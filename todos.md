@@ -145,10 +145,10 @@ Agent F — Benchmarking, validation, CI, experiments, profiling, release gates.
 All agents work in parallel, but merges must respect these gates:
 
 ```text
-Gate 0:
+Gate 0: (completed)
   Repo config builds a hello executable with CMake presets.
 
-Gate 1:
+Gate 1: (completed)
   App runs headless, emits logs, emits build metadata, exits cleanly.
 
 Gate 2:
@@ -339,7 +339,7 @@ scene editing
 
 ---
 
-## A01 — Create repository skeleton
+## [x] A01 — Create repository skeleton
 
 **Deliverable:** canonical directory layout.
 
@@ -372,7 +372,7 @@ scene editing
 
 ---
 
-## A02 — Add CMake preset matrix
+## [x] A02 — Add CMake preset matrix
 
 **Deliverable:** `CMakePresets.json`.
 
@@ -398,7 +398,7 @@ tools-release
 
 ---
 
-## A03 — Add feature flag registry
+## [x] A03 — Add feature flag registry
 
 **Deliverable:** generated or configured feature header.
 
@@ -432,7 +432,7 @@ PT_STRICT_DETERMINISM
 
 ---
 
-## A04 — Add build metadata block
+## [x] A04 — Add build metadata block
 
 **Deliverable:** `BuildInfo` service.
 
@@ -459,7 +459,7 @@ backend compile options
 
 ---
 
-## A05 — Implement structured logging core
+## [x] A05 — Implement structured logging core
 
 **Deliverable:** logging API with severity, subsystem, frame index, thread ID, and structured fields.
 
@@ -489,7 +489,7 @@ in-memory ring buffer
 
 ---
 
-## A06 — Implement subsystem lifecycle logging
+## [x] A06 — Implement subsystem lifecycle logging
 
 **Deliverable:** standard lifecycle log macros or helper calls.
 
@@ -511,7 +511,7 @@ shutdown_success
 
 ---
 
-## A07 — Add crash flight recorder
+## [x] A07 — Add crash flight recorder
 
 **Deliverable:** crash snapshot writer.
 
@@ -534,7 +534,7 @@ active_scene_state.json
 
 ---
 
-## A08 — Add platform crash hooks
+## [x] A08 — Add platform crash hooks
 
 **Deliverable:** crash handlers for Windows and POSIX platforms.
 
@@ -544,7 +544,7 @@ active_scene_state.json
 
 ---
 
-## A09 — Add `ptdoctor`
+## [x] A09 — Add `ptdoctor`
 
 **Deliverable:** diagnostic CLI tool.
 
@@ -567,7 +567,7 @@ ptdoctor --crash-test
 
 ---
 
-## A10 — Add runtime config system
+## [x] A10 — Add runtime config system
 
 **Deliverable:** config parser and resolved runtime config output.
 
@@ -586,7 +586,7 @@ default config
 
 ---
 
-## A11 — Add sanitizer presets
+## [x] A11 — Add sanitizer presets
 
 **Deliverable:** ASAN and TSAN CMake presets.
 
@@ -596,7 +596,7 @@ default config
 
 ---
 
-## A12 — Add assertion and fatal error policy
+## [x] A12 — Add assertion and fatal error policy
 
 **Deliverable:** consistent `PT_ASSERT`, `PT_VERIFY`, `PT_FATAL`, and recoverable error flow.
 
@@ -606,7 +606,7 @@ default config
 
 ---
 
-## A13 — Add agent-readable task status file
+## [x] A13 — Add agent-readable task status file
 
 **Deliverable:** generated `artifacts/status/latest_status.json`.
 
@@ -629,7 +629,7 @@ performance summary if available
 
 ---
 
-## A14 — Add minimal app shell
+## [x] A14 — Add minimal app shell
 
 **Deliverable:** `ptapp` executable.
 
@@ -651,7 +651,7 @@ Modes:
 
 ---
 
-## A15 — Add artifact directory policy
+## [x] A15 — Add artifact directory policy
 
 **Deliverable:** standardized output folder layout.
 
@@ -667,7 +667,7 @@ Modes:
 
 ---
 
-## A16 — Add integration smoke command
+## [x] A16 — Add integration smoke command
 
 **Deliverable:** one command that agents can run before every PR.
 
@@ -720,7 +720,7 @@ benchmark scoring
 
 ---
 
-## B01 — Define core primitive types
+## [x] B01 — Define core primitive types
 
 **Deliverable:** core ID, handle, span/view, result/error, and hash types.
 
@@ -743,7 +743,7 @@ FrameIndex
 
 ---
 
-## B02 — Define platform interfaces
+## [x] B02 — Define platform interfaces
 
 **Deliverable:** interfaces for platform services.
 
@@ -766,7 +766,7 @@ INativeSurfaceProvider
 
 ---
 
-## B03 — Implement headless platform
+## [x] B03 — Implement headless platform
 
 **Deliverable:** platform implementation with no window.
 
