@@ -72,7 +72,7 @@ std::uint64_t HeadlessTimeSource::now_ms() const {
 }
 
 vkpt::core::Result<std::string> HeadlessFileSystem::read_text_file(std::string_view path) const {
-  std::ifstream stream(std::string(path));
+  std::ifstream stream{std::string(path)};
   if (!stream) {
     return vkpt::core::Result<std::string>::error(vkpt::core::ErrorCode::NotFound);
   }
@@ -82,7 +82,7 @@ vkpt::core::Result<std::string> HeadlessFileSystem::read_text_file(std::string_v
 }
 
 bool HeadlessFileSystem::file_exists(std::string_view path) const {
-  std::ifstream stream(std::string(path));
+  std::ifstream stream{std::string(path)};
   return static_cast<bool>(stream);
 }
 
