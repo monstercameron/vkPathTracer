@@ -105,6 +105,7 @@ struct CameraComponent {
 };
 
 struct LightComponent {
+  std::string type = "point";
   Vec3 color{1.0f, 1.0f, 1.0f};
   float intensity = 1.0f;
   float radius = 0.0f;
@@ -267,12 +268,17 @@ struct SceneMaterialDefinition {
   std::string name;
   Vec3 albedo{1.0f, 1.0f, 1.0f};
   float roughness = 1.0f;
+  Vec3 emission{0.0f, 0.0f, 0.0f};
+  float emission_intensity = 0.0f;
 };
 
 struct SceneGeometryDefinition {
   vkpt::core::StableId id = 0;
   std::string primitive;
   std::vector<std::string> tags;
+  std::vector<Vec3> vertices;
+  std::vector<std::uint32_t> indices;
+  vkpt::core::StableId material_id = 0;
 };
 
 struct SceneSdfPrimitiveDefinition {

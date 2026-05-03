@@ -1,0 +1,60 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Physics Chaos placeholder",
+    "author": "vkPathTracer"
+  },
+  "materials": [
+    {
+      "id": 81,
+      "name": "placeholder",
+      "albedo": [0.3, 0.3, 0.3],
+      "roughness": 1.0
+    }
+  ],
+  "geometry": [],
+  "sdf_primitives": [],
+  "entities": [
+    {
+      "id": 801,
+      "name": "camera",
+      "camera": {
+        "fov": 65.0,
+        "near_plane": 0.05,
+        "far_plane": 500.0
+      }
+    },
+    {
+      "id": 802,
+      "name": "placeholder_light",
+      "light": {
+        "type": "visible emissive object",
+        "color": [0.2, 0.4, 0.9],
+        "intensity": 2.0,
+        "radius": 0.0
+      }
+    }
+  ],
+  "cameras": [
+    {
+      "id": 801,
+      "fov": 65.0,
+      "near_plane": 0.05,
+      "far_plane": 500.0
+    }
+  ],
+  "lights": [
+    {
+      "id": 802,
+      "type": "visible emissive object",
+      "color": [0.2, 0.4, 0.9],
+      "intensity": 2.0,
+      "radius": 0.0
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 16,
+    "warmup_frames": 2
+  }
+}

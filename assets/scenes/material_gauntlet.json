@@ -1,0 +1,108 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Material Gauntlet",
+    "author": "vkPathTracer"
+  },
+  "materials": [
+    {
+      "id": 21,
+      "name": "Diffuse A",
+      "albedo": [0.8, 0.45, 0.45],
+      "roughness": 1.0
+    },
+    {
+      "id": 22,
+      "name": "Diffuse B",
+      "albedo": [0.45, 0.8, 0.45],
+      "roughness": 1.0
+    },
+    {
+      "id": 23,
+      "name": "Glossy",
+      "albedo": [0.9, 0.9, 0.9],
+      "roughness": 0.2
+    },
+    {
+      "id": 24,
+      "name": "Emitter",
+      "albedo": [1.0, 1.0, 1.0],
+      "emission": [1.0, 0.8, 0.4],
+      "emission_intensity": 4.0,
+      "roughness": 1.0
+    }
+  ],
+  "geometry": [
+    {
+      "id": 11,
+      "primitive": "triangle",
+      "material_id": 21,
+      "vertices": [
+        [-1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.2, 0.0]
+      ],
+      "indices": [0, 1, 2]
+    }
+  ],
+  "sdf_primitives": [],
+  "entities": [
+    {
+      "id": 201,
+      "name": "camera",
+      "camera": {
+        "fov": 60.0,
+        "near_plane": 0.1,
+        "far_plane": 250.0
+      }
+    },
+    {
+      "id": 202,
+      "name": "mesh_left",
+      "mesh": {
+        "mesh_id": 11,
+        "material_id": 21
+      }
+    },
+    {
+      "id": 203,
+      "name": "mesh_mid",
+      "mesh": {
+        "mesh_id": 11,
+        "material_id": 23
+      }
+    },
+    {
+      "id": 204,
+      "name": "mat_emit",
+      "light": {
+        "type": "point",
+        "color": [1.0, 0.8, 0.4],
+        "intensity": 8.0,
+        "radius": 0.0
+      }
+    }
+  ],
+  "cameras": [
+    {
+      "id": 201,
+      "fov": 60.0,
+      "near_plane": 0.1,
+      "far_plane": 250.0
+    }
+  ],
+  "lights": [
+    {
+      "id": 204,
+      "type": "point",
+      "color": [1.0, 0.8, 0.4],
+      "intensity": 8.0,
+      "radius": 0.0
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 64,
+    "warmup_frames": 8
+  }
+}

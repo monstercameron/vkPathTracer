@@ -1,0 +1,94 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Cornell Native",
+    "author": "vkPathTracer"
+  },
+  "materials": [
+    {
+      "id": 1,
+      "name": "Cornell wall",
+      "albedo": [0.78, 0.78, 0.95],
+      "roughness": 1.0
+    },
+    {
+      "id": 2,
+      "name": "Cornell light",
+      "albedo": [1.0, 1.0, 1.0],
+      "emission": [1.0, 1.0, 1.0],
+      "emission_intensity": 6.0,
+      "roughness": 1.0
+    }
+  ],
+  "geometry": [
+    {
+      "id": 1,
+      "primitive": "triangle",
+      "material_id": 1,
+      "vertices": [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0]
+      ],
+      "indices": [0, 1, 2]
+    }
+  ],
+  "sdf_primitives": [],
+  "entities": [
+    {
+      "id": 1,
+      "name": "camera",
+      "camera": {
+        "fov": 60.0,
+        "near_plane": 0.1,
+        "far_plane": 1000.0
+      }
+    },
+    {
+      "id": 2,
+      "name": "light",
+      "light": {
+        "type": "point",
+        "color": [1.0, 0.95, 0.85],
+        "intensity": 18.0,
+        "radius": 0.0
+      }
+    },
+    {
+      "id": 3,
+      "name": "floor",
+      "mesh": {
+        "mesh_id": 1,
+        "material_id": 1
+      },
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [6.0, 1.0, 6.0]
+      }
+    }
+  ],
+  "transforms": [],
+  "cameras": [
+    {
+      "id": 1,
+      "fov": 60.0,
+      "near_plane": 0.1,
+      "far_plane": 1000.0
+    }
+  ],
+  "lights": [
+    {
+      "id": 2,
+      "type": "point",
+      "color": [1.0, 0.95, 0.85],
+      "intensity": 18.0,
+      "radius": 0.0
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 96,
+    "warmup_frames": 8
+  }
+}

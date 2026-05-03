@@ -395,6 +395,42 @@ bool read_vec3(const JsonValue& object, std::string_view key, Vec3& out) {
   return true;
 }
 
+bool read_vec3_list(const JsonValue& object, std::string_view key, std::vector<Vec3>& out) {
+  out.clear();
+  auto it = object.object.find(std::string(key));
+  if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array) {
+    return false;
+  }
+  out.reserve(it->second.array.size());
+  for (const auto& element : it->second.array) {
+    if (element.kind != JsonValue::Kind::Array || element.array.size() != 3) {
+      return false;
+    }
+    Vec3 value{};
+    value.x = static_cast<float>(element.array[0].number);
+    value.y = static_cast<float>(element.array[1].number);
+    value.z = static_cast<float>(element.array[2].number);
+    out.push_back(value);
+  }
+  return true;
+}
+
+bool read_u32_list(const JsonValue& object, std::string_view key, std::vector<std::uint32_t>& out) {
+  out.clear();
+  auto it = object.object.find(std::string(key));
+  if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array) {
+    return false;
+  }
+  out.reserve(it->second.array.size());
+  for (const auto& element : it->second.array) {
+    if (element.kind != JsonValue::Kind::Number) {
+      return false;
+    }
+    out.push_back(static_cast<std::uint32_t>(element.number));
+  }
+  return true;
+}
+
 bool read_quat(const JsonValue& object, std::string_view key, Quat& out) {
   auto it = object.object.find(std::string(key));
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array || it->second.array.size() != 4) {
@@ -1263,6 +1299,13 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         const auto& colorNode = item.object.at("albedo");
         read_vec3(colorNode, "", material.albedo);
       }
+      if (item.object.contains("emission")) {
+        const auto& emissionNode = item.object.at("emission");
+        read_vec3(emissionNode, "", material.emission);
+      }
+      if (item.object.contains("emission_intensity")) {
+        read_float(item, "emission_intensity", material.emission_intensity);
+      }
       read_float(item, "roughness", material.roughness);
       doc.materials.push_back(std::move(material));
     }
@@ -1274,6 +1317,9 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       SceneGeometryDefinition geometry;
       read_u64(item, "id", geometry.id);
       read_string(item, "primitive", geometry.primitive);
+      read_u64(item, "material_id", geometry.material_id);
+      read_vec3_list(item, "vertices", geometry.vertices);
+      read_u32_list(item, "indices", geometry.indices);
       const auto tags = item.object.find("tags");
       if (tags != item.object.end() && tags->second.kind == JsonValue::Kind::Array) {
         for (const auto& t : tags->second.array) {
@@ -1334,6 +1380,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       }
       if (const auto lightNode = item.object.find("light"); lightNode != item.object.end()) {
         entity.has_light = true;
+        read_string(lightNode->second, "type", entity.light.type);
         read_vec3(lightNode->second, "color", entity.light.color);
         read_float(lightNode->second, "intensity", entity.light.intensity);
         read_float(lightNode->second, "radius", entity.light.radius);
@@ -1393,6 +1440,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
     for (const auto& item : lightsNode->second.array) {
       SceneLightDefinition light;
       read_u64(item, "id", light.id);
+      read_string(item, "type", light.light.type);
       read_vec3(item, "color", light.light.color);
       read_float(item, "intensity", light.light.intensity);
       read_float(item, "radius", light.light.radius);
