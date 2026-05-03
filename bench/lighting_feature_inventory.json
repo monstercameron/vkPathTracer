@@ -1,0 +1,105 @@
+{
+  "pack_name": "Core light feature inventory",
+  "version": "1.0",
+  "features": [
+    {
+      "name": "point",
+      "units": {
+        "intensity": "candela",
+        "radius": "meter"
+      },
+      "parameters": ["color", "intensity", "radius", "falloff"]
+    },
+    {
+      "name": "spot",
+      "units": {
+        "intensity": "candela",
+        "beam_angle": "deg",
+        "radius": "meter"
+      },
+      "parameters": ["color", "intensity", "radius", "direction", "beam_angle", "blend"]
+    },
+    {
+      "name": "directional",
+      "units": {
+        "intensity": "lux"
+      },
+      "parameters": ["color", "intensity", "direction"]
+    },
+    {
+      "name": "sphere area",
+      "units": {
+        "radiant_flux": "lumen",
+        "radius": "meter"
+      },
+      "parameters": ["color", "intensity", "radius", "center"]
+    },
+    {
+      "name": "rectangle area",
+      "units": {
+        "radiant_flux": "lumen",
+        "size": "meter"
+      },
+      "parameters": ["color", "intensity", "width", "height", "normal", "u_axis", "v_axis"]
+    },
+    {
+      "name": "disk area",
+      "units": {
+        "radiant_flux": "lumen",
+        "radius": "meter"
+      },
+      "parameters": ["color", "intensity", "radius", "normal", "center"]
+    },
+    {
+      "name": "line area",
+      "units": {
+        "radiant_flux": "lumen",
+        "length": "meter"
+      },
+      "parameters": ["color", "intensity", "start", "end", "radius"]
+    },
+    {
+      "name": "portal",
+      "units": {
+        "intensity": "relative"
+      },
+      "parameters": ["color", "intensity", "width", "height", "normal", "forward"]
+    },
+    {
+      "name": "mesh emissive",
+      "units": {
+        "radiance": "W·sr-1·m-2"
+      },
+      "parameters": ["mesh_id", "color", "intensity", "unit_scale"]
+    },
+    {
+      "name": "environment sky",
+      "units": {
+        "intensity": "cd·m-2"
+      },
+      "parameters": ["color", "intensity", "turbidity", "elevation"]
+    },
+    {
+      "name": "open sky",
+      "units": {
+        "intensity": "cd·m-2"
+      },
+      "parameters": ["intensity", "sun_color", "sun_elevation"]
+    },
+    {
+      "name": "blackbody emitter",
+      "units": {
+        "temperature": "kelvin",
+        "intensity": "watt"
+      },
+      "parameters": ["temperature_k", "intensity", "scale"]
+    },
+    {
+      "name": "visible emissive object",
+      "units": {
+        "intensity": "candela"
+      },
+      "parameters": ["object_id", "color", "intensity", "mask_threshold"]
+    }
+  ]
+}

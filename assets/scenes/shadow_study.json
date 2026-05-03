@@ -1,0 +1,79 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Shadow Study",
+    "author": "vkPathTracer"
+  },
+  "materials": [
+    {
+      "id": 41,
+      "name": "wall",
+      "albedo": [0.9, 0.9, 0.9],
+      "roughness": 1.0
+    }
+  ],
+  "geometry": [
+    {
+      "id": 41,
+      "primitive": "triangle",
+      "material_id": 41,
+      "vertices": [
+        [-1.5, 0.0, 0.0],
+        [1.5, 0.0, 0.0],
+        [0.0, 1.5, 1.0]
+      ],
+      "indices": [0, 1, 2]
+    }
+  ],
+  "entities": [
+    {
+      "id": 401,
+      "name": "camera",
+      "camera": {
+        "fov": 50.0,
+        "near_plane": 0.05,
+        "far_plane": 100.0
+      }
+    },
+    {
+      "id": 402,
+      "name": "mesh",
+      "mesh": {
+        "mesh_id": 41,
+        "material_id": 41
+      }
+    },
+    {
+      "id": 403,
+      "name": "shadow_light",
+      "light": {
+        "type": "spot",
+        "color": [1.0, 1.0, 1.0],
+        "intensity": 20.0,
+        "radius": 0.0
+      }
+    }
+  ],
+  "cameras": [
+    {
+      "id": 401,
+      "fov": 50.0,
+      "near_plane": 0.05,
+      "far_plane": 100.0
+    }
+  ],
+  "lights": [
+    {
+      "id": 403,
+      "type": "spot",
+      "color": [1.0, 1.0, 1.0],
+      "intensity": 20.0,
+      "radius": 0.0
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 64,
+    "warmup_frames": 4
+  }
+}

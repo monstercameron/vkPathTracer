@@ -1,0 +1,94 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Sponza Lite / Atrium",
+    "author": "vkPathTracer"
+  },
+  "materials": [
+    {
+      "id": 31,
+      "name": "Atrium stone",
+      "albedo": [0.75, 0.72, 0.68],
+      "roughness": 1.0
+    },
+    {
+      "id": 32,
+      "name": "Atrium metal",
+      "albedo": [0.55, 0.52, 0.48],
+      "roughness": 0.25
+    }
+  ],
+  "geometry": [
+    {
+      "id": 31,
+      "primitive": "triangle",
+      "material_id": 31,
+      "vertices": [
+        [-2.0, 0.0, -2.0],
+        [2.0, 0.0, -2.0],
+        [0.0, 2.0, 2.0]
+      ],
+      "indices": [0, 1, 2]
+    }
+  ],
+  "sdf_primitives": [],
+  "entities": [
+    {
+      "id": 301,
+      "name": "camera",
+      "camera": {
+        "fov": 55.0,
+        "near_plane": 0.05,
+        "far_plane": 300.0
+      }
+    },
+    {
+      "id": 302,
+      "name": "arch_left",
+      "mesh": {
+        "mesh_id": 31,
+        "material_id": 31
+      }
+    },
+    {
+      "id": 303,
+      "name": "arch_right",
+      "mesh": {
+        "mesh_id": 31,
+        "material_id": 32
+      }
+    },
+    {
+      "id": 304,
+      "name": "sun",
+      "light": {
+        "type": "directional",
+        "color": [1.0, 0.95, 0.9],
+        "intensity": 2.2,
+        "radius": 0.0
+      }
+    }
+  ],
+  "cameras": [
+    {
+      "id": 301,
+      "fov": 55.0,
+      "near_plane": 0.05,
+      "far_plane": 300.0
+    }
+  ],
+  "lights": [
+    {
+      "id": 304,
+      "type": "directional",
+      "color": [1.0, 0.95, 0.9],
+      "intensity": 2.2,
+      "radius": 0.0
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 128,
+    "warmup_frames": 10
+  }
+}

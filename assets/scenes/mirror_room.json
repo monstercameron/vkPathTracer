@@ -1,0 +1,104 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Mirror Room",
+    "author": "vkPathTracer"
+  },
+  "materials": [
+    {
+      "id": 51,
+      "name": "mirror",
+      "albedo": [0.95, 0.95, 0.95],
+      "roughness": 0.01
+    },
+    {
+      "id": 52,
+      "name": "fill",
+      "albedo": [0.5, 0.65, 0.8],
+      "roughness": 1.0
+    }
+  ],
+  "geometry": [
+    {
+      "id": 51,
+      "primitive": "triangle",
+      "material_id": 51,
+      "vertices": [
+        [-0.5, 0.0, 0.0],
+        [0.5, 0.0, 0.0],
+        [0.0, 1.0, 0.0]
+      ],
+      "indices": [0, 1, 2]
+    },
+    {
+      "id": 52,
+      "primitive": "triangle",
+      "material_id": 52,
+      "vertices": [
+        [-0.5, 0.0, -0.5],
+        [0.5, 0.0, -0.5],
+        [0.0, 1.0, -0.5]
+      ],
+      "indices": [0, 1, 2]
+    }
+  ],
+  "entities": [
+    {
+      "id": 501,
+      "name": "camera",
+      "camera": {
+        "fov": 64.0,
+        "near_plane": 0.05,
+        "far_plane": 100.0
+      }
+    },
+    {
+      "id": 502,
+      "name": "mirror_one",
+      "mesh": {
+        "mesh_id": 51,
+        "material_id": 51
+      }
+    },
+    {
+      "id": 503,
+      "name": "room_fill",
+      "mesh": {
+        "mesh_id": 52,
+        "material_id": 52
+      }
+    },
+    {
+      "id": 504,
+      "name": "light",
+      "light": {
+        "type": "environment sky",
+        "color": [0.2, 0.2, 0.35],
+        "intensity": 0.25,
+        "radius": 0.0
+      }
+    }
+  ],
+  "cameras": [
+    {
+      "id": 501,
+      "fov": 64.0,
+      "near_plane": 0.05,
+      "far_plane": 100.0
+    }
+  ],
+  "lights": [
+    {
+      "id": 504,
+      "type": "environment sky",
+      "color": [0.2, 0.2, 0.35],
+      "intensity": 0.25,
+      "radius": 0.0
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 64,
+    "warmup_frames": 4
+  }
+}

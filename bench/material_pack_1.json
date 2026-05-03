@@ -1,0 +1,85 @@
+{
+  "pack_name": "Material Pack 1",
+  "version": "1.0",
+  "status": "gate3_registered",
+  "materials": [
+    {
+      "id": "mat_diffuse_lambert",
+      "name": "Diffuse / Lambert",
+      "implemented": true,
+      "notes": "Path throughput + cosine weighted sampling"
+    },
+    {
+      "id": "mat_emissive",
+      "name": "Emissive",
+      "implemented": true,
+      "notes": "Emission with intensity scaling"
+    },
+    {
+      "id": "mat_mirror",
+      "name": "Mirror",
+      "implemented": true,
+      "notes": "Perfect specular sampling"
+    },
+    {
+      "id": "mat_specular",
+      "name": "Specular",
+      "implemented": true,
+      "notes": "Basic specular fallback for non-rough materials"
+    },
+    {
+      "id": "mat_glossy",
+      "name": "Glossy",
+      "implemented": true,
+      "notes": "Roughness-driven glossy reflection"
+    },
+    {
+      "id": "mat_ggx_rough_conductor",
+      "name": "GGX rough conductor",
+      "implemented": false,
+      "notes": "Stub entry only"
+    },
+    {
+      "id": "mat_ggx_rough_dielectric",
+      "name": "GGX rough dielectric",
+      "implemented": false,
+      "notes": "Stub entry only"
+    },
+    {
+      "id": "mat_metallic_pbr",
+      "name": "Metallic PBR",
+      "implemented": false,
+      "notes": "Stub entry only"
+    },
+    {
+      "id": "mat_dielectric_glass",
+      "name": "Dielectric / glass",
+      "implemented": false,
+      "notes": "Stub entry only"
+    },
+    {
+      "id": "mat_clearcoat",
+      "name": "Clearcoat",
+      "implemented": false,
+      "notes": "Stub entry only"
+    },
+    {
+      "id": "mat_normal_mapped_pbr",
+      "name": "Normal-mapped PBR",
+      "implemented": false,
+      "notes": "Stub entry only"
+    },
+    {
+      "id": "mat_alpha_mask",
+      "name": "Alpha mask",
+      "implemented": false,
+      "notes": "Stub entry only"
+    },
+    {
+      "id": "mat_environment_emissive",
+      "name": "Environment emissive response",
+      "implemented": true,
+      "notes": "Background fallback emissive path"
+    }
+  ]
+}

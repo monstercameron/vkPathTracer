@@ -154,6 +154,7 @@ add_executable(ptapp
   src/app/main.cpp
   src/platform/HeadlessPlatform.cpp
   src/scene/Scene.cpp
+  src/pathtracer/PathTracer.cpp
 )
 
 target_include_directories(ptapp PRIVATE
@@ -166,6 +167,23 @@ foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
 endforeach()
 
 target_compile_features(ptapp PRIVATE cxx_std_23)
+
+add_executable(ptbench
+  src/benchmark/ptbench.cpp
+  src/benchmark/BenchmarkSchema.cpp
+  src/scene/Scene.cpp
+)
+
+target_include_directories(ptbench PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+  "${CMAKE_BINARY_DIR}/generated"
+)
+
+foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
+  target_compile_definitions(ptbench PRIVATE ${feature})
+endforeach()
+
+target_compile_features(ptbench PRIVATE cxx_std_23)
 
 add_custom_target(hello
   DEPENDS ptapp
