@@ -20,7 +20,15 @@
 
 #include "benchmark/BenchmarkSchema.h"
 #include "build_info.generated.h"
+#include "cpu/CpuFeatures.h"
+#include "cpu/PacketRay.h"
 #include "cpu/ParallelBvhBuilder.h"
+#include "cpu/SimdKernel.h"
+#include "cpu/SimdKernelScalar.h"
+#include "cpu/SimdKernelNeon.h"
+#include "cpu/SimdKernelSve.h"
+#include "cpu/SimdKernelAvx2.h"
+#include "cpu/SimdKernelAvx512.h"
 #include "cpu/TiledCpuPathTracer.h"
 #include "jobs/JobSystem.h"
 #include "pathtracer/PathTracer.h"
@@ -708,7 +716,9 @@ void PrintHelp() {
   std::cout << "  validate-scene\n";
   std::cout << "  compare\n";
   std::cout << "  dump-capabilities\n";
-  std::cout << "  run-experiments\n\n";
+  std::cout << "  run-experiments\n";
+  std::cout << "  simd-sweep\n";
+  std::cout << "  tile-sweep\n\n";
   std::cout << "run:\n";
   std::cout << "  --scene <path>\n";
   std::cout << "  --backend <cpu|vulkan|auto>\n";
@@ -725,6 +735,16 @@ void PrintHelp() {
   std::cout << "  --workers <count>        (cpu-tiled: thread count, 0=auto)\n";
   std::cout << "  --tile-size <rows>       (cpu-tiled: rows per tile, default 16)\n";
   std::cout << "  --deterministic          (cpu-tiled: serialized execution)\n\n";
+  std::cout << "simd-sweep:\n";
+  std::cout << "  [--rays <count>]         (rays per triangle test, default 1000000)\n";
+  std::cout << "  [--triangles <count>]    (triangle count, default 1024)\n";
+  std::cout << "  [--output <path>]        (write simd_sweep.json to dir)\n\n";
+  std::cout << "tile-sweep:\n";
+  std::cout << "  --scene <path>\n";
+  std::cout << "  [--workers <count>]      (thread count, 0=auto)\n";
+  std::cout << "  [--spp <n>]              (samples per pixel, default 4)\n";
+  std::cout << "  [--resolution <WxH>]     (default 128x128)\n";
+  std::cout << "  [--output <path>]        (write tile_sweep.json to dir)\n\n";
   std::cout << "validate-scene:\n";
   std::cout << "  --scene <path>\n";
   std::cout << "  [--backend <cpu|vulkan|auto>]\n";
@@ -1499,7 +1519,12 @@ int ValidateSceneCommand(const std::vector<std::string_view>& args) {
 }
 
 int DumpCapabilitiesCommand() {
+  const auto cpuFeatures = vkpt::cpu::QueryCpuFeatures();
+  const auto bestSimd = vkpt::cpu::SelectBestSimdMode(cpuFeatures);
+
   std::cout << "{\n";
+  std::cout << "  \"cpu\":" << vkpt::cpu::SerializeCpuFeatures(cpuFeatures) << ",\n";
+  std::cout << "  \"simd_mode\":\"" << vkpt::cpu::SimdModeName(bestSimd) << "\",\n";
   std::cout << "  \"backends\": [\n";
   const auto names = vkpt::render::AvailableBackendNames();
   for (std::size_t i = 0; i < names.size(); ++i) {
@@ -1601,6 +1626,297 @@ int CompareCommand(const std::vector<std::string_view>& args) {
     if (SaveDiffHeatmap(heatmap, reference.width, reference.height, std::vector<float>(diffResult.diff), nullptr)) {
       std::cout << "heatmap: " << heatmap.string() << "\n";
     }
+  }
+  return 0;
+}
+
+// F09: SIMD sweep — measures raw ray/triangle intersection throughput for each available kernel.
+int SimdSweepCommand(const std::vector<std::string_view>& args) {
+  uint64_t rayCount   = 1'000'000ULL;
+  uint64_t triCount   = 1024ULL;
+  std::string output  = "artifacts/simd_sweep";
+
+  for (std::size_t i = 2; i < args.size(); ++i) {
+    if (args[i] == "--rays" && i + 1 < args.size()) {
+      rayCount = static_cast<uint64_t>(std::stoul(std::string(args[++i])));
+    } else if (args[i] == "--triangles" && i + 1 < args.size()) {
+      triCount = static_cast<uint64_t>(std::stoul(std::string(args[++i])));
+    } else if (args[i] == "--output" && i + 1 < args.size()) {
+      output = std::string(args[++i]);
+    } else {
+      std::cerr << "unknown option: " << args[i] << "\n";
+      return 1;
+    }
+  }
+
+  // Generate pseudo-random triangles and rays
+  auto lcg = [](uint64_t& s) -> float {
+    s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+    return static_cast<float>((s >> 33) & 0xFFFFFF) / static_cast<float>(0xFFFFFF);
+  };
+
+  std::vector<vkpt::cpu::TriangleSOA> triangles(triCount);
+  uint64_t seed = 0xDEADBEEF12345678ULL;
+  for (auto& tri : triangles) {
+    const float v0x = lcg(seed) * 10.0f - 5.0f;
+    const float v0y = lcg(seed) * 10.0f - 5.0f;
+    const float v0z = lcg(seed) * 10.0f - 5.0f;
+    tri.v0x = v0x; tri.v0y = v0y; tri.v0z = v0z;
+    tri.e1x = lcg(seed) * 2.0f - 1.0f;
+    tri.e1y = lcg(seed) * 2.0f - 1.0f;
+    tri.e1z = lcg(seed) * 2.0f - 1.0f;
+    tri.e2x = lcg(seed) * 2.0f - 1.0f;
+    tri.e2y = lcg(seed) * 2.0f - 1.0f;
+    tri.e2z = lcg(seed) * 2.0f - 1.0f;
+    tri.material_index = 0;
+  }
+
+  // Build a ray packet (reuse same packet for the benchmark, like a hot cache)
+  constexpr uint32_t kPacketW = 4u;
+  vkpt::cpu::RayPacket packet{};
+  packet.count = kPacketW;
+  seed = 0xCAFEBABECAFEBABEULL;
+  for (uint32_t i = 0; i < kPacketW; ++i) {
+    packet.origin_x[i] = lcg(seed) * 2.0f - 1.0f;
+    packet.origin_y[i] = lcg(seed) * 2.0f - 1.0f;
+    packet.origin_z[i] = (lcg(seed) + 1.0f) * 5.0f;
+    const float dx = lcg(seed) * 0.1f;
+    const float dy = lcg(seed) * 0.1f;
+    const float dz = -1.0f;
+    const float inv_len = 1.0f / std::sqrt(dx*dx + dy*dy + dz*dz);
+    packet.dir_x[i] = dx * inv_len;
+    packet.dir_y[i] = dy * inv_len;
+    packet.dir_z[i] = dz * inv_len;
+  }
+
+  struct SweepResult {
+    std::string mode_name;
+    uint64_t total_rays = 0;
+    double mrays_per_sec = 0.0;
+    bool available = false;
+  };
+
+  std::vector<SweepResult> results;
+
+  auto bench_mode = [&](const char* name, bool available, auto fn) {
+    SweepResult r;
+    r.mode_name = name;
+    r.available = available;
+    if (!available) { results.push_back(r); return; }
+    vkpt::cpu::HitPacket hits{};
+    vkpt::cpu::reset_hit_packet(hits, kPacketW);
+    // Warm-up
+    for (uint64_t t = 0; t < 1000ULL; ++t) fn(packet, triangles[t % triCount], hits);
+    vkpt::cpu::reset_hit_packet(hits, kPacketW);
+    const auto t0 = std::chrono::high_resolution_clock::now();
+    const uint64_t total_pairs = rayCount / kPacketW;
+    for (uint64_t t = 0; t < total_pairs; ++t) fn(packet, triangles[t % triCount], hits);
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    r.total_rays = total_pairs * kPacketW;
+    r.mrays_per_sec = (ms > 0.0) ? (static_cast<double>(r.total_rays) / ms / 1000.0) : 0.0;
+    results.push_back(r);
+    std::cout << "  " << name << ": " << std::fixed << std::setprecision(2) << r.mrays_per_sec << " Mrays/s\n";
+  };
+
+  const auto cpuFeatures = vkpt::cpu::QueryCpuFeatures();
+  const auto bestMode    = vkpt::cpu::SelectBestSimdMode(cpuFeatures);
+  std::cout << "simd-sweep: " << rayCount << " rays x " << triCount << " triangles\n";
+  std::cout << "cpu: " << cpuFeatures.architecture << ", best_mode=" << vkpt::cpu::SimdModeName(bestMode) << "\n";
+
+  bench_mode("scalar", true,
+    [](const vkpt::cpu::RayPacket& p, const vkpt::cpu::TriangleSOA& t, vkpt::cpu::HitPacket& h) {
+      vkpt::cpu::intersect_triangle_packet_scalar(p, t, h);
+    });
+
+#if defined(__ARM_NEON)
+  bench_mode("neon", cpuFeatures.neon,
+    [](const vkpt::cpu::RayPacket& p, const vkpt::cpu::TriangleSOA& t, vkpt::cpu::HitPacket& h) {
+      vkpt::cpu::intersect_triangle_packet_neon(p, t, h);
+    });
+#else
+  results.push_back({"neon", 0, 0.0, false});
+#endif
+
+#if defined(__ARM_FEATURE_SVE)
+  bench_mode("sve", cpuFeatures.sve,
+    [](const vkpt::cpu::RayPacket& p, const vkpt::cpu::TriangleSOA& t, vkpt::cpu::HitPacket& h) {
+      vkpt::cpu::intersect_triangle_packet_sve(p, t, h);
+    });
+#else
+  results.push_back({"sve", 0, 0.0, false});
+#endif
+
+#if defined(__AVX2__)
+  bench_mode("avx2", cpuFeatures.avx2,
+    [](const vkpt::cpu::RayPacket& p, const vkpt::cpu::TriangleSOA& t, vkpt::cpu::HitPacket& h) {
+      vkpt::cpu::intersect_triangle_packet_avx2_full(p, t, h);
+    });
+#else
+  results.push_back({"avx2", 0, 0.0, false});
+#endif
+
+#if defined(__AVX512F__)
+  bench_mode("avx512", cpuFeatures.avx512f,
+    [](const vkpt::cpu::RayPacket& p, const vkpt::cpu::TriangleSOA& t, vkpt::cpu::HitPacket& h) {
+      vkpt::cpu::intersect_triangle_packet_avx512(p, t, h);
+    });
+#else
+  results.push_back({"avx512", 0, 0.0, false});
+#endif
+
+  // Find best available
+  std::string best_name = "scalar";
+  double best_mrays = 0.0;
+  for (const auto& r : results) {
+    if (r.available && r.mrays_per_sec > best_mrays) {
+      best_mrays = r.mrays_per_sec;
+      best_name = r.mode_name;
+    }
+  }
+  std::cout << "best: " << best_name << " (" << std::fixed << std::setprecision(2) << best_mrays << " Mrays/s)\n";
+
+  // Write JSON output
+  EnsureDirectory(Path(output));
+  const Path outPath = Path(output) / "simd_sweep.json";
+  std::ofstream jf(outPath);
+  if (jf.is_open()) {
+    jf << "{\n";
+    jf << "  \"architecture\":\"" << cpuFeatures.architecture << "\",\n";
+    jf << "  \"best_mode\":\"" << best_name << "\",\n";
+    jf << "  \"results\":[\n";
+    for (std::size_t i = 0; i < results.size(); ++i) {
+      const auto& r = results[i];
+      jf << "    {\"mode\":\"" << r.mode_name << "\",\"available\":" << (r.available ? "true" : "false")
+         << ",\"mrays_per_sec\":" << std::fixed << std::setprecision(4) << r.mrays_per_sec << "}";
+      if (i + 1 < results.size()) jf << ",";
+      jf << "\n";
+    }
+    jf << "  ]\n}\n";
+    std::cout << "results: " << outPath.string() << "\n";
+  }
+  return 0;
+}
+
+// F10: Tile-size sweep — runs cpu-tiled with different tile heights and measures throughput.
+int TileSweepCommand(const std::vector<std::string_view>& args) {
+  std::string scene;
+  uint32_t workers = 0;
+  uint32_t spp = 4;
+  std::string resolution = "128x128";
+  std::string output = "artifacts/tile_sweep";
+
+  for (std::size_t i = 2; i < args.size(); ++i) {
+    if (args[i] == "--scene" && i + 1 < args.size()) {
+      scene = std::string(args[++i]);
+    } else if (args[i] == "--workers" && i + 1 < args.size()) {
+      workers = static_cast<uint32_t>(std::stoul(std::string(args[++i])));
+    } else if (args[i] == "--spp" && i + 1 < args.size()) {
+      spp = static_cast<uint32_t>(std::stoul(std::string(args[++i])));
+    } else if (args[i] == "--resolution" && i + 1 < args.size()) {
+      resolution = std::string(args[++i]);
+    } else if (args[i] == "--output" && i + 1 < args.size()) {
+      output = std::string(args[++i]);
+    } else {
+      std::cerr << "unknown option: " << args[i] << "\n";
+      return 1;
+    }
+  }
+  if (scene.empty()) {
+    std::cerr << "tile-sweep requires --scene\n";
+    return 1;
+  }
+
+  const uint32_t kTileSizes[] = {8, 16, 32, 64};
+  struct TileResult {
+    uint32_t tile_height;
+    double samples_per_sec;
+    double render_ms;
+    bool ok;
+  };
+  std::vector<TileResult> results;
+
+  std::cout << "tile-sweep: " << scene << " workers=" << workers << " spp=" << spp << "\n";
+
+  for (const uint32_t tile_h : kTileSizes) {
+    const Path tileOut = Path(output) / (std::string("tile") + std::to_string(tile_h));
+    const std::vector<std::string> call_args = {
+      "ptbench", "run",
+      "--scene", scene,
+      "--backend", "cpu",
+      "--renderer-path", "cpu-tiled",
+      "--resolution", resolution,
+      "--spp", std::to_string(spp),
+      "--workers", std::to_string(workers),
+      "--tile-size", std::to_string(tile_h),
+      "--output", tileOut.string()
+    };
+    std::vector<std::string_view> cargs;
+    for (const auto& a : call_args) cargs.emplace_back(a);
+
+    const auto t0 = std::chrono::high_resolution_clock::now();
+    const int rc = RunCommand(cargs);
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const double elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    TileResult tr{};
+    tr.tile_height = tile_h;
+    tr.ok = (rc == 0);
+    tr.render_ms = elapsed_ms;
+
+    if (tr.ok) {
+      // Read back samples_per_sec from results.json
+      const Path res_path = tileOut / "results.json";
+      std::ifstream rf(res_path);
+      std::string content((std::istreambuf_iterator<char>(rf)), std::istreambuf_iterator<char>());
+      // Quick parse: find "samples_per_sec":<number>
+      const auto pos = content.find("\"samples_per_sec\":");
+      if (pos != std::string::npos) {
+        tr.samples_per_sec = std::stod(content.substr(pos + 18));
+      }
+    }
+    results.push_back(tr);
+    std::cout << "  tile_height=" << tile_h << ": ";
+    if (tr.ok) {
+      std::cout << std::fixed << std::setprecision(2) << tr.samples_per_sec / 1e6 << " Msamples/s";
+    } else {
+      std::cout << "FAILED";
+    }
+    std::cout << "\n";
+  }
+
+  // Find best
+  uint32_t best_tile = 16;
+  double best_sps = 0.0;
+  for (const auto& r : results) {
+    if (r.ok && r.samples_per_sec > best_sps) {
+      best_sps = r.samples_per_sec;
+      best_tile = r.tile_height;
+    }
+  }
+  std::cout << "best tile_height: " << best_tile << " (" << std::fixed << std::setprecision(2) << best_sps / 1e6 << " Msamples/s)\n";
+
+  // Write JSON
+  EnsureDirectory(Path(output));
+  const Path outPath = Path(output) / "tile_sweep.json";
+  std::ofstream jf(outPath);
+  if (jf.is_open()) {
+    jf << "{\n";
+    jf << "  \"scene\":\"" << EscapeJson(scene) << "\",\n";
+    jf << "  \"best_tile_height\":" << best_tile << ",\n";
+    jf << "  \"results\":[\n";
+    for (std::size_t i = 0; i < results.size(); ++i) {
+      const auto& r = results[i];
+      jf << "    {\"tile_height\":" << r.tile_height
+         << ",\"ok\":" << (r.ok ? "true" : "false")
+         << ",\"samples_per_sec\":" << std::fixed << std::setprecision(2) << r.samples_per_sec
+         << ",\"render_ms\":" << std::fixed << std::setprecision(2) << r.render_ms
+         << "}";
+      if (i + 1 < results.size()) jf << ",";
+      jf << "\n";
+    }
+    jf << "  ]\n}\n";
+    std::cout << "results: " << outPath.string() << "\n";
   }
   return 0;
 }
@@ -1749,6 +2065,12 @@ int main(int argc, char** argv) {
   }
   if (command == "run-experiments") {
     return RunExperimentsCommand(args);
+  }
+  if (command == "simd-sweep") {
+    return SimdSweepCommand(args);
+  }
+  if (command == "tile-sweep") {
+    return TileSweepCommand(args);
   }
 
   std::cerr << "unknown command: " << command << "\n";
