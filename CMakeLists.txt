@@ -154,6 +154,7 @@ add_executable(ptapp
   src/app/main.cpp
   src/core/Assert.cpp
   src/core/Config.cpp
+  src/cpu/CpuFeatures.cpp
   src/cpu/ParallelBvhBuilder.cpp
   src/cpu/TiledCpuPathTracer.cpp
   src/diagnostics/CrashRecorder.cpp
@@ -186,6 +187,7 @@ add_executable(ptbench
   src/benchmark/BenchmarkSchema.cpp
   src/core/Assert.cpp
   src/core/Config.cpp
+  src/cpu/CpuFeatures.cpp
   src/cpu/ParallelBvhBuilder.cpp
   src/cpu/TiledCpuPathTracer.cpp
   src/diagnostics/CrashRecorder.cpp

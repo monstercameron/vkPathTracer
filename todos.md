@@ -166,7 +166,7 @@ Gate 5: (completed)
 Gate 6: (completed)
   Multithreaded CPU renderer, parallel BVH, and job system are validated.
 
-Gate 7:
+Gate 7: (completed)
   SIMD CPU backends and backend performance experiments are available.
 
 Gate 8:
@@ -1641,7 +1641,7 @@ capsule
 
 ---
 
-## D13 — Add SIMD abstraction layer
+## [x] D13 — Add SIMD abstraction layer
 
 **Deliverable:** `ISimdKernel` and CPU dispatch policy.
 
@@ -1663,7 +1663,7 @@ SVE
 
 ---
 
-## D14 — Add x86 CPU feature detection
+## [x] D14 — Add x86 CPU feature detection
 
 **Deliverable:** runtime detection for x86 SIMD.
 
@@ -1687,7 +1687,7 @@ FMA
 
 ---
 
-## D15 — Add ARM CPU feature detection
+## [x] D15 — Add ARM CPU feature detection
 
 **Deliverable:** runtime detection for ARM SIMD.
 
@@ -1707,7 +1707,7 @@ dot-product optional
 
 ---
 
-## D16 — Add scalar-to-SIMD packet ray interface
+## [x] D16 — Add scalar-to-SIMD packet ray interface
 
 **Deliverable:** packet ray kernel API.
 
@@ -1717,7 +1717,7 @@ dot-product optional
 
 ---
 
-## D17 — Implement AVX2 experiment kernel
+## [x] D17 — Implement AVX2 experiment kernel
 
 **Deliverable:** AVX2 packet intersection experiment.
 
@@ -1727,7 +1727,7 @@ dot-product optional
 
 ---
 
-## D18 — Implement AVX-512 experiment kernel
+## [x] D18 — Implement AVX-512 experiment kernel
 
 **Deliverable:** AVX-512 packet intersection experiment.
 
@@ -1737,7 +1737,7 @@ dot-product optional
 
 ---
 
-## D19 — Implement NEON experiment kernel
+## [x] D19 — Implement NEON experiment kernel
 
 **Deliverable:** ARM NEON packet intersection experiment.
 
@@ -1747,7 +1747,7 @@ dot-product optional
 
 ---
 
-## D20 — Implement SVE experiment kernel
+## [x] D20 — Implement SVE experiment kernel
 
 **Deliverable:** ARM SVE packet experiment.
 
@@ -2605,7 +2605,7 @@ speedup vs scalar
 
 ---
 
-## F09 — Add SIMD CPU experiment suite
+## [x] F09 — Add SIMD CPU experiment suite
 
 **Deliverable:** SIMD comparison experiment.
 
@@ -2626,7 +2626,7 @@ SVE
 
 ---
 
-## F10 — Add tile-size experiment
+## [x] F10 — Add tile-size experiment
 
 **Deliverable:** CPU/GPU tile-size sweep.
 

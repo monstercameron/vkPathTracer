@@ -1,8 +1,48 @@
 ﻿# Changelog
 
-## 2026-05-03 (session 5)
+## 2026-05-03 (session 5, Gate 7)
 
-### Gate 6 complete — Multithreaded CPU renderer, parallel BVH, deterministic job mode
+### Gate 7 complete — SIMD CPU backends and backend performance experiments
+
+**Gate 7 acceptance:** *"SIMD CPU backends and backend performance experiments are available."*
+
+**D13 — SIMD abstraction layer** (`src/cpu/SimdKernel.h`)
+`SimdMode` enum (`Scalar`, `NEON`, `SVE`, `AVX`, `AVX2`, `AVX512`), `SimdModeName()`, and `SelectBestSimdMode()`. On AArch64 prefers SVE > NEON > Scalar; on x86 prefers AVX512 > AVX2 > AVX > Scalar. All selection logic is compile-time guarded so non-participating ISAs do not appear in binaries.
+
+**D14 — x86 CPU feature detection** (`src/cpu/CpuFeatures.h/.cpp`)
+`CpuFeatureSet` struct with fields for SSE2, SSE4.1/4.2, AVX, AVX2, AVX-512F/DQ/BW/VL, and FMA. `QueryCpuFeatures()` uses `__get_cpuid` / `__get_cpuid_count` (GCC/Clang) or `__cpuid` / `__cpuidex` (MSVC) guarded by `VKPT_ARCH_X86`. `SerializeCpuFeatures()` returns a JSON object string for embedding in `dump-capabilities` output.
+
+**D15 — ARM CPU feature detection** (`src/cpu/CpuFeatures.h/.cpp`)
+Same `CpuFeatureSet` and `QueryCpuFeatures()` for AArch64: NEON always true (implied by AArch64 ABI), SVE/SVE2/FP16/dot-product detected from compiler predefined macros (`__ARM_FEATURE_SVE` etc.) guarded by `VKPT_ARCH_ARM64`.
+
+**D16 — Packet ray interface** (`src/cpu/PacketRay.h`)
+`RayPacket` (SoA layout, up to 16 lanes), `HitPacket` (hit mask + t/u/v/material per lane), `TriangleSOA` (v0, e1, e2, material_index). Maximum packet width `kMaxPacketWidth = 16`.
+
+**D17 — AVX2 8-wide intersection kernel** (`src/cpu/SimdKernelAvx2.h`)
+`intersect_triangle_packet_avx2()` — 8-lane Möller–Trumbore using `__m256` with FMA (`_mm256_fmadd_ps`, `_mm256_fmsub_ps`). `intersect_triangle_packet_avx2_full()` for arbitrary count with scalar tail. Guarded by `#if defined(__AVX2__)`.
+
+**D18 — AVX-512 16-wide intersection kernel** (`src/cpu/SimdKernelAvx512.h`)
+`intersect_triangle_packet_avx512()` — 16-lane Möller–Trumbore using `__m512` and `__mmask16` predication with `_mm512_mask_cmp_ps_mask`. Guarded by `#if defined(__AVX512F__)`. Notes warn about potential frequency throttling.
+
+**D19 — NEON 4-wide intersection kernel** (`src/cpu/SimdKernelNeon.h`)
+`intersect_triangle_packet_neon_4()` — 4-lane Möller–Trumbore using `float32x4_t`. Uses Newton–Raphson refinement (`vrecpsq_f32`) for `vrecpeq_f32` precision. `intersect_triangle_packet_neon()` for arbitrary count. Guarded by `#if defined(__ARM_NEON)`.
+
+**D20 — SVE variable-width intersection kernel** (`src/cpu/SimdKernelSve.h`)
+`intersect_triangle_packet_sve()` — variable-length Möller–Trumbore using `svfloat32_t`, `svbool_t`, and `svcntw()` for runtime lane width. `svwhilelt_b32` predication for arbitrary packet count. Guarded by `#if defined(__ARM_FEATURE_SVE)`.
+
+**F09 — SIMD sweep experiment** (`src/benchmark/ptbench.cpp` — `SimdSweepCommand`)
+`ptbench simd-sweep [--rays N] [--triangles N] [--output dir]` — generates random rays and triangles, benchmarks all compiled/available kernels (scalar, NEON, SVE, AVX2, AVX-512) in Mrays/s, identifies best, writes `simd_sweep.json`. CPU features and best SIMD mode reported.
+
+**F10 — Tile-size sweep experiment** (`src/benchmark/ptbench.cpp` — `TileSweepCommand`)
+`ptbench tile-sweep --scene <path> [--workers N] [--spp N] [--resolution WxH] [--output dir]` — runs cpu-tiled with tile heights 8, 16, 32, 64, measures Msamples/s per configuration, identifies best, writes `tile_sweep.json`.
+
+**dump-capabilities enhancement**
+JSON output now includes `"cpu"` section (architecture + all feature flags) and `"simd_mode"` before the backends array.
+
+**CMakeLists.txt**
+Added `src/cpu/CpuFeatures.cpp` to both `ptapp` and `ptbench` source lists.
+
+
 
 **Gate 6 acceptance:** *"Multithreaded CPU renderer, parallel BVH, and job system are validated."*
 
