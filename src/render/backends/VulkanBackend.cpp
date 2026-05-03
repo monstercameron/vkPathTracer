@@ -3,7 +3,9 @@
 #include <array>
 #include <algorithm>
 #include <cstring>
+#include <cstdint>
 #include <random>
+#include <cmath>
 
 namespace vkpt::render {
 
@@ -351,6 +353,158 @@ bool RunVulkanComputeSmoke(vkpt::render::IRenderBackend& backend) {
   allocator->destroy_buffer(sourceBuffer);
   device->end();
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// C10  Vulkan BVH pass (simulated)
+// ---------------------------------------------------------------------------
+
+VulkanBVHPassResult RunVulkanBVHPass(
+    vkpt::render::VulkanComputeBackend& backend,
+    const vkpt::pathtracer::RTSceneData& scene,
+    uint32_t width,
+    uint32_t height) {
+
+  VulkanBVHPassResult result;
+
+  if (!backend.initialize()) {
+    result.error = "backend initialize failed";
+    return result;
+  }
+
+  auto device = backend.create_device();
+  if (!device || !device->begin()) {
+    result.error = "device create/begin failed";
+    return result;
+  }
+
+  auto* raw = dynamic_cast<VulkanDevice*>(device.get());
+  if (!raw) {
+    device->end();
+    result.error = "device cast failed";
+    return result;
+  }
+  auto* allocator = static_cast<VulkanResourceAllocator*>(raw->allocator());
+
+  // -- Upload vertex buffer --------------------------------------------------
+  const auto vertexBytes = scene.vertices.size() * sizeof(vkpt::pathtracer::Vec3);
+  BufferDesc vbDesc;
+  vbDesc.debug_label = "bvh_vertices";
+  vbDesc.size_bytes  = std::max<std::size_t>(vertexBytes, 4u);
+  vbDesc.usage       = ResourceBindingUsage::Storage | ResourceBindingUsage::Read;
+  const auto vertexBuf = allocator->create_buffer(vbDesc);
+  if (vertexBuf == kInvalidHandle) {
+    device->end();
+    result.error = "vertex buffer alloc failed";
+    return result;
+  }
+  if (!scene.vertices.empty()) {
+    allocator->upload_data(vertexBuf, scene.vertices.data(), vertexBytes);
+  }
+
+  // -- Upload index buffer ---------------------------------------------------
+  const auto indexBytes = scene.indices.size() * sizeof(uint32_t);
+  BufferDesc ibDesc;
+  ibDesc.debug_label = "bvh_indices";
+  ibDesc.size_bytes  = std::max<std::size_t>(indexBytes, 4u);
+  ibDesc.usage       = ResourceBindingUsage::Storage | ResourceBindingUsage::Read;
+  const auto indexBuf = allocator->create_buffer(ibDesc);
+  if (indexBuf == kInvalidHandle) {
+    allocator->destroy_buffer(vertexBuf);
+    device->end();
+    result.error = "index buffer alloc failed";
+    return result;
+  }
+  if (!scene.indices.empty()) {
+    allocator->upload_data(indexBuf, scene.indices.data(), indexBytes);
+  }
+
+  // -- Simulate BVH build ----------------------------------------------------
+  // Estimate SAH BVH node count: for N triangles, worst-case is 2N-1 nodes.
+  const auto triangleCount = static_cast<uint32_t>(scene.indices.size() / 3);
+  const uint32_t bvhNodes  = triangleCount > 0 ? 2 * triangleCount - 1 : 0;
+
+  BufferDesc bvhDesc;
+  bvhDesc.debug_label = "bvh_nodes";
+  bvhDesc.size_bytes  = std::max<std::size_t>(bvhNodes * 32u, 4u);  // 32 bytes/node (AABB + child ids)
+  bvhDesc.usage       = ResourceBindingUsage::Storage | ResourceBindingUsage::Read;
+  const auto bvhBuf = allocator->create_buffer(bvhDesc);
+  if (bvhBuf == kInvalidHandle) {
+    allocator->destroy_buffer(indexBuf);
+    allocator->destroy_buffer(vertexBuf);
+    device->end();
+    result.error = "bvh node buffer alloc failed";
+    return result;
+  }
+  // Fill with zeros to initialise the simulated BVH buffer.
+  {
+    std::vector<uint8_t> zeros(bvhDesc.size_bytes, 0u);
+    allocator->upload_data(bvhBuf, zeros.data(), zeros.size());
+  }
+
+  // -- Allocate output film texture ------------------------------------------
+  TextureDesc filmDesc;
+  filmDesc.debug_label  = "pt_film";
+  filmDesc.width        = std::max<uint32_t>(width, 1u);
+  filmDesc.height       = std::max<uint32_t>(height, 1u);
+  filmDesc.array_layers = 1u;
+  filmDesc.usage        = ResourceBindingUsage::Storage | ResourceBindingUsage::Write;
+  const auto filmTex = allocator->create_texture(filmDesc);
+  if (filmTex == kInvalidHandle) {
+    allocator->destroy_buffer(bvhBuf);
+    allocator->destroy_buffer(indexBuf);
+    allocator->destroy_buffer(vertexBuf);
+    device->end();
+    result.error = "film texture alloc failed";
+    return result;
+  }
+
+  // -- Build frame graph and execute -----------------------------------------
+  auto fg = backend.create_frame_graph();
+  const auto uploadPass  = fg->add_pass("bvh_upload",   PassType::Copy,     {},                            {vertexBuf, indexBuf, bvhBuf});
+  const auto buildPass   = fg->add_pass("bvh_build",    PassType::Compute,  {vertexBuf, indexBuf},         {bvhBuf});
+  const auto ptPass      = fg->add_pass("pathtracer",   PassType::Compute,  {bvhBuf, vertexBuf, indexBuf}, {filmTex});
+  const auto resolvePass = fg->add_pass("film_resolve", PassType::Readback, {filmTex},                     {});
+  fg->add_dependency(uploadPass, buildPass);
+  fg->add_dependency(buildPass,  ptPass);
+  fg->add_dependency(ptPass,     resolvePass);
+
+  std::vector<std::string> validateDiagnostics;
+  if (!fg->validate(&validateDiagnostics)) {
+    allocator->destroy_texture(filmTex);
+    allocator->destroy_buffer(bvhBuf);
+    allocator->destroy_buffer(indexBuf);
+    allocator->destroy_buffer(vertexBuf);
+    device->end();
+    result.error = "frame graph validation failed";
+    if (!validateDiagnostics.empty()) { result.error += ": " + validateDiagnostics.front(); }
+    return result;
+  }
+
+  auto ctx = device->create_command_context();
+  if (!ctx || !fg->execute(*ctx)) {
+    allocator->destroy_texture(filmTex);
+    allocator->destroy_buffer(bvhBuf);
+    allocator->destroy_buffer(indexBuf);
+    allocator->destroy_buffer(vertexBuf);
+    device->end();
+    result.error = "frame graph execute failed";
+    return result;
+  }
+
+  // -- Populate result -------------------------------------------------------
+  result.success             = true;
+  result.vertex_buffer_count = static_cast<uint32_t>(scene.vertices.size());
+  result.index_buffer_count  = static_cast<uint32_t>(scene.indices.size());
+  result.instance_count      = static_cast<uint32_t>(scene.instances.size());
+  result.bvh_node_estimate   = bvhNodes;
+
+  allocator->destroy_texture(filmTex);
+  allocator->destroy_buffer(bvhBuf);
+  allocator->destroy_buffer(indexBuf);
+  allocator->destroy_buffer(vertexBuf);
+  device->end();
+  return result;
 }
 
 }  // namespace vkpt::render
