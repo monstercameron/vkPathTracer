@@ -1,5 +1,86 @@
 ﻿# Changelog
 
+## 2026-05-03 (session 6, Gates 8–9)
+
+### Commits
+| Commit | Scope | Summary |
+|--------|-------|---------|
+| `98b3c7f` | build/platform | Gate 8 — multi-backend capability flags and platform extensions (C11-C17) |
+| `7834502` | pathtracer | Gate 9 — NEE, MIS, film resolve pipeline (D22/D23/D26) |
+| `84ebd4a` | materials/shaders | Gate 9 — material evaluation interface, pack registries, shader/SDF manifests (D24/E07-E11) |
+| `eceae0d` | render/editor | Gate 9 — debug view registry and editor-lite control model (E18-E21) |
+| `3d7ac6c` | diagnostics | Gate 9 — crash recorder with minidump metadata and structured log |
+| `9bdbf35` | app/bench | Gate 9 — app command wiring, benchmark schema extensions |
+| `e43808b` | docs/scripts | CI smoke plan and release gate check scripts |
+
+
+### Gate 9 complete — Material/shader library, asset import, debug views, and editor-lite controls
+
+**Gate 9 acceptance:** *"Material/shader library, asset import, debug views, and editor-lite controls exist."*
+
+**D22 — Next-event estimation** (`src/pathtracer/PathTracer.h/.cpp`)
+Direct light sampling added to `ScalarCpuPathTracer`. `RenderSettings::enable_nee` flag gates the feature. `sample_direct_light()` selects a random `RTHitLight`, casts a shadow ray, and accumulates Lambert direct contribution. Cornell scene converges faster with `--nee`.
+
+**D23 — MIS** (`src/pathtracer/PathTracer.h/.cpp`)
+`MisWeight()` power heuristic (beta=2). `RenderSettings::enable_mis` flag. When both NEE and MIS are enabled, BSDF and light PDFs are balanced via the power heuristic, reducing fireflies without bias.
+
+**D24 — Material evaluation interface** (`src/materials/MaterialInterface.h/.cpp`)
+`IMaterial` abstract interface: `evaluate`, `sample`, `pdf`, `is_delta`, `is_emissive`, `energy_check`. Concrete implementations: `DiffuseMaterial` (Lambertian), `MirrorMaterial` (delta reflection), `GlassMaterial` (Schlick Fresnel refraction), `EmissiveMaterial`.
+
+**D26 — Film resolve pipeline** (`src/pathtracer/PathTracer.h/.cpp`)
+`ToneMapMode` enum (Linear, Reinhard, FilmicApprox, AcesApprox), `FilmResolveSettings` (exposure, white_balance placeholder, tone_map_mode, gamma, clamp_output), `ApplyFilmResolve()` free function.
+
+**E07–E09 — Material pack registries** (`src/materials/MaterialDescriptors.h/.cpp`)
+`MaterialFamily` enum, `ImplementationStatus` enum, `MaterialDescriptor` struct. Full registry: Pack 1 (13 benchmark-core materials, implemented), Pack 2 (19 experimental), Pack 3 (15 backlog), Advanced (25 deferred). `SerializeMaterialRegistry()` exports JSON.
+
+**E10 — Shader family manifest** (`src/shaders/ShaderFamilyManifest.h/.cpp`)
+`ShaderFamily` enum (14 families), `ShaderFamilyDescriptor`, `GetShaderFamilyManifest()`, `SerializeShaderFamilyManifest()`. JSON export. CPU-path families marked implemented.
+
+**E11 — SDF feature inventory** (`src/shaders/SdfShaderInventory.h/.cpp`)
+`SdfFeature` enum (21 features), `SdfFeatureDescriptor`, `GetSdfFeatureInventory()`, `SerializeSdfFeatureInventory()`. JSON export. Sphere, Box, RoundedBox, Capsule, Torus, Plane marked implemented.
+
+**E18 — Debug view declarations** (`src/render/DebugViews.h/.cpp`)
+`DebugViewId` enum (20 views), `DebugViewDescriptor`, `GetDebugViewRegistry()`, `IsDebugViewAvailable()`, `FindDebugView()`, `SerializeDebugViewRegistry()`. UI/CLI can list and query views.
+
+**E19 — Editor-lite control model** (already in `src/editor/UiModels.h`)
+Confirmed complete: SelectionState, UiRuntimeState (debug view selector, inspector/material/light/camera/benchmark panel interfaces).
+
+**E20 — Editor command descriptors** (already in `src/editor/UiModels.h`)
+Confirmed complete: EditorCommand, 21 command kinds, all payloads, EditorCommandHistory.
+
+**E21 — Demo camera controls** (`src/editor/UiModels.h/.cpp`)
+`CameraControllerMode` (Orbit, Fps, Turntable, ScriptedBenchmarkPath), `CameraOrbitState`, `CameraFpsState`, `CameraWaypoint`, `CameraControllerState`, `CameraController` class. Dirty-flag protocol triggers accumulation reset on camera change.
+
+### Gate 8 complete — D3D12, Metal, and WebGPU adapters compile behind capability flags
+
+**Gate 8 acceptance:** *"D3D12, Metal, and WebGPU adapters compile behind capability flags."*
+
+**C11 — Vulkan hardware RT capability probe** (`src/render/backends/VulkanBackend.h/.cpp`, `src/render/interface/RenderContracts.h/.cpp`)
+Extended `RenderBackendCapabilities` with `ray_query_supported`, `acceleration_structure_supported`, `shader_group_handle_size`, and `max_as_size`. `VulkanComputeBackend::capabilities()` reports Vulkan RT availability; `ptbench dump-capabilities` includes all RT fields.
+
+**C12–C13 — D3D12 backend skeleton and DXR capability probe**
+`PT_ENABLE_D3D12` CMake option guards D3D12 compilation. `BackendKind::D3d12` registered in `RenderContracts.h`; `BackendKindToString()` and `SerializeBackendCapabilities()` cover D3D12 and DXR tier fields.
+
+**C14–C15 — Metal backend skeleton and ray tracing capability probe**
+`PT_ENABLE_METAL` CMake option added. `BackendKind::Metal` registered; Metal RT availability included in capability serialization.
+
+**C16–C17 — WebGPU backend skeleton and capability probe**
+`PT_ENABLE_WEBGPU` CMake option added. `BackendKind::WebGpu` registered; WebGPU compute, storage, and presentation fields in `RenderBackendCapabilities`.
+
+**RenderBackendCapabilities extensions**
+Added: `supports_present`, `supports_multiqueue`, `max_workgroup_size_{x,y,z}`, `max_buffer_alignment`, `memory_model`. All new fields serialized in `SerializeBackendCapabilities()`.
+
+**CMakeLists.txt**
+New options: `PT_ENABLE_D3D12`, `PT_ENABLE_METAL`, `PT_ENABLE_WEBGPU`, `PT_ENABLE_OPENGL_EXPERIMENTAL`, `PT_ENABLE_EDITOR`, `PT_ENABLE_PROFILING`, `PT_ENABLE_SANITIZERS`, `PT_STRICT_DETERMINISM`. Build prints active/disabled feature flag summary at configure time.
+
+**E01 — Editor UI model layer** (`src/editor/UiModels.h/.cpp`)
+Complete data-model layer for the editor UI. Data types: `UiPanelState`, `UiLayoutDocument` (8 presets), `UiRuntimeState`, `SelectionState`, `SceneEntityBounds`, `MenuBar`/`MenuItem`, `UiShortcut`. Command layer: `EditorCommand` variant over 21 kinds (entity selection/CRUD, transform, material, light/camera property, script attach/detach, asset import/assign, benchmark run, unsupported-action passthrough). `EditorCommandHistory` (capped vector) and `UiEventLog` (capped deque). Interfaces: `IUiSystem`, `IEditorCommandSink`, `ISelectionService`, `IUiPlatformBridge`, `IInspectorModelProvider`, `ISceneTreeModelProvider`, `IAssetBrowserModelProvider`, `IBenchmarkPanelModelProvider`, `IUiLogger`. Layout factories, JSON/JSONL serializers for runtime state, selection, layout document, menu bar, and command log. Asset drop validation and default keyboard shortcut map with conflict detection.
+
+**CMakeLists.txt**
+Added `src/editor/UiModels.cpp` to both `ptapp` and `ptbench` source lists.
+
+---
+
 ## 2026-05-03 (session 5, Gate 7)
 
 ### Gate 7 complete — SIMD CPU backends and backend performance experiments
