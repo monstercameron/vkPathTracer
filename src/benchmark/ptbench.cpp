@@ -453,8 +453,14 @@ bool LoadPng(const Path& path, ImageRgb& image, std::string* error = nullptr) {
       }
       return false;
     }
+    if (source + rowBytes > raw.size()) {
+      if (error) {
+        *error = "invalid decompressed png row size";
+      }
+      return false;
+    }
     for (std::uint32_t x = 0; x < width; ++x) {
-      const std::size_t px = static_cast<std::size_t>(y) * rowBytes + static_cast<std::size_t>(x) * 4u;
+      const std::size_t px = static_cast<std::size_t>(x) * 4u;
       image.rgb[target++] = static_cast<float>(raw[source + px + 0u]) / 255.0f;
       image.rgb[target++] = static_cast<float>(raw[source + px + 1u]) / 255.0f;
       image.rgb[target++] = static_cast<float>(raw[source + px + 2u]) / 255.0f;
