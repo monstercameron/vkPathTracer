@@ -153,6 +153,7 @@ configure_file(
 add_executable(ptapp
   src/app/main.cpp
   src/platform/HeadlessPlatform.cpp
+  src/scene/Scene.cpp
 )
 
 target_include_directories(ptapp PRIVATE

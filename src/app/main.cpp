@@ -6,6 +6,7 @@
 
 #include "core/Logging.h"
 #include "platform/HeadlessPlatform.h"
+#include "scene/Scene.h"
 
 #include "build_info.generated.h"
 
@@ -177,5 +178,19 @@ int main(int argc, char** argv) {
     logger.log(vkpt::log::Severity::Fatal, "app", "crash test requested");
     return 42;
   }
+
+  if (!scene.empty()) {
+    auto parseResult = vkpt::scene::SceneDocument::load_from_file(scene);
+    if (!parseResult) {
+      logger.log(vkpt::log::Severity::Error, "app", "failed to load scene");
+      std::cerr << "Failed to load scene file: " << scene << "\n";
+      return 2;
+    }
+    auto snapshot = parseResult.value().snapshot();
+    std::cout << "scene entities: " << snapshot.entity_ids.size() << '\n';
+    std::cout << "scene hash: " << parseResult.value().export_hash_hex() << '\n';
+    std::cout << "asset refs: " << snapshot.asset_refs.size() << '\n';
+  }
+
   return 0;
 }

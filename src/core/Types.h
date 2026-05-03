@@ -40,9 +40,9 @@ class [[nodiscard]] Result {
   bool has_value() const { return m_state.index() == 0; }
   explicit operator bool() const { return has_value(); }
 
-  T& value() { return std::get<0>(m_state); }
-  const T& value() const { return std::get<0>(m_state); }
-  ErrorCode error() const { return has_value() ? ErrorCode::Ok : std::get<1>(m_state); }
+  T& value() { return std::get<0>(m_state).value; }
+  const T& value() const { return std::get<0>(m_state).value; }
+  ErrorCode error() const { return has_value() ? ErrorCode::Ok : std::get<1>(m_state).code; }
 
  private:
   struct InnerOk { T value; };
@@ -70,4 +70,3 @@ class [[nodiscard]] Result<void> {
 };
 
 }  // namespace vkpt::core
-
