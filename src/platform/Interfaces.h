@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,6 +34,49 @@ struct InputEvent {
   int code = 0;
   float x = 0.0f;
   float y = 0.0f;
+  std::uint32_t device_id = 0u;
+  std::int32_t raw_code = 0;
+  float delta_x = 0.0f;
+  float delta_y = 0.0f;
+  float delta_z = 0.0f;
+};
+
+struct InputEventNormalizer final {
+  static InputEvent key(int raw_key, bool pressed) {
+    return InputEvent{pressed ? InputEventType::KeyDown : InputEventType::KeyUp, raw_key, 0.0f, 0.0f, 0u, raw_key};
+  }
+
+  static InputEvent mouse_move(float x, float y, float dx = 0.0f, float dy = 0.0f) {
+    InputEvent event{InputEventType::MouseMove, 0, x, y};
+    event.delta_x = dx;
+    event.delta_y = dy;
+    return event;
+  }
+
+  static InputEvent mouse_button(int button, bool pressed, float x = 0.0f, float y = 0.0f) {
+    return InputEvent{pressed ? InputEventType::MouseButtonDown : InputEventType::MouseButtonUp, button, x, y, 0u, button};
+  }
+
+  static InputEvent mouse_wheel(float delta, float x = 0.0f, float y = 0.0f) {
+    InputEvent event{InputEventType::MouseWheel, 0, x, y};
+    event.delta_z = delta;
+    return event;
+  }
+
+  static InputEvent resize(std::uint32_t width, std::uint32_t height) {
+    InputEvent event{InputEventType::WindowResize, 0,
+                     static_cast<float>(width), static_cast<float>(height),
+                     0u, 0};
+    return event;
+  }
+
+  static InputEvent focus(bool focused) {
+    return InputEvent{focused ? InputEventType::FocusGained : InputEventType::FocusLost, 0, 0.0f, 0.0f};
+  }
+
+  static InputEvent close() {
+    return InputEvent{InputEventType::CloseRequested, 0, 0.0f, 0.0f};
+  }
 };
 
 class IEvents {
@@ -110,4 +154,3 @@ class IPlatform {
 };
 
 }  // namespace vkpt::platform
-
