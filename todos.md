@@ -776,7 +776,7 @@ INativeSurfaceProvider
 
 ---
 
-## B04 — Implement desktop window stub
+## [x] B04 — Implement desktop window stub
 
 **Deliverable:** minimal desktop window abstraction.
 
@@ -786,7 +786,7 @@ INativeSurfaceProvider
 
 ---
 
-## B05 — Add input event normalization
+## [x] B05 — Add input event normalization
 
 **Deliverable:** normalized event stream.
 
@@ -810,7 +810,7 @@ close requested
 
 ---
 
-## B06 — Implement job system foundation
+## [x] B06 — Implement job system foundation
 
 **Deliverable:** `IJobSystem` with worker threads.
 
@@ -832,7 +832,7 @@ shutdown
 
 ---
 
-## B07 — Add task graph scheduling
+## [x] B07 — Add task graph scheduling
 
 **Deliverable:** dependency-aware task graph.
 
@@ -842,7 +842,7 @@ shutdown
 
 ---
 
-## B08 — Add deterministic job mode
+## [ ] B08 — Add deterministic job mode
 
 **Deliverable:** deterministic scheduler option.
 
@@ -1007,7 +1007,7 @@ benchmark metadata
 
 ---
 
-## B16 — Add render extraction proxy
+## [ ] B16 — Add render extraction proxy
 
 **Deliverable:** `RenderSceneProxy`.
 
@@ -1017,7 +1017,7 @@ benchmark metadata
 
 ---
 
-## B17 — Add resource lifetime registry
+## [ ] B17 — Add resource lifetime registry
 
 **Deliverable:** reference-count/lease-style registry for assets and runtime resources.
 
@@ -1027,7 +1027,7 @@ benchmark metadata
 
 ---
 
-## B18 — Add frame lifecycle controller
+## [ ] B18 — Add frame lifecycle controller
 
 **Deliverable:** central frame loop state machine.
 
@@ -1195,7 +1195,7 @@ debug
 
 ---
 
-## C06 — Implement shader manifest model
+## [ ] C06 — Implement shader manifest model
 
 **Deliverable:** `ShaderManifest`.
 
@@ -1221,7 +1221,7 @@ compile diagnostics
 
 ---
 
-## C07 — Implement shader cache interface
+## [ ] C07 — Implement shader cache interface
 
 **Deliverable:** `IShaderCache`.
 
@@ -1251,7 +1251,7 @@ dump_manifest
 
 ---
 
-## C09 — Add Vulkan timestamp query support
+## [ ] C09 — Add Vulkan timestamp query support
 
 **Deliverable:** GPU timing for Vulkan path.
 
@@ -1271,7 +1271,7 @@ dump_manifest
 
 ---
 
-## C11 — Add Vulkan hardware RT capability probe
+## [ ] C11 — Add Vulkan hardware RT capability probe
 
 **Deliverable:** capability detection for Vulkan RT.
 
@@ -1291,7 +1291,7 @@ acceleration structure limits
 
 ---
 
-## C12 — Add D3D12 backend skeleton
+## [ ] C12 — Add D3D12 backend skeleton
 
 **Deliverable:** D3D12 backend compiles on Windows behind flag.
 
@@ -1301,7 +1301,7 @@ acceleration structure limits
 
 ---
 
-## C13 — Add D3D12 DXR capability probe
+## [ ] C13 — Add D3D12 DXR capability probe
 
 **Deliverable:** DXR support check.
 
@@ -1311,7 +1311,7 @@ acceleration structure limits
 
 ---
 
-## C14 — Add Metal backend skeleton
+## [ ] C14 — Add Metal backend skeleton
 
 **Deliverable:** Metal backend compiles on macOS behind flag.
 
@@ -1321,7 +1321,7 @@ acceleration structure limits
 
 ---
 
-## C15 — Add Metal ray tracing capability probe
+## [ ] C15 — Add Metal ray tracing capability probe
 
 **Deliverable:** Metal RT support check.
 
@@ -1331,7 +1331,7 @@ acceleration structure limits
 
 ---
 
-## C16 — Add WebGPU backend skeleton
+## [ ] C16 — Add WebGPU backend skeleton
 
 **Deliverable:** WebGPU backend compiles for Emscripten/WebAssembly.
 
@@ -1341,7 +1341,7 @@ acceleration structure limits
 
 ---
 
-## C17 — Add WebGPU compute dispatch test
+## [ ] C17 — Add WebGPU compute dispatch test
 
 **Deliverable:** browser/WASM compute smoke test.
 
@@ -1351,7 +1351,7 @@ acceleration structure limits
 
 ---
 
-## C18 — Add optional OpenGL compute experiment gate
+## [ ] C18 — Add optional OpenGL compute experiment gate
 
 **Deliverable:** optional backend stub only behind `PT_ENABLE_OPENGL_EXPERIMENTAL`.
 
@@ -1361,7 +1361,7 @@ acceleration structure limits
 
 ---
 
-## C19 — Add backend selection policy
+## [ ] C19 — Add backend selection policy
 
 **Deliverable:** deterministic backend chooser.
 
@@ -1381,7 +1381,7 @@ null backend fallback only for non-render tests
 
 ---
 
-## C20 — Add renderer crash-state dump
+## [ ] C20 — Add renderer crash-state dump
 
 **Deliverable:** backend state serializer.
 

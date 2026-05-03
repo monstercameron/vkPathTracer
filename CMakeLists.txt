@@ -152,6 +152,11 @@ configure_file(
 
 add_executable(ptapp
   src/app/main.cpp
+  src/core/Assert.cpp
+  src/core/Config.cpp
+  src/diagnostics/CrashRecorder.cpp
+  src/diagnostics/CrashHooks.cpp
+  src/diagnostics/StatusFile.cpp
   src/platform/HeadlessPlatform.cpp
   src/scene/Scene.cpp
   src/pathtracer/PathTracer.cpp
@@ -176,6 +181,11 @@ target_compile_features(ptapp PRIVATE cxx_std_23)
 add_executable(ptbench
   src/benchmark/ptbench.cpp
   src/benchmark/BenchmarkSchema.cpp
+  src/core/Assert.cpp
+  src/core/Config.cpp
+  src/diagnostics/CrashRecorder.cpp
+  src/diagnostics/CrashHooks.cpp
+  src/diagnostics/StatusFile.cpp
   src/pathtracer/PathTracer.cpp
   src/scene/Scene.cpp
   src/render/interface/RenderContracts.cpp
