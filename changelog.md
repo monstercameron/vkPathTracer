@@ -1,5 +1,55 @@
 ﻿# Changelog
 
+## 2026-05-03 (session 2)
+
+### A07–A13, A16, B04–B07, C10
+
+Implemented all remaining Gate-5 infrastructure and wired it into the main binary.
+
+**A12 — PT_ASSERT / PT_VERIFY / PT_FATAL macros** (`src/core/Assert.h/.cpp`)
+Assertion layer with three tiers: `PT_ASSERT` (debug-only), `PT_VERIFY` (always-on), `PT_FATAL` (always aborts). All three write a crash artifact JSON before terminating so failures are recoverable in headless/CI runs.
+
+**A10 — Runtime config system** (`src/core/Config.h/.cpp`)
+Key-value config file parser (`key = value`, `#` comments), `PTAPP_*` env-var overrides, CLI flag overlay. Each value carries its `ConfigSource` (Default / ConfigFile / EnvVar / CliFlag). Exposed via `--config <path>` and `--dump-config` in `ptapp`.
+
+**A07 — Crash flight recorder** (`src/diagnostics/CrashRecorder.h/.cpp`)
+Singleton that tracks active backend, frame stage, pass name, shader, scene, and last 1 024 log events. On `flush()` it writes `artifacts/crashes/crash_<timestamp>/crash_state.json` + `last_log_events.jsonl` + `build_info.json`.
+
+**A08 — Platform crash hooks** (`src/diagnostics/CrashHooks.h/.cpp`)
+`install_crash_hooks()` wires `SetUnhandledExceptionFilter` (Windows) / `sigaction` (POSIX) to call `CrashRecorder::flush()` before the process dies.
+
+**A13 — Status file writer** (`src/diagnostics/StatusFile.h/.cpp`)
+Writes `artifacts/status/latest_status.json` on every run with build status, last run result, selected backend/scene/renderer-path, last error, crash artifact path, and a performance summary.
+
+**A09 — ptdoctor** (`src/app/main.cpp`)
+Full `--doctor` / `--check-build` / `--check-cpu` / `--check-backends` / `--check-assets` / `--check-shaders` implementation. Each check prints `[ok ]` or `[FAIL]`. Also added `--crash-test`, `--config`, `--dump-config`.
+
+**A16 — Integration smoke CI script** (`tools/smoke.ps1`)
+9-step PowerShell script: configure → build → binary-exists → version → doctor → render → status-file → exr-output → dump-config. Returns non-zero exit code on any failure for CI consumption.
+
+**B04 — Desktop window stub** (`src/platform/DesktopPlatform.h/.cpp`)
+`DesktopWindow` and `DesktopFileSystem` behind `IWindow` / `IFileSystem`. Tracks open/focus/resize state and drains input events.
+
+**B05 — Input event normalization** (`src/platform/DesktopPlatform.h/.cpp`)
+`DesktopInput` queues and emits key, mouse-move, mouse-button, mouse-wheel, focus-change, close-requested events as normalized `InputEvent` structs.
+
+**B06 — Job system foundation** (`src/jobs/JobSystem.h/.cpp`)
+Thread-pool `JobSystem` implementing `IJobSystem`: `submit_job`, `submit_range_job`, `wait`, `wait_group`, `worker_count`, `pump_main_thread`, `shutdown`, and `deterministic` mode toggle.
+
+**B07 — Task graph scheduling** (`src/jobs/TaskGraph.h`)
+Dependency-aware `TaskGraph` with topological sort, cycle detection, per-task timing via `TaskExecutionSample`, and optional `IJobSystem` dispatch for parallel execution.
+
+**C10 — Vulkan software-BVH compute pass** (`src/render/backends/VulkanBackend.h/.cpp`)
+`RunVulkanBVHPass()` uploads vertex/index buffers, initialises a BVH node buffer (`2N-1` nodes × 32 bytes), allocates film texture, and drives a 4-pass frame graph (`bvh_upload → bvh_build → pathtracer → film_resolve`). Returns a `VulkanBVHPassResult` with upload stats.
+
+**Resource registry** (`src/render/interface/ResourceRegistry.h`)
+`ResourceLifetimeRegistry` tracks per-handle lease info (kind, label, size, frame acquired/last-accessed, ref-count) for render resource lifetime diagnostics.
+
+**Build** (`CMakeLists.txt`)
+Added `Assert.cpp`, `Config.cpp`, `CrashRecorder.cpp`, `CrashHooks.cpp`, `StatusFile.cpp` to both `ptapp` and `ptbench` targets.
+
+---
+
 ## 2026-05-03
 
 ### Commit notes
