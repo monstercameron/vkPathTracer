@@ -10,3 +10,4 @@
 - b7b04e6 — feat(core): add primitive types and headless platform foundation
 - 43f8d28 — feat(app): implement headless app shell and diagnostic logging
 - 2d48124 — docs: mark Gate 1 tasks complete for implemented milestones
+- 22252de — fix(platform): resolve HeadlessFileSystem stream declaration parse issues
