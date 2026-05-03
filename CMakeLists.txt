@@ -150,7 +150,10 @@ configure_file(
   @ONLY
 )
 
-add_executable(ptapp src/app/main.cpp)
+add_executable(ptapp
+  src/app/main.cpp
+  src/platform/HeadlessPlatform.cpp
+)
 
 target_include_directories(ptapp PRIVATE
   "${CMAKE_SOURCE_DIR}/src"
