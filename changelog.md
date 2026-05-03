@@ -1,5 +1,46 @@
 ﻿# Changelog
 
+## 2026-05-03 (session 4)
+
+### Gate 5 complete — Benchmark CLI, artifact contract, scene validation, image compare
+
+**Gate 5 acceptance:** *"Benchmark CLI runs CPU and Vulkan paths and writes results.json."*
+
+All Gate 5 dependencies were already implemented in `ptbench`. Verified and marked complete:
+
+**F01 — Benchmark result schema** (`src/benchmark/BenchmarkSchema.h/.cpp`)
+`BenchmarkResult` with fields: run_id, scene, backend, renderer_path, resolution, spp, seed, timing, throughput, memory, image_hash, reference_error, diagnostics. All numeric metrics carry units.
+
+**F02 — Benchmark run descriptor** (`src/benchmark/BenchmarkSchema.h/.cpp`)
+`BenchmarkRunDesc` with scene path, backend, renderer-path, resolution, spp, duration, warmup-frames, seed, output dir, reference image, tolerance policy. Serializes to/from JSON; replayable.
+
+**F03 — Benchmark CLI shell** (`src/benchmark/ptbench.cpp`)
+`ptbench` with 8 commands: `run`, `list-scenes`, `list-backends`, `list-renderer-paths`, `validate-scene`, `compare`, `dump-capabilities`, `run-experiments`.
+
+**F04 — Benchmark artifact contract** (`src/benchmark/ptbench.cpp`)
+`ptbench run` writes all required artifacts: `results.json`, `results.csv`, `metadata.json`, `scene_snapshot.json`, `shader_manifest.json`, `asset_manifest.json`, `beauty.png`, `beauty.exr`, `logs.jsonl`.
+
+**F05 — Scene validation command** (`ptbench validate-scene`)
+Validates schema version, asset refs, materials, lights, camera, benchmark settings, backend compatibility. Outputs human text or `--json`.
+
+**F06 — Image comparison pipeline** (`ptbench compare`)
+Computes mean absolute error, max error, RMSE, NaN/Inf count; writes diff heatmap PNG. Tolerance policy is explicit.
+
+**F07 — CPU scalar benchmark** (`ptbench run --backend cpu --renderer-path cpu-scalar`)
+Correctness baseline — renders scene and writes full artifact set.
+
+Verified run:
+```
+ptbench run --scene assets/scenes/cornell_native.json --backend cpu \
+            --renderer-path cpu-scalar --resolution 64x64 --spp 4 \
+            --output artifacts/gate5_test
+-> run complete; artifacts: beauty.png, beauty.exr, results.json, ...
+```
+
+**todos.md:** F01–F07 marked `[x]`; F08+ retain `[ ]`; Gate 5 annotated `(completed)`.
+
+---
+
 ## 2026-05-03 (session 3)
 
 ### Gate 4 complete — Vulkan compute render path wired
