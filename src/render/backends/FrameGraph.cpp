@@ -1,0 +1,209 @@
+#include "render/backends/FrameGraph.h"
+
+#include <algorithm>
+#include <queue>
+#include <unordered_map>
+
+namespace vkpt::render {
+
+std::uint32_t FrameGraph::add_pass(std::string_view name,
+                                   PassType type,
+                                   std::vector<ResourceHandle> reads,
+                                   std::vector<ResourceHandle> writes) {
+  Pass pass;
+  pass.id = static_cast<std::uint32_t>(m_passes.size());
+  pass.name = std::string(name);
+  pass.type = type;
+  pass.reads = std::move(reads);
+  pass.writes = std::move(writes);
+  m_passes.push_back(std::move(pass));
+  return static_cast<std::uint32_t>(m_passes.size() - 1);
+}
+
+bool FrameGraph::add_dependency(std::uint32_t from, std::uint32_t to) {
+  if (from >= m_passes.size() || to >= m_passes.size() || from == to) {
+    return false;
+  }
+  const auto duplicate = std::find_if(
+      m_dependencies.begin(), m_dependencies.end(),
+      [&](const auto& edge) { return edge.first == from && edge.second == to; });
+  if (duplicate != m_dependencies.end()) {
+    return false;
+  }
+  m_dependencies.emplace_back(from, to);
+  return true;
+}
+
+bool FrameGraph::has_path(std::uint32_t from, std::uint32_t to, std::vector<bool>& visited) const {
+  if (from == to) {
+    return true;
+  }
+  if (visited[from]) {
+    return false;
+  }
+  visited[from] = true;
+  for (const auto& dep : m_dependencies) {
+    if (dep.first != from) {
+      continue;
+    }
+    if (has_path(dep.second, to, visited)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool FrameGraph::topo_sort(std::vector<std::uint32_t>& out, std::vector<std::string>* diagnostics) const {
+  out.clear();
+  if (m_passes.empty()) {
+    return true;
+  }
+
+  std::vector<std::uint32_t> indegree(m_passes.size(), 0);
+  for (const auto& dep : m_dependencies) {
+    if (dep.first >= m_passes.size() || dep.second >= m_passes.size()) {
+      if (diagnostics) {
+        diagnostics->push_back("dependency references unknown pass");
+      }
+      return false;
+    }
+    ++indegree[dep.second];
+  }
+
+  std::queue<std::uint32_t> ready;
+  for (std::uint32_t i = 0; i < m_passes.size(); ++i) {
+    if (indegree[i] == 0) {
+      ready.push(i);
+    }
+  }
+
+  while (!ready.empty()) {
+    const auto id = ready.front();
+    ready.pop();
+    out.push_back(id);
+    for (const auto& dep : m_dependencies) {
+      if (dep.first == id) {
+        if (--indegree[dep.second] == 0) {
+          ready.push(dep.second);
+        }
+      }
+    }
+  }
+
+  if (out.size() != m_passes.size()) {
+    if (diagnostics) {
+      diagnostics->push_back("frame graph has dependency cycle");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool FrameGraph::validate(std::vector<std::string>* diagnostics) const {
+  if (diagnostics) {
+    diagnostics->clear();
+  }
+  std::vector<std::uint32_t> order;
+  if (!topo_sort(order, diagnostics)) {
+    return false;
+  }
+
+  std::unordered_map<ResourceHandle, std::uint32_t> lastWriter;
+  std::unordered_map<ResourceHandle, std::vector<std::uint32_t>> lastReaders;
+
+  for (std::size_t passIndex = 0; passIndex < order.size(); ++passIndex) {
+    const auto currentId = order[passIndex];
+    const auto& current = m_passes[currentId];
+
+    for (const auto read : current.reads) {
+      const auto writerIt = lastWriter.find(read);
+      if (writerIt != lastWriter.end()) {
+        std::vector<bool> visited(m_passes.size(), false);
+        if (!has_path(writerIt->second, currentId, visited)) {
+          if (diagnostics) {
+            diagnostics->push_back("hazard: pass '" + current.name + "' reads resource without write dependency from pass " +
+                                  std::to_string(writerIt->second));
+          }
+          return false;
+        }
+      }
+      lastReaders[read].push_back(currentId);
+    }
+
+    for (const auto write : current.writes) {
+      const auto writerIt = lastWriter.find(write);
+      if (writerIt != lastWriter.end() && writerIt->second != currentId) {
+        std::vector<bool> visited(m_passes.size(), false);
+        if (!has_path(writerIt->second, currentId, visited)) {
+          if (diagnostics) {
+            diagnostics->push_back("hazard: pass '" + current.name + "' writes same resource as pass " +
+                                  std::to_string(writerIt->second) + " without dependency");
+          }
+          return false;
+        }
+      }
+
+      const auto readersIt = lastReaders.find(write);
+      if (readersIt != lastReaders.end()) {
+        for (const auto reader : readersIt->second) {
+          std::vector<bool> visited(m_passes.size(), false);
+          if (!has_path(reader, currentId, visited)) {
+            if (diagnostics) {
+              diagnostics->push_back("hazard: pass '" + current.name + "' writes resource with pending read from pass " +
+                                    std::to_string(reader));
+            }
+            return false;
+          }
+        }
+      }
+
+      lastWriter[write] = currentId;
+      lastReaders[write].clear();
+    }
+  }
+
+  return true;
+}
+
+bool FrameGraph::execute(IRenderCommandContext& context,
+                         const std::vector<std::uint32_t>* execution_order) const {
+  std::vector<std::string> diagnostics;
+  if (!validate(&diagnostics)) {
+    return false;
+  }
+
+  std::vector<std::uint32_t> order;
+  if (execution_order && !execution_order->empty()) {
+    for (const auto id : *execution_order) {
+      if (id >= m_passes.size()) {
+        return false;
+      }
+      order.push_back(id);
+    }
+  } else {
+    if (!topo_sort(order, nullptr)) {
+      return false;
+    }
+  }
+
+  if (!context.begin_frame()) {
+    return false;
+  }
+  for (const auto pass_id : order) {
+    const auto& pass = m_passes[pass_id];
+    if (!context.begin_pass(pass.type, pass.name)) {
+      return false;
+    }
+    if (pass.type == PassType::Compute) {
+      if (!context.dispatch(1, 1, 1)) {
+        return false;
+      }
+    }
+    if (!context.end_pass()) {
+      return false;
+    }
+  }
+  return context.end_frame();
+}
+
+}  // namespace vkpt::render

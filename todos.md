@@ -1087,7 +1087,7 @@ benchmark scoring
 
 ---
 
-## C01 — Define renderer interface contracts
+## [x] C01 — Define renderer interface contracts
 
 **Deliverable:** renderer interface headers.
 
@@ -1110,7 +1110,7 @@ IFrameGraph
 
 ---
 
-## C02 — Define GPU resource descriptors
+## [x] C02 — Define GPU resource descriptors
 
 **Deliverable:** abstract descriptors.
 
@@ -1133,7 +1133,7 @@ ReadbackDesc
 
 ---
 
-## C03 — Define backend capability schema
+## [x] C03 — Define backend capability schema
 
 **Deliverable:** `RenderBackendCapabilities`.
 
@@ -1162,7 +1162,7 @@ readback
 
 ---
 
-## C04 — Implement null renderer backend
+## [x] C04 — Implement null renderer backend
 
 **Deliverable:** no-op backend.
 
@@ -1172,7 +1172,7 @@ readback
 
 ---
 
-## C05 — Implement frame graph skeleton
+## [x] C05 — Implement frame graph skeleton
 
 **Deliverable:** pass graph with read/write declarations.
 
@@ -1241,7 +1241,7 @@ dump_manifest
 
 ---
 
-## C08 — Implement Vulkan compute backend MVP
+## [x] C08 — Implement Vulkan compute backend MVP
 
 **Deliverable:** Vulkan backend capable of compute dispatch and readback.
 
@@ -1261,7 +1261,7 @@ dump_manifest
 
 ---
 
-## C10 — Add Vulkan software-BVH compute path integration
+## [x] C10 — Add Vulkan software-BVH compute path integration
 
 **Deliverable:** Vulkan compute path can accept pathtracer buffers and dispatch baseline kernel.
 
@@ -1819,7 +1819,7 @@ energy_check
 
 ---
 
-## D25 — Add GPU-compatible buffer layout
+## [x] D25 — Add GPU-compatible buffer layout
 
 **Deliverable:** CPU structs mirrored to GPU layout manifest.
 

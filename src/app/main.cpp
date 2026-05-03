@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -9,6 +10,8 @@
 #include "pathtracer/PathTracer.h"
 #include "platform/HeadlessPlatform.h"
 #include "scene/Scene.h"
+#include "render/backends/BackendFactory.h"
+#include "render/interface/RenderContracts.h"
 
 namespace {
 
@@ -26,6 +29,7 @@ void PrintUsage() {
   std::cout << "ptapp [--version] [--doctor] [--headless] [--scene <path>] [--backend <name>]\n";
   std::cout << "  --version             Print build metadata and exit\n";
   std::cout << "  --doctor              Run basic self-diagnostics\n";
+  std::cout << "  --list-backends       Print known render backends and capabilities\n";
   std::cout << "  --headless            Initialize headless platform\n";
   std::cout << "  --scene <path>        Set startup scene\n";
   std::cout << "  --backend <name>      Select backend\n";
@@ -39,6 +43,34 @@ void PrintUsage() {
   std::cout << "  --height <px>         Render height\n";
   std::cout << "  --spp <samples>       Samples per pixel\n";
   std::cout << "  --max-depth <depth>    Max ray depth\n";
+}
+
+void PrintBackendDiagnostics() {
+  std::cout << "available backends:\n";
+  auto names = vkpt::render::AvailableBackendNames();
+  if (names.empty()) {
+    std::cout << "  (none)\n";
+    return;
+  }
+  for (const auto& name : names) {
+    auto backend = vkpt::render::CreateBackend(name);
+    if (!backend) {
+      std::cout << "  " << name << " unavailable\n";
+      continue;
+    }
+    if (!backend->initialize()) {
+      std::cout << "  " << name << " failed to initialize\n";
+      continue;
+    }
+    auto capabilities = backend->capabilities();
+    std::cout << "  " << vkpt::render::BackendKindToString(backend->kind()) << " -> " << capabilities.backend_name << "\n";
+    std::cout << "    " << vkpt::render::SerializeBackendCapabilities(capabilities) << "\n";
+  }
+  const auto manifest = vkpt::pathtracer::BuildRTSceneDataLayoutManifest();
+  if (manifest) {
+    std::cout << "rt layout:\n";
+    std::cout << "  " << vkpt::pathtracer::SerializeRTSceneDataLayoutManifest(manifest.value()) << "\n";
+  }
 }
 
 void PrintVersionText() {
@@ -89,6 +121,7 @@ int main(int argc, char** argv) {
   bool headless = false;
   bool crashTest = false;
   bool doctor = false;
+  bool listBackends = false;
   bool doRender = false;
   std::string_view scenePath;
   std::string_view backend;
@@ -106,6 +139,8 @@ int main(int argc, char** argv) {
       showVersion = true;
     } else if (token == "--doctor") {
       doctor = true;
+    } else if (token == "--list-backends") {
+      listBackends = true;
     } else if (token == "--json") {
       versionJson = true;
     } else if (token == "--headless") {
@@ -186,10 +221,15 @@ int main(int argc, char** argv) {
   }
 
   if (doctor) {
+    PrintBackendDiagnostics();
     std::cout << "doctor: ok\n";
     std::cout << "backend: " << (backend.empty() ? "auto" : backend) << "\n";
     std::cout << "scene: " << (scenePath.empty() ? "none" : scenePath) << "\n";
     std::cout << "build: " << vkpt::build::kProjectVersion << "\n";
+    return 0;
+  }
+  if (listBackends) {
+    PrintBackendDiagnostics();
     return 0;
   }
 

@@ -1,0 +1,61 @@
+#include "render/backends/BackendFactory.h"
+
+#include <cctype>
+
+#include "render/backends/NullBackend.h"
+#include "render/backends/VulkanBackend.h"
+
+namespace vkpt::render {
+
+namespace {
+
+std::string NormalizeInternal(std::string_view name) {
+  std::string normalized;
+  normalized.reserve(name.size());
+  for (const char ch : name) {
+    const char lower = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (lower != ' ') {
+      normalized.push_back(lower);
+    }
+  }
+  return normalized;
+}
+
+}  // namespace
+
+std::string NormalizeBackendName(std::string_view backend_name) {
+  if (backend_name.empty()) {
+    return "auto";
+  }
+  auto normalized = NormalizeInternal(backend_name);
+  std::string out{normalized};
+  if (out == "auto" || out == "default") {
+    out = "auto";
+  }
+  if (out == "vulkancompute") {
+    out = "vulkan";
+  }
+  return out;
+}
+
+std::vector<std::string> AvailableBackendNames() {
+  return {"auto", "null", "vulkan", "vulkan-compute"};
+}
+
+std::unique_ptr<IRenderBackend> CreateBackend(std::string_view backend_name) {
+  const std::string normalized = NormalizeBackendName(backend_name);
+  if (normalized == "null") {
+    return std::make_unique<NullBackend>();
+  }
+  if (normalized == "vulkan" || normalized == "vulkan-compute") {
+    return std::make_unique<VulkanComputeBackend>();
+  }
+  if (normalized == "auto" || normalized == "default") {
+    auto backend = std::make_unique<VulkanComputeBackend>();
+    backend->initialize();
+    return backend;
+  }
+  return {};
+}
+
+}  // namespace vkpt::render
