@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string_view>
 #include <string>
 #include <vector>
 
@@ -42,6 +43,17 @@ struct CrashStateSnapshot {
 
   // --- Resources ---
   std::vector<LiveResourceInfo> live_resources;
+
+  // --- UI snapshots ---
+  std::string ui_state_json = "{}";
+  std::string selection_state_json = "{}";
+  std::string layout_state_json = "{}";
+  std::string ui_events_jsonl;
+  std::string editor_commands_jsonl;
+
+  // --- Renderer crash state ---
+  // Serialized vkpt::render::RenderCrashState JSON (or "{}" if unavailable).
+  std::string renderer_state_json = "{}";
 };
 
 // ---- CrashRecorder ---------------------------------------------------------
@@ -68,6 +80,12 @@ class CrashRecorder {
   void update_shader(std::string_view shader_variant);
   void update_scene(std::string_view scene_name);
   void set_last_error(std::string_view error);
+  void update_ui_state_json(std::string_view json);
+  void update_selection_state_json(std::string_view json);
+  void update_layout_state_json(std::string_view json);
+  void update_ui_events_jsonl(std::string_view jsonl);
+  void update_editor_commands_jsonl(std::string_view jsonl);
+  void update_renderer_state_json(std::string_view json);
 
   // Track a resource (call on create; reverse with release_resource).
   void track_resource(std::string_view label, std::string_view kind,

@@ -102,6 +102,36 @@ void CrashRecorder::set_last_error(std::string_view error) {
   m_snapshot.last_error = std::string(error);
 }
 
+void CrashRecorder::update_ui_state_json(std::string_view json) {
+  std::scoped_lock lock(g_crashMutex);
+  m_snapshot.ui_state_json = json.empty() ? "{}" : std::string(json);
+}
+
+void CrashRecorder::update_selection_state_json(std::string_view json) {
+  std::scoped_lock lock(g_crashMutex);
+  m_snapshot.selection_state_json = json.empty() ? "{}" : std::string(json);
+}
+
+void CrashRecorder::update_layout_state_json(std::string_view json) {
+  std::scoped_lock lock(g_crashMutex);
+  m_snapshot.layout_state_json = json.empty() ? "{}" : std::string(json);
+}
+
+void CrashRecorder::update_ui_events_jsonl(std::string_view jsonl) {
+  std::scoped_lock lock(g_crashMutex);
+  m_snapshot.ui_events_jsonl = std::string(jsonl);
+}
+
+void CrashRecorder::update_editor_commands_jsonl(std::string_view jsonl) {
+  std::scoped_lock lock(g_crashMutex);
+  m_snapshot.editor_commands_jsonl = std::string(jsonl);
+}
+
+void CrashRecorder::update_renderer_state_json(std::string_view json) {
+  std::scoped_lock lock(g_crashMutex);
+  m_snapshot.renderer_state_json = json.empty() ? "{}" : std::string(json);
+}
+
 void CrashRecorder::track_resource(std::string_view label,
                                     std::string_view kind,
                                     uint64_t size_bytes) {
@@ -160,6 +190,42 @@ std::string CrashRecorder::flush(const std::string& base_dir) {
           << "  \"build_type\": \"" << detail::EscapeJson(snap.build_type) << "\",\n"
           << "  \"enabled_features\": \"" << detail::EscapeJson(snap.enabled_features) << "\"\n"
           << "}\n";
+    }
+
+    // ui_state.json
+    {
+      std::ofstream out(dir + "/ui_state.json");
+      out << (snap.ui_state_json.empty() ? "{}\n" : snap.ui_state_json) << '\n';
+    }
+
+    // selection_state.json
+    {
+      std::ofstream out(dir + "/selection_state.json");
+      out << (snap.selection_state_json.empty() ? "{}\n" : snap.selection_state_json) << '\n';
+    }
+
+    // layout_state.json
+    {
+      std::ofstream out(dir + "/layout_state.json");
+      out << (snap.layout_state_json.empty() ? "{}\n" : snap.layout_state_json) << '\n';
+    }
+
+    // ui_events.jsonl
+    {
+      std::ofstream out(dir + "/ui_events.jsonl");
+      out << snap.ui_events_jsonl;
+    }
+
+    // editor_commands.jsonl
+    {
+      std::ofstream out(dir + "/editor_commands.jsonl");
+      out << snap.editor_commands_jsonl;
+    }
+
+    // renderer_state.json
+    {
+      std::ofstream out(dir + "/renderer_state.json");
+      out << (snap.renderer_state_json.empty() ? "{}\n" : snap.renderer_state_json) << '\n';
     }
 
     return dir;
