@@ -169,10 +169,10 @@ Gate 6: (completed)
 Gate 7: (completed)
   SIMD CPU backends and backend performance experiments are available.
 
-Gate 8:
+Gate 8: (completed)
   D3D12, Metal, and WebGPU adapters compile behind capability flags.
 
-Gate 9:
+Gate 9: (completed)
   Material/shader library, asset import, debug views, and editor-lite controls exist.
 
 Gate 10:
@@ -1271,7 +1271,7 @@ dump_manifest
 
 ---
 
-## [ ] C11 — Add Vulkan hardware RT capability probe
+## [x] C11 — Add Vulkan hardware RT capability probe
 
 **Deliverable:** capability detection for Vulkan RT.
 
@@ -1291,7 +1291,7 @@ acceleration structure limits
 
 ---
 
-## [ ] C12 — Add D3D12 backend skeleton
+## [x] C12 — Add D3D12 backend skeleton
 
 **Deliverable:** D3D12 backend compiles on Windows behind flag.
 
@@ -1301,7 +1301,7 @@ acceleration structure limits
 
 ---
 
-## [ ] C13 — Add D3D12 DXR capability probe
+## [x] C13 — Add D3D12 DXR capability probe
 
 **Deliverable:** DXR support check.
 
@@ -1311,7 +1311,7 @@ acceleration structure limits
 
 ---
 
-## [ ] C14 — Add Metal backend skeleton
+## [x] C14 — Add Metal backend skeleton
 
 **Deliverable:** Metal backend compiles on macOS behind flag.
 
@@ -1321,7 +1321,7 @@ acceleration structure limits
 
 ---
 
-## [ ] C15 — Add Metal ray tracing capability probe
+## [x] C15 — Add Metal ray tracing capability probe
 
 **Deliverable:** Metal RT support check.
 
@@ -1331,7 +1331,7 @@ acceleration structure limits
 
 ---
 
-## [ ] C16 — Add WebGPU backend skeleton
+## [x] C16 — Add WebGPU backend skeleton
 
 **Deliverable:** WebGPU backend compiles for Emscripten/WebAssembly.
 
@@ -1341,7 +1341,7 @@ acceleration structure limits
 
 ---
 
-## [ ] C17 — Add WebGPU compute dispatch test
+## [x] C17 — Add WebGPU compute dispatch test
 
 **Deliverable:** browser/WASM compute smoke test.
 
@@ -1381,7 +1381,7 @@ null backend fallback only for non-render tests
 
 ---
 
-## [ ] C20 — Add renderer crash-state dump
+## [x] C20 — Add renderer crash-state dump
 
 **Deliverable:** backend state serializer.
 
@@ -1778,7 +1778,7 @@ environment color
 
 ---
 
-## D22 — Add next-event estimation
+## [x] D22 — Add next-event estimation
 
 **Deliverable:** direct light sampling.
 
@@ -1788,7 +1788,7 @@ environment color
 
 ---
 
-## D23 — Add MIS
+## [x] D23 — Add MIS
 
 **Deliverable:** multiple importance sampling.
 
@@ -1798,7 +1798,7 @@ environment color
 
 ---
 
-## D24 — Add material evaluation interface
+## [x] D24 — Add material evaluation interface
 
 **Deliverable:** material dispatch contract.
 
@@ -1829,7 +1829,7 @@ energy_check
 
 ---
 
-## D26 — Add film resolve pipeline
+## [x] D26 — Add film resolve pipeline
 
 **Deliverable:** CPU-side resolve stages.
 
@@ -2024,7 +2024,7 @@ Environment emissive response
 
 ---
 
-## E07 — Register Material Pack 2 as experimental
+## [x] E07 — Register Material Pack 2 as experimental
 
 **Deliverable:** descriptors and presets, not necessarily full shader implementation.
 
@@ -2058,7 +2058,7 @@ Bokeh/motion-blur stress material
 
 ---
 
-## E08 — Register Material Pack 3 backlog
+## [x] E08 — Register Material Pack 3 backlog
 
 **Deliverable:** backlog material descriptors.
 
@@ -2088,7 +2088,7 @@ Stylized diffuse
 
 ---
 
-## E09 — Register advanced material backlog
+## [x] E09 — Register advanced material backlog
 
 **Deliverable:** descriptors for advanced/future material families.
 
@@ -2128,7 +2128,7 @@ Rust progression
 
 ---
 
-## E10 — Define shader family manifest
+## [x] E10 — Define shader family manifest
 
 **Deliverable:** shader family declarations.
 
@@ -2157,7 +2157,7 @@ editor overlay
 
 ---
 
-## E11 — Define SDF shader family inventory
+## [x] E11 — Define SDF shader family inventory
 
 **Deliverable:** SDF feature manifest.
 
@@ -2285,7 +2285,7 @@ Physics Chaos placeholder
 
 ---
 
-## E18 — Add debug view declarations
+## [x] E18 — Add debug view declarations
 
 **Deliverable:** debug output registry.
 
@@ -2320,7 +2320,7 @@ NaN/Inf highlight
 
 ---
 
-## E19 — Add editor-lite control model
+## [x] E19 — Add editor-lite control model
 
 **Deliverable:** UI-independent editor state model.
 
@@ -2343,7 +2343,7 @@ debug view selector
 
 ---
 
-## E20 — Add editor command descriptors
+## [x] E20 — Add editor command descriptors
 
 **Deliverable:** editor command model.
 
@@ -2370,7 +2370,7 @@ export image
 
 ---
 
-## E21 — Add demo camera controls
+## [x] E21 — Add demo camera controls
 
 **Deliverable:** camera controller model.
 
@@ -2646,7 +2646,7 @@ adaptive/auto
 
 ---
 
-## F11 — Add Vulkan compute vs Vulkan RT experiment
+## [x] F11 — Add Vulkan compute vs Vulkan RT experiment
 
 **Deliverable:** Vulkan renderer path comparison.
 
@@ -2672,7 +2672,7 @@ Material Gauntlet
 
 ---
 
-## F12 — Add D3D12 compute vs DXR experiment
+## [x] F12 — Add D3D12 compute vs DXR experiment
 
 **Deliverable:** D3D12 renderer path comparison.
 
@@ -2689,7 +2689,7 @@ D3D12 DXR, if supported
 
 ---
 
-## F13 — Add Metal compute vs Metal RT experiment
+## [x] F13 — Add Metal compute vs Metal RT experiment
 
 **Deliverable:** Metal renderer path comparison.
 
@@ -2706,7 +2706,7 @@ Metal acceleration-structure ray tracing, if supported
 
 ---
 
-## F14 — Add WebGPU workgroup-size experiment
+## [x] F14 — Add WebGPU workgroup-size experiment
 
 **Deliverable:** WebGPU compute tuning sweep.
 
@@ -2725,7 +2725,7 @@ buffer layout variant
 
 ---
 
-## F15 — Add GPU memory pressure experiment
+## [x] F15 — Add GPU memory pressure experiment
 
 **Deliverable:** memory budget and fallback test.
 
@@ -2745,7 +2745,7 @@ upload pressure
 
 ---
 
-## F16 — Add shader variant compile matrix
+## [x] F16 — Add shader variant compile matrix
 
 **Deliverable:** CI/test matrix for shader variants.
 
@@ -2768,7 +2768,7 @@ CPU material validation
 
 ---
 
-## F17 — Add startup self-test
+## [x] F17 — Add startup self-test
 
 **Deliverable:** app self-test sequence.
 
@@ -2791,7 +2791,7 @@ benchmark artifact write
 
 ---
 
-## F18 — Add profiler event schema
+## [x] F18 — Add profiler event schema
 
 **Deliverable:** profiling event model.
 
@@ -2814,7 +2814,7 @@ render pass timing
 
 ---
 
-## F19 — Add CI smoke plan
+## [x] F19 — Add CI smoke plan
 
 **Deliverable:** CI test matrix design.
 
@@ -2837,7 +2837,7 @@ run sanitizer smoke where feasible
 
 ---
 
-## F20 — Add release gate checklist
+## [x] F20 — Add release gate checklist
 
 **Deliverable:** release candidate checklist.
 
@@ -3881,7 +3881,7 @@ artifacts/crashes/<run>/layout_state.json
 
 # 8. Workstream 7 todos
 
-## G01 — Define UI interface layer
+## [x] G01 — Define UI interface layer
 
 **Deliverable:** UI-facing interfaces.
 
@@ -3908,7 +3908,7 @@ IUiLogger
 
 ---
 
-## G02 — Define UI state model
+## [x] G02 — Define UI state model
 
 **Deliverable:** `UiRuntimeState`.
 
@@ -3934,7 +3934,7 @@ selected debug view
 
 ---
 
-## G03 — Define editor selection model
+## [x] G03 — Define editor selection model
 
 **Deliverable:** `SelectionState`.
 
@@ -3957,7 +3957,7 @@ per-item bounds
 
 ---
 
-## G04 — Define editor command interface for UI
+## [x] G04 — Define editor command interface for UI
 
 **Deliverable:** UI-specific command definitions.
 
@@ -3993,7 +3993,7 @@ RunBenchmarkCommand
 
 ---
 
-## G05 — Add standard desktop app window shell
+## [x] G05 — Add standard desktop app window shell
 
 **Deliverable:** standard resizable app window with title, status bar, and root layout area.
 
@@ -4003,7 +4003,7 @@ RunBenchmarkCommand
 
 ---
 
-## G06 — Add menu bar shell
+## [x] G06 — Add menu bar shell
 
 **Deliverable:** top-level menu bar with empty or disabled actions.
 
@@ -4029,7 +4029,7 @@ Help
 
 ---
 
-## G07 — Populate File menu
+## [x] G07 — Populate File menu
 
 **Deliverable:** File menu actions.
 
@@ -4058,7 +4058,7 @@ Exit
 
 ---
 
-## G08 — Populate Edit menu
+## [x] G08 — Populate Edit menu
 
 **Deliverable:** Edit menu actions.
 
@@ -4091,7 +4091,7 @@ Command History
 
 ---
 
-## G09 — Populate View menu
+## [x] G09 — Populate View menu
 
 **Deliverable:** View menu with panel toggles, overlay toggles, and layout presets.
 
@@ -4113,7 +4113,7 @@ Reset Layout
 
 ---
 
-## G10 — Populate Create menu
+## [x] G10 — Populate Create menu
 
 **Deliverable:** Create menu for entities and primitives.
 
@@ -4138,7 +4138,7 @@ Benchmark Marker
 
 ---
 
-## G11 — Populate Render menu
+## [x] G11 — Populate Render menu
 
 **Deliverable:** render settings menu.
 
@@ -4165,7 +4165,7 @@ Backend Capabilities
 
 ---
 
-## G12 — Populate Benchmark menu
+## [x] G12 — Populate Benchmark menu
 
 **Deliverable:** benchmark menu.
 
@@ -4190,7 +4190,7 @@ Benchmark History
 
 ---
 
-## G13 — Populate Assets and Scripts menus
+## [x] G13 — Populate Assets and Scripts menus
 
 **Deliverable:** asset/script menu actions.
 
@@ -4226,7 +4226,7 @@ Sandbox Settings
 
 ---
 
-## G14 — Add dock/floating panel system
+## [x] G14 — Add dock/floating panel system
 
 **Deliverable:** dockable and floating panel manager.
 
@@ -4252,7 +4252,7 @@ reset layout
 
 ---
 
-## G15 — Add default layout preset
+## [x] G15 — Add default layout preset
 
 **Deliverable:** default layout.
 
@@ -4274,7 +4274,7 @@ Status Bar
 
 ---
 
-## G16 — Add specialized layout presets
+## [x] G16 — Add specialized layout presets
 
 **Deliverable:** additional layout presets.
 
@@ -4296,7 +4296,7 @@ Fullscreen Viewport With Overlay
 
 ---
 
-## G17 — Add viewport panel
+## [x] G17 — Add viewport panel
 
 **Deliverable:** central render viewport panel.
 
@@ -4320,7 +4320,7 @@ gizmo overlay
 
 ---
 
-## G18 — Add viewport camera controls
+## [x] G18 — Add viewport camera controls
 
 **Deliverable:** interactive camera controller.
 
@@ -4351,7 +4351,7 @@ frame all
 
 ---
 
-## G19 — Add viewport object picking
+## [x] G19 — Add viewport object picking
 
 **Deliverable:** click-to-select support.
 
@@ -4369,7 +4369,7 @@ scene tree selection fallback
 
 ---
 
-## G20 — Add hover highlight
+## [x] G20 — Add hover highlight
 
 **Deliverable:** hover state and visual highlight.
 
@@ -4388,7 +4388,7 @@ scene tree row hover sync
 
 ---
 
-## G21 — Add selection highlight with bounding boxes
+## [x] G21 — Add selection highlight with bounding boxes
 
 **Deliverable:** selected object bounding boxes.
 
@@ -4409,7 +4409,7 @@ inspector target highlight
 
 ---
 
-## G22 — Add marquee/box selection
+## [x] G22 — Add marquee/box selection
 
 **Deliverable:** drag rectangle selection in viewport.
 
@@ -4428,7 +4428,7 @@ toggle selection
 
 ---
 
-## G23 — Add Ctrl-click multi-select
+## [x] G23 — Add Ctrl-click multi-select
 
 **Deliverable:** Ctrl-click selection toggling.
 
@@ -4447,7 +4447,7 @@ Ctrl+Shift applies additive range where applicable
 
 ---
 
-## G24 — Add transform gizmo framework
+## [x] G24 — Add transform gizmo framework
 
 **Deliverable:** gizmo controller and tool modes.
 
@@ -4486,7 +4486,7 @@ group origin
 
 ---
 
-## G25 — Add translation gizmo
+## [x] G25 — Add translation gizmo
 
 **Deliverable:** move handles.
 
@@ -4508,7 +4508,7 @@ free move, optional
 
 ---
 
-## G26 — Add rotation gizmo
+## [x] G26 — Add rotation gizmo
 
 **Deliverable:** rotation handles.
 
@@ -4527,7 +4527,7 @@ screen-space ring
 
 ---
 
-## G27 — Add scale gizmo
+## [x] G27 — Add scale gizmo
 
 **Deliverable:** scale handles.
 
@@ -4547,7 +4547,7 @@ plane scale, optional
 
 ---
 
-## G28 — Add transform snapping controls
+## [x] G28 — Add transform snapping controls
 
 **Deliverable:** snapping model.
 
@@ -4567,7 +4567,7 @@ snap step settings
 
 ---
 
-## G29 — Add multi-object transform behavior
+## [x] G29 — Add multi-object transform behavior
 
 **Deliverable:** multi-selection transform policy.
 
@@ -4586,7 +4586,7 @@ transform around selection bounds center
 
 ---
 
-## G30 — Add inspector panel shell
+## [x] G30 — Add inspector panel shell
 
 **Deliverable:** inspector panel with selected object summary.
 
@@ -4608,7 +4608,7 @@ mixed-value state for multi-select
 
 ---
 
-## G31 — Add transform inspector
+## [x] G31 — Add transform inspector
 
 **Deliverable:** numeric transform editor.
 
@@ -4629,7 +4629,7 @@ copy/paste transform
 
 ---
 
-## G32 — Add material inspector
+## [x] G32 — Add material inspector
 
 **Deliverable:** material property editor.
 
@@ -4657,7 +4657,7 @@ texture slot pickers
 
 ---
 
-## G33 — Add light inspector
+## [x] G33 — Add light inspector
 
 **Deliverable:** light property editor.
 
@@ -4682,7 +4682,7 @@ sampling weight
 
 ---
 
-## G34 — Add camera inspector
+## [x] G34 — Add camera inspector
 
 **Deliverable:** camera property editor.
 
@@ -4709,7 +4709,7 @@ set active camera
 
 ---
 
-## G35 — Add component inspector framework
+## [x] G35 — Add component inspector framework
 
 **Deliverable:** generic component editor.
 
@@ -4735,7 +4735,7 @@ Metadata
 
 ---
 
-## G36 — Add multi-selection inspector
+## [x] G36 — Add multi-selection inspector
 
 **Deliverable:** multi-object property editor.
 
@@ -4757,7 +4757,7 @@ batch script attachment
 
 ---
 
-## G37 — Add ECS scene tree panel
+## [x] G37 — Add ECS scene tree panel
 
 **Deliverable:** hierarchical ECS tree.
 
@@ -4786,7 +4786,7 @@ hover highlight
 
 ---
 
-## G38 — Add ECS tree parent/child operations
+## [x] G38 — Add ECS tree parent/child operations
 
 **Deliverable:** hierarchy editing commands.
 
@@ -4809,7 +4809,7 @@ hide/show
 
 ---
 
-## G39 — Add ECS tree drag/drop sibling reorder
+## [x] G39 — Add ECS tree drag/drop sibling reorder
 
 **Deliverable:** drag/drop reordering in tree.
 
@@ -4828,7 +4828,7 @@ drop to root
 
 ---
 
-## G40 — Add grouping workflow
+## [x] G40 — Add grouping workflow
 
 **Deliverable:** non-destructive group operation.
 
@@ -4849,7 +4849,7 @@ ungroup restores children
 
 ---
 
-## G41 — Add merge workflow
+## [x] G41 — Add merge workflow
 
 **Deliverable:** explicit merge operation.
 
@@ -4869,7 +4869,7 @@ compound physics shape merge, optional
 
 ---
 
-## G42 — Add split merged object workflow
+## [x] G42 — Add split merged object workflow
 
 **Deliverable:** undo/split interface for merged results.
 
@@ -4879,7 +4879,7 @@ compound physics shape merge, optional
 
 ---
 
-## G43 — Add asset/file management panel shell
+## [x] G43 — Add asset/file management panel shell
 
 **Deliverable:** project file browser.
 
@@ -4905,7 +4905,7 @@ Imports
 
 ---
 
-## G44 — Add asset search/filter/sort
+## [x] G44 — Add asset search/filter/sort
 
 **Deliverable:** asset browser filtering.
 
@@ -4928,7 +4928,7 @@ sort by size
 
 ---
 
-## G45 — Add asset preview cards
+## [x] G45 — Add asset preview cards
 
 **Deliverable:** preview cards for assets.
 
@@ -4951,7 +4951,7 @@ missing asset warning
 
 ---
 
-## G46 — Add drag/drop from asset browser to viewport
+## [x] G46 — Add drag/drop from asset browser to viewport
 
 **Deliverable:** asset-to-scene drag/drop.
 
@@ -4972,7 +4972,7 @@ benchmark scene dropped into benchmark panel selects scene
 
 ---
 
-## G47 — Add OS file drag/drop
+## [x] G47 — Add OS file drag/drop
 
 **Deliverable:** external file drop support.
 
@@ -4993,7 +4993,7 @@ benchmark reference image picker
 
 ---
 
-## G48 — Add file picker controls
+## [x] G48 — Add file picker controls
 
 **Deliverable:** reusable file picker widget.
 
@@ -5015,7 +5015,7 @@ open containing folder
 
 ---
 
-## G49 — Add import validation modal
+## [x] G49 — Add import validation modal
 
 **Deliverable:** import confirmation/diagnostics modal.
 
@@ -5038,7 +5038,7 @@ cancel/import buttons
 
 ---
 
-## G50 — Add script panel
+## [x] G50 — Add script panel
 
 **Deliverable:** Lua script management panel.
 
@@ -5064,7 +5064,7 @@ script event log
 
 ---
 
-## G51 — Add Lua lifecycle visibility
+## [x] G51 — Add Lua lifecycle visibility
 
 **Deliverable:** script lifecycle view.
 
@@ -5093,7 +5093,7 @@ on_unload
 
 ---
 
-## G52 — Add script parameter inspector
+## [x] G52 — Add script parameter inspector
 
 **Deliverable:** script-exposed parameter UI.
 
@@ -5117,7 +5117,7 @@ enum/dropdown
 
 ---
 
-## G53 — Add benchmark panel shell
+## [x] G53 — Add benchmark panel shell
 
 **Deliverable:** benchmark panel.
 
@@ -5145,7 +5145,7 @@ result summary
 
 ---
 
-## G54 — Add raw benchmark metric display
+## [x] G54 — Add raw benchmark metric display
 
 **Deliverable:** raw metrics in benchmark panel.
 
@@ -5171,7 +5171,7 @@ shader compile time
 
 ---
 
-## G55 — Add hardware-normalized score model UI
+## [x] G55 — Add hardware-normalized score model UI
 
 **Deliverable:** normalized score display.
 
@@ -5208,7 +5208,7 @@ Last Calibration Date
 
 ---
 
-## G56 — Add benchmark calibration panel
+## [x] G56 — Add benchmark calibration panel
 
 **Deliverable:** CPU/GPU calibration UI.
 
@@ -5231,7 +5231,7 @@ invalidate calibration profile
 
 ---
 
-## G57 — Add workload complexity graph
+## [x] G57 — Add workload complexity graph
 
 **Deliverable:** workload graph visualization.
 
@@ -5257,7 +5257,7 @@ backend path
 
 ---
 
-## G58 — Add benchmark history panel
+## [x] G58 — Add benchmark history panel
 
 **Deliverable:** history list of recent runs.
 
@@ -5280,7 +5280,7 @@ regression/improvement marker
 
 ---
 
-## G59 — Add console/log panel
+## [x] G59 — Add console/log panel
 
 **Deliverable:** in-app log viewer.
 
@@ -5302,7 +5302,7 @@ pause auto-scroll
 
 ---
 
-## G60 — Add status bar
+## [x] G60 — Add status bar
 
 **Deliverable:** bottom status bar.
 
@@ -5327,7 +5327,7 @@ background job count
 
 ---
 
-## G61 — Add UI event black box recorder
+## [x] G61 — Add UI event black box recorder
 
 **Deliverable:** last-N UI event recorder.
 
@@ -5355,7 +5355,7 @@ modal confirm/cancel
 
 ---
 
-## G62 — Add editor command history panel
+## [x] G62 — Add editor command history panel
 
 **Deliverable:** visual undo/redo history.
 
@@ -5376,7 +5376,7 @@ redoable state
 
 ---
 
-## G63 — Add modal and notification system
+## [x] G63 — Add modal and notification system
 
 **Deliverable:** standard UI modals/toasts.
 
@@ -5398,7 +5398,7 @@ crash recovery prompt
 
 ---
 
-## G64 — Add keyboard shortcut model
+## [x] G64 — Add keyboard shortcut model
 
 **Deliverable:** shortcut registry.
 
@@ -5428,7 +5428,7 @@ F11 fullscreen
 
 ---
 
-## G65 — Add UI accessibility/scaling controls
+## [x] G65 — Add UI accessibility/scaling controls
 
 **Deliverable:** UI scaling and readability controls.
 
@@ -5449,7 +5449,7 @@ tooltip delay
 
 ---
 
-## G66 — Add web UI compatibility plan
+## [x] G66 — Add web UI compatibility plan
 
 **Deliverable:** web-compatible UI mode.
 
@@ -5471,7 +5471,7 @@ WebGPU backend capability warnings
 
 ---
 
-## G67 — Add UI performance budget
+## [x] G67 — Add UI performance budget
 
 **Deliverable:** UI profiling metrics.
 
@@ -5494,7 +5494,7 @@ overlay draw time
 
 ---
 
-## G68 — Add UI-thread policy
+## [x] G68 — Add UI-thread policy
 
 **Deliverable:** thread ownership policy.
 
@@ -5514,7 +5514,7 @@ No background thread mutates UI state directly.
 
 ---
 
-## G69 — Add UI snapshot testing
+## [x] G69 — Add UI snapshot testing
 
 **Deliverable:** headless UI model tests.
 
@@ -5536,7 +5536,7 @@ layout save/load
 
 ---
 
-## G70 — Add UI release gate
+## [x] G70 — Add UI release gate
 
 **Deliverable:** UI readiness checklist.
 
