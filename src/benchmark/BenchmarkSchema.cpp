@@ -196,6 +196,31 @@ bool parse_timing(const vkpt::scene::JsonValue& object, BenchmarkTiming& out) {
          as_double(object, "cpu_ms", out.cpu_ms);
 }
 
+bool parse_timing_event(const vkpt::scene::JsonValue& object, BenchmarkTimingEvent& out) {
+  if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
+    return false;
+  }
+  return as_string(object, "name", out.name) &&
+         as_string(object, "category", out.category) &&
+         as_double(object, "ms", out.ms);
+}
+
+bool parse_timing_breakdown(const vkpt::scene::JsonValue& value, std::vector<BenchmarkTimingEvent>& out) {
+  if (value.kind != vkpt::scene::JsonValue::Kind::Array) {
+    return false;
+  }
+  out.clear();
+  out.reserve(value.array.size());
+  for (const auto& entry : value.array) {
+    BenchmarkTimingEvent evt;
+    if (!parse_timing_event(entry, evt)) {
+      return false;
+    }
+    out.push_back(std::move(evt));
+  }
+  return true;
+}
+
 bool parse_throughput(const vkpt::scene::JsonValue& object, BenchmarkThroughput& out) {
   if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
@@ -269,6 +294,15 @@ vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_vie
   if (timingIt == root->object.end() || timingIt->second.kind != vkpt::scene::JsonValue::Kind::Object ||
       !parse_timing(timingIt->second, result.timing)) {
     return vkpt::core::Result<BenchmarkResult>::error(vkpt::core::ErrorCode::InvalidArgument);
+  }
+
+  const auto breakdownIt = root->object.find("timing_breakdown");
+  if (breakdownIt != root->object.end()) {
+    if (!parse_timing_breakdown(breakdownIt->second, result.timing_breakdown)) {
+      return vkpt::core::Result<BenchmarkResult>::error(vkpt::core::ErrorCode::InvalidArgument);
+    }
+  } else {
+    result.timing_breakdown.clear();
   }
 
   const auto throughputIt = root->object.find("throughput");
@@ -511,6 +545,18 @@ std::string SerializeBenchmarkResult(const BenchmarkResult& result) {
   timing.object["render_ms"] = make_number(result.timing.render_ms);
   timing.object["cpu_ms"] = make_number(result.timing.cpu_ms);
   root.object["timing"] = timing;
+
+  std::vector<vkpt::scene::JsonValue> breakdown;
+  breakdown.reserve(result.timing_breakdown.size());
+  for (const auto& evt : result.timing_breakdown) {
+    vkpt::scene::JsonValue o;
+    o.kind = vkpt::scene::JsonValue::Kind::Object;
+    o.object["name"] = make_string(evt.name);
+    o.object["category"] = make_string(evt.category);
+    o.object["ms"] = make_number(evt.ms);
+    breakdown.push_back(std::move(o));
+  }
+  root.object["timing_breakdown"] = make_array(std::move(breakdown));
 
   vkpt::scene::JsonValue throughput;
   throughput.kind = vkpt::scene::JsonValue::Kind::Object;
