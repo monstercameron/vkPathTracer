@@ -646,6 +646,72 @@ Vec3 ScalarCpuPathTracer::sample_hemisphere(Rng& rng, const Vec3& normal) const 
   return make_unit(tangent * local.x + bitangent * local.y + normal * local.z);
 }
 
+NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit, Rng& rng) const {
+  if (m_scene.lights.empty()) {
+    return {};
+  }
+  const std::size_t num_lights = m_scene.lights.size();
+  const auto light_idx = static_cast<std::size_t>(rng.next01() * static_cast<float>(num_lights));
+  const std::size_t clamped_idx = std::min(light_idx, num_lights - 1u);
+  const RTHitLight& light = m_scene.lights[clamped_idx];
+
+  const Vec3 to_light = light.position - hit.position;
+  const float dist_sq = length_sq(to_light);
+  const float dist = std::sqrt(dist_sq);
+  if (dist < kEpsilon) {
+    return {};
+  }
+  const Vec3 light_dir = to_light / dist;
+  const float cos_theta = dot(hit.normal, light_dir);
+  if (cos_theta <= 0.0f) {
+    return {};
+  }
+
+  // Shadow ray — offset by normal to avoid self-intersection.
+  const Ray shadow_ray{hit.position + hit.normal * 0.002f, light_dir};
+  Hit shadow_hit;
+  ++m_counters.shadow_tests;
+  if (intersect_scene(shadow_ray, shadow_hit) && shadow_hit.t < dist - 0.004f) {
+    return {};  // occluded
+  }
+
+  // Lambert direct contribution.
+  const auto mat_index = std::min(hit.material_index, static_cast<uint32_t>(m_scene.materials.size() - 1));
+  const Vec3 albedo = m_scene.materials[mat_index].albedo;
+  const Vec3 irradiance = light.color * (light.intensity / (dist_sq + kEpsilon));
+  const Vec3 direct = albedo * kInvPi * irradiance * cos_theta * static_cast<float>(num_lights);
+
+  return NeeResult{direct, true};
+}
+
+float ScalarCpuPathTracer::light_pdf_for_direction(const Vec3& position, const Vec3& direction) const {
+  if (m_scene.lights.empty()) {
+    return 0.0f;
+  }
+  // Uniform light selection; solid-angle PDF approximation.
+  const float inv_n = 1.0f / static_cast<float>(m_scene.lights.size());
+  float total_pdf = 0.0f;
+  for (const auto& light : m_scene.lights) {
+    const Vec3 to_light = light.position - position;
+    const float dist = length(to_light);
+    if (dist < kEpsilon) continue;
+    const Vec3 dir = to_light / dist;
+    if (dot(dir, direction) > 0.9999f) {
+      // Approximate: treat light as point — pdf proportional to 1/dist^2.
+      total_pdf += inv_n / (dist * dist + kEpsilon);
+    }
+  }
+  return total_pdf;
+}
+
+float MisWeight(float pdf_a, float pdf_b) {
+  const float a2 = pdf_a * pdf_a;
+  const float b2 = pdf_b * pdf_b;
+  const float denom = a2 + b2;
+  if (denom <= 0.0f) return 1.0f;
+  return a2 / denom;
+}
+
 Vec3 ScalarCpuPathTracer::trace(const Ray& input,
                                 uint32_t sample_index,
                                 uint32_t frame_index,
@@ -666,7 +732,37 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
 
     const auto index = std::min(hit.material_index, static_cast<uint32_t>(m_scene.materials.size() - 1));
     const auto& material = m_scene.materials[index];
-    radiance += throughput * material.emissive;
+
+    // Emissive: only add if NEE is off, or this is the first bounce, or MIS weights it.
+    if (!m_settings.enable_nee || depth == 0) {
+      radiance += throughput * material.emissive;
+    } else if (m_settings.enable_mis && material.is_emissive()) {
+      const float bsdf_pdf = std::max(0.0f, dot(hit.normal, -ray.direction)) * kInvPi;
+      const float l_pdf = light_pdf_for_direction(ray.origin, ray.direction);
+      const float w = MisWeight(bsdf_pdf, l_pdf);
+      radiance += throughput * material.emissive * w;
+    }
+
+    // NEE direct light sampling.
+    if (m_settings.enable_nee && depth < m_settings.max_depth - 1u) {
+      const NeeResult nee = sample_direct_light(hit, rng);
+      if (nee.valid) {
+        if (m_settings.enable_mis) {
+          // Weight the direct sample against the BSDF pdf.
+          const Vec3 to_approx_light = (m_scene.lights.empty()) ? Vec3{} :
+              (m_scene.lights[0].position - hit.position);
+          const Vec3 l_dir = normalize(to_approx_light);
+          const float cos_theta = std::max(0.0f, dot(hit.normal, l_dir));
+          const float bsdf_pdf = cos_theta * kInvPi;
+          const float l_pdf = (m_scene.lights.empty()) ? 1.0f :
+              (1.0f / static_cast<float>(m_scene.lights.size()));
+          const float w = MisWeight(l_pdf, bsdf_pdf);
+          radiance += throughput * nee.radiance * w;
+        } else {
+          radiance += throughput * nee.radiance;
+        }
+      }
+    }
 
     const Vec3 inDir = -ray.direction;
     const Vec3 outDir = sample_hemisphere(rng, hit.normal);
@@ -1085,6 +1181,82 @@ std::string SerializeRTSceneDataLayoutManifest(const RTSceneLayoutManifest& mani
     out << "}";
   }
   out << "]";
+  out << "}";
+  return out.str();
+}
+
+FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings) {
+  FilmLdr ldr;
+  ldr.width = hdr.width;
+  ldr.height = hdr.height;
+  const std::size_t num_pixels = static_cast<std::size_t>(hdr.width) * hdr.height;
+  ldr.rgba8.resize(num_pixels * 4u, 255u);
+
+  const float inv_gamma = 1.0f / std::max(0.01f, settings.gamma);
+
+  for (std::size_t i = 0; i < num_pixels; ++i) {
+    float r = hdr.rgbf[i * 3u + 0u] * settings.exposure;
+    float g = hdr.rgbf[i * 3u + 1u] * settings.exposure;
+    float b = hdr.rgbf[i * 3u + 2u] * settings.exposure;
+
+    auto tonemap = [&](float x) -> float {
+      switch (settings.tone_map) {
+        case ToneMapMode::Reinhard:
+          return x / (1.0f + x);
+        case ToneMapMode::FilmicApprox: {
+          // Simplified Uncharted 2 approximation (A=0.15, B=0.50, etc.)
+          auto F = [](float v) -> float {
+            const float A = 0.15f, B = 0.50f, C = 0.10f, D = 0.20f, E = 0.02f, F_ = 0.30f;
+            return ((v * (A * v + C * B) + D * E) / (v * (A * v + B) + D * F_)) - E / F_;
+          };
+          const float W = 11.2f;
+          return F(x) / F(W);
+        }
+        case ToneMapMode::AcesApprox:
+          return (x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f);
+        default:
+          return x;
+      }
+    };
+
+    r = tonemap(r);
+    g = tonemap(g);
+    b = tonemap(b);
+
+    // Gamma correction.
+    r = std::pow(std::max(0.0f, r), inv_gamma);
+    g = std::pow(std::max(0.0f, g), inv_gamma);
+    b = std::pow(std::max(0.0f, b), inv_gamma);
+
+    if (settings.clamp_output) {
+      r = std::min(1.0f, std::max(0.0f, r));
+      g = std::min(1.0f, std::max(0.0f, g));
+      b = std::min(1.0f, std::max(0.0f, b));
+    }
+
+    ldr.rgba8[i * 4u + 0u] = static_cast<uint8_t>(r * 255.0f + 0.5f);
+    ldr.rgba8[i * 4u + 1u] = static_cast<uint8_t>(g * 255.0f + 0.5f);
+    ldr.rgba8[i * 4u + 2u] = static_cast<uint8_t>(b * 255.0f + 0.5f);
+    ldr.rgba8[i * 4u + 3u] = 255u;
+  }
+  return ldr;
+}
+
+std::string SerializeFilmResolveSettings(const FilmResolveSettings& settings) {
+  const char* tone_map_str = "linear";
+  switch (settings.tone_map) {
+    case ToneMapMode::Reinhard:     tone_map_str = "reinhard";      break;
+    case ToneMapMode::FilmicApprox: tone_map_str = "filmic_approx"; break;
+    case ToneMapMode::AcesApprox:   tone_map_str = "aces_approx";   break;
+    default: break;
+  }
+  std::ostringstream out;
+  out << "{";
+  out << "\"exposure\":" << settings.exposure << ",";
+  out << "\"white_balance_kelvin\":" << settings.white_balance_kelvin << ",";
+  out << "\"tone_map\":\"" << tone_map_str << "\",";
+  out << "\"gamma\":" << settings.gamma << ",";
+  out << "\"clamp_output\":" << (settings.clamp_output ? "true" : "false");
   out << "}";
   return out.str();
 }
