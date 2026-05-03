@@ -1,0 +1,36 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "vs2022-clangcl-release",
+      "displayName": "Visual Studio 2022 + clang-cl Release",
+      "generator": "Visual Studio 17 2022",
+      "toolset": "ClangCL",
+      "binaryDir": "${sourceDir}/build/vs2022-clangcl",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release"
+      }
+    },
+    {
+      "name": "ninja-clangcl-release",
+      "displayName": "Ninja + clang-cl Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ninja-clangcl",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "vs2022-clangcl-release",
+      "configurePreset": "vs2022-clangcl-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "ninja-clangcl-release",
+      "configurePreset": "ninja-clangcl-release"
+    }
+  ]
+}

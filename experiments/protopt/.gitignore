@@ -1,0 +1,4 @@
+build/
+tooling/
+protopt_log.txt
+protopt_embedded.hlsl
