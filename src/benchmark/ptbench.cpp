@@ -20,6 +20,9 @@
 
 #include "benchmark/BenchmarkSchema.h"
 #include "build_info.generated.h"
+#include "cpu/ParallelBvhBuilder.h"
+#include "cpu/TiledCpuPathTracer.h"
+#include "jobs/JobSystem.h"
 #include "pathtracer/PathTracer.h"
 #include "render/backends/BackendFactory.h"
 #include "render/backends/VulkanBackend.h"
@@ -259,7 +262,7 @@ std::vector<std::string> AvailableRendererPaths(std::string_view backend) {
     return {"gpu-compute"};
   }
   if (normalized == "auto" || normalized == "null" || normalized == "cpu") {
-    return {"cpu-scalar"};
+    return {"cpu-scalar", "cpu-tiled"};
   }
   return {};
 }
@@ -709,7 +712,7 @@ void PrintHelp() {
   std::cout << "run:\n";
   std::cout << "  --scene <path>\n";
   std::cout << "  --backend <cpu|vulkan|auto>\n";
-  std::cout << "  --renderer-path <cpu-scalar|gpu-compute>\n";
+  std::cout << "  --renderer-path <cpu-scalar|cpu-tiled|gpu-compute>\n";
   std::cout << "  --resolution <WxH>\n";
   std::cout << "  --spp <samples>\n";
   std::cout << "  --seed <value>\n";
@@ -718,7 +721,10 @@ void PrintHelp() {
   std::cout << "  --warmup-frames <count>\n";
   std::cout << "  --reference-image <path>\n";
   std::cout << "  --tolerance-policy <policy> (e.g. abs=0.001,rel=0.01)\n";
-  std::cout << "  --output <artifact-dir>\n\n";
+  std::cout << "  --output <artifact-dir>\n";
+  std::cout << "  --workers <count>        (cpu-tiled: thread count, 0=auto)\n";
+  std::cout << "  --tile-size <rows>       (cpu-tiled: rows per tile, default 16)\n";
+  std::cout << "  --deterministic          (cpu-tiled: serialized execution)\n\n";
   std::cout << "validate-scene:\n";
   std::cout << "  --scene <path>\n";
   std::cout << "  [--backend <cpu|vulkan|auto>]\n";
@@ -905,6 +911,9 @@ struct RunOptions {
   std::uint32_t maxDepth = 6;
   double duration = 0.0;
   std::uint32_t warmupFrames = 0;
+  std::uint32_t workers = 0;      // 0 = hardware concurrency
+  std::uint32_t tileHeight = 16;  // rows per tile for cpu-tiled
+  bool deterministic = false;
   bool json = false;
 };
 
@@ -1009,6 +1018,26 @@ bool ParseRunArgs(const std::vector<std::string_view>& args, RunOptions& out, st
       }
     } else if (token == "--json") {
       out.json = true;
+    } else if (token == "--workers") {
+      if (i + 1 >= args.size()) {
+        if (error) *error = "missing --workers value";
+        return false;
+      }
+      if (!ParseUnsigned(args[++i], out.workers)) {
+        if (error) *error = "invalid --workers";
+        return false;
+      }
+    } else if (token == "--tile-size") {
+      if (i + 1 >= args.size()) {
+        if (error) *error = "missing --tile-size value";
+        return false;
+      }
+      if (!ParseUnsigned(args[++i], out.tileHeight) || out.tileHeight == 0) {
+        if (error) *error = "invalid --tile-size (must be row count > 0)";
+        return false;
+      }
+    } else if (token == "--deterministic") {
+      out.deterministic = true;
     } else {
       if (error) {
         *error = "unknown option: " + std::string(token);
@@ -1039,6 +1068,7 @@ int RunCommand(const std::vector<std::string_view>& args) {
   }
   const std::string normalizedBackend = NormalizeBackend(opts.backend);
   const bool isVulkanPath = (std::string(ToLower(opts.rendererPath)) == "gpu-compute");
+  const bool isTiledPath = (std::string(ToLower(opts.rendererPath)) == "cpu-tiled");
   std::unique_ptr<vkpt::render::IRenderBackend> backend;
   if (isVulkanPath) {
     backend = vkpt::render::CreateBackend(normalizedBackend);
@@ -1151,7 +1181,16 @@ int RunCommand(const std::vector<std::string_view>& args) {
   renderSettings.max_depth = opts.maxDepth;
   renderSettings.seed = opts.seed;
 
-  std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+  std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer;
+  if (isTiledPath) {
+    vkpt::cpu::TiledRenderConfig tiledConfig;
+    tiledConfig.tile_height = opts.tileHeight;
+    tiledConfig.worker_count = opts.workers;
+    tiledConfig.deterministic = opts.deterministic;
+    tracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
+  } else {
+    tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+  }
   if (!tracer->configure(renderSettings) || !tracer->load_scene_snapshot(sceneData.value()) ||
       !tracer->build_or_update_acceleration()) {
     std::cerr << "path tracer init failed\n";
@@ -1244,6 +1283,26 @@ int RunCommand(const std::vector<std::string_view>& args) {
   }
 
   result.diagnostics.push_back("schema=" + std::string(opts.json ? "json" : "text"));
+
+  // F08: record multithreaded benchmark metrics for cpu-tiled path
+  if (isTiledPath) {
+    const auto* tiled = dynamic_cast<vkpt::cpu::TiledCpuPathTracer*>(tracer.get());
+    if (tiled) {
+      const std::size_t wc = tiled->worker_count();
+      const uint32_t th = tiled->tile_height();
+      const auto& bvh = tiled->bvh_stats();
+      result.diagnostics.push_back("renderer=cpu-tiled");
+      result.diagnostics.push_back("worker_count=" + std::to_string(wc));
+      result.diagnostics.push_back("tile_height_rows=" + std::to_string(th));
+      result.diagnostics.push_back("bvh_nodes=" + std::to_string(bvh.node_count));
+      result.diagnostics.push_back("bvh_build_ms=" + std::to_string(bvh.build_ms));
+      result.diagnostics.push_back("deterministic=" + std::string(opts.deterministic ? "true" : "false"));
+      // samples_per_sec and paths_per_sec already in result.throughput
+      // speedup estimate vs scalar: ratio of worker_count (linear scaling assumption)
+      const double speedup_estimate = static_cast<double>(wc);
+      result.diagnostics.push_back("speedup_estimate_vs_scalar=" + std::to_string(speedup_estimate));
+    }
+  }
 
   if (!WriteRunArtifacts(result, artifactDir, scene, manifestResult.value(), Path(opts.referenceImage), Path(result.diff_heatmap_png),
                         !opts.referenceImage.empty(), &runError)) {

@@ -1,5 +1,27 @@
 ﻿# Changelog
 
+## 2026-05-03 (session 5)
+
+### Gate 6 complete — Multithreaded CPU renderer, parallel BVH, deterministic job mode
+
+**Gate 6 acceptance:** *"Multithreaded CPU renderer, parallel BVH, and job system are validated."*
+
+**B08 — Deterministic job mode** (`src/jobs/JobSystem.h/.cpp`)
+Added `set_deterministic(bool)` support. In deterministic mode, workers acquire a `std::mutex m_serialMutex` before executing each job, ensuring sequential one-at-a-time execution with stable ordering. Added missing standard library headers (`<deque>`, `<thread>`, `<condition_variable>`, `<memory>`) to the header. Fixed `m_jobs` from `std::vector<JobEntry>` to `std::vector<std::unique_ptr<JobEntry>>` to allow non-moveable members (`std::mutex`, `std::atomic`, `std::condition_variable`) inside `JobEntry`.
+
+**D11 — Parallel BVH builder** (`src/cpu/ParallelBvhBuilder.h/.cpp`)
+`ParallelBvhBuilder::build()` partitions AABBs by midpoint split on longest axis. When primitive count ≥ 256 and a `IJobSystem` is provided, left/right subtrees are built as parallel jobs via `jobs->submit_job()` + `wait_group`. Uses `std::stable_partition` in deterministic mode. Reports `BvhBuildStats` including `node_count`, `leaf_count`, `build_ms`, `worker_count`.
+
+**D12 — Tile-based CPU renderer** (`src/cpu/TiledCpuPathTracer.h/.cpp`)
+`TiledCpuPathTracer` implements `IPathTracer` and partitions the image into horizontal tiles. Each tile owns a `ScalarCpuPathTracer` instance. `render_sample_batch()` dispatches tile jobs in parallel via the internal `JobSystem`, then merges tile films into the master `FilmBuffer` via `FilmBuffer::import_tile()`. Added `FilmBuffer::import_tile()` and `ScalarCpuPathTracer::film()` accessor to `PathTracer.h/.cpp`.
+
+**F08 — Multithreaded CPU benchmark** (`src/benchmark/ptbench.cpp`)
+`ptbench run --renderer-path cpu-tiled` selects `TiledCpuPathTracer`. New CLI options: `--workers N`, `--tile-size H`, `--deterministic`. Diagnostics in `results.json`: `renderer=cpu-tiled`, `worker_count`, `tile_height_rows`, `bvh_nodes`, `bvh_build_ms`, `deterministic`, `speedup_estimate_vs_scalar`.
+
+**CMakeLists.txt** — Added `src/jobs/JobSystem.cpp`, `src/cpu/ParallelBvhBuilder.cpp`, `src/cpu/TiledCpuPathTracer.cpp` to both `ptapp` and `ptbench` targets.
+
+**Verification:** `ptbench run --backend cpu --renderer-path cpu-tiled --workers 2` produces `results.json` with all expected diagnostics. Clean full rebuild (36/36 objects) with only pre-existing warnings.
+
 ## 2026-05-03 (session 4)
 
 ### Gate 5 complete — Benchmark CLI, artifact contract, scene validation, image compare

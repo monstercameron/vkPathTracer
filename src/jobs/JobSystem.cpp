@@ -14,7 +14,7 @@ struct JobState {
   std::atomic<int> pending = 1;
   std::mutex mutex;
   std::condition_variable cv;
-  JobSystem::JobFunction job;
+  JobFunction job;
 };
 
 }  // namespace
@@ -52,8 +52,8 @@ vkpt::core::RuntimeHandle JobSystem::submit_internal(JobFunction job) {
   auto id = m_nextJobId.fetch_add(1, std::memory_order_relaxed);
   {
     std::scoped_lock lock(m_jobsMutex);
-    m_jobs.emplace_back();
-    auto& entry = m_jobs.back();
+    m_jobs.push_back(std::make_unique<JobEntry>());
+    auto& entry = *m_jobs.back();
     entry.state.id = id;
     entry.state.job = std::move(job);
   }
@@ -87,11 +87,11 @@ bool JobSystem::wait(vkpt::core::RuntimeHandle id) {
   JobState* target = nullptr;
   {
     std::scoped_lock lock(m_jobsMutex);
-    auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [id](const JobEntry& entry) { return entry.state.id == id; });
+    auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [id](const std::unique_ptr<JobEntry>& e) { return e->state.id == id; });
     if (it == m_jobs.end()) {
       return false;
     }
-    target = &it->state;
+    target = &(*it)->state;
   }
   std::unique_lock lock(target->mutex);
   target->cv.wait(lock, [&]() { return target->pending.load(std::memory_order_acquire) == 0; });
@@ -125,11 +125,11 @@ void JobSystem::pump_main_thread() {
     JobState* target = nullptr;
     {
       std::scoped_lock lock(m_jobsMutex);
-      auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [next](const JobEntry& entry) { return entry.state.id == next; });
+      auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [next](const std::unique_ptr<JobEntry>& e) { return e->state.id == next; });
       if (it == m_jobs.end()) {
         continue;
       }
-      target = &it->state;
+      target = &(*it)->state;
     }
     RunJob(*target);
   }
@@ -173,11 +173,11 @@ void JobSystem::worker_loop() {
       JobState* target = nullptr;
       {
         std::scoped_lock jobsLock(m_jobsMutex);
-        auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [id](const JobEntry& entry) { return entry.state.id == id; });
+        auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [id](const std::unique_ptr<JobEntry>& e) { return e->state.id == id; });
         if (it == m_jobs.end()) {
           continue;
         }
-        target = &it->state;
+        target = &(*it)->state;
       }
       if (target && target->job) {
         RunJob(*target);
@@ -193,13 +193,15 @@ void JobSystem::worker_loop() {
       JobState* target = nullptr;
       {
         std::scoped_lock jobsLock(m_jobsMutex);
-        auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [id](const JobEntry& entry) { return entry.state.id == id; });
+        auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [id](const std::unique_ptr<JobEntry>& e) { return e->state.id == id; });
         if (it == m_jobs.end()) {
           continue;
         }
-        target = &it->state;
+        target = &(*it)->state;
       }
       if (target && target->job) {
+        // serialize: only one worker executes at a time in deterministic mode
+        std::scoped_lock serial(m_serialMutex);
         RunJob(*target);
       }
     }
