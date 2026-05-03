@@ -17,18 +17,32 @@ class DesktopWindow final : public IWindow {
   WindowMetrics metrics() const override;
   bool poll_events() override;
   bool resize(std::size_t width, std::size_t height);
+  void* native_handle() const;
 
   void set_title(std::string_view title);
+  void set_overlay_text(std::string_view text);
+  void on_native_resize(std::size_t width, std::size_t height);
+  const std::string& overlay_text() const { return m_overlayText; }
   void emit_focus_change(bool focused);
   void emit_close_requested();
+  void emit_menu_command(std::uint32_t command_id);
+  void emit_key(std::int32_t key, bool pressed);
+  void emit_mouse_move(int x, int y);
+  void emit_mouse_button(std::int32_t button, bool pressed, int x, int y);
+  void emit_mouse_wheel(float delta, int x, int y);
   std::vector<InputEvent> drain_events();
+  void mark_closed();
 
  private:
   bool m_open = false;
   bool m_focused = true;
   WindowMetrics m_metrics{1280, 720, 1.0f};
   std::string m_title;
+  std::string m_overlayText;
+  void* m_hwnd = nullptr;
   std::deque<InputEvent> m_events;
+  int m_lastMouseX = 0;
+  int m_lastMouseY = 0;
 };
 
 class DesktopInput final : public IInput {
@@ -83,6 +97,11 @@ class DesktopSurfaceProvider final : public INativeSurfaceProvider {
  public:
   void* native_window_handle() const override;
   void* native_instance_handle() const override;
+  void set_handles(void* window_handle, void* instance_handle);
+
+ private:
+  void* m_windowHandle = nullptr;
+  void* m_instanceHandle = nullptr;
 };
 
 class DesktopPlatform final : public IPlatform {
