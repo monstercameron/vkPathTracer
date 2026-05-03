@@ -41,6 +41,13 @@ struct RenderSettings {
   uint32_t spp = 8;
   uint32_t max_depth = 6;
   uint64_t seed = 0x12345678ULL;
+  bool enable_nee = false;
+  bool enable_mis = false;
+};
+
+struct NeeResult {
+  Vec3 radiance{};
+  bool valid = false;
 };
 
 struct RenderStats {
@@ -166,6 +173,26 @@ struct FilmHdr {
   std::vector<float> rgbf;
 };
 
+enum class ToneMapMode : std::uint8_t {
+  Linear = 0,
+  Reinhard,
+  FilmicApprox,
+  AcesApprox,
+};
+
+struct FilmResolveSettings {
+  float exposure = 1.0f;
+  float white_balance_kelvin = 6500.0f;  // placeholder — no-op for now
+  ToneMapMode tone_map = ToneMapMode::Linear;
+  float gamma = 2.2f;
+  bool clamp_output = true;
+};
+
+// Apply resolve pipeline: exposure → tone map → gamma → clamp → LDR output.
+// white_balance is declared but currently a no-op placeholder.
+FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings);
+std::string SerializeFilmResolveSettings(const FilmResolveSettings& settings);
+
 class FilmBuffer {
  public:
   FilmBuffer() = default;
@@ -209,6 +236,8 @@ class IPathTracer {
   virtual void shutdown() = 0;
 };
 
+float MisWeight(float pdf_a, float pdf_b);
+
 class ScalarCpuPathTracer final : public IPathTracer {
  public:
   bool configure(const RenderSettings& settings) override;
@@ -251,6 +280,8 @@ class ScalarCpuPathTracer final : public IPathTracer {
   bool intersect_torus(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;
   bool intersect_capsule(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;
   bool intersect_scene(const Ray& ray, Hit& out) const;
+  NeeResult sample_direct_light(const Hit& hit, Rng& rng) const;
+  float light_pdf_for_direction(const Vec3& position, const Vec3& direction) const;
   Ray camera_rays(uint32_t x,
                   uint32_t y,
                   uint32_t sample_index,
