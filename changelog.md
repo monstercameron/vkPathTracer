@@ -13,4 +13,6 @@
 - 22252de — fix(platform): resolve HeadlessFileSystem stream declaration parse issues
 - 1056e65 - feat(scene): add gate 2 scene ECS schema and snapshot system
 - 278f505 - feat(app): wire scene loading into startup path
+- 810141a — feat(benchmark): add gate3 benchmark schemas, scene manifests, and ptbench CLI
+- feat(app): implement scalar CPU path-tracing render path and Gate 3 render CLI flags
 
