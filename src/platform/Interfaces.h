@@ -24,6 +24,7 @@ enum class InputEventType {
   MouseButtonUp,
   MouseWheel,
   WindowResize,
+  MenuCommand,
   FocusLost,
   FocusGained,
   CloseRequested,
@@ -76,6 +77,10 @@ struct InputEventNormalizer final {
 
   static InputEvent close() {
     return InputEvent{InputEventType::CloseRequested, 0, 0.0f, 0.0f};
+  }
+
+  static InputEvent menu_command(std::uint32_t command_id) {
+    return InputEvent{InputEventType::MenuCommand, 0, 0.0f, 0.0f, 0u, static_cast<std::int32_t>(command_id)};
   }
 };
 

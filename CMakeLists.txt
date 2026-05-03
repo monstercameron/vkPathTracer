@@ -153,6 +153,7 @@ configure_file(
 add_executable(ptapp
   src/app/main.cpp
   src/core/Assert.cpp
+  src/editor/UiModels.cpp
   src/core/Config.cpp
   src/cpu/CpuFeatures.cpp
   src/cpu/ParallelBvhBuilder.cpp
@@ -162,8 +163,14 @@ add_executable(ptapp
   src/diagnostics/StatusFile.cpp
   src/jobs/JobSystem.cpp
   src/platform/HeadlessPlatform.cpp
+  src/platform/DesktopPlatform.cpp
   src/scene/Scene.cpp
   src/pathtracer/PathTracer.cpp
+  src/materials/MaterialInterface.cpp
+  src/materials/MaterialDescriptors.cpp
+  src/shaders/ShaderFamilyManifest.cpp
+  src/shaders/SdfShaderInventory.cpp
+  src/render/DebugViews.cpp
   src/render/interface/RenderContracts.cpp
   src/render/backends/BackendFactory.cpp
   src/render/backends/FrameGraph.cpp
@@ -186,6 +193,7 @@ add_executable(ptbench
   src/benchmark/ptbench.cpp
   src/benchmark/BenchmarkSchema.cpp
   src/core/Assert.cpp
+  src/editor/UiModels.cpp
   src/core/Config.cpp
   src/cpu/CpuFeatures.cpp
   src/cpu/ParallelBvhBuilder.cpp
@@ -196,6 +204,11 @@ add_executable(ptbench
   src/jobs/JobSystem.cpp
   src/pathtracer/PathTracer.cpp
   src/scene/Scene.cpp
+  src/materials/MaterialInterface.cpp
+  src/materials/MaterialDescriptors.cpp
+  src/shaders/ShaderFamilyManifest.cpp
+  src/shaders/SdfShaderInventory.cpp
+  src/render/DebugViews.cpp
   src/render/interface/RenderContracts.cpp
   src/render/backends/BackendFactory.cpp
   src/render/backends/FrameGraph.cpp
