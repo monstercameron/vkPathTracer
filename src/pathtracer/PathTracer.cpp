@@ -287,6 +287,24 @@ void FilmBuffer::add_sample(uint32_t x, uint32_t y, const Vec3& color) {
   m_sampleCounts[idx] += 1;
 }
 
+void FilmBuffer::import_tile(const FilmBuffer& src, uint32_t start_y, uint32_t end_y) {
+  if (m_width != src.m_width || m_height == 0 || src.m_height == 0) {
+    return;
+  }
+  const uint32_t clamped_end = std::min(end_y, std::min(m_height, src.m_height));
+  for (uint32_t y = start_y; y < clamped_end; ++y) {
+    for (uint32_t x = 0; x < m_width; ++x) {
+      const std::size_t dst_idx = static_cast<std::size_t>(y) * m_width + x;
+      const std::size_t src_idx = static_cast<std::size_t>(y) * src.m_width + x;
+      if (dst_idx < m_accumulation.size() && src_idx < src.m_accumulation.size()) {
+        m_accumulation[dst_idx] = src.m_accumulation[src_idx];
+        m_sampleCounts[dst_idx] = src.m_sampleCounts[src_idx];
+        m_invalidSamples[dst_idx] = src.m_invalidSamples[src_idx];
+      }
+    }
+  }
+}
+
 FilmLdr FilmBuffer::resolve_ldr() const {
   FilmLdr out;
   out.width = m_width;

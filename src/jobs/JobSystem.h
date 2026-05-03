@@ -1,10 +1,14 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "core/Types.h"
@@ -48,12 +52,13 @@ class JobSystem final : public IJobSystem {
   void worker_loop();
 
  private:
-  std::vector<JobEntry> m_jobs;
+  std::vector<std::unique_ptr<JobEntry>> m_jobs;
   mutable std::mutex m_jobsMutex;
   std::condition_variable m_jobsCv;
   std::mutex m_queueMutex;
   std::condition_variable m_mainCv;
   std::mutex m_mainMutex;
+  std::mutex m_serialMutex;  // serializes job execution in deterministic mode
   std::deque<vkpt::core::RuntimeHandle> m_queue;
   std::deque<vkpt::core::RuntimeHandle> m_mainQueue;
   std::vector<std::thread> m_workers;

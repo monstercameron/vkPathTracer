@@ -174,6 +174,9 @@ class FilmBuffer {
   void resize(uint32_t width, uint32_t height);
   void clear();
   void add_sample(uint32_t x, uint32_t y, const Vec3& color);
+  // Copy raw accumulation and sample counts from src for rows [start_y, end_y).
+  // Overwrites any existing data in that row range.
+  void import_tile(const FilmBuffer& src, uint32_t start_y, uint32_t end_y);
   FilmLdr resolve_ldr() const;
   FilmHdr resolve_hdr() const;
 
@@ -216,6 +219,7 @@ class ScalarCpuPathTracer final : public IPathTracer {
   FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }
   FilmHdr resolve_hdr() const override { return m_film.resolve_hdr(); }
   SampleCounters read_counters() const override { return m_counters; }
+  const FilmBuffer& film() const { return m_film; }
   void shutdown() override;
 
  private:

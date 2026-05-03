@@ -163,7 +163,7 @@ Gate 4: (completed)
 Gate 5: (completed)
   Benchmark CLI runs CPU and Vulkan paths and writes results.json.
 
-Gate 6:
+Gate 6: (completed)
   Multithreaded CPU renderer, parallel BVH, and job system are validated.
 
 Gate 7:
@@ -842,7 +842,7 @@ shutdown
 
 ---
 
-## [ ] B08 — Add deterministic job mode
+## [x] B08 — Add deterministic job mode
 
 **Deliverable:** deterministic scheduler option.
 
@@ -1621,7 +1621,7 @@ capsule
 
 ---
 
-## D11 — Add parallel BVH build
+## [x] D11 — Add parallel BVH build
 
 **Deliverable:** job-system-based BVH build.
 
@@ -1631,7 +1631,7 @@ capsule
 
 ---
 
-## D12 — Add tile-based CPU renderer
+## [x] D12 — Add tile-based CPU renderer
 
 **Deliverable:** multithreaded CPU rendering by image tiles.
 
@@ -2585,7 +2585,7 @@ diff heatmap
 
 ---
 
-## [ ] F08 — Add multithreaded CPU benchmark
+## [x] F08 — Add multithreaded CPU benchmark
 
 **Deliverable:** benchmark for tile-based CPU renderer.
 
