@@ -2,13 +2,15 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <utility>
+#include <variant>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 #include "core/Types.h"
+#include "render/interface/ResourceRegistry.h"
 
 namespace vkpt::render {
 
@@ -32,6 +34,21 @@ enum class PassType {
   Readback,
   Present,
   Debug
+};
+
+struct ShaderManifest {
+  std::string shader_family;
+  std::string entry_point;
+  std::string backend;
+  std::string source_hash;
+  std::string variant_hash;
+  std::vector<std::string> defines;
+  std::vector<std::string> feature_flags;
+  std::vector<std::string> compiler_flags;
+  uint32_t resource_layout_version = 0u;
+  std::string artifact_path;
+  std::string compile_diagnostics;
+  bool compile_success = false;
 };
 
 enum class ResourceBindingUsage : std::uint32_t {
@@ -131,11 +148,17 @@ struct RenderBackendCapabilities {
   bool storage_buffers = false;
   bool storage_textures = false;
   bool timestamp_queries = false;
+  std::string timestamp_fallback_reason;
   bool subgroups = false;
   bool descriptor_indexing = false;
   bool bindless_like_resources = false;
   bool texture_formats = true;
   bool ray_tracing = false;
+  bool ray_query = false;
+  bool ray_query_supported = false;
+  bool acceleration_structure_supported = false;
+  std::uint32_t shader_group_handle_size = 0u;
+  std::uint64_t max_as_size = 0u;
   bool presentation = false;
   bool readback = false;
   bool is_simulated = false;
@@ -147,6 +170,18 @@ struct RenderBackendCapabilities {
   std::uint64_t max_buffer_alignment = 0u;
   std::string memory_model = "unknown";
   std::string notes;
+};
+
+struct RenderCrashState {
+  std::string selected_backend;
+  std::string device_name;
+  RenderBackendCapabilities capabilities;
+  std::vector<ResourceLeaseInfo> live_resources;
+  uint64_t last_frame_index = 0u;
+  std::string last_frame_stage;
+  std::string last_pass_name;
+  std::string last_shader_variant;
+  std::string last_error;
 };
 
 struct RenderResource {
@@ -263,8 +298,20 @@ class IRenderBackend {
   virtual IShaderCompiler* compiler() = 0;
   virtual IShaderCache* shader_cache() = 0;
   virtual std::unique_ptr<IFrameGraph> create_frame_graph() = 0;
+  virtual const ResourceLifetimeRegistry* resource_registry() const { return nullptr; }
+  virtual std::string last_error() const { return {}; }
 };
 
+std::string MakeShaderManifestHash(std::string_view source_text);
+std::string BuildShaderCacheKey(std::string_view backend, const ShaderManifest& manifest);
+std::string SerializeShaderManifest(const ShaderManifest& manifest);
+RenderCrashState BuildRendererCrashState(const IRenderBackend& backend,
+                                        uint64_t frame_index,
+                                        const std::string& frame_stage,
+                                        const std::string& last_pass = {},
+                                        const std::string& last_shader_variant = {},
+                                        const std::string& extra_error = {});
+std::string SerializeRenderCrashState(const RenderCrashState& state);
 std::string SerializeBackendCapabilities(const RenderBackendCapabilities& caps);
 void AppendDiagnosticField(std::vector<std::string>& diagnostics, const std::string& entry);
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -7,6 +8,7 @@
 
 #include "render/backends/FrameGraph.h"
 #include "render/interface/RenderContracts.h"
+#include "pathtracer/PathTracer.h"
 
 namespace vkpt::render {
 
@@ -112,6 +114,28 @@ class VulkanComputeBackend final : public IRenderBackend {
 };
 
 bool RunVulkanComputeSmoke(vkpt::render::IRenderBackend& backend);
+
+// C10: Simulated Vulkan BVH pass result.
+struct VulkanBVHPassResult {
+  bool success = false;
+  uint32_t vertex_buffer_count = 0;   // vertices uploaded
+  uint32_t index_buffer_count  = 0;   // indices uploaded
+  uint32_t instance_count      = 0;   // BLAS instances
+  uint32_t bvh_node_estimate   = 0;   // SAH-estimated node count
+  std::string error;
+};
+
+// C10: Upload RTSceneData to the Vulkan allocator, perform a simulated BVH
+// build, and dispatch the pathtrace compute pass. Returns a result struct
+// describing the uploaded data and any error.
+//
+// This is the interface-completion stub for Gate 4.  No real Vulkan SDK is
+// required; all operations are performed on the simulated allocator.
+VulkanBVHPassResult RunVulkanBVHPass(
+    vkpt::render::VulkanComputeBackend& backend,
+    const vkpt::pathtracer::RTSceneData& scene,
+    uint32_t width,
+    uint32_t height);
 
 }  // namespace vkpt::render
 
