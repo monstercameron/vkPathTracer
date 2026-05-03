@@ -1361,6 +1361,19 @@ int RunCommand(const std::vector<std::string_view>& args) {
     return 2;
   }
 
+  {
+    // Gate 10 (F18): write profiler_trace.json alongside other artifacts.
+    std::vector<vkpt::benchmark::ProfilerEvent> profilerTrace;
+    profilerTrace.push_back({vkpt::benchmark::ProfilerEventKind::BvhBuild,    "scene_build",        "scene",  0u, 0.0,                       buildMs});
+    profilerTrace.push_back({vkpt::benchmark::ProfilerEventKind::RenderPass,  "render_samples",     "render", 0u, buildMs,                    renderMs});
+    profilerTrace.push_back({vkpt::benchmark::ProfilerEventKind::CpuZone,     "resolve_and_write",  "io",     0u, buildMs + renderMs,         resolveMs});
+    profilerTrace.push_back({vkpt::benchmark::ProfilerEventKind::FrameStage,  "total",              "frame",  0u, 0.0,                        result.timing.total_ms});
+    std::ofstream traceFile(artifactDir / "profiler_trace.json");
+    if (traceFile.is_open()) {
+      traceFile << vkpt::benchmark::SerializeProfilerTrace(profilerTrace) << "\n";
+    }
+  }
+
   std::ofstream logFile(artifactDir / "logs.jsonl");
   if (!logFile.is_open()) {
     std::cerr << "warning: failed to create logs.jsonl\n";

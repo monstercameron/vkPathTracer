@@ -612,4 +612,51 @@ std::string SerializeBenchmarkRunDesc(const BenchmarkRunDesc& desc) {
   return vkpt::scene::JsonParser::stringify(root);
 }
 
+std::string_view ProfilerEventKindName(ProfilerEventKind kind) {
+  switch (kind) {
+    case ProfilerEventKind::CpuZone:      return "cpu_zone";
+    case ProfilerEventKind::GpuZone:      return "gpu_zone";
+    case ProfilerEventKind::JobTiming:    return "job_timing";
+    case ProfilerEventKind::FrameStage:   return "frame_stage";
+    case ProfilerEventKind::AssetImport:  return "asset_import";
+    case ProfilerEventKind::BvhBuild:     return "bvh_build";
+    case ProfilerEventKind::ShaderCompile: return "shader_compile";
+    case ProfilerEventKind::RenderPass:   return "render_pass";
+    default:                              return "unknown";
+  }
+}
+
+std::string SerializeProfilerEvent(const ProfilerEvent& event) {
+  vkpt::scene::JsonValue root;
+  root.kind = vkpt::scene::JsonValue::Kind::Object;
+  root.object["kind"]        = make_string(std::string(ProfilerEventKindName(event.kind)));
+  root.object["name"]        = make_string(event.name);
+  root.object["category"]    = make_string(event.category);
+  root.object["thread_id"]   = make_number(static_cast<double>(event.thread_id));
+  root.object["start_ms"]    = make_number(event.start_ms);
+  root.object["duration_ms"] = make_number(event.duration_ms);
+  return vkpt::scene::JsonParser::stringify(root);
+}
+
+std::string SerializeProfilerTrace(const std::vector<ProfilerEvent>& trace) {
+  vkpt::scene::JsonValue arr;
+  arr.kind = vkpt::scene::JsonValue::Kind::Array;
+  arr.array.reserve(trace.size());
+  for (const auto& ev : trace) {
+    vkpt::scene::JsonValue obj;
+    obj.kind = vkpt::scene::JsonValue::Kind::Object;
+    obj.object["kind"]        = make_string(std::string(ProfilerEventKindName(ev.kind)));
+    obj.object["name"]        = make_string(ev.name);
+    obj.object["category"]    = make_string(ev.category);
+    obj.object["thread_id"]   = make_number(static_cast<double>(ev.thread_id));
+    obj.object["start_ms"]    = make_number(ev.start_ms);
+    obj.object["duration_ms"] = make_number(ev.duration_ms);
+    arr.array.push_back(std::move(obj));
+  }
+  vkpt::scene::JsonValue root;
+  root.kind = vkpt::scene::JsonValue::Kind::Object;
+  root.object["events"] = std::move(arr);
+  return vkpt::scene::JsonParser::stringify(root);
+}
+
 }  // namespace vkpt::benchmark

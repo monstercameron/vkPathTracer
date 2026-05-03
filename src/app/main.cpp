@@ -36,6 +36,7 @@
 #include "render/backends/BackendFactory.h"
 #include "render/backends/VulkanBackend.h"
 #include "render/interface/RenderContracts.h"
+#include "jobs/JobSystem.h"
 
 namespace {
 
@@ -231,6 +232,9 @@ void PrintUsage() {
   std::cout << "  --check-backends      Check render backends\n";
   std::cout << "  --check-assets        Check asset directories\n";
   std::cout << "  --check-shaders       Check shader directories\n";
+  std::cout << "  --check-job-system    Check job system smoke test\n";
+  std::cout << "  --check-scene-schema  Check scene schema (cornell_native.json)\n";
+  std::cout << "  --check-bench-write   Check benchmark artifact write\n";
   std::cout << "  --dump-config         Print resolved runtime config as JSON\n";
   std::cout << "  --config <path>       Load a config file (key=value format)\n";
   std::cout << "  --list-backends       Print known render backends and capabilities\n";
@@ -395,14 +399,88 @@ DoctorCheckResult CheckShaders() {
   return r;
 }
 
+DoctorCheckResult CheckJobSystem() {
+  DoctorCheckResult r;
+  r.name = "job_system";
+  std::atomic<int> counter{0};
+  {
+    vkpt::jobs::JobSystem js(1u);
+    auto handle = js.submit_job([&counter]() { counter.fetch_add(1, std::memory_order_relaxed); });
+    js.wait(handle);
+    js.shutdown();
+  }
+  r.passed = counter.load(std::memory_order_relaxed) == 1;
+  r.detail = r.passed ? "job_ran=ok worker_count=1" : "job did not complete";
+  return r;
+}
+
+DoctorCheckResult CheckSceneSchema() {
+  DoctorCheckResult r;
+  r.name = "scene_schema";
+  const std::filesystem::path scenePath = "assets/scenes/cornell_native.json";
+  if (!std::filesystem::exists(scenePath)) {
+    r.passed = true;
+    r.detail = "skipped(cornell_native.json not found)";
+    return r;
+  }
+  const auto result = vkpt::scene::SceneDocument::load_from_file(scenePath.string());
+  if (!result) {
+    r.passed = false;
+    r.detail = "load=FAIL";
+    return r;
+  }
+  std::vector<std::string> issues;
+  const bool valid = result.value().validate(&issues);
+  r.passed = valid;
+  std::ostringstream detail;
+  detail << "entities=" << result.value().snapshot().entity_ids.size()
+         << " materials=" << result.value().materials.size()
+         << " valid=" << (valid ? "yes" : "no");
+  if (!issues.empty()) {
+    detail << " issues=[";
+    for (std::size_t i = 0; i < issues.size(); ++i) {
+      if (i) detail << ",";
+      detail << issues[i];
+    }
+    detail << "]";
+  }
+  r.detail = detail.str();
+  return r;
+}
+
+DoctorCheckResult CheckBenchmarkArtifactWrite() {
+  DoctorCheckResult r;
+  r.name = "benchmark_artifact_write";
+  const std::filesystem::path outDir = "artifacts/self_test";
+  std::error_code ec;
+  std::filesystem::create_directories(outDir, ec);
+  if (ec) {
+    r.passed = false;
+    r.detail = std::string("dir=FAIL(") + ec.message() + ")";
+    return r;
+  }
+  const auto probePath = outDir / "bench_probe.json";
+  {
+    std::ofstream probe(probePath.string());
+    probe << "{\"self_test\":true,\"schema\":\"benchmark_result\"}\n";
+  }
+  r.passed = std::filesystem::exists(probePath);
+  r.detail = r.passed ? "bench_probe.json=ok" : "bench_probe.json=FAIL";
+  return r;
+}
+
 void RunDoctor(bool checkBuild, bool checkCpu, bool checkBackends,
-               bool checkAssets, bool checkShaders) {
+               bool checkAssets, bool checkShaders,
+               bool checkJobSystem, bool checkSceneSchema, bool checkBenchmarkArtifact) {
   const std::vector<DoctorCheckResult> results = {
-    checkBuild    ? CheckBuild()    : DoctorCheckResult{"build",    true, "skipped"},
-    checkCpu      ? CheckCpu()      : DoctorCheckResult{"cpu",      true, "skipped"},
-    checkBackends ? CheckBackends() : DoctorCheckResult{"backends", true, "skipped"},
-    checkAssets   ? CheckAssets()   : DoctorCheckResult{"assets",   true, "skipped"},
-    checkShaders  ? CheckShaders()  : DoctorCheckResult{"shaders",  true, "skipped"},
+    checkBuild             ? CheckBuild()                  : DoctorCheckResult{"build",                    true, "skipped"},
+    checkCpu               ? CheckCpu()                    : DoctorCheckResult{"cpu",                      true, "skipped"},
+    checkBackends          ? CheckBackends()               : DoctorCheckResult{"backends",                 true, "skipped"},
+    checkAssets            ? CheckAssets()                 : DoctorCheckResult{"assets",                   true, "skipped"},
+    checkShaders           ? CheckShaders()                : DoctorCheckResult{"shaders",                  true, "skipped"},
+    checkJobSystem         ? CheckJobSystem()              : DoctorCheckResult{"job_system",               true, "skipped"},
+    checkSceneSchema       ? CheckSceneSchema()            : DoctorCheckResult{"scene_schema",             true, "skipped"},
+    checkBenchmarkArtifact ? CheckBenchmarkArtifactWrite() : DoctorCheckResult{"benchmark_artifact_write", true, "skipped"},
   };
 
   bool allOk = true;
@@ -1722,6 +1800,9 @@ int main(int argc, char** argv) {
   bool checkBackends = false;
   bool checkAssets   = false;
   bool checkShaders  = false;
+  bool checkJobSystem         = false;
+  bool checkSceneSchema       = false;
+  bool checkBenchmarkArtifact = false;
   bool dumpConfig    = false;
   bool listBackends  = false;
   bool doRender      = false;
@@ -1744,12 +1825,15 @@ int main(int argc, char** argv) {
     const auto token = args[i];
     if      (token == "--version")        { showVersion   = true; }
     else if (token == "--json")           { versionJson   = true; }
-    else if (token == "--doctor")         { doctor = checkBuild = checkCpu = checkBackends = checkAssets = checkShaders = true; }
+    else if (token == "--doctor")         { doctor = checkBuild = checkCpu = checkBackends = checkAssets = checkShaders = checkJobSystem = checkSceneSchema = checkBenchmarkArtifact = true; }
     else if (token == "--check-build")    { checkBuild    = true; }
     else if (token == "--check-cpu")      { checkCpu      = true; }
     else if (token == "--check-backends") { checkBackends = true; }
     else if (token == "--check-assets")   { checkAssets   = true; }
     else if (token == "--check-shaders")  { checkShaders  = true; }
+    else if (token == "--check-job-system")   { checkJobSystem         = true; }
+    else if (token == "--check-scene-schema") { checkSceneSchema       = true; }
+    else if (token == "--check-bench-write")  { checkBenchmarkArtifact = true; }
     else if (token == "--dump-config")    { dumpConfig    = true; }
     else if (token == "--list-backends")  { listBackends  = true; }
     else if (token == "--headless")       { headless      = true; }
@@ -1881,8 +1965,10 @@ int main(int argc, char** argv) {
   }
 
   // ---- --doctor / --check-* (A09) -------------------------------------------
-  if (doctor || checkBuild || checkCpu || checkBackends || checkAssets || checkShaders) {
-    RunDoctor(checkBuild, checkCpu, checkBackends, checkAssets, checkShaders);
+  if (doctor || checkBuild || checkCpu || checkBackends || checkAssets || checkShaders
+               || checkJobSystem || checkSceneSchema || checkBenchmarkArtifact) {
+    RunDoctor(checkBuild, checkCpu, checkBackends, checkAssets, checkShaders,
+              checkJobSystem, checkSceneSchema, checkBenchmarkArtifact);
     recordUiAction("app.doctor", "doctor", "doctor complete", MakeUnsupportedUiCommand("app.doctor", "handled on cli"));
     writeStatus("doctor_ok");
     return 0;
