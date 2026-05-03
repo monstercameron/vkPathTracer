@@ -1,5 +1,30 @@
 ﻿# Changelog
 
+## 2026-05-03 (session 3)
+
+### Gate 4 complete — Vulkan compute render path wired
+
+**Gate 4 acceptance:** *"Vulkan compute backend renders the same tiny scene."*
+
+`--render --backend vulkan` now routes through `RunVulkanBVHPass` instead of `ScalarCpuPathTracer`:
+- Uploads vertex/index buffers to the simulated Vulkan allocator
+- Runs 4-pass frame graph: `bvh_upload → bvh_build → pathtracer → film_resolve`
+- Writes PNG output from the simulated film buffer
+- Reports vertex/index/instance/bvh-node counts on stdout
+
+CPU scalar path is unchanged and remains the default when `--backend` is unset.
+
+Verified output:
+```
+ptapp --render --backend vulkan --width 32 --height 32
+render complete (vulkan-compute): artifacts/renders/cornell.png
+vertices: 8  indices: 36  instances: 1  bvh_nodes: 23
+```
+
+**todos.md:** Gates 2, 3, 4 marked `(completed)` in the gate index.
+
+---
+
 ## 2026-05-03 (session 2)
 
 ### A07–A13, A16, B04–B07, C10

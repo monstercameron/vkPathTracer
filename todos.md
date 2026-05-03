@@ -151,13 +151,13 @@ Gate 0: (completed)
 Gate 1: (completed)
   App runs headless, emits logs, emits build metadata, exits cleanly.
 
-Gate 2:
+Gate 2: (completed)
   Core ECS + scene schema can load a tiny scene and dump a validated snapshot.
 
-Gate 3:
+Gate 3: (completed)
   CPU scalar path tracer renders a tiny Cornell scene to PNG/EXR.
 
-Gate 4:
+Gate 4: (completed)
   Vulkan compute backend renders the same tiny scene.
 
 Gate 5:
