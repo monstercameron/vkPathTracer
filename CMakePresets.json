@@ -1,0 +1,238 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "desktop-clang-debug",
+      "displayName": "Desktop Clang Debug",
+      "description": "Clang desktop debug build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/desktop-clang-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_STANDARD": "23",
+        "PT_ENABLE_CPU_RAYTRACER": "ON",
+        "PT_ENABLE_BENCHMARK": "OFF",
+        "PT_ENABLE_SANITIZERS": "OFF",
+        "PT_SANITIZER": "disabled",
+        "PT_ENABLE_OPENGL_EXPERIMENTAL": "OFF"
+      }
+    },
+    {
+      "name": "desktop-clang-release",
+      "displayName": "Desktop Clang Release",
+      "description": "Clang desktop release build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/desktop-clang-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_STANDARD": "23",
+        "PT_ENABLE_CPU_RAYTRACER": "ON",
+        "PT_ENABLE_BENCHMARK": "OFF",
+        "PT_ENABLE_SANITIZERS": "OFF",
+        "PT_SANITIZER": "disabled"
+      }
+    },
+    {
+      "name": "desktop-clang-benchmark",
+      "displayName": "Desktop Clang Benchmark",
+      "description": "Benchmark-oriented debug preset",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/desktop-clang-benchmark",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_STANDARD": "23",
+        "PT_ENABLE_BENCHMARK": "ON",
+        "PT_ENABLE_CPU_RAYTRACER": "ON",
+        "PT_ENABLE_SANITIZERS": "OFF",
+        "PT_SANITIZER": "disabled"
+      }
+    },
+    {
+      "name": "desktop-clang-asan",
+      "displayName": "Desktop Clang ASAN",
+      "description": "AddressSanitizer preset",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/desktop-clang-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_STANDARD": "23",
+        "PT_ENABLE_SANITIZERS": "ON",
+        "PT_SANITIZER": "address"
+      }
+    },
+    {
+      "name": "desktop-clang-tsan",
+      "displayName": "Desktop Clang TSAN",
+      "description": "ThreadSanitizer preset",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/desktop-clang-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_STANDARD": "23",
+        "PT_ENABLE_SANITIZERS": "ON",
+        "PT_SANITIZER": "thread"
+      }
+    },
+    {
+      "name": "windows-clangcl-d3d12-debug",
+      "displayName": "Windows Clang-cl D3D12 Debug",
+      "description": "Windows clang-cl debug preset for D3D12 path",
+      "condition": {
+        "type": "equals",
+        "lhs": "$hostSystemName",
+        "rhs": "Windows"
+      },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/windows-clangcl-d3d12-debug",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "PT_ENABLE_D3D12": "ON",
+        "PT_ENABLE_VULKAN": "OFF",
+        "PT_ENABLE_WEBGPU": "OFF"
+      }
+    },
+    {
+      "name": "linux-clang-vulkan-debug",
+      "displayName": "Linux Clang Vulkan Debug",
+      "description": "Linux Vulkan debug preset",
+      "condition": {
+        "type": "equals",
+        "lhs": "$hostSystemName",
+        "rhs": "Linux"
+      },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/linux-clang-vulkan-debug",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "PT_ENABLE_VULKAN": "ON",
+        "PT_ENABLE_D3D12": "OFF",
+        "PT_ENABLE_WEBGPU": "OFF"
+      }
+    },
+    {
+      "name": "macos-clang-metal-debug",
+      "displayName": "macOS Clang Metal Debug",
+      "description": "macOS Metal debug preset",
+      "condition": {
+        "type": "equals",
+        "lhs": "$hostSystemName",
+        "rhs": "Darwin"
+      },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/macos-clang-metal-debug",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "PT_ENABLE_METAL": "ON",
+        "PT_ENABLE_VULKAN": "OFF",
+        "PT_ENABLE_WEBGPU": "OFF"
+      }
+    },
+    {
+      "name": "web-emscripten-webgpu-debug",
+      "displayName": "Web (Emscripten) WebGPU Debug",
+      "description": "WebGPU WebAssembly debug preset",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/web-emscripten-webgpu-debug",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "Emscripten",
+        "CMAKE_CXX_COMPILER": "em++",
+        "CMAKE_C_COMPILER": "emcc",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "PT_ENABLE_WEBGPU": "ON",
+        "PT_ENABLE_VULKAN": "OFF",
+        "PT_ENABLE_D3D12": "OFF",
+        "PT_ENABLE_METAL": "OFF"
+      }
+    },
+    {
+      "name": "headless-benchmark-release",
+      "displayName": "Headless Benchmark Release",
+      "description": "Headless benchmark build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/headless-benchmark-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "PT_ENABLE_BENCHMARK": "ON",
+        "PT_ENABLE_CPU_RAYTRACER": "ON",
+        "PT_ENABLE_CPU_SIMD": "ON",
+        "PT_STRICT_DETERMINISM": "ON"
+      }
+    },
+    {
+      "name": "tools-release",
+      "displayName": "Tools Release",
+      "description": "Tooling release preset",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/tools-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "desktop-clang-debug",
+      "configurePreset": "desktop-clang-debug"
+    },
+    {
+      "name": "desktop-clang-release",
+      "configurePreset": "desktop-clang-release"
+    },
+    {
+      "name": "desktop-clang-benchmark",
+      "configurePreset": "desktop-clang-benchmark"
+    },
+    {
+      "name": "desktop-clang-asan",
+      "configurePreset": "desktop-clang-asan"
+    },
+    {
+      "name": "desktop-clang-tsan",
+      "configurePreset": "desktop-clang-tsan"
+    },
+    {
+      "name": "windows-clangcl-d3d12-debug",
+      "configurePreset": "windows-clangcl-d3d12-debug"
+    },
+    {
+      "name": "linux-clang-vulkan-debug",
+      "configurePreset": "linux-clang-vulkan-debug"
+    },
+    {
+      "name": "macos-clang-metal-debug",
+      "configurePreset": "macos-clang-metal-debug"
+    },
+    {
+      "name": "web-emscripten-webgpu-debug",
+      "configurePreset": "web-emscripten-webgpu-debug"
+    },
+    {
+      "name": "headless-benchmark-release",
+      "configurePreset": "headless-benchmark-release"
+    },
+    {
+      "name": "tools-release",
+      "configurePreset": "tools-release"
+    }
+  ]
+}

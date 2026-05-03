@@ -1,0 +1,22 @@
+#pragma once
+
+#include <string_view>
+
+namespace vkpt::build {
+inline constexpr std::string_view kProjectVersion = "@PROJECT_VERSION@";
+inline constexpr std::string_view kGitHash = "@PT_GIT_HASH@";
+inline constexpr std::string_view kBuildDate = "@PT_BUILD_DATE@";
+inline constexpr std::string_view kCompilerName = "@CMAKE_CXX_COMPILER_ID@";
+inline constexpr std::string_view kCompilerVersion = "@CMAKE_CXX_COMPILER_VERSION@";
+inline constexpr std::string_view kCxxStandard = "C++23";
+inline constexpr std::string_view kTargetOs = "@PT_TARGET_OS@";
+inline constexpr std::string_view kTargetArch = "@PT_TARGET_ARCH@";
+inline constexpr std::string_view kBuildType = "@PT_BUILD_TYPE@";
+inline constexpr std::string_view kEnabledFeatureFlags = "@PT_ACTIVE_FEATURE_FLAGS_CSV@";
+inline constexpr std::string_view kDisabledFeatureFlags = "@PT_DISABLED_FEATURE_FLAGS_CSV@";
+inline constexpr std::string_view kSimdCompileOptions = "@PT_SIMD_COMPILE_OPTIONS@";
+inline constexpr std::string_view kBackendCompileOptions = "@PT_BACKEND_COMPILE_OPTIONS@";
+inline constexpr bool kSanitizersEnabled = @PT_ENABLE_SANITIZERS_VALUE@;
+inline constexpr std::string_view kSanitizerFlavor = "@PT_SANITIZER@";
+inline constexpr bool kStrictDeterminism = @PT_STRICT_DETERMINISM_VALUE@;
+}
