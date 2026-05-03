@@ -1,1 +1,7 @@
+/build
+/builds
+/build/presets
+/artifacts
+bin
+*.log
 protopt_log.txt
