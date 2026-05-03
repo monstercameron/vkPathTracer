@@ -20,6 +20,7 @@
 
 #include "benchmark/BenchmarkSchema.h"
 #include "build_info.generated.h"
+#include "diagnostics/CrashRecorder.h"
 #include "cpu/CpuFeatures.h"
 #include "cpu/PacketRay.h"
 #include "cpu/ParallelBvhBuilder.h"
@@ -717,6 +718,9 @@ void PrintHelp() {
   std::cout << "  compare\n";
   std::cout << "  dump-capabilities\n";
   std::cout << "  run-experiments\n";
+  std::cout << "  gpu-mem-pressure\n";
+  std::cout << "  shader-matrix\n";
+  std::cout << "  release-check\n";
   std::cout << "  simd-sweep\n";
   std::cout << "  tile-sweep\n\n";
   std::cout << "run:\n";
@@ -756,6 +760,18 @@ void PrintHelp() {
   std::cout << "  --output <path>\n";
   std::cout << "  [--tolerance-policy <policy>]\n";
   std::cout << "  [--disable-heatmap]\n";
+
+  std::cout << "\ngpu-mem-pressure:\n";
+  std::cout << "  [--max-mb <n>]          (default 512)\n";
+  std::cout << "  [--step-mb <n>]         (default 64)\n";
+  std::cout << "  [--output <path>]       (default artifacts/experiments)\n\n";
+
+  std::cout << "shader-matrix:\n";
+  std::cout << "  [--output <path>]       (default artifacts/experiments)\n\n";
+
+  std::cout << "release-check:\n";
+  std::cout << "  [--scene-pack <dir>]    (default assets/scenes)\n";
+  std::cout << "  [--output <path>]       (default artifacts/release_check)\n";
 }
 
 bool WriteCsvValue(std::ofstream& out, double value) {
@@ -1104,6 +1120,11 @@ int RunCommand(const std::vector<std::string_view>& args) {
       std::cerr << "vulkan path smoke test failed\n";
       return 2;
     }
+
+    // Gate 10 (C20): record renderer crash-state snapshot for crash artifacts.
+    const auto crashState = vkpt::render::BuildRendererCrashState(*backend, 0u, "ptbench.run:start");
+    vkpt::diagnostics::CrashRecorder::instance().update_renderer_state_json(
+        vkpt::render::SerializeRenderCrashState(crashState));
   }
 
   TolerancePolicy tolerance;
@@ -1173,6 +1194,7 @@ int RunCommand(const std::vector<std::string_view>& args) {
   result.asset_hash = Hex64(Fnv1a64(assetList));
   result.reference_error = 0.0;
   result.timing = {};
+  result.timing_breakdown.clear();
   const auto manifestResult = vkpt::pathtracer::BuildRTSceneDataLayoutManifest();
   if (!manifestResult) {
     std::cerr << "failed to build shader manifest\n";
@@ -1225,6 +1247,7 @@ int RunCommand(const std::vector<std::string_view>& args) {
     }
   }
   const auto renderEnd = std::chrono::high_resolution_clock::now();
+  const auto resolveStart = std::chrono::high_resolution_clock::now();
 
   const auto ldr = tracer->resolve_ldr();
   const auto hdr = tracer->resolve_hdr();
@@ -1237,6 +1260,7 @@ int RunCommand(const std::vector<std::string_view>& args) {
     std::cerr << "failed to save beauty exr: " << writeError << "\n";
     return 2;
   }
+  const auto resolveEnd = std::chrono::high_resolution_clock::now();
 
   std::vector<std::uint8_t> beautyBytes;
   {
@@ -1253,11 +1277,18 @@ int RunCommand(const std::vector<std::string_view>& args) {
       std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(buildEnd - buildStart).count();
   const double renderMs =
       std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(renderEnd - renderStart).count();
+  const double resolveMs =
+      std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(resolveEnd - resolveStart).count();
 
   result.timing.total_ms = totalMs;
   result.timing.build_ms = buildMs;
   result.timing.render_ms = renderMs;
   result.timing.cpu_ms = renderMs;
+
+  // Gate 10 (F18): profiler/timing breakdown schema.
+  result.timing_breakdown.push_back({"scene_build", "scene", buildMs});
+  result.timing_breakdown.push_back({"render_samples", "render", renderMs});
+  result.timing_breakdown.push_back({"resolve_and_write", "io", resolveMs});
   const double pixels = static_cast<double>(opts.width) * static_cast<double>(opts.height) * std::max(1.0, 1.0 * opts.spp);
   if (renderMs > 0.0) {
     result.throughput.samples_per_sec = 1000.0 * pixels / renderMs;
@@ -1921,6 +1952,189 @@ int TileSweepCommand(const std::vector<std::string_view>& args) {
   return 0;
 }
 
+int GpuMemPressureCommand(const std::vector<std::string_view>& args) {
+  std::size_t max_mb = 512;
+  std::size_t step_mb = 64;
+  std::string output = "artifacts/experiments";
+  for (std::size_t i = 2; i < args.size(); ++i) {
+    if (args[i] == "--max-mb") {
+      if (i + 1 >= args.size()) { std::cerr << "missing --max-mb value\n"; return 1; }
+      max_mb = static_cast<std::size_t>(std::stoull(std::string(args[++i])));
+    } else if (args[i] == "--step-mb") {
+      if (i + 1 >= args.size()) { std::cerr << "missing --step-mb value\n"; return 1; }
+      step_mb = static_cast<std::size_t>(std::stoull(std::string(args[++i])));
+    } else if (args[i] == "--output") {
+      if (i + 1 >= args.size()) { std::cerr << "missing --output value\n"; return 1; }
+      output = std::string(args[++i]);
+    } else {
+      std::cerr << "unknown option: " << args[i] << "\n";
+      return 1;
+    }
+  }
+  if (step_mb == 0) step_mb = 1;
+  if (max_mb < step_mb) max_mb = step_mb;
+
+  EnsureDirectory(Path(output));
+  const Path outPath = Path(output) / "gpu_mem_pressure.json";
+
+  std::vector<std::vector<std::uint8_t>> allocations;
+  allocations.reserve(max_mb / step_mb + 1);
+  std::size_t allocated_mb = 0;
+  bool ok = true;
+  std::string fail_reason;
+
+  for (std::size_t target_mb = step_mb; target_mb <= max_mb; target_mb += step_mb) {
+    try {
+      allocations.emplace_back(target_mb * 1024ull * 1024ull, 0u);
+      allocated_mb = target_mb;
+      std::cout << "allocated_mb=" << allocated_mb << "\n";
+    } catch (const std::bad_alloc&) {
+      ok = false;
+      fail_reason = "std::bad_alloc";
+      break;
+    } catch (const std::exception& ex) {
+      ok = false;
+      fail_reason = ex.what();
+      break;
+    }
+  }
+
+  std::ofstream out(outPath);
+  if (out.is_open()) {
+    out << "{\n";
+    out << "  \"ok\": " << (ok ? "true" : "false") << ",\n";
+    out << "  \"allocated_mb\": " << allocated_mb << ",\n";
+    out << "  \"max_mb\": " << max_mb << ",\n";
+    out << "  \"step_mb\": " << step_mb << ",\n";
+    out << "  \"fail_reason\": \"" << EscapeJson(fail_reason) << "\"\n";
+    out << "}\n";
+  }
+  std::cout << "results: " << outPath.string() << "\n";
+  return ok ? 0 : 2;
+}
+
+int ShaderMatrixCommand(const std::vector<std::string_view>& args) {
+  std::string output = "artifacts/experiments";
+  for (std::size_t i = 2; i < args.size(); ++i) {
+    if (args[i] == "--output") {
+      if (i + 1 >= args.size()) { std::cerr << "missing --output value\n"; return 1; }
+      output = std::string(args[++i]);
+    } else {
+      std::cerr << "unknown option: " << args[i] << "\n";
+      return 1;
+    }
+  }
+  EnsureDirectory(Path(output));
+  const Path outPath = Path(output) / "shader_matrix.json";
+
+  struct Row { std::string backend; std::string variant; bool ok; std::string diagnostics; };
+  std::vector<Row> rows;
+
+  for (const auto& name : vkpt::render::AvailableBackendNames()) {
+    auto backend = vkpt::render::CreateBackend(name);
+    if (!backend || !backend->initialize()) {
+      rows.push_back({name, "init", false, backend ? backend->last_error() : "create_backend_failed"});
+      continue;
+    }
+    auto* compiler = backend->compiler();
+    if (!compiler) {
+      rows.push_back({name, "compiler", false, "no compiler"});
+      continue;
+    }
+
+    const std::vector<std::vector<std::string>> defineSets = {
+      {},
+      {"DEBUG_VIEW=1"},
+      {"MATERIAL_PACK=1"},
+      {"MATERIAL_PACK=2", "EXPERIMENTAL=1"},
+      {"RT=0", "SUBGROUPS=1"},
+    };
+
+    for (std::size_t i = 0; i < defineSets.size(); ++i) {
+      vkpt::render::ComputePipelineDesc desc;
+      desc.source_path = "shaders/ptbench_matrix.comp";
+      desc.entry_point = "main";
+      desc.debug_label = "ptbench_matrix";
+      for (const auto& d : defineSets[i]) desc.defines.push_back(d);
+
+      std::string artifact;
+      std::string diag;
+      const bool ok = compiler->compile_compute_shader(desc, artifact, &diag);
+      rows.push_back({name, "variant_" + std::to_string(i), ok, ok ? artifact : diag});
+    }
+  }
+
+  std::ofstream out(outPath);
+  if (out.is_open()) {
+    out << "{\n  \"rows\": [\n";
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const auto& r = rows[i];
+      out << "    {\"backend\":\"" << EscapeJson(r.backend) << "\","
+          << "\"variant\":\"" << EscapeJson(r.variant) << "\","
+          << "\"ok\":" << (r.ok ? "true" : "false") << ","
+          << "\"diagnostics\":\"" << EscapeJson(r.diagnostics) << "\"}";
+      if (i + 1 < rows.size()) out << ",";
+      out << "\n";
+    }
+    out << "  ]\n}\n";
+  }
+  std::cout << "results: " << outPath.string() << "\n";
+  return 0;
+}
+
+int ReleaseCheckCommand(const std::vector<std::string_view>& args) {
+  std::string scenePack = "assets/scenes";
+  std::string output = "artifacts/release_check";
+  for (std::size_t i = 2; i < args.size(); ++i) {
+    if (args[i] == "--scene-pack") {
+      if (i + 1 >= args.size()) { std::cerr << "missing --scene-pack value\n"; return 1; }
+      scenePack = std::string(args[++i]);
+    } else if (args[i] == "--output") {
+      if (i + 1 >= args.size()) { std::cerr << "missing --output value\n"; return 1; }
+      output = std::string(args[++i]);
+    } else {
+      std::cerr << "unknown option: " << args[i] << "\n";
+      return 1;
+    }
+  }
+  EnsureDirectory(Path(output));
+
+  std::size_t scene_ok = 0;
+  std::size_t scene_fail = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(Path(scenePack))) {
+    if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
+    const auto scenePath = entry.path().string();
+    std::vector<std::string_view> v = {"ptbench", "validate-scene", "--scene", scenePath};
+    const int rc = ValidateSceneCommand(v);
+    if (rc == 0) ++scene_ok; else ++scene_fail;
+  }
+
+  const Path runOut = Path(output) / "cpu_scalar_cornell";
+  const std::string runOutStr = runOut.string();
+  std::vector<std::string_view> runArgs = {
+    "ptbench", "run",
+    "--scene", "assets/scenes/cornell_native.json",
+    "--backend", "cpu",
+    "--renderer-path", "cpu-scalar",
+    "--resolution", "128x128",
+    "--spp", "2",
+    "--output", runOutStr
+  };
+  const int runRc = RunCommand(runArgs);
+
+  const Path outPath = Path(output) / "release_check.json";
+  std::ofstream out(outPath);
+  if (out.is_open()) {
+    out << "{\n";
+    out << "  \"scene_validate_ok\": " << scene_ok << ",\n";
+    out << "  \"scene_validate_fail\": " << scene_fail << ",\n";
+    out << "  \"cpu_scalar_run_rc\": " << runRc << "\n";
+    out << "}\n";
+  }
+  std::cout << "results: " << outPath.string() << "\n";
+  return (scene_fail == 0 && runRc == 0) ? 0 : 2;
+}
+
 int RunExperimentsCommand(const std::vector<std::string_view>& args) {
   std::string scenePack = "core";
   std::vector<std::string> includes;
@@ -2065,6 +2279,15 @@ int main(int argc, char** argv) {
   }
   if (command == "run-experiments") {
     return RunExperimentsCommand(args);
+  }
+  if (command == "gpu-mem-pressure") {
+    return GpuMemPressureCommand(args);
+  }
+  if (command == "shader-matrix") {
+    return ShaderMatrixCommand(args);
+  }
+  if (command == "release-check") {
+    return ReleaseCheckCommand(args);
   }
   if (command == "simd-sweep") {
     return SimdSweepCommand(args);

@@ -21,6 +21,12 @@ struct BenchmarkTiming {
   double cpu_ms = 0.0;
 };
 
+struct BenchmarkTimingEvent {
+  std::string name;
+  std::string category;   // e.g. "startup", "scene", "render", "io"
+  double ms = 0.0;
+};
+
 struct BenchmarkThroughput {
   double paths_per_sec = 0.0;
   double samples_per_sec = 0.0;
@@ -63,6 +69,7 @@ struct BenchmarkResult {
   std::string asset_hash;
   std::string shader_hash;
   BenchmarkTiming timing;
+  std::vector<BenchmarkTimingEvent> timing_breakdown;
   BenchmarkThroughput throughput;
   BenchmarkMemory memory;
   std::string image_hash;
