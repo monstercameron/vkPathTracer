@@ -1,5 +1,21 @@
 ﻿# Changelog
 
+## 2026-05-03 (session 7, Gate 10)
+
+### Gate 10 complete — Release candidate: reproducible benchmark artifacts
+
+**Gate 10 acceptance:** *"Release candidate benchmark scene pack runs with reproducible artifacts."*
+
+**F17 — Startup self-test extended** (`src/app/main.cpp`)
+Added `CheckJobSystem()` (creates `JobSystem(1)`, submits a job, waits, verifies completion, shuts down), `CheckSceneSchema()` (loads and validates `cornell_native.json` using `SceneDocument::load_from_file` if present), and `CheckBenchmarkArtifactWrite()` (writes a probe JSON to `artifacts/self_test/` and verifies). `RunDoctor` and the `--doctor` flag now cover all 8 subsystems: build, cpu, backends, assets, shaders, job_system, scene_schema, benchmark_artifact_write. Added `--check-job-system`, `--check-scene-schema`, `--check-bench-write` flags.
+
+**F18 — Profiler event schema** (`src/benchmark/BenchmarkSchema.h/.cpp`)
+`ProfilerEventKind` enum (8 kinds: CpuZone, GpuZone, JobTiming, FrameStage, AssetImport, BvhBuild, ShaderCompile, RenderPass). `ProfilerEvent` struct (kind, name, category, thread_id, start_ms, duration_ms). `ProfilerEventKindName()`, `SerializeProfilerEvent()`, `SerializeProfilerTrace()`. `ptbench run` now writes `profiler_trace.json` alongside `results.json` with scene_build, render_samples, resolve_and_write, and total events.
+
+**F15/F16/F19/F20** — Already implemented in previous sessions (GPU memory pressure experiment, shader variant compile matrix, CI smoke plan, release gate check scripts).
+
+---
+
 ## 2026-05-03 (session 6, Gates 8–9)
 
 ### Commits

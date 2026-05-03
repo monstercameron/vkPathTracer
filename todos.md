@@ -175,7 +175,7 @@ Gate 8: (completed)
 Gate 9: (completed)
   Material/shader library, asset import, debug views, and editor-lite controls exist.
 
-Gate 10:
+Gate 10: (completed)
   Release candidate benchmark scene pack runs with reproducible artifacts.
 ```
 
