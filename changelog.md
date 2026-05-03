@@ -16,4 +16,5 @@
 - 810141a — feat(benchmark): add gate3 benchmark schemas, scene manifests, and ptbench CLI
 - 74d7157 — feat(app): implement scalar CPU path-tracing render path and Gate 3 render CLI flags
 - e98b4e0 — feat(render): finish Gate 4 backend scaffold (interfaces, factory, null/vulkan backends, frame graph, layout manifest API), add backend-capability diagnostics in ptapp/ptbench, and wire manifest serialization
+- 66c7ff5 — fix(benchmark): correct PNG scanline indexing in ptbench image compare loader
 
