@@ -160,7 +160,7 @@ Gate 3: (completed)
 Gate 4: (completed)
   Vulkan compute backend renders the same tiny scene.
 
-Gate 5:
+Gate 5: (completed)
   Benchmark CLI runs CPU and Vulkan paths and writes results.json.
 
 Gate 6:
@@ -2422,7 +2422,7 @@ editor UI implementation
 
 ---
 
-## F01 — Define benchmark result schema
+## [x] F01 — Define benchmark result schema
 
 **Deliverable:** `BenchmarkResult` JSON schema.
 
@@ -2457,7 +2457,7 @@ diagnostics
 
 ---
 
-## F02 — Define benchmark run descriptor
+## [x] F02 — Define benchmark run descriptor
 
 **Deliverable:** `BenchmarkRunDesc`.
 
@@ -2483,7 +2483,7 @@ tolerance policy
 
 ---
 
-## F03 — Add benchmark CLI shell
+## [x] F03 — Add benchmark CLI shell
 
 **Deliverable:** `ptbench`.
 
@@ -2506,7 +2506,7 @@ ptbench run-experiments
 
 ---
 
-## F04 — Add benchmark artifact contract
+## [x] F04 — Add benchmark artifact contract
 
 **Deliverable:** standardized artifact outputs.
 
@@ -2532,7 +2532,7 @@ logs.jsonl
 
 ---
 
-## F05 — Add scene validation command
+## [x] F05 — Add scene validation command
 
 **Deliverable:** `ptbench validate-scene`.
 
@@ -2554,7 +2554,7 @@ backend compatibility
 
 ---
 
-## F06 — Add image comparison pipeline
+## [x] F06 — Add image comparison pipeline
 
 **Deliverable:** reference diff tool.
 
@@ -2575,7 +2575,7 @@ diff heatmap
 
 ---
 
-## F07 — Add CPU scalar benchmark
+## [x] F07 — Add CPU scalar benchmark
 
 **Deliverable:** benchmark path for scalar CPU renderer.
 
@@ -2585,7 +2585,7 @@ diff heatmap
 
 ---
 
-## F08 — Add multithreaded CPU benchmark
+## [ ] F08 — Add multithreaded CPU benchmark
 
 **Deliverable:** benchmark for tile-based CPU renderer.
 
