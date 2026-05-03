@@ -852,7 +852,7 @@ shutdown
 
 ---
 
-## B09 — Add ECS registry
+## [x] B09 — Add ECS registry
 
 **Deliverable:** entity/component registry.
 
@@ -879,7 +879,7 @@ BenchmarkTagComponent
 
 ---
 
-## B10 — Add ECS system phase model
+## [x] B10 — Add ECS system phase model
 
 **Deliverable:** fixed phase scheduler.
 
@@ -903,7 +903,7 @@ PostFrame
 
 ---
 
-## B11 — Add deferred world command buffer
+## [x] B11 — Add deferred world command buffer
 
 **Deliverable:** mutation command buffer.
 
@@ -927,7 +927,7 @@ assign camera
 
 ---
 
-## B12 — Add transform hierarchy
+## [x] B12 — Add transform hierarchy
 
 **Deliverable:** local/world transform resolver.
 
@@ -937,7 +937,7 @@ assign camera
 
 ---
 
-## B13 — Add transform arbitration
+## [x] B13 — Add transform arbitration
 
 **Deliverable:** transform authority resolver.
 
@@ -958,7 +958,7 @@ Authored
 
 ---
 
-## B14 — Add scene document schema v1
+## [x] B14 — Add scene document schema v1
 
 **Deliverable:** JSON scene schema.
 
@@ -984,7 +984,7 @@ benchmark
 
 ---
 
-## B15 — Add scene snapshot/export
+## [x] B15 — Add scene snapshot/export
 
 **Deliverable:** frozen `SceneSnapshot`.
 
