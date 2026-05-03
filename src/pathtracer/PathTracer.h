@@ -136,6 +136,24 @@ struct RTSceneData {
   float camera_fov_deg = 60.0f;
 };
 
+struct GpuLayoutField {
+  std::string struct_name;
+  std::string field;
+  std::size_t cpu_offset = 0u;
+  std::size_t cpu_size = 0u;
+  std::size_t cpu_alignment = 0u;
+  std::size_t gpu_offset = 0u;
+  std::size_t gpu_size = 0u;
+  std::size_t gpu_alignment = 0u;
+};
+
+struct RTSceneLayoutManifest {
+  std::string schema_version = "1.0";
+  std::size_t total_cpu_bytes = 0u;
+  std::size_t total_gpu_bytes = 0u;
+  std::vector<GpuLayoutField> fields;
+};
+
 struct FilmLdr {
   uint32_t width = 0;
   uint32_t height = 0;
@@ -251,5 +269,7 @@ class ScalarCpuPathTracer final : public IPathTracer {
 vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::SceneDocument& doc);
 bool SavePngCompat(const std::string& path, const FilmLdr& image, std::string* error = nullptr);
 bool SaveExrCompat(const std::string& path, const FilmHdr& image, std::string* error = nullptr);
+vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(std::vector<std::string>* diagnostics = nullptr);
+std::string SerializeRTSceneDataLayoutManifest(const RTSceneLayoutManifest& manifest);
 
 }  // namespace vkpt::pathtracer

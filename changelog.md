@@ -15,4 +15,5 @@
 - 278f505 - feat(app): wire scene loading into startup path
 - 810141a — feat(benchmark): add gate3 benchmark schemas, scene manifests, and ptbench CLI
 - 74d7157 — feat(app): implement scalar CPU path-tracing render path and Gate 3 render CLI flags
+- local-workstream — feat(render): finish Gate 4 backend scaffold (interfaces, factory, null/vulkan backends, frame graph, layout manifest API), add backend-capability diagnostics in ptapp/ptbench, and wire manifest serialization
 

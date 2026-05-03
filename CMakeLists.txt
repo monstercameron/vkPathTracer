@@ -155,6 +155,11 @@ add_executable(ptapp
   src/platform/HeadlessPlatform.cpp
   src/scene/Scene.cpp
   src/pathtracer/PathTracer.cpp
+  src/render/interface/RenderContracts.cpp
+  src/render/backends/BackendFactory.cpp
+  src/render/backends/FrameGraph.cpp
+  src/render/backends/NullBackend.cpp
+  src/render/backends/VulkanBackend.cpp
 )
 
 target_include_directories(ptapp PRIVATE
@@ -171,7 +176,13 @@ target_compile_features(ptapp PRIVATE cxx_std_23)
 add_executable(ptbench
   src/benchmark/ptbench.cpp
   src/benchmark/BenchmarkSchema.cpp
+  src/pathtracer/PathTracer.cpp
   src/scene/Scene.cpp
+  src/render/interface/RenderContracts.cpp
+  src/render/backends/BackendFactory.cpp
+  src/render/backends/FrameGraph.cpp
+  src/render/backends/NullBackend.cpp
+  src/render/backends/VulkanBackend.cpp
 )
 
 target_include_directories(ptbench PRIVATE

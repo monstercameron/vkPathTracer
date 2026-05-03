@@ -52,6 +52,7 @@ struct BenchmarkResult {
   std::string backend;
   std::string renderer_path;
   std::string cpu_simd_mode;
+  std::string tolerance_policy;
   Resolution resolution;
   uint32_t spp = 0;
   uint64_t seed = 0;
@@ -67,6 +68,13 @@ struct BenchmarkResult {
   std::string image_hash;
   double reference_error = 0.0;
   std::vector<std::string> diagnostics;
+
+  std::string output_directory;
+  std::string artifact_directory;
+  std::string beauty_png;
+  std::string beauty_exr;
+  std::string diff_heatmap_png;
+  std::string reference_exr;
 };
 
 struct BenchmarkRunDesc {
@@ -81,6 +89,7 @@ struct BenchmarkRunDesc {
   std::string output_directory;
   std::string reference_image;
   std::string tolerance_policy;
+  uint32_t max_depth = 6;
 };
 
 vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_view text);

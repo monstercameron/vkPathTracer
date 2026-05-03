@@ -65,6 +65,18 @@ bool as_double(const vkpt::scene::JsonValue& object, std::string_view key, doubl
   return true;
 }
 
+bool as_double_optional(const vkpt::scene::JsonValue& object, std::string_view key, double& out) {
+  if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
+    return false;
+  }
+  const auto it = object.object.find(std::string(key));
+  if (it == object.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::Number) {
+    return false;
+  }
+  out = it->second.number;
+  return true;
+}
+
 bool as_string(const vkpt::scene::JsonValue& object, std::string_view key, std::string& out) {
   if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
@@ -75,6 +87,26 @@ bool as_string(const vkpt::scene::JsonValue& object, std::string_view key, std::
   }
   out = it->second.string;
   return true;
+}
+
+bool as_string_optional(const vkpt::scene::JsonValue& object, std::string_view key, std::string& out) {
+  if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
+    return false;
+  }
+  const auto it = object.object.find(std::string(key));
+  if (it == object.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::String) {
+    return false;
+  }
+  out = it->second.string;
+  return true;
+}
+
+bool as_u32_optional(const vkpt::scene::JsonValue& object, std::string_view key, std::uint32_t& out) {
+  std::uint64_t temp = 0;
+  if (!as_u64(object, key, temp)) {
+    return false;
+  }
+  return read_u(temp, out);
 }
 
 bool as_resolution(const vkpt::scene::JsonValue& object,
@@ -204,13 +236,21 @@ vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_vie
       !as_resolution(*root, "resolution", result.resolution) ||
       !as_u32(*root, "spp", result.spp) ||
       !as_u64(*root, "seed", result.seed) ||
-      !as_u32(*root, "max_depth", result.max_depth) ||
       !as_string(*root, "scene_hash", result.scene_hash) ||
       !as_string(*root, "asset_hash", result.asset_hash) ||
       !as_string(*root, "shader_hash", result.shader_hash) ||
       !as_string(*root, "image_hash", result.image_hash) ||
       !as_double(*root, "reference_error", result.reference_error)) {
     return vkpt::core::Result<BenchmarkResult>::error(vkpt::core::ErrorCode::InvalidArgument);
+  }
+  if (!as_u32_optional(*root, "max_depth", result.max_depth)) {
+    result.max_depth = 6;
+  }
+  if (result.max_depth == 0) {
+    result.max_depth = 6;
+  }
+  if (!as_string_optional(*root, "tolerance_policy", result.tolerance_policy)) {
+    result.tolerance_policy = "abs=0.001";
   }
 
   const auto buildIt = root->object.find("build_info");
@@ -246,6 +286,42 @@ vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_vie
   if (!as_string_array(*root, "diagnostics", result.diagnostics)) {
     return vkpt::core::Result<BenchmarkResult>::error(vkpt::core::ErrorCode::InvalidArgument);
   }
+  if (!as_string_optional(*root, "output_directory", result.output_directory)) {
+    result.output_directory = "";
+  }
+  if (!as_string_optional(*root, "artifact_directory", result.artifact_directory)) {
+    result.artifact_directory = "";
+  }
+  if (!as_string_optional(*root, "beauty_png", result.beauty_png)) {
+    result.beauty_png = "";
+  }
+  if (!as_string_optional(*root, "beauty_exr", result.beauty_exr)) {
+    result.beauty_exr = "";
+  }
+  if (!as_string_optional(*root, "diff_heatmap_png", result.diff_heatmap_png)) {
+    result.diff_heatmap_png = "";
+  }
+  if (!as_string_optional(*root, "reference_exr", result.reference_exr)) {
+    result.reference_exr = "";
+  }
+  if (result.output_directory.empty()) {
+    result.output_directory = "";
+  }
+  if (result.artifact_directory.empty()) {
+    result.artifact_directory = "";
+  }
+  if (result.beauty_png.empty()) {
+    result.beauty_png = "";
+  }
+  if (result.beauty_exr.empty()) {
+    result.beauty_exr = "";
+  }
+  if (result.diff_heatmap_png.empty()) {
+    result.diff_heatmap_png = "";
+  }
+  if (result.reference_exr.empty()) {
+    result.reference_exr = "";
+  }
 
   std::string issue;
   if (!ValidateBenchmarkResult(result, &issue)) {
@@ -269,11 +345,26 @@ vkpt::core::Result<BenchmarkRunDesc> ParseBenchmarkRunDescFromText(std::string_v
       !as_u32(*root, "samples_per_pixel", desc.samples_per_pixel) ||
       !as_double(*root, "duration", desc.duration) ||
       !as_u32(*root, "warmup_frames", desc.warmup_frames) ||
-      !as_u64(*root, "seed", desc.seed) ||
-      !as_string(*root, "output_directory", desc.output_directory) ||
-      !as_string(*root, "reference_image", desc.reference_image) ||
-      !as_string(*root, "tolerance_policy", desc.tolerance_policy)) {
+      !as_u64(*root, "seed", desc.seed)) {
     return vkpt::core::Result<BenchmarkRunDesc>::error(vkpt::core::ErrorCode::InvalidArgument);
+  }
+  if (!as_string_optional(*root, "output_directory", desc.output_directory)) {
+    desc.output_directory = "artifacts/benchmarks";
+  }
+  if (desc.output_directory.empty()) {
+    desc.output_directory = "artifacts/benchmarks";
+  }
+  if (!as_string_optional(*root, "reference_image", desc.reference_image)) {
+    desc.reference_image = "";
+  }
+  if (!as_string_optional(*root, "tolerance_policy", desc.tolerance_policy)) {
+    desc.tolerance_policy = "abs=0.001";
+  }
+  if (!as_u32_optional(*root, "max_depth", desc.max_depth)) {
+    desc.max_depth = 6;
+  }
+  if (desc.max_depth == 0) {
+    desc.max_depth = 6;
   }
 
   std::string issue;
@@ -325,6 +416,10 @@ bool ValidateBenchmarkResult(const BenchmarkResult& result, std::string* message
     if (message) *message = "cpu_simd_mode is empty";
     return false;
   }
+  if (result.max_depth == 0) {
+    if (message) *message = "max_depth is zero";
+    return false;
+  }
   if (result.build_info.app_version.empty()) {
     if (message) *message = "build_info.app_version is empty";
     return false;
@@ -357,6 +452,10 @@ bool ValidateBenchmarkRunDesc(const BenchmarkRunDesc& desc, std::string* message
     if (message) *message = "warmup_frames is out of supported range";
     return false;
   }
+  if (desc.max_depth == 0) {
+    if (message) *message = "max_depth is zero";
+    return false;
+  }
   if (desc.output_directory.empty()) {
     if (message) *message = "output_directory is empty";
     return false;
@@ -383,6 +482,7 @@ std::string SerializeBenchmarkResult(const BenchmarkResult& result) {
   root.object["spp"] = make_number(result.spp);
   root.object["seed"] = make_number(static_cast<double>(result.seed));
   root.object["max_depth"] = make_number(result.max_depth);
+  root.object["tolerance_policy"] = make_string(result.tolerance_policy);
   root.object["scene_hash"] = make_string(result.scene_hash);
   root.object["asset_hash"] = make_string(result.asset_hash);
   root.object["shader_hash"] = make_string(result.shader_hash);
@@ -426,6 +526,12 @@ std::string SerializeBenchmarkResult(const BenchmarkResult& result) {
 
   root.object["image_hash"] = make_string(result.image_hash);
   root.object["reference_error"] = make_number(result.reference_error);
+  root.object["output_directory"] = make_string(result.output_directory);
+  root.object["artifact_directory"] = make_string(result.artifact_directory);
+  root.object["beauty_png"] = make_string(result.beauty_png);
+  root.object["beauty_exr"] = make_string(result.beauty_exr);
+  root.object["diff_heatmap_png"] = make_string(result.diff_heatmap_png);
+  root.object["reference_exr"] = make_string(result.reference_exr);
   std::vector<vkpt::scene::JsonValue> diagnostics;
   for (const auto& entry : result.diagnostics) {
     diagnostics.push_back(make_string(entry));
@@ -455,6 +561,7 @@ std::string SerializeBenchmarkRunDesc(const BenchmarkRunDesc& desc) {
   root.object["output_directory"] = make_string(desc.output_directory);
   root.object["reference_image"] = make_string(desc.reference_image);
   root.object["tolerance_policy"] = make_string(desc.tolerance_policy);
+  root.object["max_depth"] = make_number(desc.max_depth);
 
   return vkpt::scene::JsonParser::stringify(root);
 }
