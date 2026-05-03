@@ -27,6 +27,28 @@ struct BenchmarkTimingEvent {
   double ms = 0.0;
 };
 
+enum class ProfilerEventKind : uint8_t {
+  CpuZone,
+  GpuZone,
+  JobTiming,
+  FrameStage,
+  AssetImport,
+  BvhBuild,
+  ShaderCompile,
+  RenderPass,
+};
+
+struct ProfilerEvent {
+  ProfilerEventKind kind = ProfilerEventKind::CpuZone;
+  std::string name;
+  std::string category;
+  uint32_t thread_id = 0;
+  double start_ms = 0.0;
+  double duration_ms = 0.0;
+};
+
+std::string_view ProfilerEventKindName(ProfilerEventKind kind);
+
 struct BenchmarkThroughput {
   double paths_per_sec = 0.0;
   double samples_per_sec = 0.0;
@@ -109,5 +131,8 @@ bool ValidateBenchmarkRunDesc(const BenchmarkRunDesc& desc, std::string* message
 
 std::string SerializeBenchmarkResult(const BenchmarkResult& result);
 std::string SerializeBenchmarkRunDesc(const BenchmarkRunDesc& desc);
+
+std::string SerializeProfilerEvent(const ProfilerEvent& event);
+std::string SerializeProfilerTrace(const std::vector<ProfilerEvent>& trace);
 
 }  // namespace vkpt::benchmark
