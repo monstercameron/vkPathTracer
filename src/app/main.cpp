@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -17,6 +18,9 @@
 #include <thread>
 
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
@@ -207,6 +211,8 @@ void InitializeLogging() {
   std::filesystem::create_directories("artifacts/logs");
   logger.add_sink(std::make_unique<vkpt::log::ConsoleSink>(std::cout));
   logger.add_sink(std::make_unique<vkpt::log::PlainTextFileSink>("artifacts/logs/ptapp.log"));
+  logger.add_sink(std::make_unique<vkpt::log::PlainTextFileSink>("artifacts/logs/black_canvas_trace.log"));
+  logger.add_sink(std::make_unique<vkpt::log::JsonlFileSink>("artifacts/logs/black_canvas_trace.jsonl"));
   logger.add_sink(std::make_unique<vkpt::log::JsonlFileSink>("artifacts/logs/ptapp.jsonl"));
   logger.add_sink(std::make_unique<vkpt::log::RingBufferSink>(1024));
 }
@@ -2109,8 +2115,170 @@ int main(int argc, char** argv) {
     std::cout << "vkpt desktop window open (" << desktopWindow->metrics().width << "x"
               << desktopWindow->metrics().height << ")\n";
     std::cout << "Close the window to exit.\n";
-    desktopWindow->set_overlay_text("vkpt desktop ui shell\n"
-                                   "starting placeholder UI");
+
+    vkpt::pathtracer::ScalarCpuPathTracer previewTracer;
+    vkpt::pathtracer::RenderSettings previewSettings{};
+    const uint32_t windowPreviewWidth = std::max<uint32_t>(1u, static_cast<uint32_t>(desktopWindow->metrics().width));
+    const uint32_t windowPreviewHeight = std::max<uint32_t>(1u, static_cast<uint32_t>(desktopWindow->metrics().height));
+    const float previewScale = std::min(1.0f, 960.0f / static_cast<float>(windowPreviewWidth));
+    previewSettings.width = std::max<uint32_t>(1u, static_cast<uint32_t>(static_cast<float>(windowPreviewWidth) * previewScale));
+    previewSettings.height = std::max<uint32_t>(1u, static_cast<uint32_t>(static_cast<float>(windowPreviewHeight) * previewScale));
+    previewSettings.spp = std::max<uint32_t>(1u, std::min<uint32_t>(config.spp.value, 64u));
+    previewSettings.max_depth = std::max<uint32_t>(1u, config.max_depth.value);
+    previewSettings.seed = 0xC001D00Dull;
+    previewSettings.enable_nee = true;
+    previewSettings.enable_mis = true;
+
+    std::string previewError;
+    bool previewTracerReady = false;
+    bool previewNonBlack = false;
+    bool previewRendered = false;
+    uint32_t previewSampleIndex = 0u;
+    const uint32_t previewPixelCount = previewSettings.width * previewSettings.height;
+    std::vector<uint32_t> previewPixelOrder(previewPixelCount);
+    uint32_t previewPixelCursor = 0u;
+    const uint32_t previewPixelsPerBatch = 1024u;
+    const auto previewTraceBudgetPerFrame = std::chrono::milliseconds(16);
+    uint32_t previewChunkCounter = 0u;
+
+    auto resetPreviewPixelOrder = [&](uint32_t sampleIndex) {
+      std::iota(previewPixelOrder.begin(), previewPixelOrder.end(), 0u);
+      if (previewPixelOrder.size() <= 1u) {
+        return;
+      }
+
+      // Deterministic per-sample Fisher-Yates shuffle for spatially uniform progressive updates.
+      uint32_t state = 0x9e3779b9u ^ (sampleIndex * 0x85ebca6bu + 0xc2b2ae35u);
+      auto nextRand = [&]() -> uint32_t {
+        state ^= state << 13u;
+        state ^= state >> 17u;
+        state ^= state << 5u;
+        return state;
+      };
+
+      for (uint32_t i = previewPixelCount - 1u; i > 0u; --i) {
+        const uint32_t j = nextRand() % (i + 1u);
+        std::swap(previewPixelOrder[i], previewPixelOrder[j]);
+      }
+    };
+    resetPreviewPixelOrder(previewSampleIndex);
+
+    auto buildWindowSceneData = [&](vkpt::pathtracer::RTSceneData& outScene, std::string* outErr) -> bool {
+      outScene = {};
+      if (!config.scene_path.value.empty()) {
+        auto parseResult = vkpt::scene::SceneDocument::load_from_file(config.scene_path.value);
+        if (!parseResult) {
+          if (outErr) {
+            *outErr = "scene parse failed";
+          }
+          return false;
+        }
+        auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(parseResult.value());
+        if (!sceneResult) {
+          if (outErr) {
+            *outErr = "scene conversion failed";
+          }
+          return false;
+        }
+        outScene = std::move(sceneResult.value());
+      } else {
+        vkpt::scene::SceneDocument document;
+        document.metadata.scene_name = "cornell";
+        auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(document);
+        if (!sceneResult) {
+          if (outErr) {
+            *outErr = "builtin scene conversion failed";
+          }
+          return false;
+        }
+        outScene = std::move(sceneResult.value());
+      }
+
+      bool hasLight = !outScene.lights.empty();
+      bool hasEmissive = false;
+      for (const auto& material : outScene.materials) {
+        if (material.is_emissive()) {
+          hasEmissive = true;
+          break;
+        }
+      }
+      if (!hasLight && !hasEmissive) {
+        outScene.environment_color = {0.35f, 0.4f, 0.5f};
+      }
+      return true;
+    };
+
+    vkpt::pathtracer::RTSceneData previewScene;
+    if (!buildWindowSceneData(previewScene, &previewError)) {
+      // Fall back to a guaranteed visible diagnostic texture if scene load/setup fails.
+      const uint32_t fbw = std::max<uint32_t>(64u, static_cast<uint32_t>(desktopWindow->metrics().width));
+      const uint32_t fbh = std::max<uint32_t>(64u, static_cast<uint32_t>(desktopWindow->metrics().height));
+      std::vector<std::uint8_t> diagnostic;
+      diagnostic.resize(static_cast<std::size_t>(fbw) * static_cast<std::size_t>(fbh) * 4u, 255u);
+      for (uint32_t y = 0; y < fbh; ++y) {
+        for (uint32_t x = 0; x < fbw; ++x) {
+          const std::size_t idx = (static_cast<std::size_t>(y) * fbw + x) * 4u;
+          const bool checker = ((x / 32u) + (y / 32u)) % 2u == 0u;
+          diagnostic[idx + 0u] = checker ? static_cast<std::uint8_t>((255u * x) / std::max(1u, fbw - 1u)) : 16u;
+          diagnostic[idx + 1u] = checker ? static_cast<std::uint8_t>((255u * y) / std::max(1u, fbh - 1u)) : 220u;
+          diagnostic[idx + 2u] = checker ? 32u : 64u;
+          diagnostic[idx + 3u] = 255u;
+        }
+      }
+      desktopWindow->set_framebuffer_rgba(diagnostic, fbw, fbh);
+      previewNonBlack = true;
+      logger.log(vkpt::log::Severity::Warning, "traceprobe",
+                 "window preview scene setup failed; using diagnostic texture",
+                 {
+                   {"scene", config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value},
+                   {"error", previewError}
+                 },
+                 0);
+    } else if (!previewTracer.configure(previewSettings) ||
+               !previewTracer.load_scene_snapshot(previewScene) ||
+               !previewTracer.build_or_update_acceleration() ||
+               !previewTracer.reset_accumulation()) {
+      previewError = "window preview tracer init failed";
+      logger.log(vkpt::log::Severity::Error, "traceprobe",
+                 "window preview tracer initialization failed",
+                 {
+                   {"scene", config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value},
+                   {"width", std::to_string(previewSettings.width)},
+                   {"height", std::to_string(previewSettings.height)},
+                   {"spp", std::to_string(previewSettings.spp)},
+                   {"max_depth", std::to_string(previewSettings.max_depth)}
+                 },
+                 0);
+    } else {
+      previewTracerReady = true;
+      previewError.clear();
+      logger.log(vkpt::log::Severity::Info, "traceprobe",
+                 "window preview tracer initialized",
+                 {
+                   {"scene", config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value},
+                   {"width", std::to_string(previewSettings.width)},
+                   {"height", std::to_string(previewSettings.height)},
+                   {"spp", std::to_string(previewSettings.spp)},
+                   {"max_depth", std::to_string(previewSettings.max_depth)},
+                   {"lights", std::to_string(previewScene.lights.size())},
+                   {"materials", std::to_string(previewScene.materials.size())},
+                   {"instances", std::to_string(previewScene.instances.size())},
+                   {"sdf_primitives", std::to_string(previewScene.sdf_primitives.size())}
+                 },
+                 0);
+    }
+
+    std::ostringstream overlay;
+    overlay << "UI shell ready\n"
+            << "backend: '" << config.backend.value << "'\n"
+            << "scene: " << (config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value) << "\n"
+            << "layout: " << ui_layout_state.active_layout_name << "\n"
+            << "path tracing: " << (previewTracerReady ? "on" : "failed")
+            << (previewNonBlack ? " (visible)" : " (diagnostic fallback)") << "\n";
+    if (!previewError.empty()) {
+      overlay << "status: " << previewError << "\n";
+    }
+    desktopWindow->set_overlay_text(overlay.str());
 
     SyncRuntimePanelState(ui_runtime_state, ui_layout_state);
     UpdateCrashArtifactsFromUiState(ui_runtime_state, ui_selection_state, ui_layout_state,
@@ -2120,6 +2288,94 @@ int main(int argc, char** argv) {
     bool running = true;
     std::size_t loggedStartupFrames = 0;
     while (running && window->is_open()) {
+      if (previewTracerReady && previewSampleIndex < previewSettings.spp) {
+        const auto traceFrameStart = std::chrono::steady_clock::now();
+        bool tracedAnyPixelsThisFrame = false;
+        bool completedSampleThisFrame = false;
+        uint32_t completedSampleCount = 0u;
+        uint32_t completedSampleNumber = 0u;
+
+        while (previewTracerReady && previewSampleIndex < previewSettings.spp) {
+          const auto elapsed = std::chrono::steady_clock::now() - traceFrameStart;
+          if (elapsed >= previewTraceBudgetPerFrame) {
+            break;
+          }
+
+          const uint32_t remainingPixels = previewPixelCount - previewPixelCursor;
+          const uint32_t batchCount = std::min(previewPixelsPerBatch, remainingPixels);
+          if (!previewTracer.render_sample_pixels(previewPixelOrder.data() + previewPixelCursor,
+                                                  batchCount,
+                                                  previewSampleIndex,
+                                                  frame)) {
+            previewTracerReady = false;
+            previewError = "window preview sample failed";
+            logger.log(vkpt::log::Severity::Error, "traceprobe",
+                       "window preview sample failed",
+                       {
+                         {"sample", std::to_string(previewSampleIndex)},
+                         {"frame", std::to_string(frame)}
+                       },
+                       frame);
+            break;
+          }
+
+          tracedAnyPixelsThisFrame = true;
+          ++previewChunkCounter;
+          previewPixelCursor += batchCount;
+
+          if (previewPixelCursor >= previewPixelCount) {
+            previewPixelCursor = 0u;
+            ++previewSampleIndex;
+            completedSampleThisFrame = true;
+            ++completedSampleCount;
+            completedSampleNumber = previewSampleIndex;
+            if (previewSampleIndex < previewSettings.spp) {
+              resetPreviewPixelOrder(previewSampleIndex);
+            }
+          }
+        }
+
+        if (previewTracerReady && tracedAnyPixelsThisFrame) {
+          const auto ldr = previewTracer.resolve_ldr();
+          desktopWindow->set_framebuffer_rgba(ldr.rgba8, ldr.width, ldr.height);
+          previewRendered = true;
+          previewNonBlack = false;
+          std::uint8_t rgbMax = 0u;
+          std::uint64_t rgbSum = 0u;
+          std::uint64_t rgbCount = 0u;
+          for (std::size_t i = 0; i + 3u < ldr.rgba8.size(); i += 4u) {
+            const std::uint8_t r = ldr.rgba8[i + 0u];
+            const std::uint8_t g = ldr.rgba8[i + 1u];
+            const std::uint8_t b = ldr.rgba8[i + 2u];
+            rgbMax = std::max(rgbMax, std::max(r, std::max(g, b)));
+            rgbSum += static_cast<std::uint64_t>(r) + static_cast<std::uint64_t>(g) + static_cast<std::uint64_t>(b);
+            rgbCount += 3u;
+            if (r != 0u || g != 0u || b != 0u) {
+              previewNonBlack = true;
+            }
+          }
+          const float rgbAvg = (rgbCount == 0u) ? 0.0f
+              : static_cast<float>(rgbSum) / static_cast<float>(rgbCount);
+          if (completedSampleThisFrame &&
+              (completedSampleNumber == 1u || (completedSampleNumber % 4u) == 0u || completedSampleNumber == previewSettings.spp)) {
+            std::cout << "[ui] preview accumulate: sample " << completedSampleNumber
+                      << "/" << previewSettings.spp
+                      << " non_black=" << (previewNonBlack ? "yes" : "no") << "\n";
+            logger.log(vkpt::log::Severity::Info, "traceprobe",
+                       "window preview accumulate",
+                       {
+                         {"sample", std::to_string(completedSampleNumber)},
+                         {"spp", std::to_string(previewSettings.spp)},
+                         {"completed_samples", std::to_string(completedSampleCount)},
+                         {"rgb_max", std::to_string(static_cast<unsigned>(rgbMax))},
+                         {"rgb_avg", std::to_string(rgbAvg)},
+                         {"non_black", previewNonBlack ? "yes" : "no"}
+                       },
+                       frame);
+          }
+        }
+      }
+
       window->poll_events();
       const auto events = desktopWindow->drain_events();
       if (loggedStartupFrames < 6) {
@@ -2348,6 +2604,9 @@ int main(int argc, char** argv) {
                  << "backend: " << ui_runtime_state.active_renderer_backend << "\n"
                  << "scene: "   << ui_runtime_state.active_scene << "\n"
                  << "layout: "  << ui_runtime_state.active_layout_name << "\n"
+                 << "path tracing: " << (previewTracerReady ? "on" : "failed")
+                 << " sample=" << previewSampleIndex << "/" << previewSettings.spp << "\n"
+                 << "image: " << (previewNonBlack ? "non-black" : "dark/empty") << "\n"
                  << "status: "  << ui_runtime_state.status_message << "\n"
                  << "events: "  << ui_event_log.events().size();
       desktopWindow->set_overlay_text(statusText.str());
@@ -2431,6 +2690,8 @@ int main(int argc, char** argv) {
     settings.spp       = std::max<uint32_t>(1, config.spp.value);
     settings.max_depth = std::max<uint32_t>(1, config.max_depth.value);
     settings.seed      = 0xBAADF00DULL;
+    settings.enable_nee = true;
+    settings.enable_mis = true;
 
     auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(document);
     if (!sceneResult) {

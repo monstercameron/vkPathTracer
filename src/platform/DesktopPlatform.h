@@ -21,8 +21,13 @@ class DesktopWindow final : public IWindow {
 
   void set_title(std::string_view title);
   void set_overlay_text(std::string_view text);
+  void set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba, std::size_t width, std::size_t height);
+  void clear_framebuffer();
   void on_native_resize(std::size_t width, std::size_t height);
   const std::string& overlay_text() const { return m_overlayText; }
+  const std::vector<std::uint8_t>& framebuffer_bgra() const { return m_framebufferBgra; }
+  std::size_t framebuffer_width() const { return m_framebufferWidth; }
+  std::size_t framebuffer_height() const { return m_framebufferHeight; }
   void emit_focus_change(bool focused);
   void emit_close_requested();
   void emit_menu_command(std::uint32_t command_id);
@@ -39,6 +44,9 @@ class DesktopWindow final : public IWindow {
   WindowMetrics m_metrics{1280, 720, 1.0f};
   std::string m_title;
   std::string m_overlayText;
+  std::vector<std::uint8_t> m_framebufferBgra;
+  std::size_t m_framebufferWidth = 0;
+  std::size_t m_framebufferHeight = 0;
   void* m_hwnd = nullptr;
   std::deque<InputEvent> m_events;
   int m_lastMouseX = 0;
