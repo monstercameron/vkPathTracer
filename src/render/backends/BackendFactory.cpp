@@ -2,6 +2,7 @@
 
 #include <cctype>
 
+#include "render/backends/D3D12Backend.h"
 #include "render/backends/NullBackend.h"
 #include "render/backends/VulkanBackend.h"
 
@@ -39,7 +40,7 @@ std::string NormalizeBackendName(std::string_view backend_name) {
 }
 
 std::vector<std::string> AvailableBackendNames() {
-  return {"auto", "null", "vulkan", "vulkan-compute"};
+  return {"auto", "null", "vulkan", "vulkan-compute", "d3d12"};
 }
 
 std::unique_ptr<IRenderBackend> CreateBackend(std::string_view backend_name) {
@@ -49,6 +50,9 @@ std::unique_ptr<IRenderBackend> CreateBackend(std::string_view backend_name) {
   }
   if (normalized == "vulkan" || normalized == "vulkan-compute") {
     return std::make_unique<VulkanComputeBackend>();
+  }
+  if (normalized == "d3d12") {
+    return std::make_unique<D3D12Backend>();
   }
   if (normalized == "auto" || normalized == "default") {
     auto backend = std::make_unique<VulkanComputeBackend>();
