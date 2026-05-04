@@ -10,32 +10,278 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <array>
+#include <iomanip>
+#include <limits>
 
 namespace vkpt::gpu {
 
 namespace {
+constexpr UINT kPathTraceRoot32BitValues = static_cast<UINT>(sizeof(PathTraceConstants) / sizeof(uint32_t));
+uint64_t g_d3d12RenderBatchCalls = 0u;
+uint64_t g_d3d12SceneUploadCalls = 0u;
+
 void LogInfo(const std::string& msg) {
   vkpt::log::Logger::instance().log(vkpt::log::Severity::Info, "d3d12", msg);
 }
 void LogError(const std::string& msg) {
   vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "d3d12", msg);
 }
+void LogDebug(const std::string& msg) {
+  vkpt::log::Logger::instance().log(vkpt::log::Severity::Debug, "d3d12", msg);
+}
+
+std::string WStringToUtf8(const wchar_t* src) {
+  if (!src) return {};
+  int len = WideCharToMultiByte(CP_UTF8, 0, src, -1, nullptr, 0, nullptr, nullptr);
+  if (len <= 0) return {};
+  std::string out(static_cast<size_t>(len > 0 ? len - 1 : 0), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, src, -1, &out[0], len, nullptr, nullptr);
+  return out;
+}
+
+std::string FormatHr(HRESULT hr) {
+  std::ostringstream ss;
+  ss << "0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
+     << static_cast<uint32_t>(hr);
+  return ss.str();
+}
+
+template <typename T>
+std::string FormatFirstN(const T* values, size_t count, size_t max_values = 4u) {
+  const size_t shown = std::min(count, max_values);
+  std::ostringstream ss;
+  for (size_t i = 0; i < shown; ++i) {
+    if (i) ss << ", ";
+    ss << values[i];
+  }
+  if (count > shown) {
+    ss << "...";
+  }
+  return ss.str();
+}
+
+std::string FormatBytes(const void* ptr, size_t bytes) {
+  const auto* bytesPtr = static_cast<const uint8_t*>(ptr);
+  std::ostringstream ss;
+  const size_t shown = std::min<size_t>(bytes, 32u);
+  for (size_t i = 0; i < shown; ++i) {
+    if (i) ss << " ";
+    ss << std::hex << std::setw(2) << std::setfill('0')
+       << static_cast<uint32_t>(bytesPtr[i]);
+  }
+  if (bytes > shown) ss << " ...";
+  return ss.str();
+}
+
+// ============================================================================
+// BVH builder types and recursive construction
+// ============================================================================
+struct BvhTriRef {
+  uint32_t orig_idx;     // original triangle index into flat index buffer
+  float    centroid[3];
+  float    bmin[3], bmax[3];
+};
+
+static float bvh_sa(const float bmin[3], const float bmax[3]) {
+  float dx = bmax[0]-bmin[0], dy = bmax[1]-bmin[1], dz = bmax[2]-bmin[2];
+  if (dx < 0) dx = 0; if (dy < 0) dy = 0; if (dz < 0) dz = 0;
+  return 2.0f * (dx*dy + dy*dz + dz*dx);
+}
+
+// Writes 8 floats per node into gpu_bvh (pre-sized to max_nodes*8).
+// Reorders triangles into reord_idx / reord_tri_mat for cache-friendly leaf access.
+// Returns node index of the root.
+static uint32_t bvh_build(
+  std::vector<BvhTriRef>&        refs,
+  uint32_t start, uint32_t count,
+  const std::vector<uint32_t>&   orig_idx,
+  const std::vector<uint32_t>&   orig_tri_mat,
+  std::vector<float>&            gpu_bvh,
+  std::vector<uint32_t>&         reord_idx,
+  std::vector<uint32_t>&         reord_tri_mat,
+  uint32_t&                      node_count)
+{
+  auto as_fb = [](uint32_t u) -> float {
+    float f; std::memcpy(&f, &u, sizeof(f)); return f;
+  };
+
+  const uint32_t ni   = node_count++;
+  const uint32_t base = ni * 8u;
+
+  // Compute node AABB
+  float bmin[3] = {1e30f, 1e30f, 1e30f}, bmax[3] = {-1e30f, -1e30f, -1e30f};
+  for (uint32_t i = start; i < start + count; ++i) {
+    for (int k = 0; k < 3; ++k) {
+      bmin[k] = std::min(bmin[k], refs[i].bmin[k]);
+      bmax[k] = std::max(bmax[k], refs[i].bmax[k]);
+    }
+  }
+  gpu_bvh[base+0u]=bmin[0]; gpu_bvh[base+1u]=bmin[1]; gpu_bvh[base+2u]=bmin[2];
+  gpu_bvh[base+3u]=bmax[0]; gpu_bvh[base+4u]=bmax[1]; gpu_bvh[base+5u]=bmax[2];
+
+  // Leaf: <= 4 triangles
+  if (count <= 4u) {
+    const uint32_t first_tri = static_cast<uint32_t>(reord_idx.size() / 3u);
+    for (uint32_t i = start; i < start + count; ++i) {
+      const uint32_t t = refs[i].orig_idx;
+      reord_idx.push_back(orig_idx[t*3u+0u]);
+      reord_idx.push_back(orig_idx[t*3u+1u]);
+      reord_idx.push_back(orig_idx[t*3u+2u]);
+      reord_tri_mat.push_back(orig_tri_mat[t]);
+    }
+    gpu_bvh[base+6u] = as_fb(0x80000000u | first_tri); // leaf flag in bit 31
+    gpu_bvh[base+7u] = as_fb(count);
+    return ni;
+  }
+
+  // SAH split using 8 buckets along each axis
+  const float node_sa_v = std::max(1e-9f, bvh_sa(bmin, bmax));
+  int   best_axis      = 0;
+  float best_split_val = 0.0f;
+  float best_cost      = 1e30f;
+  bool  found_split    = false;
+
+  for (int axis = 0; axis < 3; ++axis) {
+    float cmin = 1e30f, cmax = -1e30f;
+    for (uint32_t i = start; i < start + count; ++i) {
+      cmin = std::min(cmin, refs[i].centroid[axis]);
+      cmax = std::max(cmax, refs[i].centroid[axis]);
+    }
+    const float extent = cmax - cmin;
+    if (extent < 1e-6f) continue;
+
+    struct Bkt { float mn[3], mx[3]; uint32_t n; };
+    Bkt bkts[8];
+    for (int b = 0; b < 8; ++b) {
+      bkts[b].n = 0;
+      for (int k=0;k<3;++k) { bkts[b].mn[k]=1e30f; bkts[b].mx[k]=-1e30f; }
+    }
+    for (uint32_t i = start; i < start + count; ++i) {
+      const int b = std::min(7, static_cast<int>((refs[i].centroid[axis] - cmin) / extent * 8));
+      bkts[b].n++;
+      for (int k=0;k<3;++k) {
+        bkts[b].mn[k] = std::min(bkts[b].mn[k], refs[i].bmin[k]);
+        bkts[b].mx[k] = std::max(bkts[b].mx[k], refs[i].bmax[k]);
+      }
+    }
+    for (int s = 1; s < 8; ++s) {
+      float lmn[3]={1e30f,1e30f,1e30f}, lmx[3]={-1e30f,-1e30f,-1e30f};
+      float rmn[3]={1e30f,1e30f,1e30f}, rmx[3]={-1e30f,-1e30f,-1e30f};
+      uint32_t lc = 0, rc = 0;
+      for (int b=0;b<s;++b) {
+        if (!bkts[b].n) continue;
+        lc += bkts[b].n;
+        for (int k=0;k<3;++k) { lmn[k]=std::min(lmn[k],bkts[b].mn[k]); lmx[k]=std::max(lmx[k],bkts[b].mx[k]); }
+      }
+      for (int b=s;b<8;++b) {
+        if (!bkts[b].n) continue;
+        rc += bkts[b].n;
+        for (int k=0;k<3;++k) { rmn[k]=std::min(rmn[k],bkts[b].mn[k]); rmx[k]=std::max(rmx[k],bkts[b].mx[k]); }
+      }
+      if (!lc || !rc) continue;
+      const float cost = (bvh_sa(lmn,lmx)*(float)lc + bvh_sa(rmn,rmx)*(float)rc) / node_sa_v;
+      if (cost < best_cost) {
+        best_cost      = cost;
+        best_axis      = axis;
+        best_split_val = cmin + static_cast<float>(s) / 8.0f * extent;
+        found_split    = true;
+      }
+    }
+  }
+
+  // Partition refs around the best split
+  uint32_t mid;
+  if (found_split) {
+    const int   ax  = best_axis;
+    const float spv = best_split_val;
+    auto it = std::stable_partition(
+      refs.begin() + start, refs.begin() + start + count,
+      [ax, spv](const BvhTriRef& r) { return r.centroid[ax] < spv; });
+    mid = static_cast<uint32_t>(it - refs.begin());
+    if (mid <= start || mid >= start + count) mid = start + count / 2u;
+  } else {
+    mid = start + count / 2u;
+  }
+
+  const uint32_t left_child  = bvh_build(refs, start, mid - start,
+                      orig_idx, orig_tri_mat,
+                      gpu_bvh, reord_idx, reord_tri_mat, node_count);
+  const uint32_t right_child = bvh_build(refs, mid, (start + count) - mid,
+                      orig_idx, orig_tri_mat,
+                      gpu_bvh, reord_idx, reord_tri_mat, node_count);
+
+  // Write internal node children (bit 31 = 0 means internal)
+  gpu_bvh[base+6u] = as_fb(left_child);
+  gpu_bvh[base+7u] = as_fb(right_child);
+  return ni;
+}
+
 } // namespace
 
 D3D12GpuPathTracer::D3D12GpuPathTracer(std::string hlsl_path, std::string entry_point)
     : m_hlslPath(std::move(hlsl_path)), m_entryPoint(std::move(entry_point)) {
+  LogDebug("D3D12 tracer ctor hlsl=" + m_hlslPath + " entry=" + m_entryPoint);
   m_valid = init_device() && create_root_sig_and_pso();
   if (!m_valid) LogError("D3D12GpuPathTracer init failed: " + m_error);
 }
 
 D3D12GpuPathTracer::~D3D12GpuPathTracer() { shutdown(); }
 
+std::string D3D12GpuPathTracer::dxr_tier_string() const {
+  if (m_dxrTier == D3D12_RAYTRACING_TIER_NOT_SUPPORTED) {
+    return "not_supported";
+  }
+  if (m_dxrTier >= D3D12_RAYTRACING_TIER_1_0) {
+    // Some SDK/header combos may expose newer tiers without named enum labels.
+    // Treat any tier >= 1.1 as "1.1+" to avoid contradictory reporting.
+    if (m_dxrTier > D3D12_RAYTRACING_TIER_1_0) {
+      return "1.1+";
+    }
+    return "1.0";
+  }
+  return "unknown";
+}
+
+void D3D12GpuPathTracer::set_prefer_dxr(bool enabled) {
+  m_preferDxr = enabled;
+  m_usingDxrDispatch = false;
+  m_loggedDxrFallback = false;
+  if (enabled && m_dxrRuntimeObjectsReady && !m_dxrPipelineReady) {
+    // Derive RT shader path: replace _cs.hlsl -> _rt.hlsl
+    m_rtHlslPath = m_hlslPath;
+    auto pos = m_rtHlslPath.rfind("_cs.hlsl");
+    if (pos != std::string::npos) {
+      m_rtHlslPath.replace(pos, 8, "_rt.hlsl");
+    } else {
+      auto extpos = m_rtHlslPath.rfind(".hlsl");
+      if (extpos != std::string::npos)
+        m_rtHlslPath.replace(extpos, 5, "_rt.hlsl");
+      else
+        m_rtHlslPath += "_rt.hlsl";
+    }
+    LogInfo("set_prefer_dxr: rt_shader=" + m_rtHlslPath);
+    if (!create_dxr_pipeline()) {
+      LogError("set_prefer_dxr: pipeline creation failed: " + m_error);
+    }
+  }
+}
+
 // ============================================================================
 // IPathTracer
 // ============================================================================
 
 bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
-  if (!m_valid) return false;
+  if (!m_valid) {
+    m_error = "configure before init";
+    LogError("configure rejected: " + m_error);
+    return false;
+  }
+  if (s.width == 0u || s.height == 0u) {
+    m_error = "configure invalid dimensions";
+    LogError("configure rejected: " + m_error);
+    return false;
+  }
   m_settings   = s;
   m_configured = true;
   m_filmPixels = s.width * s.height;
@@ -44,21 +290,41 @@ bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   m_counters          = {};
   m_hasScene          = false;
   m_sceneUploaded     = false;
+  std::ostringstream cfg;
+  cfg << "configure width=" << s.width << " height=" << s.height
+      << " spp=" << s.spp
+      << " max_depth=" << s.max_depth << " seed=" << s.seed;
+  LogDebug(cfg.str());
   destroy_film_buffer();
   return create_film_buffer();
 }
 
 bool D3D12GpuPathTracer::load_scene_snapshot(
     const vkpt::pathtracer::RTSceneData& scene) {
-  if (!m_configured) return false;
+  if (!m_configured) {
+    m_error = "load_scene_snapshot before configure";
+    LogError("load_scene_snapshot rejected: " + m_error);
+    return false;
+  }
   m_sceneData      = scene;
   m_hasScene       = true;
   m_sceneUploaded  = false;
+  std::ostringstream ss;
+  ss << "scene snapshot loaded verts=" << scene.vertices.size()
+     << " idx=" << scene.indices.size()
+     << " mats=" << scene.materials.size()
+     << " inst=" << scene.instances.size()
+     << " lights=" << scene.lights.size();
+  LogDebug(ss.str());
   return true;
 }
 
 bool D3D12GpuPathTracer::build_or_update_acceleration() {
-  if (!m_hasScene) return false;
+  if (!m_hasScene) {
+    m_error = "build_or_update_acceleration before snapshot";
+    LogError("build_or_update_acceleration rejected: " + m_error);
+    return false;
+  }
   m_gpuVerts.clear();
   for (const auto& v : m_sceneData.vertices)
     { m_gpuVerts.push_back(v.x); m_gpuVerts.push_back(v.y); m_gpuVerts.push_back(v.z); }
@@ -95,72 +361,262 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
     m_gpuLights.push_back(lt.intensity); m_gpuLights.push_back(0.0f);
   }
   if (m_gpuLights.empty()) m_gpuLights.assign(8, 0.0f);
+  std::ostringstream us;
+  us << "packed scene verts=" << (m_gpuVerts.size() / 3u)
+     << " idx=" << m_gpuIdx.size()
+     << " mats=" << (m_gpuMats.size() / 8u)
+     << " inst=" << (m_gpuInsts.size() / 4u)
+     << " lights=" << (m_gpuLights.size() / 8u)
+     << " bytes="
+     << (m_gpuVerts.size() * sizeof(float)) << ","
+     << (m_gpuIdx.size() * sizeof(uint32_t)) << ","
+     << (m_gpuMats.size() * sizeof(float)) << ","
+     << (m_gpuInsts.size() * sizeof(uint32_t)) << ","
+     << (m_gpuLights.size() * sizeof(float));
+  LogDebug(us.str());
+
+  // ===== Build BVH =====
+  m_gpuBvh.clear();
+  m_gpuTriMat.clear();
+  const uint32_t total_tris = static_cast<uint32_t>(m_gpuIdx.size() / 3u);
+  if (total_tris > 0u) {
+    // Build per-triangle material lookup from instances
+    std::vector<uint32_t> orig_tri_mat(total_tris, 0u);
+    for (const auto& inst : m_sceneData.instances) {
+      for (uint32_t t = 0u; t < inst.triangle_count; ++t) {
+        const uint32_t ti = inst.first_triangle + t;
+        if (ti < total_tris) orig_tri_mat[ti] = inst.material_index;
+      }
+    }
+
+    // Build per-triangle reference list with AABB and centroid
+    std::vector<BvhTriRef> refs(total_tris);
+    for (uint32_t t = 0u; t < total_tris; ++t) {
+      const uint32_t i0 = m_gpuIdx[t*3u+0u], i1 = m_gpuIdx[t*3u+1u], i2 = m_gpuIdx[t*3u+2u];
+      const float v0[3] = {m_gpuVerts[i0*3u], m_gpuVerts[i0*3u+1u], m_gpuVerts[i0*3u+2u]};
+      const float v1[3] = {m_gpuVerts[i1*3u], m_gpuVerts[i1*3u+1u], m_gpuVerts[i1*3u+2u]};
+      const float v2[3] = {m_gpuVerts[i2*3u], m_gpuVerts[i2*3u+1u], m_gpuVerts[i2*3u+2u]};
+      refs[t].orig_idx = t;
+      for (int k = 0; k < 3; ++k) {
+        refs[t].bmin[k] = std::min({v0[k], v1[k], v2[k]});
+        refs[t].bmax[k] = std::max({v0[k], v1[k], v2[k]});
+        refs[t].centroid[k] = (refs[t].bmin[k] + refs[t].bmax[k]) * 0.5f;
+      }
+    }
+
+    // Allocate GPU node buffer (max 2*total_tris nodes for binary BVH)
+    const uint32_t max_nodes = std::max(1u, 2u * total_tris);
+    m_gpuBvh.assign(static_cast<size_t>(max_nodes) * 8u, 0.0f);
+
+    std::vector<uint32_t> orig_idx_copy = m_gpuIdx; // save before reorder
+    std::vector<uint32_t> reord_idx;
+    reord_idx.reserve(m_gpuIdx.size());
+    uint32_t node_count = 0u;
+    bvh_build(refs, 0u, total_tris, orig_idx_copy, orig_tri_mat,
+              m_gpuBvh, reord_idx, m_gpuTriMat, node_count);
+
+    // Trim to actual node count and replace index buffer with reordered version
+    m_gpuBvh.resize(static_cast<size_t>(node_count) * 8u);
+    m_gpuIdx = std::move(reord_idx);
+
+    std::ostringstream bvhLog;
+    bvhLog << "BVH built nodes=" << node_count << " tris=" << total_tris
+           << " reord_idx=" << m_gpuIdx.size();
+    LogDebug(bvhLog.str());
+  }
+  if (m_gpuBvh.empty())   m_gpuBvh.assign(8u, 0.0f);   // dummy root leaf
+  if (m_gpuTriMat.empty()) m_gpuTriMat.push_back(0u);   // dummy entry
 
   destroy_scene_buffers();
   if (!upload_scene_buffers()) return false;
   m_sceneUploaded = true;
+
+  // Build hardware acceleration structures for DXR if pipeline is ready
+  if (m_preferDxr && m_dxrPipelineReady && m_dxrRuntimeObjectsReady) {
+    m_dxrAccelReady = false;
+    if (!build_dxr_acceleration_structures()) {
+      LogError("build_or_update_acceleration: BLAS/TLAS build failed: " + m_error);
+      // Non-fatal: fall back to compute path
+    }
+  }
+
+  LogDebug("scene upload complete");
   return true;
 }
 
 bool D3D12GpuPathTracer::reset_accumulation() {
   if (!m_configured || !m_filmBuf) return false;
-  // Zero the film on GPU
-  wait_for_gpu();
+  // Zero the film on GPU.
+  // Use direct UAV clear instead of upload buffer copy to avoid compute queue device
+  // removed issues on some Intel drivers.
+  if (!wait_for_gpu()) {
+    m_error = "reset wait_for_gpu";
+    LogError("reset_accumulation: " + m_error);
+    return false;
+  }
   const auto res = m_cmdAllocator->Reset();
-  if (FAILED(res)) { m_error = "cmd allocator reset failed"; return false; }
+  if (FAILED(res)) {
+    m_error = "cmd allocator reset failed hr=" + FormatHr(res);
+    LogError("reset_accumulation: " + m_error);
+    return false;
+  }
   const auto res2 = m_cmdList->Reset(m_cmdAllocator.Get(), nullptr);
-  if (FAILED(res2)) { m_error = "cmd list reset failed"; return false; }
+  if (FAILED(res2)) {
+    m_error = "cmd list reset failed hr=" + FormatHr(res2);
+    LogError("reset_accumulation: " + m_error);
+    return false;
+  }
+
+  if (m_filmPixels == 0u) {
+    m_error = "film pixel count is zero";
+    return false;
+  }
+
+  D3D12_DESCRIPTOR_HEAP_DESC dh{};
+  dh.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+  dh.NumDescriptors = 1;
+  dh.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> clearHeap;
+  if (FAILED(m_device->CreateDescriptorHeap(&dh, IID_PPV_ARGS(&clearHeap)))) {
+    m_error = "reset create descriptor heap";
+    return false;
+  }
+  auto inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = clearHeap->GetCPUDescriptorHandleForHeapStart();
+  D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = clearHeap->GetGPUDescriptorHandleForHeapStart();
+  cpuHandle.ptr += 0u * static_cast<SIZE_T>(inc);
+  gpuHandle.ptr += 0u * static_cast<SIZE_T>(inc);
+  D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+  uav.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+  uav.Buffer.NumElements = m_filmPixels;
+  uav.Buffer.StructureByteStride = 0;
+  uav.Buffer.CounterOffsetInBytes = 0;
+  uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+  m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, cpuHandle);
 
   // Transition film to unordered-access
   D3D12_RESOURCE_BARRIER rb{};
   rb.Type  = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   rb.Transition.pResource   = m_filmBuf.Get();
-  rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  rb.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
   rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   rb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  // Actually no, we need to clear it. Let's use a compute clear or copy from zeroed upload.
-  // Simpler: allocate new zeroed upload, copy to film
-  // Or: use ClearUnorderedAccessViewUint with a descriptor (requires GPU descriptor heap)
-  // Easiest: create a small zeroed upload buffer and copy subresource
-  const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
-  // We already have m_uploadBuf with m_uploadPtr zeroed in create_film_buffer
-  // Actually, let's use a Clear buffer via descriptor.
-  // Simplest approach that works: allocate a temp upload, copy zeros to film
-  {
-    Microsoft::WRL::ComPtr<ID3D12Resource> zeroBuf;
-    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
-    D3D12_RESOURCE_DESC   rd{};
-    rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-    rd.Width            = filmSize;
-    rd.Height           = 1;
-    rd.DepthOrArraySize = 1;
-    rd.MipLevels        = 1;
-    rd.Format           = DXGI_FORMAT_UNKNOWN;
-    rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    rd.SampleDesc.Count = 1;
-    if (FAILED(m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&zeroBuf)))) {
-      m_error = "zeroBuf create failed"; return false;
-    }
-    void* p = nullptr;
-    zeroBuf->Map(0, nullptr, &p);
-    std::memset(p, 0, static_cast<size_t>(filmSize));
-    zeroBuf->Unmap(0, nullptr);
-    m_cmdList->CopyBufferRegion(m_filmBuf.Get(), 0, zeroBuf.Get(), 0, filmSize);
+  m_cmdList->ResourceBarrier(1, &rb);
+  m_cmdList->SetDescriptorHeaps(1, clearHeap.GetAddressOf());
+  const FLOAT clearValues[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  m_cmdList->ClearUnorderedAccessViewFloat(gpuHandle, cpuHandle, m_filmBuf.Get(),
+                                          clearValues, 0, nullptr);
+
+  rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+  m_cmdList->ResourceBarrier(1, &rb);
+  const auto closeRes = m_cmdList->Close();
+  if (FAILED(closeRes)) {
+    m_error = "cmd list close failed";
+    return false;
   }
-  m_cmdList->Close();
   ID3D12CommandList* lists[] = {m_cmdList.Get()};
   m_cmdQueue->ExecuteCommandLists(1, lists);
-  wait_for_gpu();
+  if (!wait_for_gpu()) {
+    m_error = "reset wait_for_gpu";
+    LogError("reset_accumulation: " + m_error);
+    return false;
+  }
+  const auto removeHr = m_device->GetDeviceRemovedReason();
+  if (FAILED(removeHr)) {
+    m_error = "device removed during reset_accumulation hr=" + FormatHr(removeHr);
+    LogError("reset_accumulation: " + m_error);
+    return false;
+  }
 
   m_film.clear();
   m_counters = {};
+  LogDebug("reset_accumulation complete");
   return true;
 }
 
-bool D3D12GpuPathTracer::render_sample_batch(uint32_t, uint32_t,
+bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     uint32_t sample_idx, uint32_t frame_idx) {
-  if (!m_valid || !m_configured || !m_sceneUploaded) return false;
+  const uint64_t callIndex = ++g_d3d12RenderBatchCalls;
+  const bool verbose = (sample_idx % 16u == 0u) || (frame_idx % 16u == 0u);
+  if (!m_valid || !m_configured || !m_sceneUploaded) {
+    m_error = "render not ready";
+    std::ostringstream st;
+    st << "render_sample_batch rejected: " << m_error
+       << " valid=" << (m_valid ? "true" : "false")
+       << " configured=" << (m_configured ? "true" : "false")
+       << " sceneUploaded=" << (m_sceneUploaded ? "true" : "false")
+       << " filmPixels=" << m_filmPixels;
+    LogError(st.str());
+    return false;
+  }
+  if (!m_filmBuf || !m_filmReadbackBuf || !m_filmReadbackPtr || !m_filmPixels) {
+    m_error = "film resources unavailable";
+    std::ostringstream st;
+    st << "render_sample_batch rejected: " << m_error
+       << " filmBuf=" << (m_filmBuf ? "ok" : "null")
+       << " readbackBuf=" << (m_filmReadbackBuf ? "ok" : "null")
+       << " readbackPtr=" << (m_filmReadbackPtr ? "ok" : "null")
+       << " filmPixels=" << m_filmPixels;
+    LogError(st.str());
+    return false;
+  }
+  if (m_settings.width == 0u || m_settings.height == 0u) {
+    m_error = "invalid film dimensions";
+    LogError("render_sample_batch rejected: " + m_error);
+    return false;
+  }
+  if (verbose) {
+    std::ostringstream st;
+    st << "render_sample_batch cfg sample=" << sample_idx
+       << " frame=" << frame_idx
+       << " call=" << callIndex;
+    LogDebug(st.str());
+  }
+
+  const bool probe = verbose || (sample_idx < 4u) || (callIndex <= 8u);
+  if (probe) {
+    std::ostringstream st;
+    st << "render_sample_batch probe sample=" << sample_idx
+       << " frame=" << frame_idx
+       << " dims=" << m_settings.width << "x" << m_settings.height
+       << " film_pixels=" << m_filmPixels
+       << " states(vf/rs)= "
+       << (m_filmBuf ? "film=ok" : "film=null") << "/"
+       << (m_filmReadbackBuf ? "rb=ok" : "rb=null");
+    LogDebug(st.str());
+  }
+
+  if (verbose) {
+    std::ostringstream st;
+    st << "render_sample_batch start frame=" << frame_idx << " sample=" << sample_idx
+       << " dims=" << m_settings.width << "x" << m_settings.height;
+    LogDebug(st.str());
+  }
+
+  if (m_preferDxr) {
+    if (!m_dxrSupported || !m_dxrRuntimeObjectsReady) {
+      m_error = "DXR path requested but runtime objects are unavailable";
+      LogError("render_sample_batch: " + m_error);
+      return false;
+    }
+    if (m_dxrPipelineReady && m_dxrAccelReady) {
+      // Route to hardware DXR dispatch
+      m_usingDxrDispatch = true;
+      const bool finiteSpp2 = m_settings.spp != std::numeric_limits<uint32_t>::max();
+      const bool doRb = (finiteSpp2 && (sample_idx + 1u >= m_settings.spp))
+                     || (!finiteSpp2 && ((sample_idx & 3u) == 0u));
+      return dispatch_dxr_rays(sample_idx, frame_idx, doRb);
+    }
+    if (!m_loggedDxrFallback) {
+      LogInfo("DXR mode requested; DispatchRays path not wired yet, using compute fallback");
+      m_loggedDxrFallback = true;
+    }
+    m_usingDxrDispatch = false;
+  } else {
+    m_usingDxrDispatch = false;
+  }
 
   const auto& sc = m_sceneData;
 
@@ -203,60 +659,123 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t, uint32_t,
   pc.env_g = sc.environment_color.y;
   pc.env_b = sc.environment_color.z;
   pc.max_depth_f = static_cast<float>(std::max(1u, m_settings.max_depth));
+  if (verbose) {
+    std::ostringstream st;
+    st << "render_sample_batch constants sample_index=" << pc.sample_index
+       << " seed=" << pc.base_seed
+       << " scene(inst/mat/light)=" << pc.num_insts << "/" << pc.num_mats << "/" << pc.num_lights
+       << " max_depth=" << pc.max_depth_f
+       << " env=(" << pc.env_r << "," << pc.env_g << "," << pc.env_b << ")";
+    LogDebug(st.str());
+  }
+  if (probe) {
+    const float fwdLen = std::sqrt(fwd[0]*fwd[0] + fwd[1]*fwd[1] + fwd[2]*fwd[2]);
+    const float rightLen = std::sqrt(rn[0]*rn[0] + rn[1]*rn[1] + rn[2]*rn[2]);
+    const float upLen = std::sqrt(un[0]*un[0] + un[1]*un[1] + un[2]*un[2]);
+    std::ostringstream st;
+    st << "render_sample_batch basis lens fwd=" << fwdLen
+       << " right=" << rightLen << " up=" << upLen
+       << " fwd=(" << fwd[0] << "," << fwd[1] << "," << fwd[2] << ")"
+       << " right=(" << rn[0] << "," << rn[1] << "," << rn[2] << ")"
+       << " up=(" << un[0] << "," << un[1] << "," << un[2] << ")";
+    LogDebug(st.str());
+    auto* pcWords = reinterpret_cast<const uint32_t*>(&pc);
+    std::ostringstream dump;
+    dump << "render_sample_batch constant_u32[0..27]=";
+    for (UINT i = 0u; i < kPathTraceRoot32BitValues; ++i) {
+      if (i) dump << ",";
+      dump << "0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
+           << pcWords[i];
+    }
+    dump << std::dec;
+    LogDebug(dump.str());
+    if (g_d3d12RenderBatchCalls <= 4u) {
+      std::ostringstream sampleVals;
+      const float camPos[3] = {sc.camera_position.x, sc.camera_position.y, sc.camera_position.z};
+      const float camTarget[3] = {sc.camera_target.x, sc.camera_target.y, sc.camera_target.z};
+      sampleVals << "camera_pos=(" << camPos[0] << "," << camPos[1] << "," << camPos[2] << ")"
+                 << " camera_target=(" << camTarget[0] << "," << camTarget[1] << "," << camTarget[2] << ")"
+                 << " material0=" << FormatFirstN(m_gpuMats.data(), 8u, 8u)
+                 << " first_inst=" << FormatFirstN(m_gpuInsts.data(), 4u, 4u)
+                 << " first_light=" << FormatFirstN(m_gpuLights.data(), 8u, 8u);
+      LogDebug(sampleVals.str());
+    }
+  }
 
   // Reset command list
-  if (FAILED(m_cmdAllocator->Reset())) { m_error = "allocator reset"; return false; }
-  if (FAILED(m_cmdList->Reset(m_cmdAllocator.Get(), m_pso.Get()))) { m_error = "cmd list reset"; return false; }
+  const HRESULT resetAllocatorHr = m_cmdAllocator->Reset();
+  if (FAILED(resetAllocatorHr)) {
+    m_error = "allocator reset hr=" + FormatHr(resetAllocatorHr);
+    LogError("render_sample_batch: " + m_error);
+    return false;
+  }
+  const HRESULT resetCmdListHr = m_cmdList->Reset(m_cmdAllocator.Get(), m_pso.Get());
+  if (FAILED(resetCmdListHr)) {
+    m_error = "cmd list reset hr=" + FormatHr(resetCmdListHr);
+    LogError("render_sample_batch: " + m_error);
+    return false;
+  }
 
   // Upload constants
   m_cmdList->SetComputeRootSignature(m_rootSig.Get());
 
-  // Create descriptor heap for SRVs/UAVs
-  D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
-  heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  heapDesc.NumDescriptors = 6;
-  heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-  Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srvHeap;
-  if (FAILED(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&srvHeap)))) {
-    m_error = "srv heap"; return false;
-  }
-  UINT inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = srvHeap->GetCPUDescriptorHandleForHeapStart();
-  D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = srvHeap->GetGPUDescriptorHandleForHeapStart();
+  // Create descriptor heap for SRVs/UAVs lazily and reuse across samples.
+  if (!m_srvUavHeap) {
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+    heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heapDesc.NumDescriptors = 8;
+    heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    if (FAILED(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvUavHeap)))) {
+      m_error = "srv heap";
+      LogError("render_sample_batch: " + m_error);
+      return false;
+    }
+    if (verbose) {
+      LogDebug("render_sample_batch created persistent descriptor heap descriptors=8");
+    }
+    const UINT inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_srvUavHeap->GetCPUDescriptorHandleForHeapStart();
 
-  // Bind SRVs (t0-t4)
-  auto makeSrv = [&](int slot, ID3D12Resource* buf, UINT64 size, DXGI_FORMAT fmt) {
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-    srv.Format                  = fmt;
-    srv.ViewDimension           = D3D12_SRV_DIMENSION_BUFFER;
-    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.Buffer.NumElements      = static_cast<UINT>(size / 4u);
-    D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(slot) * inc;
-    m_device->CreateShaderResourceView(buf, &srv, h);
-  };
-  makeSrv(0, m_vertBuf.Get(),  m_gpuVerts.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
-  makeSrv(1, m_idxBuf.Get(),   m_gpuIdx.size()  * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
-  makeSrv(2, m_matBuf.Get(),   m_gpuMats.size()  * sizeof(float), DXGI_FORMAT_R32_FLOAT);
-  makeSrv(3, m_instBuf.Get(),  m_gpuInsts.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
-  makeSrv(4, m_ltBuf.Get(),    m_gpuLights.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+    auto makeSrv = [&](int slot, ID3D12Resource* buf, UINT64 size, DXGI_FORMAT fmt) {
+      if (!buf || size == 0u) {
+        std::ostringstream st;
+        st << "makeSrv slot=" << slot << " missing resource or empty size";
+        LogError(st.str());
+      }
+      D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+      srv.Format                  = fmt;
+      srv.ViewDimension           = D3D12_SRV_DIMENSION_BUFFER;
+      srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      srv.Buffer.NumElements      = static_cast<UINT>(size / 4u);
+      D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
+      h.ptr += static_cast<SIZE_T>(slot) * inc;
+      m_device->CreateShaderResourceView(buf, &srv, h);
+    };
+    makeSrv(0, m_vertBuf.Get(),   m_gpuVerts.size()   * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+    makeSrv(1, m_idxBuf.Get(),    m_gpuIdx.size()     * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+    makeSrv(2, m_matBuf.Get(),    m_gpuMats.size()    * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+    makeSrv(3, m_instBuf.Get(),   m_gpuInsts.size()   * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+    makeSrv(4, m_ltBuf.Get(),     m_gpuLights.size()  * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+    makeSrv(5, m_bvhBuf.Get(),    m_gpuBvh.size()     * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+    makeSrv(6, m_triMatBuf.Get(), m_gpuTriMat.size()  * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
 
-  // Bind UAV (u0) — film buffer as float4
-  {
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
     uav.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;
     uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
     uav.Buffer.NumElements = static_cast<UINT>(m_filmPixels);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(5) * inc;
+    h.ptr += static_cast<SIZE_T>(7) * inc;
     m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h);
   }
+  D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
+  pc.rays_per_pixel = 4u;
 
-  m_cmdList->SetDescriptorHeaps(1, srvHeap.GetAddressOf());
+  ID3D12DescriptorHeap* heaps[] = {m_srvUavHeap.Get()};
+  m_cmdList->SetDescriptorHeaps(1, heaps);
   m_cmdList->SetComputeRootDescriptorTable(1, gpuHandle);
 
   // Root constants (b0) — 28 DWORDs = 112 bytes
-  m_cmdList->SetComputeRoot32BitConstants(0, 28, &pc, 0);
+  m_cmdList->SetComputeRoot32BitConstants(0, kPathTraceRoot32BitValues, &pc, 0);
 
   // Transition film to UAV if needed
   D3D12_RESOURCE_BARRIER rb{};
@@ -267,47 +786,162 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t, uint32_t,
   rb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
   m_cmdList->ResourceBarrier(1, &rb);
 
-  m_cmdList->Dispatch((m_settings.width + 7u) / 8u,
-                      (m_settings.height + 7u) / 8u, 1u);
+  const UINT groupsX = (m_settings.width + 7u) / 8u;
+  const UINT groupsY = (m_settings.height + 7u) / 8u;
+  if (verbose) {
+  std::ostringstream d;
+  d << "dispatch groups " << groupsX << "x" << groupsY;
+  LogDebug(d.str());
+  }
+  m_cmdList->Dispatch(groupsX, groupsY, 1u);
 
-  // Transition film back to common for readback
-  rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
-  m_cmdList->ResourceBarrier(1, &rb);
-
-  // Copy film to readback buffer
+  const bool finiteSpp = m_settings.spp != std::numeric_limits<uint32_t>::max();
+  const bool isLastFiniteSample = finiteSpp && (sample_idx + 1u >= m_settings.spp);
+  const bool periodicPreviewReadback = !finiteSpp && ((sample_idx & 3u) == 0u);
+  const bool doReadback = isLastFiniteSample || periodicPreviewReadback;
   const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
-  m_cmdList->CopyBufferRegion(m_filmReadbackBuf.Get(), 0, m_filmBuf.Get(), 0, filmSize);
 
-  // Return film to COMMON state for next frame
-  rb.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-  rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
-  m_cmdList->ResourceBarrier(1, &rb);
+  if (doReadback) {
+    // Transition film for readback and copy to CPU-visible buffer.
+    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    m_cmdList->ResourceBarrier(1, &rb);
+    if (verbose) {
+      std::ostringstream cb;
+      cb << "copy filmSize=" << filmSize << " bytes to readback";
+      LogDebug(cb.str());
+    }
+    m_cmdList->CopyBufferRegion(m_filmReadbackBuf.Get(), 0, m_filmBuf.Get(), 0, filmSize);
+    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    m_cmdList->ResourceBarrier(1, &rb);
+  } else {
+    // Keep the film in COMMON between samples when not reading back.
+    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    m_cmdList->ResourceBarrier(1, &rb);
+  }
 
-  m_cmdList->Close();
+  const auto closeRes = m_cmdList->Close();
+  if (FAILED(closeRes)) {
+    m_error = "cmd list close hr=" + FormatHr(closeRes);
+    LogError("render_sample_batch: " + m_error);
+    return false;
+  }
   ID3D12CommandList* lists[] = {m_cmdList.Get()};
+  if (verbose) {
+    LogDebug("render_sample_batch execute cmdlist frame=" + std::to_string(frame_idx) +
+             " sample=" + std::to_string(sample_idx));
+  }
   m_cmdQueue->ExecuteCommandLists(1, lists);
-  wait_for_gpu();
+  if (!wait_for_gpu()) {
+    m_error = "wait_for_gpu failed";
+    LogError("render_sample_batch: " + m_error);
+    return false;
+  }
+  const auto removeHr = m_device->GetDeviceRemovedReason();
+  if (FAILED(removeHr)) {
+    m_error = "device removed during render hr=" + FormatHr(removeHr);
+    LogError("render_sample_batch: " + m_error);
+    return false;
+  }
 
-  // Rebuild CPU FilmBuffer from readback
-  const float* src = reinterpret_cast<const float*>(m_filmReadbackPtr);
-  m_film.resize(m_settings.width, m_settings.height);
-  m_film.clear();
-  for (uint32_t y = 0; y < m_settings.height; ++y) {
-    for (uint32_t x = 0; x < m_settings.width; ++x) {
-      const uint32_t p   = (y * m_settings.width + x) * 4u;
-      const float    cnt = std::max(1.0f, src[p + 3u]);
-      const vkpt::pathtracer::Vec3 avg{src[p]/cnt, src[p+1]/cnt, src[p+2]/cnt};
-      m_film.add_sample(x, y, avg);
+  // Rebuild CPU FilmBuffer only when we performed readback.
+  if (doReadback) {
+    const float* src = reinterpret_cast<const float*>(m_filmReadbackPtr);
+    if (verbose) {
+    const uint32_t probeW = std::min(m_settings.width, 8u);
+    const uint32_t probeH = std::min(m_settings.height, 8u);
+    uint32_t probePixels = 0u;
+    uint32_t nonZeroPixels = 0u;
+    float probeMax = 0.0f;
+    float probeSum = 0.0f;
+    for (uint32_t y = 0; y < probeH; ++y) {
+      for (uint32_t x = 0; x < probeW; ++x) {
+        const uint32_t p = (y * m_settings.width + x) * 4u;
+        const float r = src[p];
+        const float g = src[p + 1u];
+        const float b = src[p + 2u];
+        const float v = r + g + b;
+        ++probePixels;
+        probeSum += v;
+        probeMax = std::max(probeMax, std::max(r, std::max(g, b)));
+        if (r != 0.0f || g != 0.0f || b != 0.0f) ++nonZeroPixels;
+      }
+    }
+    std::ostringstream st;
+    st << "render_sample_batch readback probe frame=" << frame_idx << " sample=" << sample_idx
+       << " probe_pixels=" << probePixels << " non_zero=" << nonZeroPixels
+       << " probe_sum=" << probeSum << " probe_max=" << probeMax;
+    LogDebug(st.str());
+    if (nonZeroPixels == 0u) {
+      LogDebug("render_sample_batch readback probe is black");
+      if (probe) {
+        LogDebug("render_sample_batch readback first pixel bytes="
+                 + FormatBytes(src, std::min<UINT64>(sizeof(float) * 4u, filmSize)));
+      }
+    }
+    }
+    m_film.resize(m_settings.width, m_settings.height);
+    m_film.clear();
+    for (uint32_t y = 0; y < m_settings.height; ++y) {
+      for (uint32_t x = 0; x < m_settings.width; ++x) {
+        const uint32_t p   = (y * m_settings.width + x) * 4u;
+        const float    cnt = std::max(1.0f, src[p + 3u]);
+        const vkpt::pathtracer::Vec3 avg{src[p]/cnt, src[p+1]/cnt, src[p+2]/cnt};
+        m_film.add_sample(x, y, avg);
+      }
     }
   }
-  m_counters.samples += static_cast<uint64_t>(m_settings.width) * m_settings.height;
-  m_counters.rays    += m_counters.samples;
+  const uint64_t sampleInc = static_cast<uint64_t>(m_settings.width) * m_settings.height;
+  m_counters.samples += sampleInc;
+  m_counters.rays    += sampleInc * 4u;
+  m_lastSampleIdx     = sample_idx;
+  if (verbose) {
+    std::ostringstream en;
+    en << "render_sample_batch complete frame=" << frame_idx << " sample=" << sample_idx
+       << " samples=" << m_counters.samples << " rays=" << m_counters.rays;
+    LogDebug(en.str());
+  }
   return true;
 }
 
 vkpt::pathtracer::FilmLdr D3D12GpuPathTracer::resolve_ldr() const {
-  return m_film.resolve_ldr();
+  auto ldr = m_film.resolve_ldr();
+
+  // Spatial denoiser: 3x3 box filter that fades off as samples accumulate.
+  // At low sample counts it smooths noise; by ~64 samples it is essentially off.
+  const uint32_t spp = m_lastSampleIdx + 1u;
+  if (spp < 64u && ldr.width > 2u && ldr.height > 2u) {
+    const float alpha = std::min(1.0f, static_cast<float>(spp) / 64.0f);
+    const uint32_t W = ldr.width, H = ldr.height;
+    std::vector<uint8_t> filtered = ldr.rgba8;
+    for (uint32_t y = 1u; y + 1u < H; ++y) {
+      for (uint32_t x = 1u; x + 1u < W; ++x) {
+        float r = 0.0f, g = 0.0f, b = 0.0f;
+        for (int dy = -1; dy <= 1; ++dy) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            const uint32_t q = ((y + static_cast<uint32_t>(dy)) * W +
+                                (x + static_cast<uint32_t>(dx))) * 4u;
+            r += static_cast<float>(ldr.rgba8[q]);
+            g += static_cast<float>(ldr.rgba8[q + 1u]);
+            b += static_cast<float>(ldr.rgba8[q + 2u]);
+          }
+        }
+        r /= 9.0f; g /= 9.0f; b /= 9.0f;
+        const uint32_t p = (y * W + x) * 4u;
+        filtered[p+0u] = static_cast<uint8_t>(std::clamp(
+            static_cast<int>(r * (1.0f - alpha) + static_cast<float>(ldr.rgba8[p+0u]) * alpha), 0, 255));
+        filtered[p+1u] = static_cast<uint8_t>(std::clamp(
+            static_cast<int>(g * (1.0f - alpha) + static_cast<float>(ldr.rgba8[p+1u]) * alpha), 0, 255));
+        filtered[p+2u] = static_cast<uint8_t>(std::clamp(
+            static_cast<int>(b * (1.0f - alpha) + static_cast<float>(ldr.rgba8[p+2u]) * alpha), 0, 255));
+        filtered[p+3u] = ldr.rgba8[p+3u];
+      }
+    }
+    ldr.rgba8 = std::move(filtered);
+  }
+  return ldr;
 }
 vkpt::pathtracer::FilmHdr D3D12GpuPathTracer::resolve_hdr() const {
   return m_film.resolve_hdr();
@@ -318,10 +952,15 @@ vkpt::pathtracer::SampleCounters D3D12GpuPathTracer::read_counters() const {
 
 void D3D12GpuPathTracer::shutdown() {
   if (!m_device) return;
-  wait_for_gpu();
+  (void)wait_for_gpu();
   destroy_film_buffer();
   destroy_scene_buffers();
   m_uploadBuf.Reset();
+  destroy_dxr_resources();
+  m_dxrCmdList.Reset();
+  m_dxrCmdAllocator.Reset();
+  m_dxrCmdQueue.Reset();
+  m_device5.Reset();
   m_cmdList.Reset();
   m_cmdAllocator.Reset();
   m_pso.Reset();
@@ -332,6 +971,10 @@ void D3D12GpuPathTracer::shutdown() {
   m_factory.Reset();
   m_valid = false;
   m_uploadPtr = nullptr;
+  m_dxrRuntimeObjectsReady = false;
+  m_usingDxrDispatch = false;
+  m_dxrAccelReady    = false;
+  m_dxrPipelineReady = false;
 }
 
 // ============================================================================
@@ -349,42 +992,54 @@ bool D3D12GpuPathTracer::init_device() {
 #if defined(_DEBUG)
   flags |= DXGI_CREATE_FACTORY_DEBUG;
 #endif
-  if (FAILED(CreateDXGIFactory2(flags, IID_PPV_ARGS(&m_factory)))) {
-    m_error = "CreateDXGIFactory2"; return false;
+  const HRESULT createFactoryHr = CreateDXGIFactory2(flags, IID_PPV_ARGS(&m_factory));
+  if (FAILED(createFactoryHr)) {
+    m_error = "CreateDXGIFactory2 hr=" + FormatHr(createFactoryHr);
+    LogError("init_device: " + m_error);
+    return false;
   }
 
   // Enumerate adapters, pick the one with the most dedicated VRAM
   Microsoft::WRL::ComPtr<IDXGIAdapter1> chosen;
   SIZE_T bestVram = 0;
   std::string bestName;
+  int adapterCount = 0;
   for (UINT i = 0;; ++i) {
     Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
     if (m_factory->EnumAdapters1(i, &adapter) == DXGI_ERROR_NOT_FOUND) break;
     DXGI_ADAPTER_DESC1 desc{};
-    adapter->GetDesc1(&desc);
-    if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
-    if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
-        __uuidof(ID3D12Device), nullptr))) continue;
+    if (FAILED(adapter->GetDesc1(&desc))) continue;
+    const std::string name = WStringToUtf8(desc.Description);
+    const bool software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+    const bool creates = SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
+        __uuidof(ID3D12Device), nullptr));
+    std::ostringstream a;
+    a << "adapter[" << i << "] " << name
+      << " vram=" << (static_cast<uint64_t>(desc.DedicatedVideoMemory) / (1024ull * 1024ull))
+      << "MB software=" << (software ? "true" : "false")
+      << " create_ok=" << (creates ? "true" : "false");
+    LogDebug(a.str());
+    if (software || !creates) continue;
+    ++adapterCount;
     if (desc.DedicatedVideoMemory > bestVram) {
       bestVram = desc.DedicatedVideoMemory;
       chosen = adapter;
-      int len = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, nullptr, 0, nullptr, nullptr);
-      bestName.resize(static_cast<size_t>(len > 0 ? len - 1 : 0));
-      if (len > 0) WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1,
-          &bestName[0], len, nullptr, nullptr);
-      if (!bestName.empty() && bestName.back() == '\0') bestName.pop_back();
+      bestName = name;
     }
   }
   if (!chosen) {
     m_factory->EnumWarpAdapter(IID_PPV_ARGS(&chosen));
     DXGI_ADAPTER_DESC1 desc{};
-    chosen->GetDesc1(&desc);
+    if (FAILED(chosen->GetDesc1(&desc))) {
+      m_error = "EnumWarpAdapter returned invalid adapter";
+      return false;
+    }
     bestVram = 0;
-    int len = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, nullptr, 0, nullptr, nullptr);
-    bestName.resize(static_cast<size_t>(len > 0 ? len - 1 : 0));
-    if (len > 0) WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1,
-        &bestName[0], len, nullptr, nullptr);
-    if (!bestName.empty() && bestName.back() == '\0') bestName.pop_back();
+    bestName = WStringToUtf8(desc.Description);
+    LogDebug("falling back to WARP adapter");
+  }
+  if (chosen && adapterCount == 0) {
+    LogDebug("adapter enum had no non-software D3D12 devices");
   }
   m_gpuName = bestName;
   m_vramMb  = static_cast<uint32_t>(bestVram / (1024u * 1024u));
@@ -392,37 +1047,86 @@ bool D3D12GpuPathTracer::init_device() {
   sel << "Selected GPU: " << m_gpuName << "  VRAM=" << m_vramMb << " MB";
   LogInfo(sel.str());
 
-  if (FAILED(D3D12CreateDevice(chosen.Get(), D3D_FEATURE_LEVEL_11_0,
-      IID_PPV_ARGS(&m_device)))) {
-    m_error = "D3D12CreateDevice"; return false;
+  const HRESULT createDeviceHr = D3D12CreateDevice(chosen.Get(), D3D_FEATURE_LEVEL_11_0,
+      IID_PPV_ARGS(&m_device));
+  if (FAILED(createDeviceHr)) {
+    m_error = "D3D12CreateDevice hr=" + FormatHr(createDeviceHr);
+    LogError("init_device: " + m_error);
+    return false;
+  }
+
+  // Probe DXR capability for migration planning and benchmark telemetry.
+  D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5{};
+  const HRESULT opts5Hr = m_device->CheckFeatureSupport(
+      D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5));
+  if (SUCCEEDED(opts5Hr)) {
+    m_dxrTier = opts5.RaytracingTier;
+    m_dxrSupported = (m_dxrTier >= D3D12_RAYTRACING_TIER_1_0);
+  } else {
+    m_dxrTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+    m_dxrSupported = false;
+  }
+  {
+    std::ostringstream dxr;
+    dxr << "DXR support=" << (m_dxrSupported ? "yes" : "no")
+        << " tier=" << dxr_tier_string();
+    LogInfo(dxr.str());
+  }
+
+  if (m_dxrSupported) {
+    if (SUCCEEDED(m_device.As(&m_device5))) {
+      if (!init_dxr_runtime_objects()) {
+        LogError("DXR runtime object init failed; compute path remains available");
+      }
+    } else {
+      m_dxrSupported = false;
+      m_dxrTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+      LogError("DXR probe reported supported but ID3D12Device5 query failed");
+    }
   }
 
   // Command queue
   D3D12_COMMAND_QUEUE_DESC qd{};
   qd.Type     = D3D12_COMMAND_LIST_TYPE_COMPUTE;
   qd.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-  if (FAILED(m_device->CreateCommandQueue(&qd, IID_PPV_ARGS(&m_cmdQueue)))) {
-    m_error = "CreateCommandQueue"; return false;
+  const HRESULT createQueueHr = m_device->CreateCommandQueue(&qd, IID_PPV_ARGS(&m_cmdQueue));
+  if (FAILED(createQueueHr)) {
+    m_error = "CreateCommandQueue hr=" + FormatHr(createQueueHr);
+    LogError("init_device: " + m_error);
+    return false;
   }
 
   // Command allocator + list
-  if (FAILED(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE,
-      IID_PPV_ARGS(&m_cmdAllocator)))) {
-    m_error = "CreateCommandAllocator"; return false;
+  const HRESULT createAllocHr = m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE,
+      IID_PPV_ARGS(&m_cmdAllocator));
+  if (FAILED(createAllocHr)) {
+    m_error = "CreateCommandAllocator hr=" + FormatHr(createAllocHr);
+    LogError("init_device: " + m_error);
+    return false;
   }
-  if (FAILED(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE,
-      m_cmdAllocator.Get(), nullptr, IID_PPV_ARGS(&m_cmdList)))) {
-    m_error = "CreateCommandList"; return false;
+  const HRESULT createListHr = m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE,
+      m_cmdAllocator.Get(), nullptr, IID_PPV_ARGS(&m_cmdList));
+  if (FAILED(createListHr)) {
+    m_error = "CreateCommandList hr=" + FormatHr(createListHr);
+    LogError("init_device: " + m_error);
+    return false;
   }
   m_cmdList->Close();
 
   // Fence
-  if (FAILED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-      IID_PPV_ARGS(&m_fence)))) {
-    m_error = "CreateFence"; return false;
+  const HRESULT createFenceHr = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+      IID_PPV_ARGS(&m_fence));
+  if (FAILED(createFenceHr)) {
+    m_error = "CreateFence hr=" + FormatHr(createFenceHr);
+    LogError("init_device: " + m_error);
+    return false;
   }
   m_fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-  if (!m_fenceEvent) { m_error = "CreateEventW"; return false; }
+  if (!m_fenceEvent) {
+    m_error = "CreateEventW";
+    LogError("init_device: " + m_error);
+    return false;
+  }
 
   // Upload buffer — 64 MB
   m_uploadSize = 64ull * 1024 * 1024;
@@ -436,29 +1140,94 @@ bool D3D12GpuPathTracer::init_device() {
   rd.Format           = DXGI_FORMAT_UNKNOWN;
   rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
   rd.SampleDesc.Count = 1;
-  if (FAILED(m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
-      D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_uploadBuf)))) {
-    m_error = "upload buffer"; return false;
+  const HRESULT createUploadHr = m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+      D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_uploadBuf));
+  if (FAILED(createUploadHr)) {
+    m_error = "upload buffer hr=" + FormatHr(createUploadHr);
+    LogError("init_device: " + m_error);
+    return false;
   }
-  m_uploadBuf->Map(0, nullptr, &m_uploadPtr);
+  const HRESULT mapUploadHr = m_uploadBuf->Map(0, nullptr, &m_uploadPtr);
+  if (FAILED(mapUploadHr)) {
+    m_error = "upload buffer map hr=" + FormatHr(mapUploadHr);
+    LogError("init_device: " + m_error);
+    return false;
+  }
+  LogDebug("D3D12 device init success upload_heap=" + std::to_string(m_uploadSize));
 
   LogInfo("D3D12 device init success");
   return true;
 }
 
+bool D3D12GpuPathTracer::init_dxr_runtime_objects() {
+  if (!m_dxrSupported || !m_device5) {
+    return false;
+  }
+
+  D3D12_COMMAND_QUEUE_DESC qd{};
+  qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+  qd.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+  const HRESULT createQueueHr = m_device->CreateCommandQueue(&qd, IID_PPV_ARGS(&m_dxrCmdQueue));
+  if (FAILED(createQueueHr)) {
+    m_error = "CreateCommandQueue(DIRECT) hr=" + FormatHr(createQueueHr);
+    LogError("init_dxr_runtime_objects: " + m_error);
+    return false;
+  }
+
+  const HRESULT createAllocHr = m_device->CreateCommandAllocator(
+      D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_dxrCmdAllocator));
+  if (FAILED(createAllocHr)) {
+    m_error = "CreateCommandAllocator(DIRECT) hr=" + FormatHr(createAllocHr);
+    LogError("init_dxr_runtime_objects: " + m_error);
+    return false;
+  }
+
+  const HRESULT createListHr = m_device5->CreateCommandList(
+      0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_dxrCmdAllocator.Get(), nullptr,
+      IID_PPV_ARGS(&m_dxrCmdList));
+  if (FAILED(createListHr)) {
+    m_error = "CreateCommandList4(DIRECT) hr=" + FormatHr(createListHr);
+    LogError("init_dxr_runtime_objects: " + m_error);
+    return false;
+  }
+  m_dxrCmdList->Close();
+  m_dxrRuntimeObjectsReady = true;
+
+  // Create DXR fence (separate from compute fence so queues can sync independently)
+  const HRESULT createDxrFenceHr = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+      IID_PPV_ARGS(&m_dxrFence));
+  if (FAILED(createDxrFenceHr)) {
+    m_error = "CreateFence(DXR) hr=" + FormatHr(createDxrFenceHr);
+    LogError("init_dxr_runtime_objects: " + m_error);
+    return false;
+  }
+  m_dxrFenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (!m_dxrFenceEvent) {
+    m_error = "CreateEventW(DXR)";
+    LogError("init_dxr_runtime_objects: " + m_error);
+    return false;
+  }
+
+  std::ostringstream st;
+  st << "DXR runtime objects ready tier=" << dxr_tier_string();
+  LogInfo(st.str());
+  return true;
+}
+
 bool D3D12GpuPathTracer::create_root_sig_and_pso() {
-  // Root sig: param0 = 25 32-bit constants (b0), param1 = descriptor table
+  // Root sig: param0 = compile-time constants (b0), param1 = descriptor table
   D3D12_ROOT_PARAMETER params[2]{};
   // Root constants (b0)
   params[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
   params[0].Constants.ShaderRegister = 0;
   params[0].Constants.RegisterSpace  = 0;
-  params[0].Constants.Num32BitValues = 28;
+  params[0].Constants.Num32BitValues = kPathTraceRoot32BitValues;
   params[0].ShaderVisibility         = D3D12_SHADER_VISIBILITY_ALL;
   // Descriptor table (t0-t4 SRV + u0 UAV)
+  // Descriptor table (t0-t6 SRV + u0 UAV at slot 7)
   D3D12_DESCRIPTOR_RANGE ranges[2]{};
   ranges[0].RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-  ranges[0].NumDescriptors     = 5;
+  ranges[0].NumDescriptors     = 7;
   ranges[0].BaseShaderRegister = 0;
   ranges[0].RegisterSpace      = 0;
   ranges[0].OffsetInDescriptorsFromTableStart = 0;
@@ -466,7 +1235,7 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
   ranges[1].NumDescriptors     = 1;
   ranges[1].BaseShaderRegister = 0;
   ranges[1].RegisterSpace      = 0;
-  ranges[1].OffsetInDescriptorsFromTableStart = 5;
+  ranges[1].OffsetInDescriptorsFromTableStart = 7;
   params[1].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
   params[1].DescriptorTable.NumDescriptorRanges = 2;
   params[1].DescriptorTable.pDescriptorRanges   = ranges;
@@ -484,15 +1253,23 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
     if (err) LogError(static_cast<const char*>(err->GetBufferPointer()));
     return false;
   }
-  if (FAILED(m_device->CreateRootSignature(0, sig->GetBufferPointer(),
-      sig->GetBufferSize(), IID_PPV_ARGS(&m_rootSig)))) {
-    m_error = "CreateRootSignature"; return false;
+  const HRESULT createRootHr = m_device->CreateRootSignature(0, sig->GetBufferPointer(),
+      sig->GetBufferSize(), IID_PPV_ARGS(&m_rootSig));
+  if (FAILED(createRootHr)) {
+    m_error = "CreateRootSignature hr=" + FormatHr(createRootHr);
+    LogError("create_root_sig_and_pso: " + m_error);
+    return false;
   }
 
   // Load HLSL source and compile at runtime
   std::ifstream f(m_hlslPath, std::ios::binary | std::ios::ate);
-  if (!f.is_open()) { m_error = "Cannot open HLSL: " + m_hlslPath; return false; }
+  if (!f.is_open()) {
+    m_error = "Cannot open HLSL: " + m_hlslPath;
+    LogError("create_root_sig_and_pso: " + m_error);
+    return false;
+  }
   const auto sz = static_cast<size_t>(f.tellg());
+  LogDebug("compile shader " + m_hlslPath + " size=" + std::to_string(sz) + " bytes");
   f.seekg(0);
   std::string src(sz, '\0');
   f.read(&src[0], static_cast<std::streamsize>(sz));
@@ -518,16 +1295,26 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
   pso.pRootSignature     = m_rootSig.Get();
   pso.CS.pShaderBytecode  = csBlob->GetBufferPointer();
   pso.CS.BytecodeLength   = csBlob->GetBufferSize();
-  if (FAILED(m_device->CreateComputePipelineState(&pso,
-      IID_PPV_ARGS(&m_pso)))) {
-    m_error = "CreateComputePipelineState"; return false;
+  const HRESULT createPsoHr = m_device->CreateComputePipelineState(&pso,
+      IID_PPV_ARGS(&m_pso));
+  if (FAILED(createPsoHr)) {
+    m_error = "CreateComputePipelineState hr=" + FormatHr(createPsoHr);
+    LogError("create_root_sig_and_pso: " + m_error);
+    return false;
   }
+  LogDebug("compiled shader bytes=" + std::to_string(csBlob->GetBufferSize()));
   LogInfo("D3D12 compute PSO created from " + m_hlslPath);
   return true;
 }
 
 bool D3D12GpuPathTracer::create_film_buffer() {
   const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
+  if (filmSize == 0u) {
+    m_error = "film size is zero";
+    LogError("create_film_buffer: " + m_error);
+    return false;
+  }
+  LogDebug("create_film_buffer pixels=" + std::to_string(m_filmPixels) + " bytes=" + std::to_string(filmSize));
 
   // Default heap (GPU-visible UAV)
   D3D12_HEAP_PROPERTIES defhp{D3D12_HEAP_TYPE_DEFAULT};
@@ -541,9 +1328,12 @@ bool D3D12GpuPathTracer::create_film_buffer() {
   rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
   rd.SampleDesc.Count = 1;
   rd.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-  if (FAILED(m_device->CreateCommittedResource(&defhp, D3D12_HEAP_FLAG_NONE, &rd,
-      D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_filmBuf)))) {
-    m_error = "film buf"; return false;
+  const HRESULT createFilmHr = m_device->CreateCommittedResource(&defhp, D3D12_HEAP_FLAG_NONE, &rd,
+      D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_filmBuf));
+  if (FAILED(createFilmHr)) {
+    m_error = "film buf hr=" + FormatHr(createFilmHr);
+    LogError("create_film_buffer: " + m_error);
+    return false;
   }
 
   // Readback buffer
@@ -557,25 +1347,60 @@ bool D3D12GpuPathTracer::create_film_buffer() {
   rd2.Format           = DXGI_FORMAT_UNKNOWN;
   rd2.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
   rd2.SampleDesc.Count = 1;
-  if (FAILED(m_device->CreateCommittedResource(&rdhp, D3D12_HEAP_FLAG_NONE, &rd2,
-      D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_filmReadbackBuf)))) {
-    m_error = "film readback buf"; return false;
+  const HRESULT createReadbackHr = m_device->CreateCommittedResource(&rdhp, D3D12_HEAP_FLAG_NONE, &rd2,
+      D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_filmReadbackBuf));
+  if (FAILED(createReadbackHr)) {
+    m_error = "film readback buf hr=" + FormatHr(createReadbackHr);
+    LogError("create_film_buffer: " + m_error);
+    return false;
   }
-  m_filmReadbackBuf->Map(0, nullptr, &m_filmReadbackPtr);
+  const HRESULT mapReadbackHr = m_filmReadbackBuf->Map(0, nullptr, &m_filmReadbackPtr);
+  if (FAILED(mapReadbackHr)) {
+    m_error = "film readback map hr=" + FormatHr(mapReadbackHr);
+    LogError("create_film_buffer: " + m_error);
+    return false;
+  }
   return true;
 }
 
 bool D3D12GpuPathTracer::upload_scene_buffers() {
-  wait_for_gpu();
-  if (FAILED(m_cmdAllocator->Reset())) return false;
-  if (FAILED(m_cmdList->Reset(m_cmdAllocator.Get(), nullptr))) return false;
+  if (!wait_for_gpu()) {
+    m_error = "wait_for_gpu before scene upload";
+    LogError("upload_scene_buffers: " + m_error);
+    return false;
+  }
+  if (FAILED(m_cmdAllocator->Reset())) {
+    m_error = "upload cmd allocator reset";
+    LogError("upload_scene_buffers: " + m_error);
+    return false;
+  }
+  if (FAILED(m_cmdList->Reset(m_cmdAllocator.Get(), nullptr))) {
+    m_error = "upload cmd list reset";
+    LogError("upload_scene_buffers: " + m_error);
+    return false;
+  }
 
-  struct UploadInfo { UINT64 size; ID3D12Resource** dstBuf; const void* data; };
   UINT64 offset = 0;
   auto align = [](UINT64 x) { return (x + 255ull) & ~255ull; };
 
-  auto stage = [&](const void* data, UINT64 size, ID3D12Resource** dst) {
-    if (offset + size > m_uploadSize) return false;
+  auto stage = [&](const char* name, const void* data, UINT64 size, ID3D12Resource** dst) {
+    const bool shouldLogUpload = g_d3d12SceneUploadCalls < 8u;
+    if (shouldLogUpload) {
+      std::ostringstream stageInfo;
+      stageInfo << "upload_scene stage begin name=" << name << " bytes=" << size;
+      LogDebug(stageInfo.str());
+    }
+    if (offset + size > m_uploadSize) {
+      m_error = std::string("upload_scene_buffers overflow for ") + name;
+      LogError("upload_scene_buffers: " + m_error);
+      return false;
+    }
+    if (!data || size == 0u) {
+      m_error = std::string("upload_scene_buffers invalid data for ") + name;
+      LogError("upload_scene_buffers: " + m_error);
+      return false;
+    }
+    const UINT64 stagedOffset = offset;
     std::memcpy(static_cast<uint8_t*>(m_uploadPtr) + offset, data, static_cast<size_t>(size));
 
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
@@ -584,41 +1409,79 @@ bool D3D12GpuPathTracer::upload_scene_buffers() {
     rd.DepthOrArraySize=1; rd.MipLevels=1; rd.Format=DXGI_FORMAT_UNKNOWN;
     rd.Layout=D3D12_TEXTURE_LAYOUT_ROW_MAJOR; rd.SampleDesc.Count=1;
     if (FAILED(m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
-        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(dst))))
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(dst)))) {
+      m_error = "upload_stage create resource failed";
+      LogError("upload_scene_buffers: " + m_error);
       return false;
+    }
+    ++g_d3d12SceneUploadCalls;
+    if (shouldLogUpload) {
+      std::ostringstream st;
+      st << "upload_scene stage " << name << " offset=" << stagedOffset
+         << " bytes=" << size;
+      if (size > 0u && std::strcmp(name, "verts") == 0) {
+        st << " first=" << FormatFirstN(reinterpret_cast<const float*>(data), size / sizeof(float), 8u);
+      } else if (size > 0u && (std::strcmp(name, "mats") == 0 || std::strcmp(name, "lights") == 0)) {
+        st << " first=" << FormatFirstN(reinterpret_cast<const float*>(data), size / sizeof(float), 8u);
+      } else if (size > 0u && (std::strcmp(name, "idx") == 0 || std::strcmp(name, "inst") == 0)) {
+        st << " first=" << FormatFirstN(reinterpret_cast<const uint32_t*>(data), size / sizeof(uint32_t), 8u);
+      }
+      LogDebug(st.str());
+    }
     m_cmdList->CopyBufferRegion(*dst, 0, m_uploadBuf.Get(), offset, size);
     offset = align(offset + size);
     return true;
   };
 
-  if (!stage(m_gpuVerts.data(),  m_gpuVerts.size()  * sizeof(float), &m_vertBuf)) return false;
-  if (!stage(m_gpuIdx.data(),    m_gpuIdx.size()    * sizeof(uint32_t), &m_idxBuf)) return false;
-  if (!stage(m_gpuMats.data(),   m_gpuMats.size()   * sizeof(float), &m_matBuf)) return false;
-  if (!stage(m_gpuInsts.data(),  m_gpuInsts.size()  * sizeof(uint32_t), &m_instBuf)) return false;
-  if (!stage(m_gpuLights.data(), m_gpuLights.size() * sizeof(float), &m_ltBuf)) return false;
+  if (!stage("verts", m_gpuVerts.data(),  m_gpuVerts.size()  * sizeof(float), &m_vertBuf)) return false;
+  if (!stage("idx", m_gpuIdx.data(),      m_gpuIdx.size()    * sizeof(uint32_t), &m_idxBuf)) return false;
+  if (!stage("mats", m_gpuMats.data(),   m_gpuMats.size()   * sizeof(float), &m_matBuf)) return false;
+  if (!stage("inst", m_gpuInsts.data(),  m_gpuInsts.size()  * sizeof(uint32_t), &m_instBuf)) return false;
+  if (!stage("lights", m_gpuLights.data(), m_gpuLights.size() * sizeof(float), &m_ltBuf)) return false;
+
+  if (!stage("bvh",    m_gpuBvh.data(),    m_gpuBvh.size()    * sizeof(float),    &m_bvhBuf))    return false;
+  if (!stage("trimat", m_gpuTriMat.data(), m_gpuTriMat.size() * sizeof(uint32_t), &m_triMatBuf)) return false;
 
   // Transition all to non-pixel shader resource
-  D3D12_RESOURCE_BARRIER barriers[5]{};
+  D3D12_RESOURCE_BARRIER barriers[7]{};
   ID3D12Resource* bufs[] = {m_vertBuf.Get(), m_idxBuf.Get(), m_matBuf.Get(),
-                            m_instBuf.Get(), m_ltBuf.Get()};
-  for (int i = 0; i < 5; ++i) {
+                            m_instBuf.Get(), m_ltBuf.Get(), m_bvhBuf.Get(), m_triMatBuf.Get()};
+  for (int i = 0; i < 7; ++i) {
     barriers[i].Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barriers[i].Transition.pResource=bufs[i];
     barriers[i].Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_DEST;
     barriers[i].Transition.StateAfter=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     barriers[i].Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
   }
-  m_cmdList->ResourceBarrier(5, barriers);
-  m_cmdList->Close();
+  m_cmdList->ResourceBarrier(7, barriers);
+  const auto closeRes = m_cmdList->Close();
+  if (FAILED(closeRes)) {
+    m_error = "cmd list close";
+    LogError("upload_scene_buffers: " + m_error);
+    return false;
+  }
   ID3D12CommandList* lists[] = {m_cmdList.Get()};
   m_cmdQueue->ExecuteCommandLists(1, lists);
-  wait_for_gpu();
+  if (!wait_for_gpu()) {
+    m_error = "wait_for_gpu failed";
+    LogError("upload_scene_buffers: " + m_error);
+    return false;
+  }
+  const auto removeHr = m_device->GetDeviceRemovedReason();
+  if (FAILED(removeHr)) {
+    m_error = "device removed during upload_scene_buffers hr=" + FormatHr(removeHr);
+    LogError("upload_scene_buffers: " + m_error);
+    return false;
+  }
+  LogDebug("upload_scene_buffers complete");
   return true;
 }
 
 void D3D12GpuPathTracer::destroy_scene_buffers() {
   m_vertBuf.Reset(); m_idxBuf.Reset(); m_matBuf.Reset();
   m_instBuf.Reset(); m_ltBuf.Reset();
+  m_bvhBuf.Reset();  m_triMatBuf.Reset();
+  m_srvUavHeap.Reset();
   m_sceneUploaded = false;
 }
 
@@ -627,15 +1490,795 @@ void D3D12GpuPathTracer::destroy_film_buffer() {
   m_filmReadbackPtr = nullptr;
   m_filmReadbackBuf.Reset();
   m_filmBuf.Reset();
+  m_srvUavHeap.Reset();
 }
 
-void D3D12GpuPathTracer::wait_for_gpu() {
+bool D3D12GpuPathTracer::wait_for_gpu() {
   ++m_fenceValue;
-  m_cmdQueue->Signal(m_fence.Get(), m_fenceValue);
-  if (m_fence->GetCompletedValue() < m_fenceValue) {
-    m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent);
-    WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+  const HRESULT signalHr = m_cmdQueue->Signal(m_fence.Get(), m_fenceValue);
+  if (FAILED(signalHr)) {
+    m_error = "Signal failed hr=" + FormatHr(signalHr);
+    LogError("wait_for_gpu: " + m_error);
+    return false;
   }
+  if (m_fence->GetCompletedValue() < m_fenceValue) {
+    const HRESULT setEvHr = m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent);
+    if (FAILED(setEvHr)) {
+      m_error = "SetEventOnCompletion failed hr=" + FormatHr(setEvHr);
+      LogError("wait_for_gpu: " + m_error);
+      return false;
+    }
+    const DWORD waitRes = WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+    if (waitRes != WAIT_OBJECT_0) {
+      m_error = "WaitForSingleObjectEx failed code=" + std::to_string(waitRes);
+      LogError("wait_for_gpu: " + m_error);
+      return false;
+    }
+    return true;
+  }
+  return true;
+}
+
+// ============================================================================
+// DXR: compile DXIL, create global root sig, build pipeline, build AS, dispatch
+// ============================================================================
+
+bool D3D12GpuPathTracer::wait_for_dxr_gpu() {
+  ++m_dxrFenceValue;
+  const HRESULT signalHr = m_dxrCmdQueue->Signal(m_dxrFence.Get(), m_dxrFenceValue);
+  if (FAILED(signalHr)) {
+    m_error = "dxr Signal hr=" + FormatHr(signalHr);
+    LogError("wait_for_dxr_gpu: " + m_error);
+    return false;
+  }
+  if (m_dxrFence->GetCompletedValue() < m_dxrFenceValue) {
+    m_dxrFence->SetEventOnCompletion(m_dxrFenceValue, m_dxrFenceEvent);
+    if (WaitForSingleObjectEx(m_dxrFenceEvent, INFINITE, FALSE) != WAIT_OBJECT_0) {
+      m_error = "dxr WaitForSingleObjectEx failed";
+      LogError("wait_for_dxr_gpu: " + m_error);
+      return false;
+    }
+  }
+  return true;
+}
+
+void D3D12GpuPathTracer::destroy_dxr_resources() {
+  if (m_sbtMappedPtr && m_sbtBuffer) { m_sbtBuffer->Unmap(0, nullptr); m_sbtMappedPtr = nullptr; }
+  m_rtPsoProps.Reset();    m_rtPso.Reset();
+  m_sbtBuffer.Reset();     m_dxrDescHeap.Reset();
+  m_dxrGlobalRootSig.Reset();
+  m_blasBuffer.Reset();    m_blasScratch.Reset();
+  m_tlasBuffer.Reset();    m_tlasScratch.Reset();
+  m_tlasInstanceBuf.Reset();
+  if (m_dxrFenceEvent) { CloseHandle(m_dxrFenceEvent); m_dxrFenceEvent = nullptr; }
+  m_dxrFence.Reset();
+  m_dxrAccelReady    = false;
+  m_dxrPipelineReady = false;
+}
+
+bool D3D12GpuPathTracer::compile_dxil(const std::string& path, std::vector<uint8_t>& outDxil) {
+  // Load dxil.dll FIRST (for signing), then dxcompiler.dll
+  static HMODULE s_dxcLib = nullptr;
+  if (!s_dxcLib) {
+    const wchar_t* kSdkDir =
+        L"C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\";
+    // Pre-load dxil.dll so DXC can find it for DXIL signing
+    wchar_t dxilPath[MAX_PATH]{};
+    wcscpy_s(dxilPath, kSdkDir); wcscat_s(dxilPath, L"dxil.dll");
+    HMODULE dxilMod = LoadLibraryW(dxilPath);
+    if (!dxilMod) {
+      // Try bare name (might be in PATH)
+      dxilMod = LoadLibraryW(L"dxil.dll");
+    }
+    if (dxilMod) LogDebug("compile_dxil: dxil.dll loaded for signing");
+    else          LogInfo("compile_dxil: dxil.dll not found — DXIL will be unsigned");
+
+    // Load dxcompiler.dll
+    wchar_t dxcPath[MAX_PATH]{};
+    wcscpy_s(dxcPath, kSdkDir); wcscat_s(dxcPath, L"dxcompiler.dll");
+    s_dxcLib = LoadLibraryW(dxcPath);
+    if (!s_dxcLib) s_dxcLib = LoadLibraryW(L"dxcompiler.dll");
+    if (!s_dxcLib) {
+      m_error = "dxcompiler.dll not found";
+      LogError("compile_dxil: " + m_error);
+      return false;
+    }
+  }
+
+  typedef HRESULT (__stdcall *PFN_DxcCreate)(REFCLSID, REFIID, LPVOID*);
+  auto dxcCreate = (PFN_DxcCreate)GetProcAddress(s_dxcLib, "DxcCreateInstance");
+  if (!dxcCreate) {
+    m_error = "DxcCreateInstance not in dxcompiler.dll";
+    LogError("compile_dxil: " + m_error);
+    return false;
+  }
+
+  Microsoft::WRL::ComPtr<IDxcUtils>     utils;
+  Microsoft::WRL::ComPtr<IDxcCompiler3> compiler;
+  if (FAILED(dxcCreate(CLSID_DxcUtils, IID_PPV_ARGS(&utils))) ||
+      FAILED(dxcCreate(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler)))) {
+    m_error = "DXC utils/compiler create failed";
+    LogError("compile_dxil: " + m_error);
+    return false;
+  }
+
+  Microsoft::WRL::ComPtr<IDxcBlobEncoding> sourceBlob;
+  std::wstring wpath(path.begin(), path.end());
+  if (FAILED(utils->LoadFile(wpath.c_str(), nullptr, &sourceBlob))) {
+    m_error = "DXC LoadFile failed: " + path;
+    LogError("compile_dxil: " + m_error);
+    return false;
+  }
+
+  DxcBuffer src{};
+  src.Ptr      = sourceBlob->GetBufferPointer();
+  src.Size     = sourceBlob->GetBufferSize();
+  src.Encoding = DXC_CP_ACP;
+
+  LPCWSTR args[] = { L"-T", L"lib_6_3", L"-HV", L"2021" };
+  Microsoft::WRL::ComPtr<IDxcResult> result;
+  HRESULT hr = compiler->Compile(&src, args, ARRAYSIZE(args), nullptr, IID_PPV_ARGS(&result));
+
+  Microsoft::WRL::ComPtr<IDxcBlobUtf8> errors;
+  if (SUCCEEDED(result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr))
+      && errors && errors->GetStringLength() > 0) {
+    LogError("DXC errors:\n" + std::string(errors->GetStringPointer(), errors->GetStringLength()));
+  }
+
+  HRESULT status = E_FAIL;
+  if (result) result->GetStatus(&status);
+  if (FAILED(hr) || FAILED(status)) {
+    m_error = "DXC compile failed for " + path;
+    LogError("compile_dxil: " + m_error);
+    return false;
+  }
+
+  Microsoft::WRL::ComPtr<IDxcBlob> dxilBlob;
+  if (FAILED(result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&dxilBlob), nullptr))
+      || !dxilBlob || dxilBlob->GetBufferSize() == 0) {
+    m_error = "DXC produced empty DXIL blob";
+    LogError("compile_dxil: " + m_error);
+    return false;
+  }
+
+  outDxil.resize(dxilBlob->GetBufferSize());
+  std::memcpy(outDxil.data(), dxilBlob->GetBufferPointer(), outDxil.size());
+  LogInfo("DXR shader compiled " + std::to_string(outDxil.size()) + " bytes from " + path);
+  return true;
+}
+
+bool D3D12GpuPathTracer::create_dxr_global_root_sig() {
+  // Param 0: root constants (PCBuf = 28 DWORDs) at b0
+  // Param 1: root SRV at t0 (TLAS)
+  // Param 2: descriptor table [t1-t6 SRV, u0 UAV]
+  D3D12_ROOT_PARAMETER params[3]{};
+  params[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+  params[0].Constants.ShaderRegister = 0;
+  params[0].Constants.RegisterSpace  = 0;
+  params[0].Constants.Num32BitValues = kPathTraceRoot32BitValues;
+  params[0].ShaderVisibility         = D3D12_SHADER_VISIBILITY_ALL;
+  params[1].ParameterType                = D3D12_ROOT_PARAMETER_TYPE_SRV;
+  params[1].Descriptor.ShaderRegister   = 0;   // t0
+  params[1].Descriptor.RegisterSpace    = 0;
+  params[1].ShaderVisibility            = D3D12_SHADER_VISIBILITY_ALL;
+
+  D3D12_DESCRIPTOR_RANGE ranges[2]{};
+  ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+  ranges[0].NumDescriptors = 6;          // t1-t6
+  ranges[0].BaseShaderRegister = 1;
+  ranges[0].RegisterSpace = 0;
+  ranges[0].OffsetInDescriptorsFromTableStart = 0;
+  ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+  ranges[1].NumDescriptors = 1;          // u0
+  ranges[1].BaseShaderRegister = 0;
+  ranges[1].RegisterSpace = 0;
+  ranges[1].OffsetInDescriptorsFromTableStart = 6;
+  params[2].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  params[2].DescriptorTable.NumDescriptorRanges = 2;
+  params[2].DescriptorTable.pDescriptorRanges   = ranges;
+  params[2].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_ALL;
+
+  D3D12_ROOT_SIGNATURE_DESC rsd{};
+  rsd.NumParameters = 3;
+  rsd.pParameters   = params;
+  rsd.Flags         = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+  Microsoft::WRL::ComPtr<ID3DBlob> sig, err;
+  HRESULT hr = D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err);
+  if (FAILED(hr)) {
+    m_error = "dxr SerializeRootSignature";
+    if (err) LogError(static_cast<const char*>(err->GetBufferPointer()));
+    return false;
+  }
+  const HRESULT createHr = m_device->CreateRootSignature(0, sig->GetBufferPointer(),
+      sig->GetBufferSize(), IID_PPV_ARGS(&m_dxrGlobalRootSig));
+  if (FAILED(createHr)) {
+    m_error = "dxr CreateRootSignature hr=" + FormatHr(createHr);
+    LogError("create_dxr_global_root_sig: " + m_error);
+    return false;
+  }
+  LogDebug("DXR global root sig created");
+  return true;
+}
+
+bool D3D12GpuPathTracer::create_dxr_pipeline() {
+  if (!create_dxr_global_root_sig()) return false;
+
+  // Compile DXIL library
+  std::vector<uint8_t> dxil;
+  if (!compile_dxil(m_rtHlslPath, dxil)) return false;
+
+  // Subobject array: library, hitgroup, shaderconfig, pipelineconfig, globalrootsig
+  constexpr UINT kNumSubobjects = 5;
+  D3D12_STATE_SUBOBJECT subobjects[kNumSubobjects]{};
+  UINT si = 0;
+
+  // 1. DXIL library
+  D3D12_EXPORT_DESC exports[3]{};
+  exports[0] = {L"RayGen",    nullptr, D3D12_EXPORT_FLAG_NONE};
+  exports[1] = {L"Miss",      nullptr, D3D12_EXPORT_FLAG_NONE};
+  exports[2] = {L"ClosestHit",nullptr, D3D12_EXPORT_FLAG_NONE};
+  D3D12_DXIL_LIBRARY_DESC libDesc{};
+  libDesc.DXILLibrary = {dxil.data(), dxil.size()};
+  libDesc.NumExports  = 3;
+  libDesc.pExports    = exports;
+  subobjects[si++] = {D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &libDesc};
+
+  // 2. Hit group
+  D3D12_HIT_GROUP_DESC hitGroup{};
+  hitGroup.HitGroupExport          = L"HitGroup0";
+  hitGroup.Type                    = D3D12_HIT_GROUP_TYPE_TRIANGLES;
+  hitGroup.ClosestHitShaderImport  = L"ClosestHit";
+  hitGroup.AnyHitShaderImport      = nullptr;
+  hitGroup.IntersectionShaderImport= nullptr;
+  subobjects[si++] = {D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &hitGroup};
+
+  // 3. Shader config (payload + attribute sizes)
+  D3D12_RAYTRACING_SHADER_CONFIG shaderCfg{};
+  shaderCfg.MaxPayloadSizeInBytes   = 64; // sizeof(PathPayload) in HLSL
+  shaderCfg.MaxAttributeSizeInBytes = 8;  // float2 barycentrics
+  subobjects[si++] = {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shaderCfg};
+
+  // 4. Pipeline config (max recursion = 1 since we loop in raygen)
+  D3D12_RAYTRACING_PIPELINE_CONFIG pipelineCfg{};
+  pipelineCfg.MaxTraceRecursionDepth = 1;
+  subobjects[si++] = {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &pipelineCfg};
+
+  // 5. Global root signature
+  D3D12_GLOBAL_ROOT_SIGNATURE globalRootSig{};
+  globalRootSig.pGlobalRootSignature = m_dxrGlobalRootSig.Get();
+  subobjects[si++] = {D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &globalRootSig};
+
+  D3D12_STATE_OBJECT_DESC soDesc{};
+  soDesc.Type          = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
+  soDesc.NumSubobjects = si;
+  soDesc.pSubobjects   = subobjects;
+
+  const HRESULT soHr = m_device5->CreateStateObject(&soDesc, IID_PPV_ARGS(&m_rtPso));
+  if (FAILED(soHr)) {
+    m_error = "CreateStateObject (DXR pipeline) hr=" + FormatHr(soHr);
+    LogError("create_dxr_pipeline: " + m_error);
+    return false;
+  }
+  const HRESULT propsHr = m_rtPso->QueryInterface(IID_PPV_ARGS(&m_rtPsoProps));
+  if (FAILED(propsHr)) {
+    m_error = "QueryInterface ID3D12StateObjectProperties hr=" + FormatHr(propsHr);
+    LogError("create_dxr_pipeline: " + m_error);
+    return false;
+  }
+
+  // Build shader binding table (3 x 64-byte records: raygen, miss, hitgroup)
+  constexpr UINT kSbtRecordSize  = 32; // D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES
+  constexpr UINT kSbtRecordAlign = 64; // D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT
+  constexpr UINT kSbtTotalBytes  = kSbtRecordAlign * 3; // raygen + miss + hitgroup
+
+  D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
+  D3D12_RESOURCE_DESC   rd{};
+  rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+  rd.Width            = kSbtTotalBytes;
+  rd.Height           = 1;
+  rd.DepthOrArraySize = 1;
+  rd.MipLevels        = 1;
+  rd.Format           = DXGI_FORMAT_UNKNOWN;
+  rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  rd.SampleDesc.Count = 1;
+
+  const HRESULT sbtHr = m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+      D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_sbtBuffer));
+  if (FAILED(sbtHr)) {
+    m_error = "SBT CreateCommittedResource hr=" + FormatHr(sbtHr);
+    LogError("create_dxr_pipeline: " + m_error);
+    return false;
+  }
+  m_sbtBuffer->Map(0, nullptr, &m_sbtMappedPtr);
+  std::memset(m_sbtMappedPtr, 0, kSbtTotalBytes);
+
+  auto* sbtBytes = static_cast<uint8_t*>(m_sbtMappedPtr);
+  void* rayGenId  = m_rtPsoProps->GetShaderIdentifier(L"RayGen");
+  void* missId    = m_rtPsoProps->GetShaderIdentifier(L"Miss");
+  void* hitId     = m_rtPsoProps->GetShaderIdentifier(L"HitGroup0");
+  if (!rayGenId || !missId || !hitId) {
+    m_error = "GetShaderIdentifier returned null — names may not match PSO exports";
+    LogError("create_dxr_pipeline: " + m_error);
+    return false;
+  }
+  std::memcpy(sbtBytes + 0,              rayGenId, kSbtRecordSize);
+  std::memcpy(sbtBytes + kSbtRecordAlign, missId,  kSbtRecordSize);
+  std::memcpy(sbtBytes + kSbtRecordAlign * 2, hitId, kSbtRecordSize);
+
+  m_dxrPipelineReady = true;
+  LogInfo("DXR pipeline ready; SBT written (" + std::to_string(kSbtTotalBytes) + " bytes)");
+  return true;
+}
+
+bool D3D12GpuPathTracer::create_dxr_desc_heap() {
+  // 7 descriptors: slots 0-5 → scene SRVs (t1-t6), slot 6 → film UAV (u0)
+  D3D12_DESCRIPTOR_HEAP_DESC dh{};
+  dh.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+  dh.NumDescriptors = 7;
+  dh.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  const HRESULT hr = m_device->CreateDescriptorHeap(&dh, IID_PPV_ARGS(&m_dxrDescHeap));
+  if (FAILED(hr)) {
+    m_error = "dxr CreateDescriptorHeap hr=" + FormatHr(hr);
+    LogError("create_dxr_desc_heap: " + m_error);
+    return false;
+  }
+
+  const UINT inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu = m_dxrDescHeap->GetCPUDescriptorHandleForHeapStart();
+
+  auto makeSrv = [&](UINT slot, ID3D12Resource* buf, UINT64 bytes, DXGI_FORMAT fmt) {
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format                  = fmt;
+    srv.ViewDimension           = D3D12_SRV_DIMENSION_BUFFER;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Buffer.NumElements      = static_cast<UINT>(bytes / 4u);
+    D3D12_CPU_DESCRIPTOR_HANDLE h = cpu;
+    h.ptr += slot * inc;
+    m_device->CreateShaderResourceView(buf, &srv, h);
+  };
+  makeSrv(0, m_vertBuf.Get(),   m_gpuVerts.size()  * sizeof(float),    DXGI_FORMAT_R32_FLOAT);
+  makeSrv(1, m_idxBuf.Get(),    m_gpuIdx.size()    * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+  makeSrv(2, m_matBuf.Get(),    m_gpuMats.size()   * sizeof(float),    DXGI_FORMAT_R32_FLOAT);
+  makeSrv(3, m_instBuf.Get(),   m_gpuInsts.size()  * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+  makeSrv(4, m_ltBuf.Get(),     m_gpuLights.size() * sizeof(float),    DXGI_FORMAT_R32_FLOAT);
+  makeSrv(5, m_triMatBuf.Get(), m_gpuTriMat.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+
+  D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+  uav.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
+  uav.Buffer.NumElements = m_filmPixels;
+  D3D12_CPU_DESCRIPTOR_HANDLE h6 = cpu;
+  h6.ptr += 6 * inc;
+  m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h6);
+  LogDebug("DXR descriptor heap created");
+  return true;
+}
+
+bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
+  if (!m_device5 || !m_dxrCmdList || !m_vertBuf || !m_idxBuf) {
+    m_error = "build_dxr_acceleration_structures: missing device5 or scene buffers";
+    return false;
+  }
+
+  // scene upload already completed (wait_for_gpu called in upload_scene_buffers)
+
+  // ---- BLAS ----------------------------------------------------------------
+  // Log first triangle to verify scene geometry is sensible
+  if (m_gpuVerts.size() >= 9u && m_gpuIdx.size() >= 3u) {
+    const uint32_t i0 = m_gpuIdx[0], i1 = m_gpuIdx[1], i2 = m_gpuIdx[2];
+    std::ostringstream gv;
+    gv << "BLAS geom check: v0=(" << m_gpuVerts[i0*3] << "," << m_gpuVerts[i0*3+1] << "," << m_gpuVerts[i0*3+2]
+       << ") v1=(" << m_gpuVerts[i1*3] << "," << m_gpuVerts[i1*3+1] << "," << m_gpuVerts[i1*3+2]
+       << ") v2=(" << m_gpuVerts[i2*3] << "," << m_gpuVerts[i2*3+1] << "," << m_gpuVerts[i2*3+2] << ")";
+    LogInfo(gv.str());
+  }
+
+  // Use upload-heap copies of vertex/index data so the buffers are always in
+  // GENERIC_READ state (avoids any state-promotion issues with the DEFAULT
+  // heap m_vertBuf / m_idxBuf on certain drivers).
+  {
+    const UINT64 vertBytes = static_cast<UINT64>(m_gpuVerts.size()) * sizeof(float);
+    const UINT64 idxBytes  = static_cast<UINT64>(m_gpuIdx.size())  * sizeof(uint32_t);
+    auto makeUpload = [&](UINT64 bytes, Microsoft::WRL::ComPtr<ID3D12Resource>& out) -> bool {
+      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
+      D3D12_RESOURCE_DESC rd{};
+      rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+      rd.Width     = bytes;
+      rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+      rd.Format = DXGI_FORMAT_UNKNOWN; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+      rd.SampleDesc.Count = 1;
+      return SUCCEEDED(m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+          D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&out)));
+    };
+    if (!makeUpload(vertBytes, m_blasVertUpload) ||
+        !makeUpload(idxBytes,  m_blasIdxUpload)) {
+      m_error = "BLAS upload buf create failed";
+      LogError("build_dxr_acceleration_structures: " + m_error);
+      return false;
+    }
+    void* p = nullptr;
+    m_blasVertUpload->Map(0, nullptr, &p);
+    std::memcpy(p, m_gpuVerts.data(), vertBytes);
+    m_blasVertUpload->Unmap(0, nullptr);
+    m_blasIdxUpload->Map(0, nullptr, &p);
+    std::memcpy(p, m_gpuIdx.data(), idxBytes);
+    m_blasIdxUpload->Unmap(0, nullptr);
+  }
+
+  D3D12_RAYTRACING_GEOMETRY_DESC geomDesc{};
+  geomDesc.Type  = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+  geomDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+  geomDesc.Triangles.VertexBuffer.StartAddress  = m_blasVertUpload->GetGPUVirtualAddress();
+  geomDesc.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 3;
+  geomDesc.Triangles.VertexFormat               = DXGI_FORMAT_R32G32B32_FLOAT;
+  geomDesc.Triangles.VertexCount                = static_cast<UINT>(m_gpuVerts.size() / 3u);
+  geomDesc.Triangles.IndexBuffer                = m_blasIdxUpload->GetGPUVirtualAddress();
+  geomDesc.Triangles.IndexFormat                = DXGI_FORMAT_R32_UINT;
+  geomDesc.Triangles.IndexCount                 = static_cast<UINT>(m_gpuIdx.size());
+
+  D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS blasInputs{};
+  blasInputs.Type         = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+  blasInputs.Flags        = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+  blasInputs.NumDescs     = 1;
+  blasInputs.DescsLayout  = D3D12_ELEMENTS_LAYOUT_ARRAY;
+  blasInputs.pGeometryDescs = &geomDesc;
+
+  D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO blasInfo{};
+  m_device5->GetRaytracingAccelerationStructurePrebuildInfo(&blasInputs, &blasInfo);
+  LogInfo("BLAS prebuild: verts=" + std::to_string(geomDesc.Triangles.VertexCount)
+       + " idx=" + std::to_string(geomDesc.Triangles.IndexCount)
+       + " resultBytes=" + std::to_string(blasInfo.ResultDataMaxSizeInBytes)
+       + " scratchBytes=" + std::to_string(blasInfo.ScratchDataSizeInBytes));
+
+  auto makeAS = [&](UINT64 resultBytes, UINT64 scratchBytes,
+                    Microsoft::WRL::ComPtr<ID3D12Resource>& res,
+                    Microsoft::WRL::ComPtr<ID3D12Resource>& scratch) -> bool {
+    auto makeUavBuf = [&](UINT64 bytes, Microsoft::WRL::ComPtr<ID3D12Resource>& out,
+                          D3D12_RESOURCE_STATES initState) -> bool {
+      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+      D3D12_RESOURCE_DESC rd{};
+      rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+      rd.Width            = bytes;
+      rd.Height           = 1;
+      rd.DepthOrArraySize = 1;
+      rd.MipLevels        = 1;
+      rd.Format           = DXGI_FORMAT_UNKNOWN;
+      rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+      rd.SampleDesc.Count = 1;
+      rd.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+      const HRESULT hr = m_device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+          initState, nullptr, IID_PPV_ARGS(&out));
+      if (FAILED(hr)) { m_error = "AS buf create hr=" + FormatHr(hr); return false; }
+      return true;
+    };
+    if (!makeUavBuf(resultBytes,  res,     D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE)) return false;
+    if (!makeUavBuf(scratchBytes, scratch, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) return false;
+    return true;
+  };
+
+  if (!makeAS(blasInfo.ResultDataMaxSizeInBytes, blasInfo.ScratchDataSizeInBytes,
+              m_blasBuffer, m_blasScratch)) {
+    LogError("build_dxr_acceleration_structures: BLAS alloc: " + m_error);
+    return false;
+  }
+
+  // ---- TLAS ----------------------------------------------------------------
+  D3D12_RAYTRACING_INSTANCE_DESC instDesc{};
+  // Identity 3x4 transform row-major
+  instDesc.Transform[0][0] = instDesc.Transform[1][1] = instDesc.Transform[2][2] = 1.0f;
+  instDesc.InstanceID = 0;
+  instDesc.InstanceMask = 0xFF;
+  instDesc.InstanceContributionToHitGroupIndex = 0;
+  instDesc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
+  instDesc.AccelerationStructure = m_blasBuffer->GetGPUVirtualAddress();
+
+  // Instance upload buffer
+  D3D12_HEAP_PROPERTIES instHp{D3D12_HEAP_TYPE_UPLOAD};
+  D3D12_RESOURCE_DESC   instRd{};
+  instRd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+  instRd.Width            = sizeof(instDesc);
+  instRd.Height           = 1;
+  instRd.DepthOrArraySize = 1;
+  instRd.MipLevels        = 1;
+  instRd.Format           = DXGI_FORMAT_UNKNOWN;
+  instRd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  instRd.SampleDesc.Count = 1;
+  const HRESULT instHr = m_device->CreateCommittedResource(&instHp, D3D12_HEAP_FLAG_NONE, &instRd,
+      D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_tlasInstanceBuf));
+  if (FAILED(instHr)) {
+    m_error = "TLAS instance buf hr=" + FormatHr(instHr);
+    LogError("build_dxr_acceleration_structures: " + m_error);
+    return false;
+  }
+  void* instPtr = nullptr;
+  m_tlasInstanceBuf->Map(0, nullptr, &instPtr);
+  std::memcpy(instPtr, &instDesc, sizeof(instDesc));
+  m_tlasInstanceBuf->Unmap(0, nullptr);
+
+  D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tlasInputs{};
+  tlasInputs.Type          = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+  tlasInputs.Flags         = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+  tlasInputs.NumDescs      = 1;
+  tlasInputs.DescsLayout   = D3D12_ELEMENTS_LAYOUT_ARRAY;
+  tlasInputs.InstanceDescs = m_tlasInstanceBuf->GetGPUVirtualAddress();
+
+  D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO tlasInfo{};
+  m_device5->GetRaytracingAccelerationStructurePrebuildInfo(&tlasInputs, &tlasInfo);
+
+  if (!makeAS(tlasInfo.ResultDataMaxSizeInBytes, tlasInfo.ScratchDataSizeInBytes,
+              m_tlasBuffer, m_tlasScratch)) {
+    LogError("build_dxr_acceleration_structures: TLAS alloc: " + m_error);
+    return false;
+  }
+
+  // ---- Build commands -------------------------------------------------------
+  // Try to build BLAS on the compute command list (same queue as scene upload)
+  // to avoid any cross-queue memory visibility issue.
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> buildList;
+  ID3D12CommandQueue* buildQueue = nullptr;
+  Microsoft::WRL::ComPtr<ID3D12CommandAllocator>     buildAlloc;
+  bool usedComputeQueue = false;
+  if (SUCCEEDED(m_cmdList->QueryInterface(IID_PPV_ARGS(&buildList)))) {
+    // Compute command list supports CL4 — use it for BLAS build
+    buildQueue = m_cmdQueue.Get();
+    buildAlloc = nullptr;
+    usedComputeQueue = true;
+    LogInfo("BLAS build: using compute queue (CL4 QI succeeded)");
+    if (FAILED(m_cmdAllocator->Reset()) ||
+        FAILED(buildList->Reset(m_cmdAllocator.Get(), nullptr))) {
+      m_error = "compute CL4 reset failed";
+      LogError("build_dxr_acceleration_structures: " + m_error + " — falling back to DXR queue");
+      buildList.Reset();
+      usedComputeQueue = false;
+    }
+  }
+  if (!buildList) {
+    // Fall back to DXR queue
+    if (FAILED(m_dxrCmdAllocator->Reset()) ||
+        FAILED(m_dxrCmdList->Reset(m_dxrCmdAllocator.Get(), nullptr))) {
+      m_error = "dxr cmd list reset";
+      return false;
+    }
+    buildList  = m_dxrCmdList;
+    buildQueue = m_dxrCmdQueue.Get();
+    LogInfo("BLAS build: using DXR queue");
+  }
+
+  D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC blasDesc{};
+  blasDesc.Inputs                           = blasInputs;
+  blasDesc.DestAccelerationStructureData    = m_blasBuffer->GetGPUVirtualAddress();
+  blasDesc.ScratchAccelerationStructureData = m_blasScratch->GetGPUVirtualAddress();
+  buildList->BuildRaytracingAccelerationStructure(&blasDesc, 0, nullptr);
+
+  // UAV barrier between BLAS build and TLAS build
+  D3D12_RESOURCE_BARRIER uavBarrier{};
+  uavBarrier.Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+  uavBarrier.UAV.pResource = m_blasBuffer.Get();
+  buildList->ResourceBarrier(1, &uavBarrier);
+
+  D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC tlasDesc{};
+  tlasDesc.Inputs                           = tlasInputs;
+  tlasDesc.DestAccelerationStructureData    = m_tlasBuffer->GetGPUVirtualAddress();
+  tlasDesc.ScratchAccelerationStructureData = m_tlasScratch->GetGPUVirtualAddress();
+  buildList->BuildRaytracingAccelerationStructure(&tlasDesc, 0, nullptr);
+
+  // Another UAV barrier so dispatch sees complete TLAS
+  uavBarrier.UAV.pResource = m_tlasBuffer.Get();
+  buildList->ResourceBarrier(1, &uavBarrier);
+
+  buildList->Close();
+  ID3D12CommandList* lists[] = {buildList.Get()};
+  buildQueue->ExecuteCommandLists(1, lists);
+  if (usedComputeQueue) {
+    if (!wait_for_gpu()) {
+      LogError("build_dxr_acceleration_structures: compute wait failed: " + m_error);
+      return false;
+    }
+  } else {
+    if (!wait_for_dxr_gpu()) {
+      LogError("build_dxr_acceleration_structures: dxr wait failed: " + m_error);
+      return false;
+    }
+  }
+
+  // Create descriptor heap for scene SRVs + film UAV
+  m_dxrDescHeap.Reset();
+  if (!create_dxr_desc_heap()) return false;
+
+  m_dxrAccelReady = true;
+  LogInfo("DXR BLAS/TLAS built — ready to dispatch");
+  return true;
+}
+
+bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_idx, bool doReadback) {
+  // Use the compute queue's command list (same queue as BLAS build) to avoid
+  // any cross-queue memory visibility issues with the acceleration structures.
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> cl4;
+  if (FAILED(m_cmdList->QueryInterface(IID_PPV_ARGS(&cl4)))) {
+    m_error = "dispatch_dxr_rays: CL4 QI failed — DXR not supported on compute list";
+    LogError(m_error);
+    return false;
+  }
+  if (FAILED(m_cmdAllocator->Reset()) ||
+      FAILED(cl4->Reset(m_cmdAllocator.Get(), nullptr))) {
+    m_error = "dispatch_dxr_rays: cmd list reset failed";
+    LogError("dispatch_dxr_rays: " + m_error);
+    return false;
+  }
+
+  // Build PathTraceConstants (identical layout to compute path)
+  const auto& sc = m_sceneData;
+  auto norm3 = [](float x, float y, float z, float* out) {
+    float l = std::sqrt(x*x + y*y + z*z);
+    if (l < 1e-9f) l = 1.0f;
+    out[0]=x/l; out[1]=y/l; out[2]=z/l;
+  };
+  float fwd[3]; norm3(sc.camera_target.x - sc.camera_position.x,
+      sc.camera_target.y - sc.camera_position.y,
+      sc.camera_target.z - sc.camera_position.z, fwd);
+  float rt[3]  = {fwd[1]*sc.camera_up.z - fwd[2]*sc.camera_up.y,
+                  fwd[2]*sc.camera_up.x - fwd[0]*sc.camera_up.z,
+                  fwd[0]*sc.camera_up.y - fwd[1]*sc.camera_up.x};
+  float rn[3]; norm3(rt[0], rt[1], rt[2], rn);
+  float un[3]; norm3(rn[1]*fwd[2]-rn[2]*fwd[1],
+      rn[2]*fwd[0]-rn[0]*fwd[2], rn[0]*fwd[1]-rn[1]*fwd[0], un);
+
+  PathTraceConstants pc{};
+  pc.camera_pos_x = sc.camera_position.x;
+  pc.camera_pos_y = sc.camera_position.y;
+  pc.camera_pos_z = sc.camera_position.z;
+  pc.fov_tan_half = std::tan(0.5f * sc.camera_fov_deg * 3.14159265f / 180.0f);
+  pc.cam_fwd_x=fwd[0]; pc.cam_fwd_y=fwd[1]; pc.cam_fwd_z=fwd[2];
+  pc.aspect    = static_cast<float>(m_settings.width) /
+                 std::max(1.0f, static_cast<float>(m_settings.height));
+  pc.cam_right_x=rn[0]; pc.cam_right_y=rn[1]; pc.cam_right_z=rn[2];
+  pc.cam_up_x=un[0]; pc.cam_up_y=un[1]; pc.cam_up_z=un[2];
+  pc.sample_index = sample_idx;
+  pc.num_insts    = static_cast<uint32_t>(sc.instances.size());
+  pc.num_mats     = static_cast<uint32_t>(sc.materials.size());
+  pc.num_lights   = static_cast<uint32_t>(sc.lights.size());
+  pc.width        = m_settings.width;
+  pc.height       = m_settings.height;
+  pc.base_seed    = static_cast<uint32_t>(m_settings.seed & 0xFFFFFFFFu)
+                    ^ (frame_idx * 2654435761u);
+  pc.env_r = sc.environment_color.x;
+  pc.env_g = sc.environment_color.y;
+  pc.env_b = sc.environment_color.z;
+  pc.max_depth_f  = static_cast<float>(std::max(1u, m_settings.max_depth));
+  pc.rays_per_pixel = 4u;
+
+  // Set global root signature and bind resources
+  cl4->SetComputeRootSignature(m_dxrGlobalRootSig.Get());
+  cl4->SetComputeRoot32BitConstants(0, kPathTraceRoot32BitValues, &pc, 0);
+  cl4->SetComputeRootShaderResourceView(1, m_tlasBuffer->GetGPUVirtualAddress());
+  ID3D12DescriptorHeap* heaps[] = {m_dxrDescHeap.Get()};
+  cl4->SetDescriptorHeaps(1, heaps);
+  cl4->SetComputeRootDescriptorTable(2, m_dxrDescHeap->GetGPUDescriptorHandleForHeapStart());
+
+  // Transition film to UAV
+  D3D12_RESOURCE_BARRIER rb{};
+  rb.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  rb.Transition.pResource   = m_filmBuf.Get();
+  rb.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+  rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  rb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  cl4->ResourceBarrier(1, &rb);
+
+  // Set pipeline state and dispatch
+  cl4->SetPipelineState1(m_rtPso.Get());
+
+  // Log dispatch constants once
+  {
+    static bool s_logged = false;
+    if (!s_logged) {
+      s_logged = true;
+      std::ostringstream dc;
+      dc << "dispatch_dxr_rays constants: env=(" << pc.env_r << "," << pc.env_g << "," << pc.env_b
+         << ") maxDepth=" << pc.max_depth_f << " rpp=" << pc.rays_per_pixel
+         << " camPos=(" << pc.camera_pos_x << "," << pc.camera_pos_y << "," << pc.camera_pos_z << ")"
+         << " camFwd=(" << pc.cam_fwd_x << "," << pc.cam_fwd_y << "," << pc.cam_fwd_z << ")"
+         << " w=" << pc.width << " h=" << pc.height;
+      LogInfo(dc.str());
+    }
+  }
+
+  constexpr UINT kSbtAlign = 64; // D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT
+  const D3D12_GPU_VIRTUAL_ADDRESS sbtGpu = m_sbtBuffer->GetGPUVirtualAddress();
+  D3D12_DISPATCH_RAYS_DESC drd{};
+  drd.RayGenerationShaderRecord = {sbtGpu + 0,          kSbtAlign};
+  drd.MissShaderTable           = {sbtGpu + kSbtAlign,  kSbtAlign, kSbtAlign};
+  drd.HitGroupTable             = {sbtGpu + kSbtAlign*2, kSbtAlign, kSbtAlign};
+  drd.Width  = m_settings.width;
+  drd.Height = m_settings.height;
+  drd.Depth  = 1;
+  cl4->DispatchRays(&drd);
+
+  const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
+  if (doReadback) {
+    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    cl4->ResourceBarrier(1, &rb);
+    cl4->CopyBufferRegion(m_filmReadbackBuf.Get(), 0, m_filmBuf.Get(), 0, filmSize);
+    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    cl4->ResourceBarrier(1, &rb);
+  } else {
+    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    cl4->ResourceBarrier(1, &rb);
+  }
+
+  cl4->Close();
+  ID3D12CommandList* lists[] = {cl4.Get()};
+  m_cmdQueue->ExecuteCommandLists(1, lists);
+  if (!wait_for_gpu()) {
+    LogError("dispatch_dxr_rays: " + m_error);
+    return false;
+  }
+
+  // Drain any D3D12 InfoQueue messages (debug layer validation errors)
+  {
+    Microsoft::WRL::ComPtr<ID3D12InfoQueue> iq;
+    if (SUCCEEDED(m_device->QueryInterface(IID_PPV_ARGS(&iq)))) {
+      static bool s_iqLogged = false;
+      if (!s_iqLogged) {
+        s_iqLogged = true;
+        const UINT64 n = iq->GetNumStoredMessages();
+        for (UINT64 i = 0; i < n; ++i) {
+          SIZE_T len = 0;
+          iq->GetMessage(i, nullptr, &len);
+          std::vector<char> buf(len);
+          auto* msg = reinterpret_cast<D3D12_MESSAGE*>(buf.data());
+          if (SUCCEEDED(iq->GetMessage(i, msg, &len))) {
+            std::string sev = (msg->Severity == D3D12_MESSAGE_SEVERITY_ERROR)   ? "ERROR"   :
+                              (msg->Severity == D3D12_MESSAGE_SEVERITY_WARNING) ? "WARNING" : "INFO";
+            LogInfo("[D3D12] " + sev + ": " + std::string(msg->pDescription, msg->DescriptionByteLength));
+          }
+        }
+        if (n == 0) LogInfo("[D3D12 InfoQueue] No messages stored");
+      }
+    }
+  }
+  const auto removeHr = m_device->GetDeviceRemovedReason();
+  if (FAILED(removeHr)) {
+    m_error = "device removed during DXR dispatch hr=" + FormatHr(removeHr);
+    LogError("dispatch_dxr_rays: " + m_error);
+    return false;
+  }
+
+  if (doReadback) {
+    const float* src = reinterpret_cast<const float*>(m_filmReadbackPtr);
+    // Probe first few pixels to diagnose black frame
+    {
+      float maxVal = 0.0f;
+      uint32_t nonZero = 0u;
+      for (uint32_t p = 0u; p < std::min(m_filmPixels, 4096u) * 4u; p += 4u) {
+        float ch = std::max({src[p], src[p+1], src[p+2], std::abs(src[p+3])});
+        if (ch > 0.0f) { ++nonZero; maxVal = std::max(maxVal, ch); }
+      }
+      std::ostringstream ds;
+      ds << "dispatch_dxr_rays readback probe: nonZero=" << nonZero
+         << "/" << std::min(m_filmPixels, 4096u)
+         << " maxVal=" << maxVal
+         << " px0=(" << src[0] << "," << src[1] << "," << src[2] << "," << src[3] << ")";
+      LogDebug(ds.str());
+    }
+    m_film.resize(m_settings.width, m_settings.height);
+    m_film.clear();
+    for (uint32_t y = 0; y < m_settings.height; ++y) {
+      for (uint32_t x = 0; x < m_settings.width; ++x) {
+        const uint32_t p   = (y * m_settings.width + x) * 4u;
+        const float    cnt = std::max(1.0f, src[p + 3u]);
+        m_film.add_sample(x, y, {src[p]/cnt, src[p+1]/cnt, src[p+2]/cnt});
+      }
+    }
+  }
+  const uint64_t inc = static_cast<uint64_t>(m_settings.width) * m_settings.height;
+  m_counters.samples += inc;
+  m_counters.rays    += inc * 4u;
+  m_lastSampleIdx     = sample_idx;
+  return true;
 }
 
 }  // namespace vkpt::gpu
