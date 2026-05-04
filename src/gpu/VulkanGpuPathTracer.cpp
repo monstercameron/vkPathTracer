@@ -269,9 +269,10 @@ bool VulkanGpuPathTracer::render_sample_batch(
     }
   }
 
-  m_counters.samples +=
+  const uint64_t sampleInc =
       static_cast<uint64_t>(m_settings.width) * m_settings.height;
-  m_counters.rays    += m_counters.samples;
+  m_counters.samples += sampleInc;
+  m_counters.rays    += sampleInc;
   return true;
 }
 

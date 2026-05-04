@@ -3,7 +3,10 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
+#include <deque>
+#include <iomanip>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
@@ -137,14 +140,33 @@ std::string QuoteShellArg(std::string_view arg) {
 void SetWindowFrameStatus(vkpt::platform::DesktopWindow* window,
                          const vkpt::editor::UiRuntimeState& runtime_state,
                          const vkpt::editor::UiLayoutDocument& layout_state,
-                         vkpt::core::FrameIndex frame_index) {
+                         vkpt::core::FrameIndex frame_index,
+                         std::string_view perf_text) {
   std::ostringstream out;
   out << "vkpt-desktop | frame=" << frame_index
       << " | layout=" << layout_state.active_layout_name
       << " | scene=" << runtime_state.active_scene
       << " | backend=" << runtime_state.active_renderer_backend
       << " | status=" << runtime_state.status_message;
+  if (!perf_text.empty()) {
+    out << " | " << perf_text;
+  }
   window->set_title(out.str());
+}
+
+std::string FormatThroughputKmb(double value_per_second) {
+  const double v = std::max(0.0, value_per_second);
+  std::ostringstream out;
+  if (v < 1.0e3) {
+    out << static_cast<std::uint64_t>(std::llround(v));
+  } else if (v < 1.0e6) {
+    out << std::fixed << std::setprecision(1) << (v / 1.0e3) << "K";
+  } else if (v < 1.0e9) {
+    out << std::fixed << std::setprecision(1) << (v / 1.0e6) << "M";
+  } else {
+    out << std::fixed << std::setprecision(2) << (v / 1.0e9) << "B";
+  }
+  return out.str();
 }
 #endif
 
@@ -1912,6 +1934,9 @@ int main(int argc, char** argv) {
   if (maxDepth != 6)      { config.max_depth     = {maxDepth, vkpt::config::ConfigSource::CliFlag}; }
   if (!outputPath.empty()) { config.output_path  = {std::string(outputPath), vkpt::config::ConfigSource::CliFlag}; }
 
+  // Canonicalize backend aliases (e.g. "dxr" -> "d3d12-dxr").
+  config.backend.value = vkpt::render::NormalizeBackendName(config.backend.value);
+
   vkpt::editor::UiRuntimeState ui_runtime_state = vkpt::editor::CreateDefaultRuntimeState();
   vkpt::editor::SelectionState ui_selection_state = vkpt::editor::CreateDefaultSelectionState();
   vkpt::editor::UiLayoutDocument ui_layout_state = vkpt::editor::CreateDefaultLayout();
@@ -2192,7 +2217,8 @@ int main(int argc, char** argv) {
     }
 #endif
 #ifdef PT_ENABLE_D3D12
-    if (config.backend.value == "d3d12") {
+    if (config.backend.value == "d3d12" || config.backend.value == "d3d12-dxr") {
+      const bool requestDxr = (config.backend.value == "d3d12-dxr");
       const std::string hlslPath =
 #ifdef PT_SHADER_HLSL_PATH
           PT_SHADER_HLSL_PATH;
@@ -2201,27 +2227,53 @@ int main(int argc, char** argv) {
 #endif
       auto gpuTracer = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(hlslPath);
       if (gpuTracer->is_valid()) {
+        gpuTracer->set_prefer_dxr(requestDxr);
+        if (requestDxr && !gpuTracer->dxr_supported()) {
+          const std::string errorMsg =
+              "Requested d3d12-dxr but DXR is not supported on this GPU/device";
+          logger.log(vkpt::log::Severity::Error, "app", errorMsg);
+          writeStatus("error:d3d12_dxr_unsupported", errorMsg);
+          return 1;
+        }
         previewGpuName = gpuTracer->gpu_name();
         std::ostringstream ginfo;
         ginfo << gpuTracer->gpu_name()
               << "  D3D12"
-              << "  " << gpuTracer->vram_mb() << " MB VRAM";
+            << "  " << gpuTracer->vram_mb() << " MB VRAM"
+            << "  DXR=" << (gpuTracer->dxr_supported() ? "yes" : "no")
+            << "(tier " << gpuTracer->dxr_tier_string() << ")";
+        if (requestDxr) {
+          ginfo << "  mode=DXR-phase1";
+        }
         previewGpuInfo = ginfo.str();
         std::cout << "[gpu] " << previewGpuInfo << "\n";
         logger.log(vkpt::log::Severity::Info, "app",
-                   "Using D3D12 GPU path tracer: " + previewGpuInfo);
+                   std::string(requestDxr ? "Using D3D12 DXR path tracer (phase1 compute fallback): "
+                                          : "Using D3D12 GPU path tracer: ") + previewGpuInfo);
         previewTracer = std::move(gpuTracer);
       } else {
-        logger.log(vkpt::log::Severity::Warning, "app",
-                   "D3D12 GPU tracer init failed (" + gpuTracer->last_error() +
-                   "), falling back to CPU tiled");
+        const std::string errorMsg =
+            "D3D12 GPU tracer init failed (" + gpuTracer->last_error() + ")";
+        logger.log(vkpt::log::Severity::Error, "app", errorMsg);
+        writeStatus("error:d3d12_init_failed", errorMsg);
+        return 1;
       }
     }
 #endif
     if (!previewTracer) {
+      const bool allowCpuFallback =
+          (config.backend.value == "cpu-tiled" || config.backend.value == "cpu" ||
+           config.backend.value == "auto" || config.backend.value.empty());
+      if (!allowCpuFallback) {
+        const std::string errorMsg =
+            "Requested backend '" + config.backend.value +
+            "' is unavailable in this build; refusing CPU fallback";
+        logger.log(vkpt::log::Severity::Error, "app", errorMsg);
+        writeStatus("error:backend_unavailable", errorMsg);
+        return 1;
+      }
       if (config.backend.value == "cpu-tiled" || config.backend.value == "cpu" ||
-          config.backend.value == "auto" || config.backend.value.empty() ||
-          config.backend.value == "vulkan" || config.backend.value == "vulkan-compute") {
+          config.backend.value == "auto" || config.backend.value.empty()) {
         vkpt::cpu::TiledRenderConfig tiledConfig{};
         tiledConfig.worker_count = 0;
         previewTracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
@@ -2249,6 +2301,7 @@ int main(int argc, char** argv) {
     bool previewNonBlack = false;
     bool previewRendered = false;
     uint32_t previewSampleIndex = 0u;
+    uint32_t previewD3D12RetryCount = 0u;
     const uint32_t previewPixelCount = previewSettings.width * previewSettings.height;
     std::vector<uint32_t> previewPixelOrder(previewPixelCount);
     uint32_t previewPixelCursor = 0u;
@@ -2370,6 +2423,15 @@ int main(int argc, char** argv) {
                !previewTracer->build_or_update_acceleration() ||
                !previewTracer->reset_accumulation()) {
       previewError = "window preview tracer init failed";
+      std::string previewInitFailureReason;
+#ifdef PT_ENABLE_D3D12
+      if (const auto* d3d12Tracer =
+              dynamic_cast<vkpt::gpu::D3D12GpuPathTracer*>(previewTracer.get())) {
+        previewInitFailureReason = d3d12Tracer->last_error();
+      }
+#endif
+      if (previewInitFailureReason.empty()) previewInitFailureReason = "unavailable";
+      previewError = previewError + " (" + previewInitFailureReason + ")";
       logger.log(vkpt::log::Severity::Error, "traceprobe",
                  "window preview tracer initialization failed",
                  {
@@ -2377,9 +2439,10 @@ int main(int argc, char** argv) {
                    {"width", std::to_string(previewSettings.width)},
                    {"height", std::to_string(previewSettings.height)},
                    {"spp", std::to_string(previewSettings.spp)},
-                   {"max_depth", std::to_string(previewSettings.max_depth)}
-                 },
-                 0);
+                   {"max_depth", std::to_string(previewSettings.max_depth)},
+                   {"error", previewInitFailureReason}
+                  },
+                  0);
     } else {
       previewTracerReady = true;
       previewError.clear();
@@ -2443,6 +2506,13 @@ int main(int argc, char** argv) {
     auto frame = static_cast<vkpt::core::FrameIndex>(0);
     bool running = true;
     std::size_t loggedStartupFrames = 0;
+    auto perfPrevTime = std::chrono::steady_clock::now();
+    std::uint64_t perfPrevRays = 0u;
+    std::deque<double> perfRpsWindow;
+    double perfRpsWindowSum = 0.0;
+    constexpr std::size_t kPerfWindowSize = 12u;
+    constexpr double kRpsBenchmarkTarget = 30.0e6;
+    std::string titlePerfText = "rays/s: 0";
     while (running && window->is_open()) {
       // ---- Render dispatch -----------------------------------------------
       // TiledCpuPathTracer runs on a background thread (bgRenderThread) to
@@ -2540,13 +2610,52 @@ int main(int argc, char** argv) {
           if (!render_ok) {
             previewTracerReady = false;
             previewError = "window preview sample failed";
+            std::string sampleFailureReason;
+            bool d3d12Failure = false;
+#ifdef PT_ENABLE_D3D12
+            if (const auto* d3d12Tracer =
+                    dynamic_cast<vkpt::gpu::D3D12GpuPathTracer*>(previewTracer.get())) {
+              sampleFailureReason = d3d12Tracer->last_error();
+              d3d12Failure = true;
+            }
+#endif
+            const auto counters = previewTracer->read_counters();
             logger.log(vkpt::log::Severity::Error, "traceprobe",
                        "window preview sample failed",
                        {
                          {"sample", std::to_string(previewSampleIndex)},
-                         {"frame", std::to_string(frame)}
+                         {"frame", std::to_string(frame)},
+                         {"accum_samples", std::to_string(counters.samples)},
+                         {"accum_rays", std::to_string(counters.rays)},
+                         {"error", sampleFailureReason.empty() ? "unavailable" : sampleFailureReason}
                        },
                        frame);
+            std::cout << "[ui] preview sample failed: sample=" << previewSampleIndex
+                      << " frame=" << frame
+                      << " accum_samples=" << counters.samples
+                      << " accum_rays=" << counters.rays
+                      << " error=" << (sampleFailureReason.empty() ? "unavailable" : sampleFailureReason)
+                      << "\n";
+            if (d3d12Failure && previewD3D12RetryCount < 2u) {
+              if (previewD3D12RetryCount < 2u && previewTracer->reset_accumulation()) {
+                std::cout << "[ui] preview d3d12 sample failed; retrying sample 0\n";
+                logger.log(vkpt::log::Severity::Warning, "traceprobe",
+                           "window preview d3d12 sample retry",
+                           {
+                             {"attempt", std::to_string(previewD3D12RetryCount + 1u)},
+                             {"accum_samples", std::to_string(counters.samples)},
+                             {"accum_rays", std::to_string(counters.rays)}
+                           },
+                           frame);
+                ++previewD3D12RetryCount;
+                previewSampleIndex = 0u;
+                previewPixelCursor = 0u;
+                resetPreviewPixelOrder(previewSampleIndex);
+                previewError.clear();
+                previewTracerReady = true;
+                continue;
+              }
+            }
             break;
           }
         }
@@ -2811,7 +2920,31 @@ int main(int argc, char** argv) {
                                        ui_event_log, ui_command_history);
       }
 #ifdef _WIN32
-      SetWindowFrameStatus(desktopWindow, ui_runtime_state, ui_layout_state, frame);
+      if (previewTracerReady && previewTracer && !useBgRender) {
+        const auto counters = previewTracer->read_counters();
+        const auto now = std::chrono::steady_clock::now();
+        const double dtSec = std::chrono::duration<double>(now - perfPrevTime).count();
+        if (dtSec > 0.0) {
+          const std::uint64_t currRays = counters.rays;
+          const std::uint64_t deltaRays = (currRays >= perfPrevRays) ? (currRays - perfPrevRays) : 0u;
+          const double instantRps = static_cast<double>(deltaRays) / dtSec;
+          perfRpsWindow.push_back(instantRps);
+          perfRpsWindowSum += instantRps;
+          if (perfRpsWindow.size() > kPerfWindowSize) {
+            perfRpsWindowSum -= perfRpsWindow.front();
+            perfRpsWindow.pop_front();
+          }
+          const double avgRps = (perfRpsWindow.empty())
+              ? instantRps
+              : (perfRpsWindowSum / static_cast<double>(perfRpsWindow.size()));
+          const bool benchmarkPass = (avgRps >= kRpsBenchmarkTarget);
+          titlePerfText = std::string("rays/s: ") + FormatThroughputKmb(avgRps)
+              + "  target>30M:" + (benchmarkPass ? "PASS" : "FAIL");
+          perfPrevRays = currRays;
+          perfPrevTime = now;
+        }
+      }
+      SetWindowFrameStatus(desktopWindow, ui_runtime_state, ui_layout_state, frame, titlePerfText);
       std::ostringstream statusText;
       statusText << "UI shell ready\n"
                  << "backend: " << ui_runtime_state.active_renderer_backend;
@@ -2993,10 +3126,61 @@ int main(int argc, char** argv) {
       if (gpuT->is_valid()) { tracer = std::move(gpuT); }
     }
 #endif
+#ifdef PT_ENABLE_D3D12
+    if (config.backend.value == "d3d12" || config.backend.value == "d3d12-dxr") {
+      const bool requestDxr = (config.backend.value == "d3d12-dxr");
+      const std::string hlslPath =
+#ifdef PT_SHADER_HLSL_PATH
+          PT_SHADER_HLSL_PATH;
+#else
+          "src/shaders/gpu/pathtrace_cs.hlsl";
+#endif
+      auto gpuT = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(hlslPath);
+      if (gpuT->is_valid()) {
+        gpuT->set_prefer_dxr(requestDxr);
+        if (requestDxr && !gpuT->dxr_supported()) {
+          const std::string errorMsg =
+              "Requested d3d12-dxr but DXR is not supported on this GPU/device";
+          std::cerr << errorMsg << "\n";
+          logger.log(vkpt::log::Severity::Error, "app", errorMsg);
+          writeStatus("error:d3d12_dxr_unsupported", errorMsg);
+          recordUiAction("app.render", "render", "d3d12 dxr unsupported",
+                         MakeUnsupportedUiCommand("app.render", "d3d12_dxr_unsupported"));
+          return 2;
+        }
+        tracer = std::move(gpuT);
+        if (requestDxr) {
+          status.selected_renderer_path = "d3d12_dxr_phase1";
+        }
+      } else {
+        const std::string errorMsg =
+            "D3D12 GPU tracer init failed (" + gpuT->last_error() + ")";
+        std::cerr << errorMsg << "\n";
+        logger.log(vkpt::log::Severity::Error, "app", errorMsg);
+        writeStatus("error:d3d12_init_failed", errorMsg);
+        recordUiAction("app.render", "render", "d3d12 render init failed",
+                       MakeUnsupportedUiCommand("app.render", "d3d12_render_init_failed"));
+        return 2;
+      }
+    }
+#endif
     if (!tracer) {
+      const bool allowCpuFallback =
+          (config.backend.value == "cpu-tiled" || config.backend.value == "cpu" ||
+           config.backend.value == "auto" || config.backend.value.empty());
+      if (!allowCpuFallback) {
+        const std::string errorMsg =
+            "Requested backend '" + config.backend.value +
+            "' is unavailable in this build; refusing CPU fallback";
+        std::cerr << errorMsg << "\n";
+        logger.log(vkpt::log::Severity::Error, "app", errorMsg);
+        writeStatus("error:backend_unavailable", errorMsg);
+        recordUiAction("app.render", "render", "backend unavailable",
+                       MakeUnsupportedUiCommand("app.render", "backend_unavailable"));
+        return 2;
+      }
       if (config.backend.value == "cpu-tiled" || config.backend.value == "cpu" ||
-          config.backend.value == "auto"       || config.backend.value.empty() ||
-          config.backend.value == "vulkan"     || config.backend.value == "vulkan-compute") {
+          config.backend.value == "auto"       || config.backend.value.empty()) {
         vkpt::cpu::TiledRenderConfig tiledConfig{};
         tiledConfig.worker_count = 0;
         tracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);

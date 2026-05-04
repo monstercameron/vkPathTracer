@@ -36,11 +36,14 @@ std::string NormalizeBackendName(std::string_view backend_name) {
   if (out == "vulkancompute") {
     out = "vulkan";
   }
+  if (out == "dxr" || out == "d3d12dxr") {
+    out = "d3d12-dxr";
+  }
   return out;
 }
 
 std::vector<std::string> AvailableBackendNames() {
-  return {"auto", "null", "vulkan", "vulkan-compute", "d3d12"};
+  return {"auto", "null", "vulkan", "vulkan-compute", "d3d12", "d3d12-dxr"};
 }
 
 std::unique_ptr<IRenderBackend> CreateBackend(std::string_view backend_name) {
@@ -51,7 +54,7 @@ std::unique_ptr<IRenderBackend> CreateBackend(std::string_view backend_name) {
   if (normalized == "vulkan" || normalized == "vulkan-compute") {
     return std::make_unique<VulkanComputeBackend>();
   }
-  if (normalized == "d3d12") {
+  if (normalized == "d3d12" || normalized == "d3d12-dxr") {
     return std::make_unique<D3D12Backend>();
   }
   if (normalized == "auto" || normalized == "default") {
