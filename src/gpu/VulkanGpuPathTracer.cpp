@@ -327,17 +327,68 @@ bool VulkanGpuPathTracer::init_device() {
   std::vector<VkPhysicalDevice> devs(cnt);
   VK_CHK(vkEnumeratePhysicalDevices(m_instance, &cnt, devs.data()));
 
+  // Enumerate all physical devices and log them to help verify the right GPU
+  // is selected.  We prefer DISCRETE_GPU over INTEGRATED_GPU.
+  auto deviceTypeName = [](VkPhysicalDeviceType t) -> const char* {
+    switch (t) {
+      case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   return "DISCRETE";
+      case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return "INTEGRATED";
+      case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    return "VIRTUAL";
+      case VK_PHYSICAL_DEVICE_TYPE_CPU:            return "CPU";
+      default:                                      return "OTHER";
+    }
+  };
+
   m_physDev = devs[0];
-  for (auto& d : devs) {
+  for (uint32_t i = 0; i < devs.size(); ++i) {
     VkPhysicalDeviceProperties p{};
-    vkGetPhysicalDeviceProperties(d, &p);
-    if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) { m_physDev = d; break; }
+    vkGetPhysicalDeviceProperties(devs[i], &p);
+
+    // Sum DEVICE_LOCAL heap sizes to get VRAM estimate
+    VkPhysicalDeviceMemoryProperties mp{};
+    vkGetPhysicalDeviceMemoryProperties(devs[i], &mp);
+    uint64_t vramBytes = 0;
+    for (uint32_t h = 0; h < mp.memoryHeapCount; ++h)
+      if (mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+        vramBytes += mp.memoryHeaps[h].size;
+    const uint32_t vramMb = static_cast<uint32_t>(vramBytes / (1024u * 1024u));
+    const uint32_t apiMaj = VK_VERSION_MAJOR(p.apiVersion);
+    const uint32_t apiMin = VK_VERSION_MINOR(p.apiVersion);
+
+    std::ostringstream ds;
+    ds << "  [gpu" << i << "] " << p.deviceName
+       << "  type=" << deviceTypeName(p.deviceType)
+       << "  api=" << apiMaj << "." << apiMin
+       << "  vram=" << vramMb << " MB"
+       << (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? "  <-- DISCRETE (preferred)" : "");
+    vkpt::log::Logger::instance().log(vkpt::log::Severity::Info, "vulkan", ds.str());
+
+    if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+      m_physDev = devs[i];   // last discrete wins; keeps highest-perf GPU
   }
+
+  // Confirm selected device
   {
     VkPhysicalDeviceProperties p{};
     vkGetPhysicalDeviceProperties(m_physDev, &p);
-    vkpt::log::Logger::instance().log(vkpt::log::Severity::Info, "vulkan",
-                                      std::string("GPU: ") + p.deviceName);
+    VkPhysicalDeviceMemoryProperties mp{};
+    vkGetPhysicalDeviceMemoryProperties(m_physDev, &mp);
+    uint64_t vramBytes = 0;
+    for (uint32_t h = 0; h < mp.memoryHeapCount; ++h)
+      if (mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+        vramBytes += mp.memoryHeaps[h].size;
+
+    m_gpuName    = p.deviceName;
+    m_vramMb     = static_cast<uint32_t>(vramBytes / (1024u * 1024u));
+    m_apiVersion = p.apiVersion;
+    m_gpuType    = deviceTypeName(p.deviceType);
+
+    std::ostringstream sel;
+    sel << "Selected GPU: " << m_gpuName
+        << "  type=" << m_gpuType
+        << "  api=" << VK_VERSION_MAJOR(m_apiVersion) << "." << VK_VERSION_MINOR(m_apiVersion)
+        << "  vram=" << m_vramMb << " MB";
+    vkpt::log::Logger::instance().log(vkpt::log::Severity::Info, "vulkan", sel.str());
   }
 
   // Compute queue family
