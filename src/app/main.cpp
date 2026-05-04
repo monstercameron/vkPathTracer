@@ -40,6 +40,9 @@
 #ifdef PT_ENABLE_VULKAN
 #include "gpu/VulkanGpuPathTracer.h"
 #endif
+#ifdef PT_ENABLE_D3D12
+#include "gpu/D3D12GpuPathTracer.h"
+#endif
 #include "platform/DesktopPlatform.h"
 #include "platform/HeadlessPlatform.h"
 #include "scene/Scene.h"
@@ -2184,6 +2187,33 @@ int main(int argc, char** argv) {
       } else {
         logger.log(vkpt::log::Severity::Warning, "app",
                    "Vulkan GPU tracer init failed (" + gpuTracer->last_error() +
+                   "), falling back to CPU tiled");
+      }
+    }
+#endif
+#ifdef PT_ENABLE_D3D12
+    if (config.backend.value == "d3d12") {
+      const std::string hlslPath =
+#ifdef PT_SHADER_HLSL_PATH
+          PT_SHADER_HLSL_PATH;
+#else
+          "src/shaders/gpu/pathtrace_cs.hlsl";
+#endif
+      auto gpuTracer = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(hlslPath);
+      if (gpuTracer->is_valid()) {
+        previewGpuName = gpuTracer->gpu_name();
+        std::ostringstream ginfo;
+        ginfo << gpuTracer->gpu_name()
+              << "  D3D12"
+              << "  " << gpuTracer->vram_mb() << " MB VRAM";
+        previewGpuInfo = ginfo.str();
+        std::cout << "[gpu] " << previewGpuInfo << "\n";
+        logger.log(vkpt::log::Severity::Info, "app",
+                   "Using D3D12 GPU path tracer: " + previewGpuInfo);
+        previewTracer = std::move(gpuTracer);
+      } else {
+        logger.log(vkpt::log::Severity::Warning, "app",
+                   "D3D12 GPU tracer init failed (" + gpuTracer->last_error() +
                    "), falling back to CPU tiled");
       }
     }

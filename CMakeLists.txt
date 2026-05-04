@@ -204,6 +204,7 @@ set(PT_CPU_SOURCES
   src/render/backends/BackendFactory.cpp
   src/render/backends/FrameGraph.cpp
   src/render/backends/NullBackend.cpp
+  src/render/backends/D3D12Backend.cpp
   src/render/backends/VulkanBackend.cpp
 )
 
@@ -223,6 +224,10 @@ if(PT_ENABLE_VULKAN)
   list(APPEND PT_CPU_SOURCES src/gpu/VulkanGpuPathTracer.cpp)
 endif()
 
+if(PT_ENABLE_D3D12)
+  list(APPEND PT_CPU_SOURCES src/gpu/D3D12GpuPathTracer.cpp)
+endif()
+
 # ---- ptapp ------------------------------------------------------------------
 add_executable(ptapp
   src/app/main.cpp
@@ -238,9 +243,14 @@ if(PT_ENABLE_VULKAN)
   target_include_directories(ptapp PRIVATE ${Vulkan_INCLUDE_DIRS})
   target_link_libraries(ptapp PRIVATE ${Vulkan_LIBRARIES})
   add_dependencies(ptapp pt_shaders)
-  # Pass SPIR-V file path as a compile definition so main.cpp can locate it
   target_compile_definitions(ptapp PRIVATE
     PT_SHADER_SPV_PATH=\"$<TARGET_FILE_DIR:ptapp>/shaders/pathtrace.spv\")
+endif()
+
+if(PT_ENABLE_D3D12)
+  target_link_libraries(ptapp PRIVATE d3d12 dxgi d3dcompiler)
+  target_compile_definitions(ptapp PRIVATE
+    PT_SHADER_HLSL_PATH=\"${CMAKE_SOURCE_DIR}/src/shaders/gpu/pathtrace_cs.hlsl\")
 endif()
 
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
@@ -264,6 +274,10 @@ target_include_directories(ptbench PRIVATE
 if(PT_ENABLE_VULKAN)
   target_include_directories(ptbench PRIVATE ${Vulkan_INCLUDE_DIRS})
   target_link_libraries(ptbench PRIVATE ${Vulkan_LIBRARIES})
+endif()
+
+if(PT_ENABLE_D3D12)
+  target_link_libraries(ptbench PRIVATE d3d12 dxgi d3dcompiler)
 endif()
 
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
