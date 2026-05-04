@@ -1,4 +1,6 @@
 #include "cpu/TiledCpuPathTracer.h"
+#include "cpu/Avx2PathTracer.h"
+#include "cpu/CpuFeatures.h"
 
 #include <algorithm>
 #include <thread>
@@ -15,6 +17,10 @@ TiledCpuPathTracer::TiledCpuPathTracer(TiledRenderConfig config)
   if (config.deterministic) {
     m_jobSystem->set_deterministic(true);
   }
+
+  // Detect SIMD capability for tile tracer selection
+  const auto features = vkpt::cpu::QueryCpuFeatures();
+  m_simdDispatch = BuildSimdDispatchInfo(features);
 }
 
 TiledCpuPathTracer::~TiledCpuPathTracer() {
@@ -89,7 +95,12 @@ void TiledCpuPathTracer::init_tile_tracers() {
     const uint32_t end_y = std::min(start_y + tile_h, h);
     m_tiles[i].start_y = start_y;
     m_tiles[i].end_y = end_y;
-    m_tiles[i].tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+
+    if (m_simdDispatch.preferred == vkpt::cpu::SimdBackend::X86Avx2) {
+      m_tiles[i].tracer = std::make_unique<vkpt::cpu::Avx2CpuPathTracer>();
+    } else {
+      m_tiles[i].tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+    }
     m_tiles[i].tracer->configure(m_settings);
     m_tiles[i].tracer->load_scene_snapshot(m_scene);
     m_tiles[i].tracer->build_or_update_acceleration();

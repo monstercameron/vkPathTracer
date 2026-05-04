@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 
+#include "cpu/CpuFeatures.h"
 #include "cpu/ParallelBvhBuilder.h"
 #include "jobs/JobSystem.h"
 #include "pathtracer/PathTracer.h"
@@ -33,6 +34,7 @@ class TiledCpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   vkpt::pathtracer::FilmLdr resolve_ldr() const override;
   vkpt::pathtracer::FilmHdr resolve_hdr() const override;
   vkpt::pathtracer::SampleCounters read_counters() const override;
+  const vkpt::pathtracer::FilmBuffer& film() const override { return m_film; }
   void shutdown() override;
 
   // Parallel BVH stats from the last build_or_update_acceleration call.
@@ -54,12 +56,13 @@ class TiledCpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::unique_ptr<vkpt::jobs::JobSystem> m_jobSystem;
   ParallelBvhBuilder m_bvhBuilder;
   BvhBuildStats m_bvhStats{};
+  SimdDispatchInfo m_simdDispatch;
 
-  // One ScalarCpuPathTracer per tile
+  // One IPathTracer per tile (Scalar or AVX2 depending on CPU features)
   struct TileState {
     uint32_t start_y = 0;
     uint32_t end_y = 0;
-    std::unique_ptr<vkpt::pathtracer::ScalarCpuPathTracer> tracer;
+    std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer;
   };
   std::vector<TileState> m_tiles;
   bool m_initialized = false;
