@@ -11,6 +11,7 @@
 #include <wrl/client.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
+#include <dxcapi.h>
 
 #include "pathtracer/PathTracer.h"
 
@@ -30,7 +31,8 @@ struct PathTraceConstants {
     uint32_t num_insts;   uint32_t num_mats;    uint32_t num_lights; uint32_t width;
     uint32_t height;      uint32_t base_seed;   float    env_r;      float env_g;
     float  env_b;         float  max_depth_f;
-    float  _pad[3]; // pad to 112 bytes (multiple of 16)
+    uint32_t rays_per_pixel;
+    float  _pad1; // pad to 112 bytes (multiple of 16)
 };
 static_assert(sizeof(PathTraceConstants) == 112,
               "PathTraceConstants size mismatch (expected 112)");
@@ -56,21 +58,43 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::string last_error() const { return m_error; }
   std::string gpu_name()   const { return m_gpuName; }
   uint32_t    vram_mb()    const { return m_vramMb; }
+  bool        dxr_supported() const { return m_dxrSupported; }
+  std::string dxr_tier_string() const;
+  void        set_prefer_dxr(bool enabled);
+  bool        prefer_dxr() const { return m_preferDxr; }
+  bool        using_dxr_dispatch() const { return m_usingDxrDispatch; }
 
  private:
   bool init_device();
+  bool init_dxr_runtime_objects();
   bool create_root_sig_and_pso();
   bool create_film_buffer();
   bool upload_scene_buffers();
   void destroy_scene_buffers();
   void destroy_film_buffer();
-  void wait_for_gpu();
+  bool wait_for_gpu();
+  // DXR pipeline
+  bool compile_dxil(const std::string& path, std::vector<uint8_t>& outDxil);
+  bool create_dxr_global_root_sig();
+  bool create_dxr_pipeline();
+  bool build_dxr_acceleration_structures();
+  bool create_dxr_desc_heap();
+  bool dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_idx, bool doReadback);
+  bool wait_for_dxr_gpu();
+  void destroy_dxr_resources();
 
   Microsoft::WRL::ComPtr<IDXGIFactory6>  m_factory;
   Microsoft::WRL::ComPtr<ID3D12Device>   m_device;
+  Microsoft::WRL::ComPtr<ID3D12Device5>  m_device5;
   Microsoft::WRL::ComPtr<ID3D12CommandQueue>       m_cmdQueue;
   Microsoft::WRL::ComPtr<ID3D12CommandAllocator>   m_cmdAllocator;
   Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_cmdList;
+  Microsoft::WRL::ComPtr<ID3D12CommandQueue>         m_dxrCmdQueue;
+  Microsoft::WRL::ComPtr<ID3D12CommandAllocator>     m_dxrCmdAllocator;
+  Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> m_dxrCmdList;
+  Microsoft::WRL::ComPtr<ID3D12Fence>                m_dxrFence;
+  HANDLE  m_dxrFenceEvent  = nullptr;
+  UINT64  m_dxrFenceValue  = 0;
   Microsoft::WRL::ComPtr<ID3D12RootSignature>       m_rootSig;
   Microsoft::WRL::ComPtr<ID3D12PipelineState>       m_pso;
   Microsoft::WRL::ComPtr<ID3D12Fence>               m_fence;
@@ -86,9 +110,12 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   Microsoft::WRL::ComPtr<ID3D12Resource> m_matBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_instBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_ltBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_bvhBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_triMatBuf;
 
   Microsoft::WRL::ComPtr<ID3D12Resource> m_filmBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_filmReadbackBuf;
+  Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
   void* m_filmReadbackPtr = nullptr;
 
   vkpt::pathtracer::RenderSettings        m_settings{};
@@ -101,6 +128,29 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::string m_error;
   std::string m_gpuName;
   uint32_t    m_vramMb     = 0;
+  bool        m_dxrSupported = false;
+  D3D12_RAYTRACING_TIER m_dxrTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+  bool        m_dxrRuntimeObjectsReady = false;
+  bool        m_preferDxr = false;
+  bool        m_usingDxrDispatch = false;
+  bool        m_loggedDxrFallback = false;
+  bool        m_dxrAccelReady    = false;
+  bool        m_dxrPipelineReady = false;
+  std::string m_rtHlslPath;
+  // DXR resources
+  Microsoft::WRL::ComPtr<ID3D12Resource>              m_blasBuffer;
+  Microsoft::WRL::ComPtr<ID3D12Resource>              m_blasScratch;
+  Microsoft::WRL::ComPtr<ID3D12Resource>              m_blasVertUpload;
+  Microsoft::WRL::ComPtr<ID3D12Resource>              m_blasIdxUpload;
+  Microsoft::WRL::ComPtr<ID3D12Resource>              m_tlasBuffer;
+  Microsoft::WRL::ComPtr<ID3D12Resource>              m_tlasScratch;
+  Microsoft::WRL::ComPtr<ID3D12Resource>              m_tlasInstanceBuf;
+  Microsoft::WRL::ComPtr<ID3D12StateObject>           m_rtPso;
+  Microsoft::WRL::ComPtr<ID3D12StateObjectProperties> m_rtPsoProps;
+  Microsoft::WRL::ComPtr<ID3D12Resource>              m_sbtBuffer;
+  void*                                               m_sbtMappedPtr = nullptr;
+  Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>        m_dxrDescHeap;
+  Microsoft::WRL::ComPtr<ID3D12RootSignature>         m_dxrGlobalRootSig;
 
   bool m_valid          = false;
   bool m_configured     = false;
@@ -113,6 +163,9 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::vector<float>    m_gpuMats;
   std::vector<uint32_t> m_gpuInsts;
   std::vector<float>    m_gpuLights;
+  std::vector<float>    m_gpuBvh;
+  std::vector<uint32_t> m_gpuTriMat;
+  mutable uint32_t m_lastSampleIdx = 0;
 };
 
 }  // namespace vkpt::gpu

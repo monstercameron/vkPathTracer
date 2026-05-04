@@ -10,18 +10,21 @@ cbuffer PCBuf {
     float  cam_up_x;      float cam_up_y;      float cam_up_z;      uint  sample_index;
     uint   num_insts;     uint   num_mats;      uint   num_lights;   uint  width;
     uint   height;        uint   base_seed;     float  env_r;        float env_g;
-    float  env_b;         float  max_depth_f;
-    float  _pad0c;        float  _pad10;        float  _pad14;
+    float  env_b;         float  max_depth_f;   uint   rays_per_pixel; float  _pad10;
 };
 
-StructuredBuffer<float>    VertBuf  : register(t0);
-StructuredBuffer<uint>     IndexBuf : register(t1);
-StructuredBuffer<float>    MatBuf   : register(t2);
-StructuredBuffer<uint>     InstBuf  : register(t3);
-StructuredBuffer<float>    LightBuf : register(t4);
-RWStructuredBuffer<float4> FilmBuf  : register(u0);
+Buffer<float>    VertBuf  : register(t0);
+Buffer<uint>     IndexBuf : register(t1);
+Buffer<float>    MatBuf   : register(t2);
+Buffer<uint>     InstBuf  : register(t3);
+Buffer<float>    LightBuf : register(t4);
+Buffer<float>    BvhBuf    : register(t5);
+Buffer<uint>     TriMatBuf : register(t6);
+RWBuffer<float4> FilmBuf  : register(u0);
 
 // ---- Forward declarations (fxc requires them) -------------------------------
+float Halton2(uint idx);
+float Halton3(uint idx);
 struct Hit { bool ok; float t; float3 pos; float3 n; uint mat; };
 uint  Pcg(uint v);
 float RandF(inout uint rng);
@@ -42,21 +45,25 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float3 cam_up   = float3(cam_up_x,     cam_up_y,     cam_up_z);
     float3 env_col  = float3(env_r, env_g, env_b);
 
-    uint rng = Pcg(pixel ^ Pcg(sample_index * 1664525u ^ base_seed));
+    uint rpp = max(1u, rays_per_pixel);
+    float3 total_color = float3(0.0f, 0.0f, 0.0f);
 
-    float jx = RandF(rng);
-    float jy = RandF(rng);
-    float fx = (float(gid.x) + jx) / float(width);
-    float fy = (float(gid.y) + jy) / float(height);
-    float nx = (2.0 * fx - 1.0) * aspect * fov_tan_half;
-    float ny = (1.0 - 2.0 * fy) * fov_tan_half;
-    float3 dir = normalize(cam_fwd + cam_right * nx + cam_up * ny);
+    for (uint ri = 0u; ri < rpp; ++ri) {
+        uint eff_sample = sample_index * rpp + ri;
+        uint rng = Pcg(pixel ^ Pcg(eff_sample * 1664525u ^ base_seed) ^ (ri * 2654435761u));
+        float jx = Halton2(eff_sample);
+        float jy = Halton3(eff_sample);
+        float fx = (float(gid.x) + jx) / float(width);
+        float fy = (float(gid.y) + jy) / float(height);
+        float nx = (2.0f * fx - 1.0f) * aspect * fov_tan_half;
+        float ny = (1.0f - 2.0f * fy) * fov_tan_half;
+        float3 dir = normalize(cam_fwd + cam_right * nx + cam_up * ny);
+        total_color += Trace(cam_pos, dir, rng, env_col);
+    }
 
-    float3 color = Trace(cam_pos, dir, rng, env_col);
-
-    uint fb = pixel * 4u;
     float4 prev = FilmBuf[pixel];
-    FilmBuf[pixel] = float4(prev.x + color.x, prev.y + color.y, prev.z + color.z, prev.w + 1.0f);
+    FilmBuf[pixel] = float4(prev.x + total_color.x, prev.y + total_color.y,
+                            prev.z + total_color.z, prev.w + float(rpp));
 }
 
 // ============================================================================
@@ -70,6 +77,32 @@ uint Pcg(uint v) {
 float RandF(inout uint rng) {
     rng = Pcg(rng);
     return float(rng) / 4294967296.0;
+}
+
+// ============================================================================
+// Low-discrepancy Halton sequence
+// ============================================================================
+float Halton2(uint idx) {
+    uint bits = idx;
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10f;
+}
+float Halton3(uint idx) {
+    float result = 0.0f;
+    float f = 1.0f / 3.0f;
+    uint  i = idx;
+    [loop]
+    for (uint step = 0u; step < 21u; ++step) {
+        if (i == 0u) break;
+        result += f * float(i % 3u);
+        i /= 3u;
+        f *= (1.0f / 3.0f);
+    }
+    return result;
 }
 
 // ============================================================================
@@ -100,28 +133,62 @@ bool IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, inout float b
 // Scene hit
 // ============================================================================
 Hit IntersectScene(float3 ro, float3 rd) {
-    Hit h; h.ok = false; h.t = 1e30;
-    for (uint ii = 0u; ii < num_insts; ++ii) {
-        uint ib    = ii * 4u;
-        uint ftri  = InstBuf[ib];
-        uint ntri  = InstBuf[ib + 1u];
-        uint mat   = InstBuf[ib + 2u];
-        for (uint ti = 0u; ti < ntri; ++ti) {
-            uint tb = (ftri + ti) * 3u;
-            uint i0 = IndexBuf[tb];
-            uint i1 = IndexBuf[tb + 1u];
-            uint i2 = IndexBuf[tb + 2u];
-            float t_best = h.t;
-            if (IntersectTri(ro, rd, i0, i1, i2, t_best)) {
-                h.ok  = true;
-                h.t   = t_best;
-                h.pos = ro + rd * h.t;
-                float3 v0 = float3(VertBuf[i0*3u],   VertBuf[i0*3u+1u],  VertBuf[i0*3u+2u]);
-                float3 v1 = float3(VertBuf[i1*3u],   VertBuf[i1*3u+1u],  VertBuf[i1*3u+2u]);
-                float3 v2 = float3(VertBuf[i2*3u],   VertBuf[i2*3u+1u],  VertBuf[i2*3u+2u]);
-                h.n   = normalize(cross(v1 - v0, v2 - v0));
-                h.mat = mat;
+    Hit h;
+    h.ok  = false;
+    h.t   = 1e30f;
+    h.pos = float3(0.0f, 0.0f, 0.0f);
+    h.n   = float3(0.0f, 1.0f, 0.0f);
+    h.mat = 0u;
+
+    float3 inv_rd = float3(1.0f / rd.x, 1.0f / rd.y, 1.0f / rd.z);
+
+    uint stack[32];
+    uint sp = 0u;
+    stack[sp++] = 0u; // root node index
+
+    [loop]
+    while (sp > 0u) {
+        uint ni = stack[--sp];
+        uint nb = ni * 8u;
+
+        float3 bmin = float3(BvhBuf[nb+0u], BvhBuf[nb+1u], BvhBuf[nb+2u]);
+        float3 bmax = float3(BvhBuf[nb+3u], BvhBuf[nb+4u], BvhBuf[nb+5u]);
+
+        // Slab AABB intersection test
+        float3 t0 = (bmin - ro) * inv_rd;
+        float3 t1 = (bmax - ro) * inv_rd;
+        float tenter = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
+        float texit  = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
+        if (texit < 1e-4f || tenter > texit || tenter > h.t) continue;
+
+        uint lf = asuint(BvhBuf[nb+6u]);
+        uint rc = asuint(BvhBuf[nb+7u]);
+        bool is_leaf = (lf & 0x80000000u) != 0u;
+
+        if (is_leaf) {
+            uint first_tri = lf & 0x7FFFFFFFu;
+            uint ntri = rc;
+            for (uint ti = 0u; ti < ntri; ++ti) {
+                uint tb = (first_tri + ti) * 3u;
+                uint i0 = IndexBuf[tb];
+                uint i1 = IndexBuf[tb + 1u];
+                uint i2 = IndexBuf[tb + 2u];
+                float t_best = h.t;
+                if (IntersectTri(ro, rd, i0, i1, i2, t_best)) {
+                    h.ok  = true;
+                    h.t   = t_best;
+                    h.pos = ro + rd * h.t;
+                    float3 v0 = float3(VertBuf[i0*3u], VertBuf[i0*3u+1u], VertBuf[i0*3u+2u]);
+                    float3 v1 = float3(VertBuf[i1*3u], VertBuf[i1*3u+1u], VertBuf[i1*3u+2u]);
+                    float3 v2 = float3(VertBuf[i2*3u], VertBuf[i2*3u+1u], VertBuf[i2*3u+2u]);
+                    h.n   = normalize(cross(v1 - v0, v2 - v0));
+                    h.mat = TriMatBuf[first_tri + ti];
+                }
             }
+        } else {
+            // Push right child first so left is processed first (DFS)
+            stack[sp++] = rc;
+            stack[sp++] = lf;
         }
     }
     return h;
