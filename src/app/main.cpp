@@ -37,6 +37,9 @@
 #include "diagnostics/StatusFile.h"
 #include "pathtracer/PathTracer.h"
 #include "cpu/TiledCpuPathTracer.h"
+#ifdef PT_ENABLE_VULKAN
+#include "gpu/VulkanGpuPathTracer.h"
+#endif
 #include "platform/DesktopPlatform.h"
 #include "platform/HeadlessPlatform.h"
 #include "scene/Scene.h"
@@ -2120,13 +2123,35 @@ int main(int argc, char** argv) {
     std::cout << "Close the window to exit.\n";
 
     std::unique_ptr<vkpt::pathtracer::IPathTracer> previewTracer;
-    if (config.backend.value == "cpu-tiled" || config.backend.value == "cpu" ||
-        config.backend.value == "auto" || config.backend.value.empty()) {
-      vkpt::cpu::TiledRenderConfig tiledConfig{};
-      tiledConfig.worker_count = 0;
-      previewTracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
-    } else {
-      previewTracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+#ifdef PT_ENABLE_VULKAN
+    if (config.backend.value == "vulkan" || config.backend.value == "vulkan-compute") {
+      const std::string spvPath =
+#ifdef PT_SHADER_SPV_PATH
+          PT_SHADER_SPV_PATH;
+#else
+          "shaders/pathtrace.spv";
+#endif
+      auto gpuTracer = std::make_unique<vkpt::gpu::VulkanGpuPathTracer>(spvPath);
+      if (gpuTracer->is_valid()) {
+        logger.log(vkpt::log::Severity::Info, "app", "Using Vulkan GPU path tracer");
+        previewTracer = std::move(gpuTracer);
+      } else {
+        logger.log(vkpt::log::Severity::Warning, "app",
+                   "Vulkan GPU tracer init failed (" + gpuTracer->last_error() +
+                   "), falling back to CPU tiled");
+      }
+    }
+#endif
+    if (!previewTracer) {
+      if (config.backend.value == "cpu-tiled" || config.backend.value == "cpu" ||
+          config.backend.value == "auto" || config.backend.value.empty() ||
+          config.backend.value == "vulkan" || config.backend.value == "vulkan-compute") {
+        vkpt::cpu::TiledRenderConfig tiledConfig{};
+        tiledConfig.worker_count = 0;
+        previewTracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
+      } else {
+        previewTracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+      }
     }
     vkpt::pathtracer::RenderSettings previewSettings{};
     const uint32_t windowPreviewWidth = std::max<uint32_t>(1u, static_cast<uint32_t>(desktopWindow->metrics().width));
@@ -2873,15 +2898,30 @@ int main(int argc, char** argv) {
       return 0;
     }
 
-    // ---- CPU path tracer (tiled + AVX2 when available) ------------------------
+    // ---- CPU/GPU path tracer selection ----------------------------------------
     std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer;
-    if (config.backend.value == "cpu-tiled" || config.backend.value == "cpu" ||
-        config.backend.value == "auto" || config.backend.value.empty()) {
-      vkpt::cpu::TiledRenderConfig tiledConfig{};
-      tiledConfig.worker_count = 0; // auto = hardware_concurrency
-      tracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
-    } else {
-      tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+#ifdef PT_ENABLE_VULKAN
+    if (config.backend.value == "vulkan" || config.backend.value == "vulkan-compute") {
+      const std::string spvPath =
+#ifdef PT_SHADER_SPV_PATH
+          PT_SHADER_SPV_PATH;
+#else
+          "shaders/pathtrace.spv";
+#endif
+      auto gpuT = std::make_unique<vkpt::gpu::VulkanGpuPathTracer>(spvPath);
+      if (gpuT->is_valid()) { tracer = std::move(gpuT); }
+    }
+#endif
+    if (!tracer) {
+      if (config.backend.value == "cpu-tiled" || config.backend.value == "cpu" ||
+          config.backend.value == "auto"       || config.backend.value.empty() ||
+          config.backend.value == "vulkan"     || config.backend.value == "vulkan-compute") {
+        vkpt::cpu::TiledRenderConfig tiledConfig{};
+        tiledConfig.worker_count = 0;
+        tracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
+      } else {
+        tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+      }
     }
     if (!tracer->configure(settings)) {
       std::cerr << "pathtracer configure failed\n";

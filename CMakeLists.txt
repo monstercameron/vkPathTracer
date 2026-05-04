@@ -144,14 +144,43 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
+# ---- Vulkan SDK --------------------------------------------------------------
+if(PT_ENABLE_VULKAN)
+  # Allow the user to point at a specific SDK via VULKAN_SDK env variable.
+  if(DEFINED ENV{VULKAN_SDK})
+    set(Vulkan_SDK_DIR "$ENV{VULKAN_SDK}")
+    list(APPEND CMAKE_PREFIX_PATH "${Vulkan_SDK_DIR}")
+  endif()
+  find_package(Vulkan REQUIRED)
+  message(STATUS "Vulkan found: ${Vulkan_INCLUDE_DIRS}, lib: ${Vulkan_LIBRARIES}")
+
+  # Locate glslc for shader compilation
+  find_program(GLSLC glslc
+    HINTS "${Vulkan_SDK_DIR}/Bin" "$ENV{VULKAN_SDK}/Bin"
+          "${Vulkan_INCLUDE_DIRS}/../Bin"
+    REQUIRED)
+  message(STATUS "glslc: ${GLSLC}")
+
+  # Compile pathtrace.comp → pathtrace.spv into <binary>/shaders/
+  set(PT_SHADER_SRC "${CMAKE_SOURCE_DIR}/src/shaders/gpu/pathtrace.comp")
+  set(PT_SHADER_SPV "${CMAKE_BINARY_DIR}/bin/shaders/pathtrace.spv")
+  file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/bin/shaders")
+  add_custom_command(
+    OUTPUT  "${PT_SHADER_SPV}"
+    COMMAND "${GLSLC}" -fshader-stage=comp "${PT_SHADER_SRC}" -o "${PT_SHADER_SPV}"
+    DEPENDS "${PT_SHADER_SRC}"
+    COMMENT "Compiling pathtrace.comp → pathtrace.spv"
+    VERBATIM)
+  add_custom_target(pt_shaders ALL DEPENDS "${PT_SHADER_SPV}")
+endif()
+
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/BuildInfo.h.in"
   "${CMAKE_BINARY_DIR}/generated/build_info.generated.h"
   @ONLY
 )
 
-add_executable(ptapp
-  src/app/main.cpp
+set(PT_CPU_SOURCES
   src/core/Assert.cpp
   src/editor/UiModels.cpp
   src/core/Config.cpp
@@ -178,10 +207,41 @@ add_executable(ptapp
   src/render/backends/VulkanBackend.cpp
 )
 
+if(PT_ENABLE_AVX2)
+  set(PT_ENABLE_CPU_SIMD ON)
+  list(APPEND PT_CPU_SOURCES src/cpu/Avx2PathTracer.cpp)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    set_source_files_properties(src/cpu/Avx2PathTracer.cpp src/cpu/CpuFeatures.cpp
+      PROPERTIES COMPILE_FLAGS "-mavx2 -mfma")
+  elseif(MSVC)
+    set_source_files_properties(src/cpu/Avx2PathTracer.cpp src/cpu/CpuFeatures.cpp
+      PROPERTIES COMPILE_FLAGS "/arch:AVX2")
+  endif()
+endif()
+
+if(PT_ENABLE_VULKAN)
+  list(APPEND PT_CPU_SOURCES src/gpu/VulkanGpuPathTracer.cpp)
+endif()
+
+# ---- ptapp ------------------------------------------------------------------
+add_executable(ptapp
+  src/app/main.cpp
+  ${PT_CPU_SOURCES}
+)
+
 target_include_directories(ptapp PRIVATE
   "${CMAKE_SOURCE_DIR}/src"
   "${CMAKE_BINARY_DIR}/generated"
 )
+
+if(PT_ENABLE_VULKAN)
+  target_include_directories(ptapp PRIVATE ${Vulkan_INCLUDE_DIRS})
+  target_link_libraries(ptapp PRIVATE ${Vulkan_LIBRARIES})
+  add_dependencies(ptapp pt_shaders)
+  # Pass SPIR-V file path as a compile definition so main.cpp can locate it
+  target_compile_definitions(ptapp PRIVATE
+    PT_SHADER_SPV_PATH=\"$<TARGET_FILE_DIR:ptapp>/shaders/pathtrace.spv\")
+endif()
 
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(ptapp PRIVATE ${feature})
@@ -189,37 +249,22 @@ endforeach()
 
 target_compile_features(ptapp PRIVATE cxx_std_23)
 
+# ---- ptbench ----------------------------------------------------------------
 add_executable(ptbench
   src/benchmark/ptbench.cpp
   src/benchmark/BenchmarkSchema.cpp
-  src/core/Assert.cpp
-  src/editor/UiModels.cpp
-  src/core/Config.cpp
-  src/cpu/CpuFeatures.cpp
-  src/cpu/ParallelBvhBuilder.cpp
-  src/cpu/TiledCpuPathTracer.cpp
-  src/diagnostics/CrashRecorder.cpp
-  src/diagnostics/CrashHooks.cpp
-  src/diagnostics/StatusFile.cpp
-  src/jobs/JobSystem.cpp
-  src/pathtracer/PathTracer.cpp
-  src/scene/Scene.cpp
-  src/materials/MaterialInterface.cpp
-  src/materials/MaterialDescriptors.cpp
-  src/shaders/ShaderFamilyManifest.cpp
-  src/shaders/SdfShaderInventory.cpp
-  src/render/DebugViews.cpp
-  src/render/interface/RenderContracts.cpp
-  src/render/backends/BackendFactory.cpp
-  src/render/backends/FrameGraph.cpp
-  src/render/backends/NullBackend.cpp
-  src/render/backends/VulkanBackend.cpp
+  ${PT_CPU_SOURCES}
 )
 
 target_include_directories(ptbench PRIVATE
   "${CMAKE_SOURCE_DIR}/src"
   "${CMAKE_BINARY_DIR}/generated"
 )
+
+if(PT_ENABLE_VULKAN)
+  target_include_directories(ptbench PRIVATE ${Vulkan_INCLUDE_DIRS})
+  target_link_libraries(ptbench PRIVATE ${Vulkan_LIBRARIES})
+endif()
 
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(ptbench PRIVATE ${feature})
