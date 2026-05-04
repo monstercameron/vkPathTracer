@@ -1,11 +1,13 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <numeric>
 #include <sstream>
@@ -34,6 +36,7 @@
 #include "diagnostics/CrashRecorder.h"
 #include "diagnostics/StatusFile.h"
 #include "pathtracer/PathTracer.h"
+#include "cpu/TiledCpuPathTracer.h"
 #include "platform/DesktopPlatform.h"
 #include "platform/HeadlessPlatform.h"
 #include "scene/Scene.h"
@@ -2116,7 +2119,15 @@ int main(int argc, char** argv) {
               << desktopWindow->metrics().height << ")\n";
     std::cout << "Close the window to exit.\n";
 
-    vkpt::pathtracer::ScalarCpuPathTracer previewTracer;
+    std::unique_ptr<vkpt::pathtracer::IPathTracer> previewTracer;
+    if (config.backend.value == "cpu-tiled" || config.backend.value == "cpu" ||
+        config.backend.value == "auto" || config.backend.value.empty()) {
+      vkpt::cpu::TiledRenderConfig tiledConfig{};
+      tiledConfig.worker_count = 0;
+      previewTracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
+    } else {
+      previewTracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+    }
     vkpt::pathtracer::RenderSettings previewSettings{};
     const uint32_t windowPreviewWidth = std::max<uint32_t>(1u, static_cast<uint32_t>(desktopWindow->metrics().width));
     const uint32_t windowPreviewHeight = std::max<uint32_t>(1u, static_cast<uint32_t>(desktopWindow->metrics().height));
@@ -2140,6 +2151,22 @@ int main(int argc, char** argv) {
     const uint32_t previewPixelsPerBatch = 1024u;
     const auto previewTraceBudgetPerFrame = std::chrono::milliseconds(16);
     uint32_t previewChunkCounter = 0u;
+
+    // Background render thread state (used when TiledCpuPathTracer is active).
+    // The tiled tracer blocks the calling thread in wait_group() for an entire
+    // sample which would stall the Win32 message pump.  We run it on a
+    // dedicated thread so the main loop stays responsive.
+    std::atomic<bool> bgRenderStop{false};
+    std::mutex bgFrameMutex;
+    struct BgFrame {
+      std::vector<uint8_t> rgba8;
+      uint32_t width  = 0;
+      uint32_t height = 0;
+      uint32_t sample = 0;
+      bool fresh = false;
+    } bgFrame;
+    bool useBgRender = false;
+    std::thread bgRenderThread;
 
     auto resetPreviewPixelOrder = [&](uint32_t sampleIndex) {
       std::iota(previewPixelOrder.begin(), previewPixelOrder.end(), 0u);
@@ -2234,10 +2261,10 @@ int main(int argc, char** argv) {
                    {"error", previewError}
                  },
                  0);
-    } else if (!previewTracer.configure(previewSettings) ||
-               !previewTracer.load_scene_snapshot(previewScene) ||
-               !previewTracer.build_or_update_acceleration() ||
-               !previewTracer.reset_accumulation()) {
+    } else if (!previewTracer->configure(previewSettings) ||
+               !previewTracer->load_scene_snapshot(previewScene) ||
+               !previewTracer->build_or_update_acceleration() ||
+               !previewTracer->reset_accumulation()) {
       previewError = "window preview tracer init failed";
       logger.log(vkpt::log::Severity::Error, "traceprobe",
                  "window preview tracer initialization failed",
@@ -2266,6 +2293,29 @@ int main(int argc, char** argv) {
                    {"sdf_primitives", std::to_string(previewScene.sdf_primitives.size())}
                  },
                  0);
+
+      // Launch background render thread for TiledCpuPathTracer so the main
+      // thread's Win32 message pump is never blocked.
+      if (dynamic_cast<vkpt::cpu::TiledCpuPathTracer*>(previewTracer.get()) != nullptr) {
+        useBgRender = true;
+        bgRenderThread = std::thread([&]() {
+          for (uint32_t s = 0; s < previewSettings.spp && !bgRenderStop.load(std::memory_order_relaxed); ++s) {
+            bool ok = previewTracer->render_sample_batch(0, previewSettings.height, s, 0);
+            if (!ok) break;
+            auto ldr = previewTracer->resolve_ldr();
+            {
+              std::lock_guard<std::mutex> lock(bgFrameMutex);
+              bgFrame.rgba8  = std::move(ldr.rgba8);
+              bgFrame.width  = ldr.width;
+              bgFrame.height = ldr.height;
+              bgFrame.sample = s + 1;
+              bgFrame.fresh  = true;
+            }
+          }
+        });
+        logger.log(vkpt::log::Severity::Info, "traceprobe",
+                   "background render thread launched for TiledCpuPathTracer");
+      }
     }
 
     std::ostringstream overlay;
@@ -2288,7 +2338,53 @@ int main(int argc, char** argv) {
     bool running = true;
     std::size_t loggedStartupFrames = 0;
     while (running && window->is_open()) {
-      if (previewTracerReady && previewSampleIndex < previewSettings.spp) {
+      // ---- Render dispatch -----------------------------------------------
+      // TiledCpuPathTracer runs on a background thread (bgRenderThread) to
+      // keep the Win32 message pump unblocked.  The main loop just picks up
+      // the latest resolved frame whenever the bg thread posts one.
+      // ScalarCpuPathTracer keeps the original incremental pixel-batch path.
+      if (useBgRender) {
+        bool fresh = false;
+        std::vector<uint8_t> rgbaCopy;
+        uint32_t bfw = 0, bfh = 0, bfSample = 0;
+        {
+          std::lock_guard<std::mutex> lock(bgFrameMutex);
+          if (bgFrame.fresh) {
+            rgbaCopy  = bgFrame.rgba8;
+            bfw       = bgFrame.width;
+            bfh       = bgFrame.height;
+            bfSample  = bgFrame.sample;
+            bgFrame.fresh = false;
+            fresh = true;
+          }
+        }
+        if (fresh) {
+          desktopWindow->set_framebuffer_rgba(rgbaCopy, bfw, bfh);
+          previewRendered  = true;
+          previewNonBlack  = false;
+          for (std::size_t i = 0; i + 3u < rgbaCopy.size(); i += 4u) {
+            if (rgbaCopy[i] || rgbaCopy[i + 1u] || rgbaCopy[i + 2u]) {
+              previewNonBlack = true;
+              break;
+            }
+          }
+          previewSampleIndex = bfSample;
+          if (bfSample == 1u || (bfSample % 4u) == 0u || bfSample == previewSettings.spp) {
+            std::cout << "[ui] preview accumulate (tiled): sample " << bfSample
+                      << "/" << previewSettings.spp
+                      << " non_black=" << (previewNonBlack ? "yes" : "no") << "\n";
+            logger.log(vkpt::log::Severity::Info, "traceprobe",
+                       "window preview accumulate (tiled)",
+                       {
+                         {"sample", std::to_string(bfSample)},
+                         {"spp",    std::to_string(previewSettings.spp)},
+                         {"non_black", previewNonBlack ? "yes" : "no"}
+                       },
+                       frame);
+          }
+        }
+      } else if (previewTracerReady && previewSampleIndex < previewSettings.spp) {
+        // Original ScalarCpuPathTracer incremental pixel-batch path.
         const auto traceFrameStart = std::chrono::steady_clock::now();
         bool tracedAnyPixelsThisFrame = false;
         bool completedSampleThisFrame = false;
@@ -2301,12 +2397,42 @@ int main(int argc, char** argv) {
             break;
           }
 
-          const uint32_t remainingPixels = previewPixelCount - previewPixelCursor;
-          const uint32_t batchCount = std::min(previewPixelsPerBatch, remainingPixels);
-          if (!previewTracer.render_sample_pixels(previewPixelOrder.data() + previewPixelCursor,
-                                                  batchCount,
-                                                  previewSampleIndex,
-                                                  frame)) {
+          bool render_ok = false;
+          if (auto* scalar_tracer = dynamic_cast<vkpt::pathtracer::ScalarCpuPathTracer*>(previewTracer.get())) {
+            const uint32_t remainingPixels = previewPixelCount - previewPixelCursor;
+            const uint32_t batchCount = std::min(previewPixelsPerBatch, remainingPixels);
+            render_ok = scalar_tracer->render_sample_pixels(previewPixelOrder.data() + previewPixelCursor,
+                                                            batchCount,
+                                                            previewSampleIndex,
+                                                            frame);
+            if (render_ok) {
+              tracedAnyPixelsThisFrame = true;
+              ++previewChunkCounter;
+              previewPixelCursor += batchCount;
+
+              if (previewPixelCursor >= previewPixelCount) {
+                previewPixelCursor = 0u;
+                ++previewSampleIndex;
+                completedSampleThisFrame = true;
+                ++completedSampleCount;
+                completedSampleNumber = previewSampleIndex;
+                if (previewSampleIndex < previewSettings.spp) {
+                  resetPreviewPixelOrder(previewSampleIndex);
+                }
+              }
+            }
+          } else {
+            render_ok = previewTracer->render_sample_batch(0, previewSettings.height, previewSampleIndex, frame);
+            if (render_ok) {
+              tracedAnyPixelsThisFrame = true;
+              ++previewSampleIndex;
+              completedSampleThisFrame = true;
+              ++completedSampleCount;
+              completedSampleNumber = previewSampleIndex;
+            }
+          }
+
+          if (!render_ok) {
             previewTracerReady = false;
             previewError = "window preview sample failed";
             logger.log(vkpt::log::Severity::Error, "traceprobe",
@@ -2318,25 +2444,10 @@ int main(int argc, char** argv) {
                        frame);
             break;
           }
-
-          tracedAnyPixelsThisFrame = true;
-          ++previewChunkCounter;
-          previewPixelCursor += batchCount;
-
-          if (previewPixelCursor >= previewPixelCount) {
-            previewPixelCursor = 0u;
-            ++previewSampleIndex;
-            completedSampleThisFrame = true;
-            ++completedSampleCount;
-            completedSampleNumber = previewSampleIndex;
-            if (previewSampleIndex < previewSettings.spp) {
-              resetPreviewPixelOrder(previewSampleIndex);
-            }
-          }
         }
 
         if (previewTracerReady && tracedAnyPixelsThisFrame) {
-          const auto ldr = previewTracer.resolve_ldr();
+          const auto ldr = previewTracer->resolve_ldr();
           desktopWindow->set_framebuffer_rgba(ldr.rgba8, ldr.width, ldr.height);
           previewRendered = true;
           previewNonBlack = false;
@@ -2622,6 +2733,12 @@ int main(int argc, char** argv) {
       }
     }
 
+    // Stop background render thread before tearing down the tracer.
+    bgRenderStop.store(true, std::memory_order_relaxed);
+    if (bgRenderThread.joinable()) {
+      bgRenderThread.join();
+    }
+
     platform.shutdown();
     recordUiAction("app.window", "window", "window closed",
                    MakeUnsupportedUiCommand("app.window", "window_closed"));
@@ -2756,16 +2873,24 @@ int main(int argc, char** argv) {
       return 0;
     }
 
-    // ---- CPU scalar path tracer (default) ----------------------------------
-    vkpt::pathtracer::ScalarCpuPathTracer tracer;
-    if (!tracer.configure(settings)) {
+    // ---- CPU path tracer (tiled + AVX2 when available) ------------------------
+    std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer;
+    if (config.backend.value == "cpu-tiled" || config.backend.value == "cpu" ||
+        config.backend.value == "auto" || config.backend.value.empty()) {
+      vkpt::cpu::TiledRenderConfig tiledConfig{};
+      tiledConfig.worker_count = 0; // auto = hardware_concurrency
+      tracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
+    } else {
+      tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+    }
+    if (!tracer->configure(settings)) {
       std::cerr << "pathtracer configure failed\n";
       recordUiAction("app.render", "render", "pathtracer configure failed",
                      MakeUnsupportedUiCommand("app.render", "tracer_configure_failed"));
       writeStatus("error:tracer_configure_failed", "tracer_configure_failed");
       return 2;
     }
-    if (!tracer.load_scene_snapshot(sceneResult.value()) || !tracer.build_or_update_acceleration()) {
+    if (!tracer->load_scene_snapshot(sceneResult.value()) || !tracer->build_or_update_acceleration()) {
       std::cerr << "failed to prepare scene for path tracing\n";
       recordUiAction("app.render", "render", "scene bvh build failed",
                      MakeUnsupportedUiCommand("app.render", "bvh_build_failed"));
@@ -2776,9 +2901,9 @@ int main(int argc, char** argv) {
     vkpt::diagnostics::CrashRecorder::instance().update_frame_stage("render_execute", 0);
     std::filesystem::create_directories(
         std::filesystem::path(config.output_path.value).parent_path());
-    tracer.reset_accumulation();
+    tracer->reset_accumulation();
     for (uint32_t sample = 0; sample < settings.spp; ++sample) {
-      if (!tracer.render_sample_batch(0, settings.height, sample, 0)) {
+      if (!tracer->render_sample_batch(0, settings.height, sample, 0)) {
         std::cerr << "render failed\n";
         recordUiAction("app.render", "render", "render sample failed",
                        MakeUnsupportedUiCommand("app.render", "render_sample_batch_failed"));
@@ -2787,8 +2912,8 @@ int main(int argc, char** argv) {
       }
     }
 
-    const auto ldr = tracer.resolve_ldr();
-    const auto hdr = tracer.resolve_hdr();
+    const auto ldr = tracer->resolve_ldr();
+    const auto hdr = tracer->resolve_hdr();
     std::string saveError;
     if (!vkpt::pathtracer::SavePngCompat(config.output_path.value, ldr, &saveError)) {
       std::cerr << "png save failed: " << saveError << "\n";
@@ -2807,7 +2932,7 @@ int main(int argc, char** argv) {
       }
     }
 
-    const auto counters = tracer.read_counters();
+    const auto counters = tracer->read_counters();
     std::cout << "render complete: " << config.output_path.value << "\n";
     std::cout << "samples: " << counters.samples << "\n";
     std::cout << "rays: " << counters.rays << "\n";

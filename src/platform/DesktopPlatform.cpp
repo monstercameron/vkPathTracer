@@ -50,17 +50,23 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT clientRect;
         GetClientRect(hwnd, &clientRect);
-        auto* brush = CreateSolidBrush(RGB(0, 0, 0));
-        if (brush) {
-          FillRect(hdc, &clientRect, brush);
-          DeleteObject(brush);
-        } else {
-          FillRect(hdc, &clientRect, (HBRUSH)GetStockObject(WHITE_BRUSH));
-        }
 
         const auto& framebuffer = self->framebuffer_bgra();
         const auto framebufferWidth = self->framebuffer_width();
         const auto framebufferHeight = self->framebuffer_height();
+
+        // Only fill with black when there is no framebuffer to blit.
+        // Filling before the StretchBlt causes a visible black flash on every
+        // repaint because the fill and the blit are not atomic.
+        if (framebuffer.empty() || framebufferWidth == 0u || framebufferHeight == 0u) {
+          auto* brush = CreateSolidBrush(RGB(0, 0, 0));
+          if (brush) {
+            FillRect(hdc, &clientRect, brush);
+            DeleteObject(brush);
+          } else {
+            FillRect(hdc, &clientRect, (HBRUSH)GetStockObject(BLACK_BRUSH));
+          }
+        }
         static std::uint64_t paintCount = 0u;
         ++paintCount;
         if (!framebuffer.empty() && framebufferWidth > 0u && framebufferHeight > 0u) {
