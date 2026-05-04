@@ -1,5 +1,54 @@
 ﻿# Changelog
 
+## 2026-05-04 (session 10)
+
+### Real Vulkan GPU compute path tracer — Intel Arc B580, Windows + Linux plumbing
+
+**Goal:** Replace the fully simulated `VulkanComputeBackend` with a real Vulkan compute path tracer running on the GPU.
+
+**`src/shaders/gpu/pathtrace.comp` — GLSL compute shader (new)**
+One invocation per pixel. Brute-force Möller–Trumbore triangle intersection across all scene instances. PCG hash RNG seeded per-pixel-per-sample. Cosine-weighted hemisphere sampling identical to `ScalarCpuPathTracer`. NEE with point lights + shadow rays. Emissive geometry visible at depth 0 and when no point lights present. Accumulates into a persistent RGBA32F film buffer (`r_sum, g_sum, b_sum, sample_count` per pixel). Push constants carry all per-dispatch parameters (camera, scene counts, sample index, seed). Local workgroup size 8×8.
+
+**`src/gpu/VulkanGpuPathTracer.h/.cpp` — real `IPathTracer` over Vulkan (new)**
+Implements `IPathTracer` so it integrates cleanly into all existing render paths.
+- `init_device()`: `vkCreateInstance` (Vulkan 1.2, no extensions) → enumerate physical devices, select discrete GPU (Intel Arc B580) → create `VkDevice` with compute queue → `vkGetDeviceQueue`
+- `create_cmd_pool()`: `VkCommandPool` (resettable) + single persistent `VkCommandBuffer` + `VkFence`
+- `create_pipeline()`: loads SPIR-V from `<exe>/shaders/pathtrace.spv` → `VkShaderModule` → 6-binding `VkDescriptorSetLayout` (all `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`) → `VkPipelineLayout` (push constants 104 bytes) → `VkComputePipeline`
+- `build_or_update_acceleration()`: packs `RTSceneData` into flat GPU arrays (3f/vertex, 3f+3f+1f+1f/material, 4u/instance, 8f/light), creates `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | HOST_COHERENT_BIT` storage buffers and maps+copies
+- `render_sample_batch()`: writes push constants (camera basis using same `cross(forward,up)` convention as scalar tracer, per-sample seed), records `vkCmdBindPipeline` + `vkCmdBindDescriptorSets` + `vkCmdPushConstants` + `vkCmdDispatch(ceil(w/8), ceil(h/8), 1)`, submits and waits on fence (10s timeout), reads back host-coherent film buffer into CPU `FilmBuffer` for `resolve_ldr()`
+- All buffers `HOST_VISIBLE | HOST_COHERENT` so no staging copies are needed; film buffer directly readable by CPU after fence
+
+**`CMakeLists.txt` — Vulkan SDK integration**
+- `find_package(Vulkan REQUIRED)` when `PT_ENABLE_VULKAN=ON`; respects `VULKAN_SDK` env variable for SDK path
+- `find_program(GLSLC)` located from SDK Bin dir
+- `add_custom_command` compiles `pathtrace.comp` → `${binary}/bin/shaders/pathtrace.spv` at build time
+- `add_custom_target(pt_shaders)` as dependency of `ptapp`
+- `target_include_directories` and `target_link_libraries` wire `Vulkan_INCLUDE_DIRS` and `Vulkan_LIBRARIES` into `ptapp` and `ptbench`
+- `PT_SHADER_SPV_PATH` compile definition passes the SPIR-V path as a string literal so the runtime can locate it without hardcoding
+
+**`CMakePresets.json` — `windows-clang-vulkan-debug` preset (new)**
+- `PT_ENABLE_VULKAN=ON`, `PT_ENABLE_AVX2=ON`, `PT_ENABLE_CPU_RAYTRACER=ON`
+- `VULKAN_SDK=C:/VulkanSDK/1.4.341.1`
+- Clang++ Debug, Ninja, Windows
+
+**`src/app/main.cpp` — backend routing**
+- `--backend vulkan` or `--backend vulkan-compute` in `--window` and `--render` modes creates a `VulkanGpuPathTracer(spv_path)`; falls back to CPU tiled if the GPU tracer fails to initialise
+- Background render thread and all existing window-mode logic unchanged
+
+**Runtime confirmation**
+```
+[info] [vulkan] GPU: Intel(R) Arc(TM) B580 Graphics
+[info] [vulkan] Compute pipeline created from .../shaders/pathtrace.spv
+[info] [app]    Using Vulkan GPU path tracer
+```
+
+**Linux plumbing notes**
+- `find_package(Vulkan)` and `find_program(GLSLC)` work on Linux with `apt install vulkan-sdk` or system Vulkan packages
+- The `linux-clang-vulkan-debug` preset (`PT_ENABLE_VULKAN=ON`) already existed and now has real build rules behind it
+- No platform-specific code in `VulkanGpuPathTracer.cpp` — pure Vulkan API, compiles on Linux unchanged
+
+---
+
 ## 2026-05-04 (session 9)
 
 ### Multithreaded AVX2 path tracer wired into GUI window — functional Cornell box render

@@ -13,6 +13,7 @@
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_STANDARD": "23",
         "PT_ENABLE_CPU_RAYTRACER": "ON",
+        "PT_ENABLE_AVX2": "ON",
         "PT_ENABLE_BENCHMARK": "OFF",
         "PT_ENABLE_SANITIZERS": "OFF",
         "PT_SANITIZER": "disabled",
@@ -81,6 +82,26 @@
         "CMAKE_CXX_STANDARD": "23",
         "PT_ENABLE_SANITIZERS": "ON",
         "PT_SANITIZER": "thread"
+      }
+    },
+    {
+      "name": "windows-clang-vulkan-debug",
+      "displayName": "Windows Clang Vulkan+AVX2 Debug",
+      "description": "Real Vulkan compute path tracer + AVX2 CPU path, Windows debug",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/windows-clang-vulkan-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_STANDARD": "23",
+        "PT_ENABLE_VULKAN": "ON",
+        "PT_ENABLE_CPU_RAYTRACER": "ON",
+        "PT_ENABLE_AVX2": "ON",
+        "PT_ENABLE_BENCHMARK": "OFF",
+        "PT_ENABLE_SANITIZERS": "OFF",
+        "PT_SANITIZER": "disabled",
+        "VULKAN_SDK": "C:/VulkanSDK/1.4.341.1"
       }
     },
     {
@@ -209,6 +230,10 @@
     {
       "name": "desktop-clang-tsan",
       "configurePreset": "desktop-clang-tsan"
+    },
+    {
+      "name": "windows-clang-vulkan-debug",
+      "configurePreset": "windows-clang-vulkan-debug"
     },
     {
       "name": "windows-clangcl-d3d12-debug",

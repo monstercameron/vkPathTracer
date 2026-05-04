@@ -1,0 +1,228 @@
+#version 450
+// GPU path tracer compute shader.
+// One invocation per pixel; accumulates into a persistent RGBA32F film buffer.
+// Push constants carry all per-dispatch state (camera, scene counts, sample index).
+// Layout mirrors RTSceneData on the CPU side.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// ---- push constants ---------------------------------------------------------
+layout(push_constant) uniform PC {
+    vec3  camera_pos;     float fov_tan_half;   // 16
+    vec3  cam_forward;    float aspect;         // 32
+    vec3  cam_right;      float pad0;           // 48
+    vec3  cam_up;         uint  sample_index;   // 64
+    uint  num_insts;      uint  num_mats;       // 72
+    uint  num_lights;     uint  width;          // 80
+    uint  height;         uint  base_seed;      // 88
+    // NOTE: vec3 would require 16-byte alignment here (GLSL std430), creating
+    // an 8-byte gap vs the C++ struct.  Use four separate floats instead so
+    // the layout is identical on both sides (4-byte aligned scalars, no gap).
+    float env_r;          float env_g;          // 88 / 92
+    float env_b;          float max_depth_f;    // 96 / 100  (total 104 bytes)
+} pc;
+
+// ---- storage buffers --------------------------------------------------------
+// Binding 0: vertex positions, 3 floats per vertex
+layout(std430, set = 0, binding = 0) readonly buffer VBuf { float verts[]; };
+// Binding 1: triangle indices (global flat array)
+layout(std430, set = 0, binding = 1) readonly buffer IBuf  { uint  tidx[];  };
+// Binding 2: materials — 8 floats each: albedo.xyz, emissive.xyz, roughness, pad
+layout(std430, set = 0, binding = 2) readonly buffer MBuf  { float mats[];  };
+// Binding 3: instances — 4 uints each: first_triangle, triangle_count, material_index, pad
+layout(std430, set = 0, binding = 3) readonly buffer InstBuf { uint insts[]; };
+// Binding 4: lights — 8 floats each: pos.xyz, color.xyz, intensity, pad
+layout(std430, set = 0, binding = 4) readonly buffer LBuf  { float lights[]; };
+// Binding 5: film — 4 floats per pixel: r_sum, g_sum, b_sum, sample_count
+layout(std430, set = 0, binding = 5)          buffer FilmBuf { float film[]; };
+
+// ---- PCG hash RNG -----------------------------------------------------------
+uint pcg(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word  = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+float rand_f(inout uint rng) {
+    rng = pcg(rng);
+    return float(rng) / 4294967296.0;
+}
+
+// ---- Moller-Trumbore intersection -------------------------------------------
+bool intersect_tri(vec3 ro, vec3 rd,
+                   uint i0, uint i1, uint i2,
+                   out float out_t) {
+    vec3 v0 = vec3(verts[i0*3u], verts[i0*3u+1u], verts[i0*3u+2u]);
+    vec3 v1 = vec3(verts[i1*3u], verts[i1*3u+1u], verts[i1*3u+2u]);
+    vec3 v2 = vec3(verts[i2*3u], verts[i2*3u+1u], verts[i2*3u+2u]);
+    vec3 e1 = v1 - v0;
+    vec3 e2 = v2 - v0;
+    vec3 h  = cross(rd, e2);
+    float a = dot(e1, h);
+    if (abs(a) < 1e-5) return false;
+    float f = 1.0 / a;
+    vec3  s = ro - v0;
+    float u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) return false;
+    vec3  q = cross(s, e1);
+    float v = f * dot(rd, q);
+    if (v < 0.0 || u + v > 1.0) return false;
+    float t = f * dot(e2, q);
+    out_t = t;
+    return t > 1e-4;
+}
+
+// ---- Scene intersection (brute-force) ---------------------------------------
+struct Hit { bool ok; float t; vec3 pos; vec3 n; uint mat; };
+
+Hit intersect_scene(vec3 ro, vec3 rd) {
+    Hit h; h.ok = false; h.t = 1e30;
+    for (uint ii = 0u; ii < pc.num_insts; ++ii) {
+        uint ib    = ii * 4u;
+        uint ftri  = insts[ib + 0u];
+        uint ntri  = insts[ib + 1u];
+        uint mat   = insts[ib + 2u];
+        for (uint ti = 0u; ti < ntri; ++ti) {
+            uint tb = (ftri + ti) * 3u;
+            uint i0 = tidx[tb], i1 = tidx[tb+1u], i2 = tidx[tb+2u];
+            float t;
+            if (intersect_tri(ro, rd, i0, i1, i2, t) && t < h.t) {
+                h.ok  = true;
+                h.t   = t;
+                h.pos = ro + rd * t;
+                vec3 v0 = vec3(verts[i0*3u], verts[i0*3u+1u], verts[i0*3u+2u]);
+                vec3 v1 = vec3(verts[i1*3u], verts[i1*3u+1u], verts[i1*3u+2u]);
+                vec3 v2 = vec3(verts[i2*3u], verts[i2*3u+1u], verts[i2*3u+2u]);
+                h.n   = normalize(cross(v1 - v0, v2 - v0));
+                h.mat = mat;
+            }
+        }
+    }
+    return h;
+}
+
+// ---- Cosine-weighted hemisphere sample (matches ScalarCpuPathTracer) --------
+vec3 sample_hemisphere(vec3 n, inout uint rng) {
+    float u1  = rand_f(rng);
+    float u2  = rand_f(rng);
+    float r   = sqrt(max(0.0, 1.0 - u1));
+    float phi = 6.28318530718 * u2;
+    vec3  local = vec3(r * cos(phi), r * sin(phi), sqrt(max(0.0, u1)));
+    vec3  ref  = (abs(n.z) < 0.999) ? vec3(0, 0, 1) : vec3(0, 1, 0);
+    vec3  tang = normalize(cross(ref, n));
+    vec3  btan = cross(n, tang);
+    return normalize(tang * local.x + btan * local.y + n * local.z);
+}
+
+// ---- Material helpers -------------------------------------------------------
+vec3 mat_albedo(uint idx)   { uint b = idx*8u; return vec3(mats[b],   mats[b+1u], mats[b+2u]); }
+vec3 mat_emissive(uint idx) { uint b = idx*8u; return vec3(mats[b+3u],mats[b+4u], mats[b+5u]); }
+bool mat_is_emissive(uint idx) {
+    vec3 e = mat_emissive(idx);
+    return e.r > 0.0 || e.g > 0.0 || e.b > 0.0;
+}
+
+// ---- Path trace one ray -----------------------------------------------------
+vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
+    vec3 rad = vec3(0.0);
+    vec3 thr = vec3(1.0);
+    uint max_depth = uint(pc.max_depth_f);
+
+    for (uint depth = 0u; depth < max_depth; ++depth) {
+        Hit hit = intersect_scene(ro, rd);
+        if (!hit.ok) {
+            rad += thr * vec3(pc.env_r, pc.env_g, pc.env_b);
+            break;
+        }
+
+        // Shading normal — flip to face incoming ray
+        vec3 n = hit.n;
+        if (dot(n, -rd) < 0.0) n = -n;
+
+        uint mi = (pc.num_mats > 0u) ? min(hit.mat, pc.num_mats - 1u) : 0u;
+        vec3 albedo   = mat_albedo(mi);
+        vec3 emissive = mat_emissive(mi);
+
+        // Emissive contribution — add at depth 0 (direct visibility) and
+        // at all depths when no point lights are present
+        if (depth == 0u || pc.num_lights == 0u) {
+            rad += thr * emissive;
+        }
+
+        // NEE: sample one point light
+        if (pc.num_lights > 0u) {
+            uint  li    = uint(rand_f(rng) * float(pc.num_lights));
+            li = min(li, pc.num_lights - 1u);
+            uint  lb    = li * 8u;
+            vec3  lpos  = vec3(lights[lb], lights[lb+1u], lights[lb+2u]);
+            vec3  lcol  = vec3(lights[lb+3u], lights[lb+4u], lights[lb+5u]);
+            float lint  = lights[lb+6u];
+
+            vec3  to_l  = lpos - hit.pos;
+            float dist2 = dot(to_l, to_l);
+            float dist  = sqrt(dist2);
+            vec3  ldir  = to_l / dist;
+            float cos_t = dot(n, ldir);
+
+            if (cos_t > 0.0 && dist > 1e-4) {
+                Hit shadow = intersect_scene(hit.pos + n * 0.002, ldir);
+                bool occ   = shadow.ok && shadow.t < dist - 0.004;
+                if (!occ) {
+                    vec3 irrad  = lcol * (lint / (dist2 + 1e-4));
+                    vec3 direct = albedo * (1.0 / 3.14159265) * irrad * cos_t
+                                  * float(pc.num_lights);
+                    rad += thr * direct;
+                }
+            }
+        }
+
+        // BSDF sample (Lambertian — throughput simplifies to albedo)
+        vec3  out_dir = sample_hemisphere(n, rng);
+        float cos_t   = max(0.0, dot(n, out_dir));
+        float pdf     = cos_t / 3.14159265;
+        if (pdf <= 0.0) break;
+        thr *= albedo; // albedo * (1/pi) * cos_t / pdf = albedo
+
+        float mx = max(thr.r, max(thr.g, thr.b));
+        if (mx < 0.001) break;
+
+        // Russian roulette after depth 3
+        if (depth >= 3u) {
+            float rr = clamp(mx, 0.1, 0.99);
+            if (rand_f(rng) > rr) break;
+            thr /= rr;
+        }
+
+        ro = hit.pos + n * 0.002;
+        rd = out_dir;
+    }
+    return rad;
+}
+
+// ---- Main -------------------------------------------------------------------
+void main() {
+    uvec2 gid = gl_GlobalInvocationID.xy;
+    if (gid.x >= pc.width || gid.y >= pc.height) return;
+
+    uint pixel = gid.y * pc.width + gid.x;
+
+    // Per-pixel per-sample RNG seed  — matches CPU make_rng() structure
+    uint rng = pcg(pixel ^ pcg(pc.sample_index * 1664525u ^ pc.base_seed));
+
+    // Camera ray with stratified jitter
+    float jx = rand_f(rng);
+    float jy = rand_f(rng);
+    float fx  = (float(gid.x) + jx) / float(pc.width);
+    float fy  = (float(gid.y) + jy) / float(pc.height);
+    float nx  = (2.0 * fx - 1.0) * pc.aspect * pc.fov_tan_half;
+    float ny  = (1.0 - 2.0 * fy) * pc.fov_tan_half;
+    vec3  dir = normalize(pc.cam_forward + pc.cam_right * nx + pc.cam_up * ny);
+
+    vec3 color = trace(pc.camera_pos, dir, rng);
+
+    // Accumulate into film buffer (safe — one invocation per pixel, no races)
+    uint fb = pixel * 4u;
+    film[fb + 0u] += color.r;
+    film[fb + 1u] += color.g;
+    film[fb + 2u] += color.b;
+    film[fb + 3u] += 1.0; // sample count
+}
