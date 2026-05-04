@@ -1,5 +1,31 @@
 ﻿# Changelog
 
+## 2026-05-03 (session 8)
+
+### CPU path tracer bring-up — window preview, multithreading, SIMD dispatch
+
+**Commits**
+| Commit | Scope | Summary |
+|--------|-------|---------|
+| `8d9f0f5` | scene | Cornell box — sphere, area light mesh, five materials, camera at (0,1,3) |
+| `68c925b` | cpu | SIMD dispatch scaffold — `SimdBackend` enum, ARM NEON/VCE/SME, x86 SSE/AVX/AMX detection |
+| `9967c76` | pathtracer | Multithreaded CPU tracer — stripe-interleaved thread pool, atomic counters, SIMD dispatch wiring |
+| `308326b` | app/platform | Win32 preview window — GDI blit, Fisher-Yates pixel queue, 16ms tracing budget, overlay HUD |
+
+**Cornell box scene** (`assets/scenes/cornell_native.json`)
+Fully specified Cornell box: floor, ceiling, back/left/right walls, area light mesh on ceiling, SDF sphere in center. Five materials (white/red/green/light/sphere). Camera at (0,1,3) targeting (0,1,2). Point light at (0,1.85,0).
+
+**SIMD dispatch scaffold** (`src/cpu/CpuFeatures.h/.cpp`)
+`SimdBackend` enum (`Scalar`, `ArmNeon`, `ArmVce`, `ArmSme`, `X86Sse`, `X86Avx`, `X86Amx`). `SimdDispatchInfo` struct with `preferred` and `available` backends. `BuildSimdDispatchInfo()` selects best backend at runtime: ARM prefers SME > VCE > NEON; x86 prefers AVX > SSE; AMX is placeholder pending kernel support. VCE mapped as SVE‖SVE2; SME detected via `__ARM_FEATURE_SME`. `vce` and `sme` fields added to `CpuFeatureSet`, serialized to JSON.
+
+**Multithreaded CPU path tracer** (`src/pathtracer/PathTracer.h/.cpp`)
+`render_sample_pixels` now runs a `std::thread` worker pool. Thread count is `hardware_concurrency()` (12 on this machine). Work is stripe-interleaved: thread `t` processes pixel indices `t, t+N, t+2N, …`. Each thread accumulates into a `LocalAccum` struct (no mutex on hot path); results are merged after all joins. All `SampleCounters` increments use `std::atomic_ref<uint64_t>` to eliminate data races. `read_counters()` moved out-of-line with atomic loads. `configure()` initializes `m_worker_count` and `m_simd_dispatch` and logs both.
+
+**Win32 preview window** (`src/app/main.cpp`, `src/platform/DesktopPlatform.h/.cpp`)
+`--window` mode creates a Win32 window via `DesktopPlatform`. Each frame: up to 16ms of CPU path tracing via `render_sample_pixels`, then film resolve and GDI `StretchBlt` DIBSection upload to client area. `WM_ERASEBKGND` returns 1 and `InvalidateRect(FALSE)` suppress flicker. Pixel processing order is Fisher-Yates shuffled per-sample so convergence is stochastic across the whole canvas rather than top-down. Overlay HUD (white text, black shadow) shows frame/sample/non-black stats. Tracer initialised with scene loaded from `--scene` arg; falls back to checkerboard diagnostic texture on load failure.
+
+---
+
 ## 2026-05-03 (session 7, Gate 10)
 
 ### Gate 10 complete — Release candidate: reproducible benchmark artifacts

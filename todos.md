@@ -688,6 +688,67 @@ write latest_status.json
 
 ---
 
+## [ ] A17 — Add application mode contract
+
+**Deliverable:** `IApplicationMode` interface.
+
+Required responsibilities:
+
+```text
+mode name
+configure from RuntimeConfig
+initialize
+tick
+shutdown
+describe capabilities
+```
+
+**Implementation hints:** headless benchmark and desktop/editor modes should share startup plumbing behind this contract.
+
+**Acceptance:** `ptapp` can select at least two modes through one unified mode interface.
+
+---
+
+## [ ] A18 — Add crash reporter interface boundary
+
+**Deliverable:** `ICrashReporter` interface used by app/diagnostics.
+
+Required operations:
+
+```text
+begin_session
+record_checkpoint
+record_subsystem_state
+flush_pre_crash_state
+write_crash_artifact_bundle
+```
+
+**Implementation hints:** wrap existing crash hooks/recorder behind this interface so platform code and app code do not depend on concrete crash writer types.
+
+**Acceptance:** crash-test path is executed through `ICrashReporter` without changing artifact outputs.
+
+---
+
+## [ ] A19 — Add engine config and feature flag contracts
+
+**Deliverable:** `EngineConfig` and `FeatureFlags` runtime contracts.
+
+**Implementation hints:** map existing CMake feature toggles and runtime options into one serializable config payload used by app startup and diagnostics.
+
+**Acceptance:** `ptapp --dump-config` includes structured `EngineConfig` and `FeatureFlags` blocks.
+
+---
+
+## [ ] A20 — Add standalone ptdoctor CLI entrypoint
+
+**Deliverable:** dedicated `ptdoctor` executable wrapper.
+
+**Implementation hints:** reuse existing doctor checks from `ptapp --doctor` but expose a standalone tool target for docs/CI parity with the plan.
+
+**Acceptance:** `ptdoctor --check-build` and `ptdoctor --dump-config` run without invoking `ptapp` manually.
+
+---
+
 # 4. Agent B — Core runtime, platform abstraction, ECS, jobs, threading, scene lifecycle
 
 ## Mission
@@ -1017,7 +1078,7 @@ benchmark metadata
 
 ---
 
-## [ ] B17 — Add resource lifetime registry
+## [x] B17 — Add resource lifetime registry
 
 **Deliverable:** reference-count/lease-style registry for assets and runtime resources.
 
@@ -1050,6 +1111,43 @@ FrameEnd
 **Implementation hints:** log stage begin/end with durations.
 
 **Acceptance:** if crash happens, crash state shows last frame stage.
+
+---
+
+## [ ] B19 — Add scene runtime contracts
+
+**Deliverable:** `ISceneLoader`, `ISceneRuntime`, and `IEcsWorld` interfaces.
+
+**Implementation hints:** keep document parsing, runtime ownership, and ECS access separated so renderer/pathtracer do not consume mutable scene internals directly.
+
+**Acceptance:** app can load scene through `ISceneLoader`, hand runtime state through `ISceneRuntime`, and expose ECS access via `IEcsWorld`.
+
+---
+
+## [ ] B20 — Add canonical handle aliases
+
+**Deliverable:** plan-conform handle aliases/types.
+
+Required aliases:
+
+```text
+EntityHandle
+StableEntityId
+AssetId
+TextureHandle
+BufferHandle
+PipelineHandle
+ShaderHandle
+SceneHandle
+BackendDeviceHandle
+AccelerationHandle
+BenchmarkRunId
+JobHandle
+```
+
+**Implementation hints:** aliases may wrap existing `RuntimeHandle`/`StableId` types, but should be explicit at module boundaries.
+
+**Acceptance:** public headers expose canonical handle names without leaking backend-native handles.
 
 ---
 
@@ -1195,7 +1293,7 @@ debug
 
 ---
 
-## [ ] C06 — Implement shader manifest model
+## [x] C06 — Implement shader manifest model
 
 **Deliverable:** `ShaderManifest`.
 
@@ -1221,7 +1319,7 @@ compile diagnostics
 
 ---
 
-## [ ] C07 — Implement shader cache interface
+## [x] C07 — Implement shader cache interface
 
 **Deliverable:** `IShaderCache`.
 
@@ -1406,6 +1504,58 @@ last error
 
 ---
 
+## [ ] C21 — Complete capability schema set
+
+**Deliverable:** missing capability structs from plan.
+
+Required structs:
+
+```text
+PlatformCapabilities
+CpuCapabilities
+SimdCapabilities
+RayTracingCapabilities
+ShaderCapabilities
+TextureFormatCapabilities
+MemoryBudgetCapabilities
+```
+
+**Implementation hints:** keep capability structs serializable for doctor output, status artifacts, and crash dumps.
+
+**Acceptance:** `ptdoctor` can emit all capability structs as JSON.
+
+---
+
+## [ ] C22 — Add frame context descriptors
+
+**Deliverable:** `FrameContext` and `FrameGraphDesc` contracts.
+
+**Implementation hints:** frame graph build/execute should consume `FrameGraphDesc` and runtime frame inputs should flow through `FrameContext`.
+
+**Acceptance:** one frame graph compile/execute path uses the new descriptors end-to-end.
+
+---
+
+## [ ] C23 — Add explicit WGSL shader path for WebGPU
+
+**Deliverable:** first-class WGSL shader source/manifest path for WebGPU backend.
+
+**Implementation hints:** shader manifest should record WGSL entry points and compile/validation diagnostics distinct from SPIR-V/other backend sources.
+
+**Acceptance:** WebGPU backend can report and serialize WGSL shader variants in manifests/artifacts.
+
+---
+
+## [ ] C24 — Register non-Vulkan backend adapters in factory
+
+**Deliverable:** backend factory wiring for D3D12, Metal, and WebGPU adapter stubs.
+
+**Implementation hints:** keep compile-time gating via `PT_ENABLE_D3D12`, `PT_ENABLE_METAL`, and `PT_ENABLE_WEBGPU`; include rejection reasons when disabled/unavailable.
+
+**Acceptance:** backend listing and create path can enumerate/select d3d12/metal/webgpu stubs when enabled.
+
+---
+
 # 6. Agent D — Path tracing core, CPU ray path, SIMD, BVH, integrator, film pipeline
 
 ## Mission
@@ -1439,7 +1589,7 @@ benchmark report formatting
 
 ---
 
-## D01 — Define pathtracer domain API
+## [x] D01 — Define pathtracer domain API
 
 **Deliverable:** `IPathTracer`.
 
@@ -1462,7 +1612,7 @@ shutdown
 
 ---
 
-## D02 — Define canonical ray tracing scene data
+## [x] D02 — Define canonical ray tracing scene data
 
 **Deliverable:** `RTSceneData`.
 
@@ -1486,7 +1636,7 @@ environment
 
 ---
 
-## D03 — Define RNG protocol
+## [x] D03 — Define RNG protocol
 
 **Deliverable:** deterministic sample key model.
 
@@ -1508,7 +1658,7 @@ seed
 
 ---
 
-## D04 — Implement scalar CPU ray path
+## [x] D04 — Implement scalar CPU ray path
 
 **Deliverable:** scalar CPU path tracer.
 
@@ -1530,7 +1680,7 @@ linear HDR film
 
 ---
 
-## D05 — Implement CPU film accumulation
+## [x] D05 — Implement CPU film accumulation
 
 **Deliverable:** HDR film buffer.
 
@@ -1550,7 +1700,7 @@ NaN/Inf checks
 
 ---
 
-## D06 — Implement camera ray generation
+## [x] D06 — Implement camera ray generation
 
 **Deliverable:** physical camera ray generator.
 
@@ -1570,7 +1720,7 @@ depth of field stub
 
 ---
 
-## D07 — Implement CPU triangle intersection
+## [x] D07 — Implement CPU triangle intersection
 
 **Deliverable:** scalar ray/triangle path.
 
@@ -1580,7 +1730,7 @@ depth of field stub
 
 ---
 
-## D08 — Implement SDF primitive intersection baseline
+## [x] D08 — Implement SDF primitive intersection baseline
 
 **Deliverable:** sphere-tracing or analytic/SDF intersection baseline.
 
@@ -1601,7 +1751,7 @@ capsule
 
 ---
 
-## D09 — Implement BVH builder baseline
+## [x] D09 — Implement BVH builder baseline
 
 **Deliverable:** CPU-built BVH.
 
@@ -1611,7 +1761,7 @@ capsule
 
 ---
 
-## D10 — Implement BVH traversal baseline
+## [x] D10 — Implement BVH traversal baseline
 
 **Deliverable:** scalar traversal.
 
@@ -1757,7 +1907,7 @@ dot-product optional
 
 ---
 
-## D21 — Add integrator baseline
+## [x] D21 — Add integrator baseline
 
 **Deliverable:** path tracing integrator.
 
@@ -1848,6 +1998,46 @@ gamma/output transform
 
 ---
 
+## [ ] D27 — Add ray accelerator interface boundary
+
+**Deliverable:** `IRayAccelerator` and `ICpuRayKernel` interfaces.
+
+**Implementation hints:** decouple accelerator build/query and CPU kernel evaluation from concrete scalar/tiled implementations.
+
+**Acceptance:** scalar and tiled CPU paths can be selected through `ICpuRayKernel` while sharing one `IRayAccelerator` contract.
+
+---
+
+## [ ] D28 — Add explicit tracing settings contracts
+
+**Deliverable:** `PathTraceSettings`, `IntegratorSettings`, and `FilmSettings` plan-level contracts.
+
+**Implementation hints:** map existing runtime knobs into these structs; avoid scattering per-feature CLI flags without one canonical settings payload.
+
+**Acceptance:** path tracer configure path accepts one canonical settings package and serializes it in run artifacts.
+
+---
+
+## [ ] D29 — Add AVX SIMD kernel path coverage
+
+**Deliverable:** explicit AVX (non-AVX2) SIMD kernel contract/implementation.
+
+**Implementation hints:** keep the same packet interface as scalar/AVX2/AVX-512 paths; runtime dispatch should choose AVX when AVX2 is unavailable.
+
+**Acceptance:** SIMD mode listing and benchmark experiments can exercise AVX separately from AVX2.
+
+---
+
+## [ ] D30 — Add `ISimdKernel` interface contract
+
+**Deliverable:** explicit `ISimdKernel` abstraction for SIMD packet kernels.
+
+**Implementation hints:** wrap existing scalar/AVX2/AVX-512/NEON/SVE kernels behind one interface and dispatch policy.
+
+**Acceptance:** CPU SIMD selection and benchmark experiments use `ISimdKernel` instead of concrete kernel types directly.
+
+---
+
 # 7. Agent E — Assets, materials, shaders, scene packs, editor/demo controls
 
 ## Mission
@@ -1881,7 +2071,7 @@ benchmark scoring
 
 ---
 
-## E01 — Define asset ID and registry
+## [ ] E01 — Define asset ID and registry
 
 **Deliverable:** `AssetRegistry`.
 
@@ -1903,7 +2093,7 @@ BenchmarkSceneAsset
 
 ---
 
-## E02 — Define importer interface
+## [ ] E02 — Define importer interface
 
 **Deliverable:** `IAssetImporter`.
 
@@ -1923,7 +2113,7 @@ emit_diagnostics
 
 ---
 
-## E03 — Add texture asset model
+## [ ] E03 — Add texture asset model
 
 **Deliverable:** canonical texture descriptor.
 
@@ -1946,7 +2136,7 @@ sampler defaults
 
 ---
 
-## E04 — Add material descriptor model
+## [x] E04 — Add material descriptor model
 
 **Deliverable:** `MaterialDesc`.
 
@@ -1976,7 +2166,7 @@ compatibility notes
 
 ---
 
-## E05 — Add material registry
+## [x] E05 — Add material registry
 
 **Deliverable:** `MaterialRegistry`.
 
@@ -1996,7 +2186,7 @@ query benchmark approval
 
 ---
 
-## E06 — Register Material Pack 1
+## [x] E06 — Register Material Pack 1
 
 **Deliverable:** descriptors and presets for benchmark core materials.
 
@@ -2193,7 +2383,7 @@ noise deformation
 
 ---
 
-## E12 — Define lighting feature inventory
+## [ ] E12 — Define lighting feature inventory
 
 **Deliverable:** light descriptor schema.
 
@@ -2221,7 +2411,7 @@ visible emissive object
 
 ---
 
-## E13 — Add glTF/GLB importer MVP
+## [ ] E13 — Add glTF/GLB importer MVP
 
 **Deliverable:** glTF/GLB mesh/material/texture import.
 
@@ -2231,7 +2421,7 @@ visible emissive object
 
 ---
 
-## E14 — Add OBJ/MTL importer MVP
+## [ ] E14 — Add OBJ/MTL importer MVP
 
 **Deliverable:** OBJ mesh and basic MTL material import.
 
@@ -2241,7 +2431,7 @@ visible emissive object
 
 ---
 
-## E15 — Add PNG/JPEG texture path
+## [ ] E15 — Add PNG/JPEG texture path
 
 **Deliverable:** basic image decode into texture assets.
 
@@ -2251,7 +2441,7 @@ visible emissive object
 
 ---
 
-## E16 — Add EXR texture/output support plan hook
+## [ ] E16 — Add EXR texture/output support plan hook
 
 **Deliverable:** EXR asset/output interface.
 
@@ -2261,7 +2451,7 @@ visible emissive object
 
 ---
 
-## E17 — Add benchmark scene descriptors
+## [x] E17 — Add benchmark scene descriptors
 
 **Deliverable:** scene documents for first scene pack.
 
@@ -2386,6 +2576,26 @@ scripted benchmark path
 **Implementation hints:** controls emit camera commands; they do not directly mutate render state.
 
 **Acceptance:** camera changes trigger accumulation reset event.
+
+---
+
+## [ ] E22 — Add material registry interface contract
+
+**Deliverable:** `IMaterialRegistry` interface boundary.
+
+Required operations:
+
+```text
+register family
+register preset
+validate material
+resolve fallback
+dump registry
+```
+
+**Implementation hints:** adapt current material registry implementation behind this interface without changing serialized registry schema.
+
+**Acceptance:** material consumers depend on `IMaterialRegistry` instead of concrete registry types.
 
 ---
 
@@ -2860,6 +3070,55 @@ latest_status.json generated
 **Implementation hints:** checklist should be runnable by agents.
 
 **Acceptance:** release readiness is not subjective.
+
+---
+
+## [ ] F21 — Add benchmark runner interface
+
+**Deliverable:** `IBenchmarkRunner` interface.
+
+Required operations:
+
+```text
+run_once
+run_suite
+validate_artifacts
+summarize_results
+```
+
+**Implementation hints:** CLI command handlers should delegate run logic through this interface to support scripted/embedded benchmark execution.
+
+**Acceptance:** `ptbench run` and suite execution paths can execute through `IBenchmarkRunner`.
+
+---
+
+## [ ] F22 — Add profiler service contract
+
+**Deliverable:** `IProfiler` interface and benchmark capability summary.
+
+Required operations:
+
+```text
+begin_event
+end_event
+emit_trace
+reset_frame
+describe_capabilities
+```
+
+**Implementation hints:** map current profiler event schema into this contract and include `BenchmarkCapabilities` in benchmark metadata output.
+
+**Acceptance:** profiler traces and capability metadata are emitted through `IProfiler` and visible in benchmark artifacts.
+
+---
+
+## [ ] F23 — Add benchmark capability schema contract
+
+**Deliverable:** `BenchmarkCapabilities` structure serialized into benchmark metadata.
+
+**Implementation hints:** include backend availability, profiling support, artifact export capabilities, and experiment support flags.
+
+**Acceptance:** `ptbench dump-capabilities` and run metadata include `BenchmarkCapabilities`.
 
 ---
 
