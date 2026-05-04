@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include "cpu/CpuFeatures.h"
 #include "core/Logging.h"
 #include "core/Types.h"
 #include "scene/Scene.h"
@@ -245,9 +246,13 @@ class ScalarCpuPathTracer final : public IPathTracer {
   bool build_or_update_acceleration() override;
   bool reset_accumulation() override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
+  bool render_sample_pixels(const uint32_t* pixel_indices,
+                            uint32_t pixel_count,
+                            uint32_t sample_index,
+                            uint32_t frame_index);
   FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }
   FilmHdr resolve_hdr() const override { return m_film.resolve_hdr(); }
-  SampleCounters read_counters() const override { return m_counters; }
+  SampleCounters read_counters() const override;
   const FilmBuffer& film() const { return m_film; }
   void shutdown() override;
 
@@ -296,6 +301,8 @@ class ScalarCpuPathTracer final : public IPathTracer {
   mutable SampleCounters m_counters{};
   bool m_configured = false;
   bool m_has_scene = false;
+  uint32_t m_worker_count = 1;
+  vkpt::cpu::SimdDispatchInfo m_simd_dispatch{};
   Vec3 m_camera_right{};
   Vec3 m_camera_up{};
   Vec3 m_camera_forward{};

@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <thread>
 #include <sstream>
 #include <unordered_map>
 
@@ -17,6 +19,16 @@ constexpr float kEpsilon = 1e-4f;
 constexpr float kMinMarchStep = 1.0e-3f;
 constexpr uint32_t kMaxMarchSteps = 192u;
 constexpr float kMaxMarchDistance = 10000.0f;
+
+void atomic_add_u64(uint64_t& value, uint64_t delta = 1u) {
+  std::atomic_ref<uint64_t> ref(value);
+  ref.fetch_add(delta, std::memory_order_relaxed);
+}
+
+uint64_t atomic_load_u64(const uint64_t& value) {
+  std::atomic_ref<const uint64_t> ref(value);
+  return ref.load(std::memory_order_relaxed);
+}
 
 uint64_t splitmix64(uint64_t x) {
   x += 0x9e3779b97f4a7c15ULL;
@@ -170,6 +182,10 @@ float length(const vkpt::pathtracer::Vec3& value) {
   return std::sqrt(length_sq(value));
 }
 
+float luminance(const vkpt::pathtracer::Vec3& value) {
+  return 0.2126f * value.x + 0.7152f * value.y + 0.0722f * value.z;
+}
+
 vkpt::pathtracer::Vec3 normalize(const vkpt::pathtracer::Vec3& value) {
   const float l = length(value);
   if (l <= kEpsilon) {
@@ -311,17 +327,66 @@ FilmLdr FilmBuffer::resolve_ldr() const {
   out.height = m_height;
   out.rgba8.assign(static_cast<std::size_t>(m_width) * m_height * 4, 0u);
 
+  float logLumSum = 0.0f;
+  uint32_t logLumCount = 0u;
+  float maxChannel = 0.0f;
+  const float kLogBias = 1.0e-4f;
+
   for (uint32_t y = 0; y < m_height; ++y) {
     for (uint32_t x = 0; x < m_width; ++x) {
       const auto idx = static_cast<std::size_t>(y) * m_width + x;
       const float invSamples = 1.0f / std::max(1u, m_sampleCounts[idx]);
-      const Vec3 linear = clamp01({m_accumulation[idx].x * invSamples,
-                                  m_accumulation[idx].y * invSamples,
-                                  m_accumulation[idx].z * invSamples});
+      const Vec3 linear{
+          std::max(0.0f, m_accumulation[idx].x * invSamples),
+          std::max(0.0f, m_accumulation[idx].y * invSamples),
+          std::max(0.0f, m_accumulation[idx].z * invSamples)};
+      maxChannel = std::max(maxChannel, std::max(linear.x, std::max(linear.y, linear.z)));
+      const float lum = luminance(linear);
+      if (lum > 0.0f) {
+        logLumSum += std::log(kLogBias + lum);
+        ++logLumCount;
+      }
+    }
+  }
+
+  const float logAvgLum =
+      (logLumCount > 0u) ? std::exp(logLumSum / static_cast<float>(logLumCount)) : 0.0f;
+  float exposure = 1.0f;
+  if (logAvgLum > 0.0f) {
+    exposure = 0.18f / logAvgLum;
+  }
+  if (maxChannel > 0.0f) {
+    exposure = std::max(exposure, 2.5f / maxChannel);
+  }
+  exposure = std::clamp(exposure, 1.0f / 65536.0f, 65536.0f);
+
+  vkpt::log::Logger::instance().log(vkpt::log::Severity::Debug,
+                                    "traceprobe",
+                                    "film resolve ldr",
+                                    {
+                                      {"width", std::to_string(m_width)},
+                                      {"height", std::to_string(m_height)},
+                                      {"log_avg_lum", std::to_string(logAvgLum)},
+                                      {"max_channel", std::to_string(maxChannel)},
+                                      {"exposure", std::to_string(exposure)}
+                                    });
+
+  for (uint32_t y = 0; y < m_height; ++y) {
+    for (uint32_t x = 0; x < m_width; ++x) {
+      const auto idx = static_cast<std::size_t>(y) * m_width + x;
+      const float invSamples = 1.0f / std::max(1u, m_sampleCounts[idx]);
+      const Vec3 linear{
+          std::max(0.0f, m_accumulation[idx].x * invSamples),
+          std::max(0.0f, m_accumulation[idx].y * invSamples),
+          std::max(0.0f, m_accumulation[idx].z * invSamples)};
+      const Vec3 mapped{
+          (linear.x * exposure) / (1.0f + linear.x * exposure),
+          (linear.y * exposure) / (1.0f + linear.y * exposure),
+          (linear.z * exposure) / (1.0f + linear.z * exposure)};
       const auto base = static_cast<std::size_t>(y) * m_width * 4 + static_cast<std::size_t>(x) * 4;
-      out.rgba8[base + 0] = to_byte(std::pow(linear.x, 1.0f / 2.2f));
-      out.rgba8[base + 1] = to_byte(std::pow(linear.y, 1.0f / 2.2f));
-      out.rgba8[base + 2] = to_byte(std::pow(linear.z, 1.0f / 2.2f));
+      out.rgba8[base + 0] = to_byte(std::pow(std::max(0.0f, mapped.x), 1.0f / 2.2f));
+      out.rgba8[base + 1] = to_byte(std::pow(std::max(0.0f, mapped.y), 1.0f / 2.2f));
+      out.rgba8[base + 2] = to_byte(std::pow(std::max(0.0f, mapped.z), 1.0f / 2.2f));
       out.rgba8[base + 3] = 255;
     }
   }
@@ -374,6 +439,17 @@ bool ScalarCpuPathTracer::configure(const RenderSettings& settings) {
   m_film = FilmBuffer{settings.width, settings.height};
   m_film.clear();
   m_counters = {};
+  m_worker_count = std::max(1u, std::thread::hardware_concurrency());
+  const auto features = vkpt::cpu::QueryCpuFeatures();
+  m_simd_dispatch = vkpt::cpu::BuildSimdDispatchInfo(features);
+  vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,
+                                    "pathtracer",
+                                    "cpu tracer dispatch configured",
+                                    {
+                                      {"workers", std::to_string(m_worker_count)},
+                                      {"simd_preferred", vkpt::cpu::ToString(m_simd_dispatch.preferred)},
+                                      {"simd_available", std::to_string(m_simd_dispatch.available.size())}
+                                    });
   m_configured = true;
   m_has_scene = false;
   m_scene = RTSceneData{};
@@ -425,7 +501,7 @@ bool ScalarCpuPathTracer::intersect_triangle(const RTTriangle& tri,
   if (tri.i0 >= m_scene.vertices.size() || tri.i1 >= m_scene.vertices.size() || tri.i2 >= m_scene.vertices.size()) {
     return false;
   }
-  ++m_counters.triangle_tests;
+  atomic_add_u64(m_counters.triangle_tests);
   const Vec3 p0 = m_scene.vertices[tri.i0];
   const Vec3 p1 = m_scene.vertices[tri.i1];
   const Vec3 p2 = m_scene.vertices[tri.i2];
@@ -506,12 +582,12 @@ bool ScalarCpuPathTracer::intersect_sphere(const RTSdfPrimitive& primitive,
 
 bool ScalarCpuPathTracer::intersect_box(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const {
   for (uint32_t i = 0; i < kMaxMarchSteps; ++i) {
-    ++m_counters.sdf_tests;
+    atomic_add_u64(m_counters.sdf_tests);
     const Vec3 point = ray.origin + ray.direction * t;
     const float d = sdf_distance(primitive, point);
     if (d <= kEpsilon) {
       sdf_normal(primitive, point, normal);
-      ++m_counters.sdf_hits;
+      atomic_add_u64(m_counters.sdf_hits);
       return true;
     }
     t += std::max(kMinMarchStep, d);
@@ -560,7 +636,7 @@ bool ScalarCpuPathTracer::intersect_scene(const Ray& ray, Hit& out) const {
       float u = 0.0f;
       float v = 0.0f;
       if (!intersect_triangle(tri, ray, t, u, v)) {
-        ++m_counters.triangle_hits;
+        atomic_add_u64(m_counters.triangle_hits);
         continue;
       }
       if (t >= bestT) {
@@ -670,7 +746,7 @@ NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit, Rng& rng) con
   // Shadow ray — offset by normal to avoid self-intersection.
   const Ray shadow_ray{hit.position + hit.normal * 0.002f, light_dir};
   Hit shadow_hit;
-  ++m_counters.shadow_tests;
+  atomic_add_u64(m_counters.shadow_tests);
   if (intersect_scene(shadow_ray, shadow_hit) && shadow_hit.t < dist - 0.004f) {
     return {};  // occluded
   }
@@ -730,6 +806,11 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
       break;
     }
 
+    Vec3 shadingNormal = hit.normal;
+    if (dot(shadingNormal, -ray.direction) < 0.0f) {
+      shadingNormal = -shadingNormal;
+    }
+
     const auto index = std::min(hit.material_index, static_cast<uint32_t>(m_scene.materials.size() - 1));
     const auto& material = m_scene.materials[index];
 
@@ -737,7 +818,7 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
     if (!m_settings.enable_nee || depth == 0) {
       radiance += throughput * material.emissive;
     } else if (m_settings.enable_mis && material.is_emissive()) {
-      const float bsdf_pdf = std::max(0.0f, dot(hit.normal, -ray.direction)) * kInvPi;
+      const float bsdf_pdf = std::max(0.0f, dot(shadingNormal, -ray.direction)) * kInvPi;
       const float l_pdf = light_pdf_for_direction(ray.origin, ray.direction);
       const float w = MisWeight(bsdf_pdf, l_pdf);
       radiance += throughput * material.emissive * w;
@@ -745,14 +826,16 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
 
     // NEE direct light sampling.
     if (m_settings.enable_nee && depth < m_settings.max_depth - 1u) {
-      const NeeResult nee = sample_direct_light(hit, rng);
+      Hit lightSampleHit = hit;
+      lightSampleHit.normal = shadingNormal;
+      const NeeResult nee = sample_direct_light(lightSampleHit, rng);
       if (nee.valid) {
         if (m_settings.enable_mis) {
           // Weight the direct sample against the BSDF pdf.
           const Vec3 to_approx_light = (m_scene.lights.empty()) ? Vec3{} :
               (m_scene.lights[0].position - hit.position);
           const Vec3 l_dir = normalize(to_approx_light);
-          const float cos_theta = std::max(0.0f, dot(hit.normal, l_dir));
+          const float cos_theta = std::max(0.0f, dot(shadingNormal, l_dir));
           const float bsdf_pdf = cos_theta * kInvPi;
           const float l_pdf = (m_scene.lights.empty()) ? 1.0f :
               (1.0f / static_cast<float>(m_scene.lights.size()));
@@ -765,13 +848,13 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
     }
 
     const Vec3 inDir = -ray.direction;
-    const Vec3 outDir = sample_hemisphere(rng, hit.normal);
+    const Vec3 outDir = sample_hemisphere(rng, shadingNormal);
     float pdf = 0.0f;
-    const Vec3 bsdf = evaluate_bsdf(material, hit.normal, inDir, outDir, pdf);
+    const Vec3 bsdf = evaluate_bsdf(material, shadingNormal, inDir, outDir, pdf);
     if (pdf <= 0.0f) {
       break;
     }
-    const float cosTheta = std::max(0.0f, dot(hit.normal, outDir));
+    const float cosTheta = std::max(0.0f, dot(shadingNormal, outDir));
     throughput = throughput * bsdf * (cosTheta / pdf);
 
     if (std::max(throughput.x, std::max(throughput.y, throughput.z)) < 0.001f) {
@@ -782,7 +865,7 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
       break;
     }
     throughput = throughput / rr;
-    ray.origin = hit.position + hit.normal * 0.002f;
+    ray.origin = hit.position + shadingNormal * 0.002f;
     ray.direction = outDir;
   }
   (void)sample_index;
@@ -827,35 +910,158 @@ bool ScalarCpuPathTracer::render_sample_batch(uint32_t start_y,
     return false;
   }
   const uint32_t maxY = std::min(end_y, m_settings.height);
-  for (uint32_t y = start_y; y < maxY; ++y) {
+  const uint32_t minY = std::min(start_y, maxY);
+  std::vector<uint32_t> pixelIndices;
+  pixelIndices.reserve(static_cast<std::size_t>(m_settings.width) * (maxY - minY));
+  for (uint32_t y = minY; y < maxY; ++y) {
+    const uint32_t rowBase = y * m_settings.width;
     for (uint32_t x = 0; x < m_settings.width; ++x) {
-      uint64_t seed = 0;
-      const uint64_t sampleSeed = (static_cast<uint64_t>(y) << 32) | x;
-      const uint64_t pathId = sampleSeed + static_cast<uint64_t>(sample_index) + static_cast<uint64_t>(frame_index);
-      const Ray ray = camera_rays(x, y, sample_index, frame_index, static_cast<uint32_t>(pathId), seed);
-      SampleKey key{};
-      key.pixel_index = sampleSeed;
-      key.sample_index = sample_index;
-      key.frame_index = frame_index;
-      key.path_id = pathId;
-      key.seed = m_settings.seed + sampleSeed + seed;
-      key.path_depth = 0;
-      Rng rng(key);
-      uint64_t rayCounter = 0;
-      Vec3 sample = trace(ray, sample_index, frame_index, static_cast<uint32_t>(pathId), 0, rayCounter, rng);
-      if (!std::isfinite(sample.x) || !std::isfinite(sample.y) || !std::isfinite(sample.z)) {
-        vkpt::log::Logger::instance().log(vkpt::log::Severity::Warning, "pathtracer", "non-finite sample", {
-          {"pixel", std::to_string(sampleSeed)},
-          {"sample", std::to_string(sample_index)}
-        });
-        continue;
-      }
-      m_film.add_sample(x, y, sample);
-      m_counters.samples += 1;
-      m_counters.rays += rayCounter;
+      pixelIndices.push_back(rowBase + x);
     }
   }
+  if (pixelIndices.empty()) {
+    return true;
+  }
+  return render_sample_pixels(pixelIndices.data(), static_cast<uint32_t>(pixelIndices.size()), sample_index, frame_index);
+}
+
+bool ScalarCpuPathTracer::render_sample_pixels(const uint32_t* pixel_indices,
+                                               uint32_t pixel_count,
+                                               uint32_t sample_index,
+                                               uint32_t frame_index) {
+  if (!m_configured || !m_has_scene) {
+    return false;
+  }
+  if (pixel_indices == nullptr || pixel_count == 0u) {
+    return true;
+  }
+
+  struct LocalAccum {
+    float lum_sum = 0.0f;
+    float sample_max = 0.0f;
+    std::uint64_t sample_count = 0u;
+    std::uint64_t ray_count = 0u;
+    uint32_t min_pixel = std::numeric_limits<uint32_t>::max();
+    uint32_t max_pixel = 0u;
+  };
+
+  auto shade_one = [&](uint32_t pixel, LocalAccum& accum) {
+    if (pixel >= m_settings.width * m_settings.height) {
+      return;
+    }
+
+    accum.min_pixel = std::min(accum.min_pixel, pixel);
+    accum.max_pixel = std::max(accum.max_pixel, pixel);
+
+    const uint32_t x = pixel % m_settings.width;
+    const uint32_t y = pixel / m_settings.width;
+
+    uint64_t seed = 0;
+    const uint64_t sampleSeed = (static_cast<uint64_t>(y) << 32) | x;
+    const uint64_t pathId = sampleSeed + static_cast<uint64_t>(sample_index) + static_cast<uint64_t>(frame_index);
+    const Ray ray = camera_rays(x, y, sample_index, frame_index, static_cast<uint32_t>(pathId), seed);
+    SampleKey key{};
+    key.pixel_index = sampleSeed;
+    key.sample_index = sample_index;
+    key.frame_index = frame_index;
+    key.path_id = pathId;
+    key.seed = m_settings.seed + sampleSeed + seed;
+    key.path_depth = 0;
+    Rng rng(key);
+    uint64_t rayCounter = 0;
+    Vec3 sample = trace(ray, sample_index, frame_index, static_cast<uint32_t>(pathId), 0, rayCounter, rng);
+    if (!std::isfinite(sample.x) || !std::isfinite(sample.y) || !std::isfinite(sample.z)) {
+      vkpt::log::Logger::instance().log(vkpt::log::Severity::Warning,
+                                        "pathtracer",
+                                        "non-finite sample",
+                                        {{"pixel", std::to_string(sampleSeed)}, {"sample", std::to_string(sample_index)}});
+      return;
+    }
+
+    const float lum = luminance(sample);
+    accum.lum_sum += lum;
+    accum.sample_max = std::max(accum.sample_max, std::max(sample.x, std::max(sample.y, sample.z)));
+    ++accum.sample_count;
+    accum.ray_count += rayCounter;
+    m_film.add_sample(x, y, sample);
+  };
+
+  const uint32_t threadCount = std::max(1u, std::min(m_worker_count, pixel_count));
+  std::vector<LocalAccum> locals(static_cast<std::size_t>(threadCount));
+
+  if (threadCount == 1u) {
+    for (uint32_t i = 0; i < pixel_count; ++i) {
+      shade_one(pixel_indices[i], locals[0]);
+    }
+  } else {
+    std::vector<std::thread> workers;
+    workers.reserve(threadCount - 1u);
+
+    auto run_worker = [&](uint32_t workerIndex) {
+      LocalAccum& local = locals[workerIndex];
+      for (uint32_t i = workerIndex; i < pixel_count; i += threadCount) {
+        shade_one(pixel_indices[i], local);
+      }
+    };
+
+    for (uint32_t t = 1u; t < threadCount; ++t) {
+      workers.emplace_back(run_worker, t);
+    }
+    run_worker(0u);
+    for (auto& worker : workers) {
+      if (worker.joinable()) {
+        worker.join();
+      }
+    }
+  }
+
+  float sampleLumSum = 0.0f;
+  float sampleMax = 0.0f;
+  std::uint64_t sampleCount = 0u;
+  std::uint64_t rayCount = 0u;
+  uint32_t minPixel = std::numeric_limits<uint32_t>::max();
+  uint32_t maxPixel = 0u;
+  for (const auto& local : locals) {
+    sampleLumSum += local.lum_sum;
+    sampleMax = std::max(sampleMax, local.sample_max);
+    sampleCount += local.sample_count;
+    rayCount += local.ray_count;
+    if (local.sample_count > 0u) {
+      minPixel = std::min(minPixel, local.min_pixel);
+      maxPixel = std::max(maxPixel, local.max_pixel);
+    }
+  }
+  atomic_add_u64(m_counters.samples, sampleCount);
+  atomic_add_u64(m_counters.rays, rayCount);
+
+  if (sampleCount > 0u && (sample_index == 0u || ((sample_index + 1u) % 4u) == 0u || (sample_index + 1u) == m_settings.spp)) {
+    const float avgLum = sampleCount == 0u ? 0.0f : (sampleLumSum / static_cast<float>(sampleCount));
+    vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,
+                                      "traceprobe",
+                                      "render_sample_pixels",
+                                      {
+                                        {"frame", std::to_string(frame_index)},
+                                        {"sample_index", std::to_string(sample_index)},
+                                        {"pixels", std::to_string(sampleCount)},
+                                        {"pixel_span", std::to_string(minPixel) + "-" + std::to_string(maxPixel)},
+                                        {"avg_lum", std::to_string(avgLum)},
+                                        {"sample_max", std::to_string(sampleMax)},
+                                        {"samples", std::to_string(sampleCount)}
+                                      });
+  }
   return true;
+}
+
+SampleCounters ScalarCpuPathTracer::read_counters() const {
+  SampleCounters out;
+  out.samples = atomic_load_u64(m_counters.samples);
+  out.rays = atomic_load_u64(m_counters.rays);
+  out.triangle_tests = atomic_load_u64(m_counters.triangle_tests);
+  out.sdf_tests = atomic_load_u64(m_counters.sdf_tests);
+  out.triangle_hits = atomic_load_u64(m_counters.triangle_hits);
+  out.sdf_hits = atomic_load_u64(m_counters.sdf_hits);
+  out.shadow_tests = atomic_load_u64(m_counters.shadow_tests);
+  return out;
 }
 
 void ScalarCpuPathTracer::shutdown() {
@@ -968,8 +1174,13 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       continue;
     }
     Vec3 pos{};
+    bool hasTransform = false;
     if (auto it = entityTransforms.find(light.id); it != entityTransforms.end()) {
       pos = {it->second.translation.x, it->second.translation.y, it->second.translation.z};
+      hasTransform = true;
+    }
+    if (!hasTransform) {
+      pos = {0.0f, 1.8f, 0.0f};
     }
     scene.lights.push_back(RTHitLight{pos, {light.light.color.x, light.light.color.y, light.light.color.z}, light.light.intensity});
   }
@@ -981,6 +1192,41 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       scene.camera_fov_deg = entity.camera.fov;
       scene.camera_target = scene.camera_position + Vec3{0.0f, 0.0f, -1.0f};
       break;
+    }
+  }
+
+  bool hasCameraEntity = false;
+  bool hasCameraTransform = false;
+  for (const auto& entity : doc.entities) {
+    if (entity.has_camera) {
+      hasCameraEntity = true;
+      hasCameraTransform = entity.has_transform;
+      break;
+    }
+  }
+
+  if (hasCameraEntity && !hasCameraTransform && !scene.vertices.empty()) {
+    Vec3 bmin = scene.vertices.front();
+    Vec3 bmax = scene.vertices.front();
+    for (const auto& v : scene.vertices) {
+      bmin.x = std::min(bmin.x, v.x);
+      bmin.y = std::min(bmin.y, v.y);
+      bmin.z = std::min(bmin.z, v.z);
+      bmax.x = std::max(bmax.x, v.x);
+      bmax.y = std::max(bmax.y, v.y);
+      bmax.z = std::max(bmax.z, v.z);
+    }
+    const Vec3 center{(bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f, (bmin.z + bmax.z) * 0.5f};
+    const Vec3 extent{bmax.x - bmin.x, bmax.y - bmin.y, bmax.z - bmin.z};
+    const float radius = std::max(0.5f, 0.5f * std::max(extent.x, std::max(extent.y, extent.z)));
+    scene.camera_target = center;
+    scene.camera_position = center + Vec3{0.0f, std::max(0.6f, 0.4f * radius), std::max(2.0f, 2.2f * radius)};
+
+    if (scene.lights.empty()) {
+      scene.lights.push_back(RTHitLight{
+          center + Vec3{0.0f, std::max(1.0f, 1.2f * radius), 0.0f},
+          {6.0f, 6.0f, 6.0f},
+          10.0f});
     }
   }
 
@@ -1009,6 +1255,22 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
         RTSdfPrimitive{SdfShape::Sphere, {0.0f, 1.8f, 0.0f}, {0.35f, 0.35f, 0.35f}, {0.0f, 0.0f, 0.0f}, 3u, 0.35f, 0.0f, 0.0f});
     scene.lights.push_back(RTHitLight{{0.0f, 1.8f, 0.0f}, {6.0f, 6.0f, 6.0f}, 10.0f});
   }
+
+  vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,
+                                    "traceprobe",
+                                    "scene converted to RTSceneData",
+                                    {
+                                      {"vertices", std::to_string(scene.vertices.size())},
+                                      {"indices", std::to_string(scene.indices.size())},
+                                      {"instances", std::to_string(scene.instances.size())},
+                                      {"sdf_primitives", std::to_string(scene.sdf_primitives.size())},
+                                      {"materials", std::to_string(scene.materials.size())},
+                                      {"lights", std::to_string(scene.lights.size())},
+                                      {"camera_pos", std::to_string(scene.camera_position.x) + "," +
+                                         std::to_string(scene.camera_position.y) + "," + std::to_string(scene.camera_position.z)},
+                                      {"camera_target", std::to_string(scene.camera_target.x) + "," +
+                                         std::to_string(scene.camera_target.y) + "," + std::to_string(scene.camera_target.z)}
+                                    });
 
   return vkpt::core::Result<RTSceneData>::ok(std::move(scene));
 }
