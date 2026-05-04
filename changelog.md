@@ -1,5 +1,14 @@
 ﻿# Changelog
 
+## 2026-05-04 (session 12)
+
+### D3D12 reliability, backend selection hardening, and material-color parsing fix
+
+- Hardened backend routing so explicit GPU backend requests do not silently fall back to CPU. Backend aliases now normalize `dxr` and `d3d12dxr` to `d3d12-dxr`, and availability checks fail fast when requested backends are not compiled in.
+- Fixed scene material vector parsing in scene import for `albedo` and `emission` by correctly reading vectors from the parent material object key path.
+- Updated D3D12 and shader constant layouts to include `rays_per_pixel`, added BVH/triangle-material bindings in the compute shader path, and integrated DXR pipeline plumbing with improved diagnostics and resource lifetime handling.
+- Corrected Vulkan sample/ray counter accumulation to increment rays by per-sample work rather than cumulative sample count.
+
 ## 2026-05-04 (session 11)
 
 ### Cornell box with diffuse / mirror / glossy cuboids; infinite convergence; GPU confirmed on Arc B580
