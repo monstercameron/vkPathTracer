@@ -1,5 +1,41 @@
 ﻿# Changelog
 
+## 2026-05-04 (session 9)
+
+### Multithreaded AVX2 path tracer wired into GUI window — functional Cornell box render
+
+**Goal:** Get the `TiledCpuPathTracer` + `Avx2CpuPathTracer` pipeline producing a visible image in the `--window` GUI.
+
+**`src/app/main.cpp` — backend selection + non-blocking window render**
+- `"auto"` and empty backend now select `TiledCpuPathTracer` (previously fell through to `ScalarCpuPathTracer`), matching the `--render` path.
+- Added `<atomic>` and `<mutex>` includes.
+- For `TiledCpuPathTracer` in `--window` mode: rendering runs on a dedicated `std::thread` (`bgRenderThread`). Each completed sample is posted to a mutex-protected `BgFrame` struct. The main Win32 loop reads the latest frame without blocking, keeping the message pump responsive. `bgRenderStop` + `bgRenderThread.join()` on window close prevents use-after-free.
+- `ScalarCpuPathTracer` retains the original incremental per-pixel-batch path (unchanged).
+
+**`src/cpu/Avx2PathTracer.cpp` + `Avx2PathTracer.h` — full rewrite against scalar reference**
+
+Four bugs in the original implementation produced an all-black image:
+
+| Bug | Root cause | Fix |
+|-----|-----------|-----|
+| Wrong camera basis | `cam_right = cross({0,1,0}, forward)` gives opposite sign to scalar tracer | `cam_right = cross(forward, camera_up)` — exact match to `ScalarCpuPathTracer::build_or_update_acceleration()` |
+| All pixels same RNG | `rng_state[i] = i ^ seed` — every lane-0 pixel across the whole image used an identical random sequence; all samples degenerate | Per-pixel/per-sample seed via `make_rng(x, y, width, sample_index, ...)` matching scalar's `SampleKey` construction |
+| Closest hit not tracked | `best_t` passed by value to `intersect8` — never updated, so every subsequent triangle tested against `infinity`; `hit_t` ended up holding the *last* hit, not the closest | `best_t = hit_t` after each triangle test; `intersect8` also takes `current_best_t` by value and only accepts `t < current_best_t` |
+| No light contribution | `!enable_nee \|\| depth==0` guard suppressed emissive at bounce depth > 0 with no NEE implementation | Full NEE + MIS-weighted emissive mirroring `ScalarCpuPathTracer::trace` exactly: direct point-light sampling with shadow ray, MIS weight, throughput accumulation |
+
+New structure of `Avx2PathTracer.cpp`:
+- `intersect8()` — 8-wide AVX2+FMA Möller–Trumbore; accepts `current_best_t` to cull farther hits; returns lane bitmask and updates `out_t/u/v` only for closer hits.
+- `intersect_scene8()` — loops all instances/triangles, maintains `best_t` per-lane in an `__m256`, collects closest hit position/normal/material into `Hit8`.
+- `trace_one()` — scalar path-tracing loop identical to `ScalarCpuPathTracer::trace`: environment miss, emissive (NEE off or depth 0), MIS-weighted emissive hit, NEE direct shadow ray, Lambertian BSDF sample, Russian roulette. Uses `intersect_scene8` for each bounce.
+- `render_sample_batch()` — generates camera rays per-pixel (mirroring scalar `camera_rays()`), calls `trace_one` per pixel with correct per-pixel RNG.
+
+**`src/platform/DesktopPlatform.cpp` — eliminate repaint flash**
+- `WM_PAINT` no longer calls `FillRect` when a valid framebuffer is present. `StretchBlt` covers the entire client area, making the preceding black fill redundant. Fill is preserved only when no framebuffer exists (startup/errors). Removes the visible black flash that occurred on every `set_overlay_text`-triggered repaint.
+
+**Result:** Cornell box renders in the GUI window with ceiling light, correct NEE illumination, and progressive sample accumulation. `log_avg_lum≈4.9`, `max_channel≈213` confirmed by offline render test.
+
+---
+
 ## 2026-05-03 (session 8)
 
 ### CPU path tracer bring-up — window preview, multithreading, SIMD dispatch
