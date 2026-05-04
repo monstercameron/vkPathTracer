@@ -1296,12 +1296,10 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       }
       usedIds.insert(material.id);
       if (item.object.contains("albedo")) {
-        const auto& colorNode = item.object.at("albedo");
-        read_vec3(colorNode, "", material.albedo);
+        read_vec3(item, "albedo", material.albedo);
       }
       if (item.object.contains("emission")) {
-        const auto& emissionNode = item.object.at("emission");
-        read_vec3(emissionNode, "", material.emission);
+        read_vec3(item, "emission", material.emission);
       }
       if (item.object.contains("emission_intensity")) {
         read_float(item, "emission_intensity", material.emission_intensity);
