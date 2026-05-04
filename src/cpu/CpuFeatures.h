@@ -1,8 +1,27 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace vkpt::cpu {
+
+enum class SimdBackend : std::uint8_t {
+  Scalar = 0,
+  ArmNeon,
+  ArmVce,
+  ArmSme,
+  X86Sse,
+  X86Avx,
+  X86Amx,
+};
+
+struct SimdDispatchInfo {
+  SimdBackend preferred = SimdBackend::Scalar;
+  std::vector<SimdBackend> available;
+};
+
+std::string ToString(SimdBackend backend);
 
 // Runtime-detected CPU SIMD feature flags.
 struct CpuFeatureSet {
@@ -23,7 +42,9 @@ struct CpuFeatureSet {
 
   // ARM features (false on non-ARM builds)
   bool neon        = false;
+  bool vce         = false;
   bool sve         = false;
+  bool sme         = false;
   bool sve2        = false;
   bool fp16        = false;
   bool dot_product = false;
@@ -31,6 +52,7 @@ struct CpuFeatureSet {
 
 // Query CPU features at runtime. Result is stable for the process lifetime.
 CpuFeatureSet QueryCpuFeatures();
+SimdDispatchInfo BuildSimdDispatchInfo(const CpuFeatureSet& features);
 
 // Serialize feature set as a JSON object string.
 std::string SerializeCpuFeatures(const CpuFeatureSet& features);
