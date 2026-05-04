@@ -2159,7 +2159,10 @@ int main(int argc, char** argv) {
     const float previewScale = std::min(1.0f, 960.0f / static_cast<float>(windowPreviewWidth));
     previewSettings.width = std::max<uint32_t>(1u, static_cast<uint32_t>(static_cast<float>(windowPreviewWidth) * previewScale));
     previewSettings.height = std::max<uint32_t>(1u, static_cast<uint32_t>(static_cast<float>(windowPreviewHeight) * previewScale));
-    previewSettings.spp = std::max<uint32_t>(1u, std::min<uint32_t>(config.spp.value, 64u));
+    // No upper cap on samples in window mode — accumulate indefinitely while
+    // the camera is stationary; convergence continues sampling until the user
+    // closes the window or the tracer is reset.
+    previewSettings.spp = std::numeric_limits<uint32_t>::max();
     previewSettings.max_depth = std::max<uint32_t>(1u, config.max_depth.value);
     previewSettings.seed = 0xC001D00Dull;
     previewSettings.enable_nee = true;
@@ -2324,7 +2327,9 @@ int main(int argc, char** argv) {
       if (dynamic_cast<vkpt::cpu::TiledCpuPathTracer*>(previewTracer.get()) != nullptr) {
         useBgRender = true;
         bgRenderThread = std::thread([&]() {
-          for (uint32_t s = 0; s < previewSettings.spp && !bgRenderStop.load(std::memory_order_relaxed); ++s) {
+          // Accumulate indefinitely — no spp cap. Convergence continues until
+          // bgRenderStop is set (window close) or render_sample_batch fails.
+          for (uint32_t s = 0; !bgRenderStop.load(std::memory_order_relaxed); ++s) {
             bool ok = previewTracer->render_sample_batch(0, previewSettings.height, s, 0);
             if (!ok) break;
             auto ldr = previewTracer->resolve_ldr();
@@ -2394,15 +2399,14 @@ int main(int argc, char** argv) {
             }
           }
           previewSampleIndex = bfSample;
-          if (bfSample == 1u || (bfSample % 4u) == 0u || bfSample == previewSettings.spp) {
-            std::cout << "[ui] preview accumulate (tiled): sample " << bfSample
-                      << "/" << previewSettings.spp
+          // Log every 16 samples to show convergence progress
+          if (bfSample == 1u || (bfSample % 16u) == 0u) {
+            std::cout << "[ui] preview accumulate: samples=" << bfSample
                       << " non_black=" << (previewNonBlack ? "yes" : "no") << "\n";
             logger.log(vkpt::log::Severity::Info, "traceprobe",
-                       "window preview accumulate (tiled)",
+                       "window preview accumulate",
                        {
-                         {"sample", std::to_string(bfSample)},
-                         {"spp",    std::to_string(previewSettings.spp)},
+                         {"samples",   std::to_string(bfSample)},
                          {"non_black", previewNonBlack ? "yes" : "no"}
                        },
                        frame);
@@ -2493,19 +2497,16 @@ int main(int argc, char** argv) {
           const float rgbAvg = (rgbCount == 0u) ? 0.0f
               : static_cast<float>(rgbSum) / static_cast<float>(rgbCount);
           if (completedSampleThisFrame &&
-              (completedSampleNumber == 1u || (completedSampleNumber % 4u) == 0u || completedSampleNumber == previewSettings.spp)) {
-            std::cout << "[ui] preview accumulate: sample " << completedSampleNumber
-                      << "/" << previewSettings.spp
+              (completedSampleNumber == 1u || (completedSampleNumber % 16u) == 0u)) {
+            std::cout << "[ui] preview accumulate: samples=" << completedSampleNumber
                       << " non_black=" << (previewNonBlack ? "yes" : "no") << "\n";
             logger.log(vkpt::log::Severity::Info, "traceprobe",
                        "window preview accumulate",
                        {
-                         {"sample", std::to_string(completedSampleNumber)},
-                         {"spp", std::to_string(previewSettings.spp)},
-                         {"completed_samples", std::to_string(completedSampleCount)},
-                         {"rgb_max", std::to_string(static_cast<unsigned>(rgbMax))},
-                         {"rgb_avg", std::to_string(rgbAvg)},
-                         {"non_black", previewNonBlack ? "yes" : "no"}
+                         {"samples",   std::to_string(completedSampleNumber)},
+                         {"rgb_max",    std::to_string(static_cast<unsigned>(rgbMax))},
+                         {"rgb_avg",    std::to_string(rgbAvg)},
+                         {"non_black",  previewNonBlack ? "yes" : "no"}
                        },
                        frame);
           }
@@ -2740,8 +2741,8 @@ int main(int argc, char** argv) {
                  << "backend: " << ui_runtime_state.active_renderer_backend << "\n"
                  << "scene: "   << ui_runtime_state.active_scene << "\n"
                  << "layout: "  << ui_runtime_state.active_layout_name << "\n"
-                 << "path tracing: " << (previewTracerReady ? "on" : "failed")
-                 << " sample=" << previewSampleIndex << "/" << previewSettings.spp << "\n"
+           << "path tracing: " << (previewTracerReady ? "on" : "failed")
+           << " samples=" << previewSampleIndex << "\n"
                  << "image: " << (previewNonBlack ? "non-black" : "dark/empty") << "\n"
                  << "status: "  << ui_runtime_state.status_message << "\n"
                  << "events: "  << ui_event_log.events().size();
