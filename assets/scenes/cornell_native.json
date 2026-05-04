@@ -1,22 +1,40 @@
 {
   "metadata": {
     "schema": "1.0",
-    "scene_name": "Cornell Native",
+    "scene_name": "Cornell Box Sphere",
     "author": "vkPathTracer"
   },
   "materials": [
     {
       "id": 1,
-      "name": "Cornell wall",
-      "albedo": [0.78, 0.78, 0.95],
+      "name": "White matte",
+      "albedo": [0.82, 0.82, 0.8],
       "roughness": 1.0
     },
     {
       "id": 2,
-      "name": "Cornell light",
+      "name": "Red wall",
+      "albedo": [0.8, 0.18, 0.16],
+      "roughness": 1.0
+    },
+    {
+      "id": 3,
+      "name": "Green wall",
+      "albedo": [0.2, 0.72, 0.2],
+      "roughness": 1.0
+    },
+    {
+      "id": 4,
+      "name": "Ceiling light",
       "albedo": [1.0, 1.0, 1.0],
       "emission": [1.0, 1.0, 1.0],
-      "emission_intensity": 6.0,
+      "emission_intensity": 10.0,
+      "roughness": 1.0
+    },
+    {
+      "id": 5,
+      "name": "Sphere matte",
+      "albedo": [0.8, 0.8, 0.85],
       "roughness": 1.0
     }
   ],
@@ -26,20 +44,100 @@
       "primitive": "triangle",
       "material_id": 1,
       "vertices": [
-        [0.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0]
+        [-1.0, 0.0, -1.0],
+        [1.0, 0.0, -1.0],
+        [1.0, 0.0, 1.0],
+        [-1.0, 0.0, 1.0]
       ],
-      "indices": [0, 1, 2]
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 2,
+      "primitive": "triangle",
+      "material_id": 1,
+      "vertices": [
+        [-1.0, 2.0, -1.0],
+        [-1.0, 2.0, 1.0],
+        [1.0, 2.0, 1.0],
+        [1.0, 2.0, -1.0]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 3,
+      "primitive": "triangle",
+      "material_id": 1,
+      "vertices": [
+        [-1.0, 0.0, -1.0],
+        [-1.0, 2.0, -1.0],
+        [1.0, 2.0, -1.0],
+        [1.0, 0.0, -1.0]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 4,
+      "primitive": "triangle",
+      "material_id": 2,
+      "vertices": [
+        [-1.0, 0.0, -1.0],
+        [-1.0, 0.0, 1.0],
+        [-1.0, 2.0, 1.0],
+        [-1.0, 2.0, -1.0]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 5,
+      "primitive": "triangle",
+      "material_id": 3,
+      "vertices": [
+        [1.0, 0.0, -1.0],
+        [1.0, 2.0, -1.0],
+        [1.0, 2.0, 1.0],
+        [1.0, 0.0, 1.0]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 6,
+      "primitive": "triangle",
+      "material_id": 4,
+      "vertices": [
+        [-0.35, 1.98, -0.35],
+        [-0.35, 1.98, 0.35],
+        [0.35, 1.98, 0.35],
+        [0.35, 1.98, -0.35]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
     }
   ],
-  "sdf_primitives": [],
+  "sdf_primitives": [
+    {
+      "id": 301,
+      "shape": "sphere",
+      "transform": {
+        "translation": [0.0, 0.55, 0.2],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.55, 0.55, 0.55]
+      },
+      "primitive": {
+        "shape": "sphere",
+        "radius": 0.55
+      }
+    }
+  ],
   "entities": [
     {
       "id": 1,
       "name": "camera",
+      "transform": {
+        "translation": [0.0, 1.0, 3.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
       "camera": {
-        "fov": 60.0,
+        "fov": 55.0,
         "near_plane": 0.1,
         "far_plane": 1000.0
       }
@@ -47,10 +145,15 @@
     {
       "id": 2,
       "name": "light",
+      "transform": {
+        "translation": [0.0, 1.85, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
       "light": {
         "type": "point",
-        "color": [1.0, 0.95, 0.85],
-        "intensity": 18.0,
+        "color": [1.0, 0.98, 0.95],
+        "intensity": 14.0,
         "radius": 0.0
       }
     },
@@ -64,7 +167,72 @@
       "transform": {
         "translation": [0.0, 0.0, 0.0],
         "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [6.0, 1.0, 6.0]
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 4,
+      "name": "ceiling",
+      "mesh": {
+        "mesh_id": 2,
+        "material_id": 1
+      },
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 5,
+      "name": "back_wall",
+      "mesh": {
+        "mesh_id": 3,
+        "material_id": 1
+      },
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 6,
+      "name": "left_wall",
+      "mesh": {
+        "mesh_id": 4,
+        "material_id": 2
+      },
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 7,
+      "name": "right_wall",
+      "mesh": {
+        "mesh_id": 5,
+        "material_id": 3
+      },
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 8,
+      "name": "ceiling_light_mesh",
+      "mesh": {
+        "mesh_id": 6,
+        "material_id": 4
+      },
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
       }
     }
   ],
@@ -81,8 +249,8 @@
     {
       "id": 2,
       "type": "point",
-      "color": [1.0, 0.95, 0.85],
-      "intensity": 18.0,
+      "color": [1.0, 0.98, 0.95],
+      "intensity": 14.0,
       "radius": 0.0
     }
   ],
