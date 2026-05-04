@@ -722,6 +722,38 @@ Vec3 ScalarCpuPathTracer::sample_hemisphere(Rng& rng, const Vec3& normal) const 
   return make_unit(tangent * local.x + bitangent * local.y + normal * local.z);
 }
 
+// Phong lobe sampling.  Samples a direction around the perfect-mirror
+// reflection direction.  exponent controls the spread:
+//   exponent -> inf  : perfect mirror
+//   exponent   = 0   : cosine-weighted hemisphere (diffuse)
+// pdf (not used explicitly) = (n+1)/(2*pi) * cos^n(theta)
+// Weight: throughput *= albedo (energy-conserving approx).
+Vec3 ScalarCpuPathTracer::sample_phong_lobe(Rng& rng, const Vec3& refl_dir,
+                                            float exponent, const Vec3& normal) const {
+  const float u1  = rng.next01();
+  const float u2  = rng.next01();
+  const float cosT = std::pow(std::max(0.0f, u1), 1.0f / (exponent + 1.0f));
+  const float sinT = std::sqrt(std::max(0.0f, 1.0f - cosT * cosT));
+  const float phi  = 2.0f * kPi * u2;
+  // Build tangent frame around refl_dir
+  const Vec3 ref_t = (std::fabs(refl_dir.z) < 0.999f)
+                       ? Vec3{0.0f, 0.0f, 1.0f}
+                       : Vec3{0.0f, 1.0f, 0.0f};
+  Vec3 tang = normalize(cross(ref_t, refl_dir));
+  Vec3 btan = cross(refl_dir, tang);
+  Vec3 out = normalize(tang * (sinT * std::cos(phi)) +
+                       btan * (sinT * std::sin(phi)) +
+                       refl_dir * cosT);
+  // If sample ends up below the shading hemisphere, clamp onto it
+  if (dot(out, normal) <= 0.0f) {
+    out = out - 2.0f * dot(out, normal) * normal;
+    if (dot(out, normal) <= 0.0f) {
+      return sample_hemisphere(rng, normal);  // fallback
+    }
+  }
+  return out;
+}
+
 NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit, Rng& rng) const {
   if (m_scene.lights.empty()) {
     return {};
@@ -824,14 +856,16 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
       radiance += throughput * material.emissive * w;
     }
 
-    // NEE direct light sampling.
-    if (m_settings.enable_nee && depth < m_settings.max_depth - 1u) {
+    const bool isMirror  = (material.roughness <= 0.001f);
+    const bool isDiffuse = (material.roughness >= 0.999f);
+
+    // NEE direct light sampling — skip for perfect mirrors (delta BSDF)
+    if (m_settings.enable_nee && !isMirror && depth < m_settings.max_depth - 1u) {
       Hit lightSampleHit = hit;
       lightSampleHit.normal = shadingNormal;
       const NeeResult nee = sample_direct_light(lightSampleHit, rng);
       if (nee.valid) {
         if (m_settings.enable_mis) {
-          // Weight the direct sample against the BSDF pdf.
           const Vec3 to_approx_light = (m_scene.lights.empty()) ? Vec3{} :
               (m_scene.lights[0].position - hit.position);
           const Vec3 l_dir = normalize(to_approx_light);
@@ -847,20 +881,31 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
       }
     }
 
-    const Vec3 inDir = -ray.direction;
-    const Vec3 outDir = sample_hemisphere(rng, shadingNormal);
-    float pdf = 0.0f;
-    const Vec3 bsdf = evaluate_bsdf(material, shadingNormal, inDir, outDir, pdf);
-    if (pdf <= 0.0f) {
-      break;
+    // ---- BSDF bounce -------------------------------------------------------
+    Vec3 outDir;
+    if (isMirror) {
+      // Perfect specular reflection: r = d - 2*(d·n)*n
+      outDir = ray.direction - 2.0f * dot(shadingNormal, ray.direction) * shadingNormal;
+    } else if (isDiffuse) {
+      outDir = sample_hemisphere(rng, shadingNormal);
+    } else {
+      // Glossy: Phong lobe around mirror direction
+      // exponent = 2/alpha^4 - 2, alpha = roughness^2  (GGX-inspired mapping)
+      const float a2   = material.roughness * material.roughness;
+      const float expt = std::max(0.0f, 2.0f / (a2 * a2) - 2.0f);
+      const Vec3 refl = ray.direction - 2.0f * dot(shadingNormal, ray.direction) * shadingNormal;
+      outDir = sample_phong_lobe(rng, refl, expt, shadingNormal);
     }
-    const float cosTheta = std::max(0.0f, dot(shadingNormal, outDir));
-    throughput = throughput * bsdf * (cosTheta / pdf);
+
+    if (dot(outDir, shadingNormal) <= 0.0f) break;
+    // Throughput weight = albedo for all three cases (energy-conserving approx)
+    throughput = throughput * material.albedo;
 
     if (std::max(throughput.x, std::max(throughput.y, throughput.z)) < 0.001f) {
       break;
     }
-    const float rr = std::min(0.99f, std::max(0.1f, std::max(throughput.x, std::max(throughput.y, throughput.z))));
+    const float rr = std::min(0.99f, std::max(0.1f,
+        std::max(throughput.x, std::max(throughput.y, throughput.z))));
     if (depth >= 3 && rng.next01() > rr) {
       break;
     }

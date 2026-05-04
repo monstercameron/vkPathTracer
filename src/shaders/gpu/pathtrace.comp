@@ -100,23 +100,46 @@ Hit intersect_scene(vec3 ro, vec3 rd) {
     return h;
 }
 
+// ---- Tangent frame ----------------------------------------------------------
+void build_frame(vec3 n, out vec3 tang, out vec3 btan) {
+  vec3 ref = (abs(n.z) < 0.999) ? vec3(0,0,1) : vec3(0,1,0);
+  tang = normalize(cross(ref, n));
+  btan = cross(n, tang);
+}
+
 // ---- Cosine-weighted hemisphere sample (matches ScalarCpuPathTracer) --------
 vec3 sample_hemisphere(vec3 n, inout uint rng) {
-    float u1  = rand_f(rng);
-    float u2  = rand_f(rng);
-    float r   = sqrt(max(0.0, 1.0 - u1));
-    float phi = 6.28318530718 * u2;
-    vec3  local = vec3(r * cos(phi), r * sin(phi), sqrt(max(0.0, u1)));
-    vec3  ref  = (abs(n.z) < 0.999) ? vec3(0, 0, 1) : vec3(0, 1, 0);
-    vec3  tang = normalize(cross(ref, n));
-    vec3  btan = cross(n, tang);
-    return normalize(tang * local.x + btan * local.y + n * local.z);
+  float u1  = rand_f(rng);
+  float u2  = rand_f(rng);
+  float r   = sqrt(max(0.0, 1.0 - u1));
+  float phi = 6.28318530718 * u2;
+  vec3  tang, btan;
+  build_frame(n, tang, btan);
+  return normalize(tang * (r * cos(phi)) + btan * (r * sin(phi)) + n * sqrt(max(0.0, u1)));
+}
+
+// ---- Phong lobe sample around reflection direction --------------------------
+vec3 sample_phong_lobe(vec3 refl, float exponent, vec3 normal, inout uint rng) {
+  float u1   = rand_f(rng);
+  float u2   = rand_f(rng);
+  float cosT = pow(max(0.0, u1), 1.0 / (exponent + 1.0));
+  float sinT = sqrt(max(0.0, 1.0 - cosT * cosT));
+  float phi  = 6.28318530718 * u2;
+  vec3 tang, btan;
+  build_frame(refl, tang, btan);
+  vec3 dir = normalize(tang * (sinT * cos(phi)) + btan * (sinT * sin(phi)) + refl * cosT);
+  if (dot(dir, normal) <= 0.0) {
+    dir = dir - 2.0 * dot(dir, normal) * normal;
+    if (dot(dir, normal) <= 0.0) return sample_hemisphere(normal, rng);
+  }
+  return dir;
 }
 
 // ---- Material helpers -------------------------------------------------------
-vec3 mat_albedo(uint idx)   { uint b = idx*8u; return vec3(mats[b],   mats[b+1u], mats[b+2u]); }
-vec3 mat_emissive(uint idx) { uint b = idx*8u; return vec3(mats[b+3u],mats[b+4u], mats[b+5u]); }
-bool mat_is_emissive(uint idx) {
+vec3  mat_albedo(uint idx)    { uint b=idx*8u; return vec3(mats[b],   mats[b+1u], mats[b+2u]); }
+vec3  mat_emissive(uint idx)  { uint b=idx*8u; return vec3(mats[b+3u],mats[b+4u], mats[b+5u]); }
+float mat_roughness(uint idx) { return mats[idx*8u + 6u]; }
+bool  mat_is_emissive(uint idx) {
     vec3 e = mat_emissive(idx);
     return e.r > 0.0 || e.g > 0.0 || e.b > 0.0;
 }
@@ -148,8 +171,12 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
             rad += thr * emissive;
         }
 
-        // NEE: sample one point light
-        if (pc.num_lights > 0u) {
+        float roughness = mat_roughness(mi);
+        bool  is_mirror  = (roughness <= 0.001);
+        bool  is_diffuse = (roughness >= 0.999);
+
+        // NEE: sample one point light — skip for perfect mirrors
+        if (pc.num_lights > 0u && !is_mirror) {
             uint  li    = uint(rand_f(rng) * float(pc.num_lights));
             li = min(li, pc.num_lights - 1u);
             uint  lb    = li * 8u;
@@ -175,12 +202,24 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
             }
         }
 
-        // BSDF sample (Lambertian — throughput simplifies to albedo)
-        vec3  out_dir = sample_hemisphere(n, rng);
-        float cos_t   = max(0.0, dot(n, out_dir));
-        float pdf     = cos_t / 3.14159265;
-        if (pdf <= 0.0) break;
-        thr *= albedo; // albedo * (1/pi) * cos_t / pdf = albedo
+        // ---- BSDF bounce ---------------------------------------------------
+        vec3 out_dir;
+        if (is_mirror) {
+            // Perfect specular reflection
+            out_dir = rd - 2.0 * dot(n, rd) * n;
+        } else if (is_diffuse) {
+            out_dir = sample_hemisphere(n, rng);
+        } else {
+            // Glossy — Phong lobe around mirror direction
+            // exponent = 2/alpha^4 - 2,  alpha = roughness^2
+            float a2   = roughness * roughness;
+            float expt = max(0.0, 2.0 / (a2 * a2) - 2.0);
+            vec3  refl = rd - 2.0 * dot(n, rd) * n;
+            out_dir = sample_phong_lobe(refl, expt, n, rng);
+        }
+        if (dot(out_dir, n) <= 0.0) break;
+        // Throughput weight = albedo for all cases (energy-conserving approx)
+        thr *= albedo;
 
         float mx = max(thr.r, max(thr.g, thr.b));
         if (mx < 0.001) break;

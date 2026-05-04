@@ -235,6 +235,7 @@ class IPathTracer {
   virtual FilmHdr resolve_hdr() const = 0;
   virtual SampleCounters read_counters() const = 0;
   virtual void shutdown() = 0;
+  virtual const FilmBuffer& film() const = 0;
 };
 
 float MisWeight(float pdf_a, float pdf_b);
@@ -253,7 +254,7 @@ class ScalarCpuPathTracer final : public IPathTracer {
   FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }
   FilmHdr resolve_hdr() const override { return m_film.resolve_hdr(); }
   SampleCounters read_counters() const override;
-  const FilmBuffer& film() const { return m_film; }
+  const FilmBuffer& film() const override { return m_film; }
   void shutdown() override;
 
  private:
@@ -276,6 +277,10 @@ class ScalarCpuPathTracer final : public IPathTracer {
 
   Vec3 make_unit(const Vec3& value) const;
   Vec3 sample_hemisphere(Rng& rng, const Vec3& normal) const;
+  // Sample Phong lobe around refl_dir; falls back to hemisphere if sample is
+  // below the shading surface. exponent=0 → diffuse, exponent→∞ → mirror.
+  Vec3 sample_phong_lobe(Rng& rng, const Vec3& refl_dir,
+                         float exponent, const Vec3& normal) const;
   Vec3 trace(const Ray& ray, uint32_t sample_index, uint32_t frame_index, uint32_t path_id, uint32_t path_depth, uint64_t& ray_counter, Rng& rng);
   bool intersect_triangle(const RTTriangle& tri, const Ray& ray, float& t, float& u, float& v) const;
   bool intersect_box(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;

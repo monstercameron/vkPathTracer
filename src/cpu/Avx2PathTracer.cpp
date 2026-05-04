@@ -162,21 +162,43 @@ inline int intersect8(const RaySoA& ray,
   return hit_mask;
 }
 
-// ---- Lambertian hemisphere sample (identical to scalar tracer) --------------
+// ---- Tangent frame ----------------------------------------------------------
+inline void build_frame(const Vec3& n, Vec3& tang, Vec3& btan) {
+  const Vec3 ref = (std::fabs(n.z) < 0.999f) ? Vec3{0,0,1} : Vec3{0,1,0};
+  tang = normalize(cross(ref, n));
+  btan = cross(n, tang);
+}
 
+// ---- Lambertian hemisphere sample (identical to scalar tracer) --------------
 inline Vec3 sample_hemisphere(Rng& rng, const Vec3& normal) {
   const float u1  = rng.next01();
   const float u2  = rng.next01();
   const float r   = std::sqrt(std::max(0.0f, 1.0f - u1));
   const float phi = 2.0f * kPi * u2;
   const Vec3  local{r * std::cos(phi), r * std::sin(phi), std::sqrt(std::max(0.0f, u1))};
-  Vec3 tangent = cross((std::fabs(normal.z) < 0.999f)
-                       ? Vec3{0.0f, 0.0f, 1.0f}
-                       : Vec3{0.0f, 1.0f, 0.0f},
-                       normal);
-  tangent = normalize(tangent);
-  const Vec3 bitangent = cross(normal, tangent);
-  return normalize(tangent * local.x + bitangent * local.y + normal * local.z);
+  Vec3 tang, btan;
+  build_frame(normal, tang, btan);
+  return normalize(tang * local.x + btan * local.y + normal * local.z);
+}
+
+// ---- Phong lobe sample around a reflection direction ------------------------
+inline Vec3 sample_phong_lobe(Rng& rng, const Vec3& refl, float exponent,
+                               const Vec3& normal) {
+  const float u1   = rng.next01();
+  const float u2   = rng.next01();
+  const float cosT = std::pow(std::max(0.0f, u1), 1.0f / (exponent + 1.0f));
+  const float sinT = std::sqrt(std::max(0.0f, 1.0f - cosT * cosT));
+  const float phi  = 2.0f * kPi * u2;
+  Vec3 tang, btan;
+  build_frame(refl, tang, btan);
+  Vec3 out = normalize(tang * (sinT * std::cos(phi)) +
+                       btan * (sinT * std::sin(phi)) +
+                       refl * cosT);
+  if (dot(out, normal) <= 0.0f) {
+    out = out - 2.0f * dot(out, normal) * normal;
+    if (dot(out, normal) <= 0.0f) return sample_hemisphere(rng, normal);
+  }
+  return out;
 }
 
 } // anonymous namespace
@@ -399,8 +421,11 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
       }
     }
 
-    // NEE direct light sampling — mirrors scalar tracer
-    if (settings.enable_nee && !scene.lights.empty() && depth + 1 < settings.max_depth) {
+    const bool is_mirror  = (material.roughness <= 0.001f);
+    const bool is_diffuse = (material.roughness >= 0.999f);
+
+    // NEE — skip for perfect mirrors (delta BSDF)
+    if (settings.enable_nee && !is_mirror && !scene.lights.empty() && depth + 1 < settings.max_depth) {
       const std::size_t nl  = scene.lights.size();
       const std::size_t li  = static_cast<std::size_t>(rng.next01() * static_cast<float>(nl));
       const auto& lt        = scene.lights[std::min(li, nl - 1)];
@@ -411,7 +436,6 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
         const Vec3  ldir      = to_light / dist;
         const float cos_theta = dot(shading_normal, ldir);
         if (cos_theta > 0.0f) {
-          // Shadow test — send a single ray and check lane 0
           vkpt::pathtracer::Ray shadow_ray{hits.pos[0] + shading_normal * 0.002f, ldir};
           RaySoA sr8;
           for (int i = 0; i < 8; ++i) {
@@ -443,12 +467,21 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
       }
     }
 
-    // BSDF sample — identical to scalar tracer
-    const Vec3  out_dir   = sample_hemisphere(rng, shading_normal);
-    const float cos_theta = std::max(0.0f, dot(shading_normal, out_dir));
-    const float pdf       = cos_theta * kInvPi;
-    if (pdf <= 0.0f) break;
-    throughput = throughput * material.albedo * (1.0f * kInvPi) * (cos_theta / pdf);
+    // ---- BSDF bounce -------------------------------------------------------
+    Vec3 out_dir;
+    if (is_mirror) {
+      out_dir = ray.direction - 2.0f * dot(shading_normal, ray.direction) * shading_normal;
+    } else if (is_diffuse) {
+      out_dir = sample_hemisphere(rng, shading_normal);
+    } else {
+      const float a2   = material.roughness * material.roughness;
+      const float expt = std::max(0.0f, 2.0f / (a2 * a2) - 2.0f);
+      const Vec3 refl  = ray.direction - 2.0f * dot(shading_normal, ray.direction) * shading_normal;
+      out_dir = sample_phong_lobe(rng, refl, expt, shading_normal);
+    }
+
+    if (dot(out_dir, shading_normal) <= 0.0f) break;
+    throughput = throughput * material.albedo;
 
     if (std::max({throughput.x, throughput.y, throughput.z}) < 0.001f) break;
 
