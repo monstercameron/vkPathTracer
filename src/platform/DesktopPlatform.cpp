@@ -5,7 +5,13 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <algorithm>
+#include <cstring>
+#include "core/Logging.h"
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #include <windowsx.h>
 #endif
@@ -44,7 +50,7 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
         HDC hdc = BeginPaint(hwnd, &ps);
         RECT clientRect;
         GetClientRect(hwnd, &clientRect);
-        auto* brush = CreateSolidBrush(RGB(245, 245, 245));
+        auto* brush = CreateSolidBrush(RGB(0, 0, 0));
         if (brush) {
           FillRect(hdc, &clientRect, brush);
           DeleteObject(brush);
@@ -52,9 +58,76 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
           FillRect(hdc, &clientRect, (HBRUSH)GetStockObject(WHITE_BRUSH));
         }
 
+        const auto& framebuffer = self->framebuffer_bgra();
+        const auto framebufferWidth = self->framebuffer_width();
+        const auto framebufferHeight = self->framebuffer_height();
+        static std::uint64_t paintCount = 0u;
+        ++paintCount;
+        if (!framebuffer.empty() && framebufferWidth > 0u && framebufferHeight > 0u) {
+          BITMAPINFO bmi{};
+          bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+          bmi.bmiHeader.biWidth = static_cast<LONG>(framebufferWidth);
+          bmi.bmiHeader.biHeight = -static_cast<LONG>(framebufferHeight);
+          bmi.bmiHeader.biPlanes = 1;
+          bmi.bmiHeader.biBitCount = 32;
+          bmi.bmiHeader.biCompression = BI_RGB;
+
+          void* dibBits = nullptr;
+          HBITMAP dib = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &dibBits, nullptr, 0);
+          if (dib && dibBits) {
+            std::memcpy(dibBits, framebuffer.data(), framebuffer.size());
+            HDC memDc = CreateCompatibleDC(hdc);
+            HGDIOBJ oldBmp = SelectObject(memDc, dib);
+            StretchBlt(hdc,
+                      clientRect.left,
+                      clientRect.top,
+                      clientRect.right - clientRect.left,
+                      clientRect.bottom - clientRect.top,
+                      memDc,
+                      0,
+                      0,
+                      static_cast<int>(framebufferWidth),
+                      static_cast<int>(framebufferHeight),
+                      SRCCOPY);
+            SelectObject(memDc, oldBmp);
+            DeleteDC(memDc);
+          } else {
+            // Fallback for platforms/drivers that fail DIBSection creation.
+            StretchDIBits(hdc,
+                          clientRect.left,
+                          clientRect.top,
+                          clientRect.right - clientRect.left,
+                          clientRect.bottom - clientRect.top,
+                          0,
+                          0,
+                          static_cast<int>(framebufferWidth),
+                          static_cast<int>(framebufferHeight),
+                          framebuffer.data(),
+                          &bmi,
+                          DIB_RGB_COLORS,
+                          SRCCOPY);
+          }
+          if (dib) {
+            DeleteObject(dib);
+          }
+
+          if (paintCount <= 8u || (paintCount % 60u) == 0u) {
+            vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,
+                                              "traceprobe",
+                                              "wm_paint blit",
+                                              {
+                                                {"paint_count", std::to_string(paintCount)},
+                                                {"fb_width", std::to_string(framebufferWidth)},
+                                                {"fb_height", std::to_string(framebufferHeight)},
+                                                {"fb_bytes", std::to_string(framebuffer.size())},
+                                                {"client_width", std::to_string(clientRect.right - clientRect.left)},
+                                                {"client_height", std::to_string(clientRect.bottom - clientRect.top)}
+                                              });
+          }
+        }
+
         const auto overlay = self->overlay_text();
         const auto text = ToWide(overlay.empty() ? "vkpt desktop ui shell" : overlay);
-        SetTextColor(hdc, RGB(30, 30, 30));
         SetBkMode(hdc, TRANSPARENT);
         const int margin = 12;
         RECT textRect{
@@ -63,11 +136,20 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
           clientRect.right - margin,
           clientRect.bottom - margin
         };
+        // Draw a dark shadow pass first, then white text for readability.
+        RECT shadowRect = textRect;
+        OffsetRect(&shadowRect, 1, 1);
+        SetTextColor(hdc, RGB(0, 0, 0));
+        DrawTextW(hdc, text.c_str(), -1, &shadowRect,
+                  DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOCLIP);
+        SetTextColor(hdc, RGB(255, 255, 255));
         DrawTextW(hdc, text.c_str(), -1, &textRect,
                   DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOCLIP);
         EndPaint(hwnd, &ps);
         return 0;
       }
+      case WM_ERASEBKGND:
+        return 1;
       case WM_CLOSE: {
         self->emit_close_requested();
         self->mark_closed();
@@ -271,7 +353,78 @@ void DesktopWindow::set_overlay_text(std::string_view text) {
   m_overlayText.assign(text);
 #ifdef _WIN32
   if (m_hwnd) {
-    InvalidateRect(static_cast<HWND>(m_hwnd), nullptr, TRUE);
+    InvalidateRect(static_cast<HWND>(m_hwnd), nullptr, FALSE);
+  }
+#endif
+}
+
+void DesktopWindow::set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba,
+                                         std::size_t width,
+                                         std::size_t height) {
+  if (width == 0u || height == 0u) {
+    clear_framebuffer();
+    return;
+  }
+  const std::size_t pixelCount = width * height;
+  const std::size_t byteCount = pixelCount * 4u;
+  if (rgba.size() < byteCount) {
+    clear_framebuffer();
+    return;
+  }
+
+  m_framebufferBgra.resize(byteCount);
+  m_framebufferWidth = width;
+  m_framebufferHeight = height;
+
+  for (std::size_t i = 0; i < pixelCount; ++i) {
+    const std::size_t src = i * 4u;
+    const std::size_t dst = src;
+    m_framebufferBgra[dst + 0u] = rgba[src + 2u];
+    m_framebufferBgra[dst + 1u] = rgba[src + 1u];
+    m_framebufferBgra[dst + 2u] = rgba[src + 0u];
+    m_framebufferBgra[dst + 3u] = 255u;
+  }
+
+  std::uint8_t rgbMax = 0u;
+  std::uint64_t rgbSum = 0u;
+  std::uint64_t rgbCount = 0u;
+  for (std::size_t i = 0; i < pixelCount; ++i) {
+    const std::size_t base = i * 4u;
+    const std::uint8_t r = rgba[base + 0u];
+    const std::uint8_t g = rgba[base + 1u];
+    const std::uint8_t b = rgba[base + 2u];
+    rgbMax = std::max(rgbMax, std::max(r, std::max(g, b)));
+    rgbSum += static_cast<std::uint64_t>(r) + static_cast<std::uint64_t>(g) + static_cast<std::uint64_t>(b);
+    rgbCount += 3u;
+  }
+  const float rgbAvg = (rgbCount == 0u)
+      ? 0.0f
+      : static_cast<float>(rgbSum) / static_cast<float>(rgbCount);
+  vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,
+                                    "traceprobe",
+                                    "framebuffer upload",
+                                    {
+                                      {"width", std::to_string(width)},
+                                      {"height", std::to_string(height)},
+                                      {"bytes", std::to_string(byteCount)},
+                                      {"rgb_max", std::to_string(static_cast<unsigned>(rgbMax))},
+                                      {"rgb_avg", std::to_string(rgbAvg)}
+                                    });
+
+#ifdef _WIN32
+  if (m_hwnd) {
+    InvalidateRect(static_cast<HWND>(m_hwnd), nullptr, FALSE);
+  }
+#endif
+}
+
+void DesktopWindow::clear_framebuffer() {
+  m_framebufferBgra.clear();
+  m_framebufferWidth = 0u;
+  m_framebufferHeight = 0u;
+#ifdef _WIN32
+  if (m_hwnd) {
+    InvalidateRect(static_cast<HWND>(m_hwnd), nullptr, FALSE);
   }
 #endif
 }
