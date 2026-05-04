@@ -23,6 +23,19 @@
 
 namespace vkpt::cpu {
 
+std::string ToString(SimdBackend backend) {
+  switch (backend) {
+    case SimdBackend::Scalar: return "scalar";
+    case SimdBackend::ArmNeon: return "arm-neon";
+    case SimdBackend::ArmVce: return "arm-vce";
+    case SimdBackend::ArmSme: return "arm-sme";
+    case SimdBackend::X86Sse: return "x86-sse";
+    case SimdBackend::X86Avx: return "x86-avx";
+    case SimdBackend::X86Amx: return "x86-amx";
+    default: return "unknown";
+  }
+}
+
 CpuFeatureSet QueryCpuFeatures() {
   CpuFeatureSet f;
 
@@ -35,6 +48,9 @@ CpuFeatureSet QueryCpuFeatures() {
 #if defined(__ARM_FEATURE_SVE)
   f.sve = true;
 #endif
+#if defined(__ARM_FEATURE_SME)
+  f.sme = true;
+#endif
 #if defined(__ARM_FEATURE_SVE2)
   f.sve2 = true;
 #endif
@@ -44,6 +60,10 @@ CpuFeatureSet QueryCpuFeatures() {
 #if defined(__ARM_FEATURE_DOTPROD)
   f.dot_product = true;
 #endif
+
+  // There is no stable portable compiler macro for "VCE" yet.
+  // For now we treat VCE as available when vector-length-agnostic SVE paths are available.
+  f.vce = f.sve || f.sve2;
 
 #elif defined(VKPT_ARCH_X86)
   f.architecture = "x86_64";
@@ -93,6 +113,63 @@ CpuFeatureSet QueryCpuFeatures() {
   return f;
 }
 
+SimdDispatchInfo BuildSimdDispatchInfo(const CpuFeatureSet& f) {
+  SimdDispatchInfo out;
+  out.available.push_back(SimdBackend::Scalar);
+
+  if (f.architecture == "aarch64") {
+    if (f.neon) {
+      out.available.push_back(SimdBackend::ArmNeon);
+    }
+    if (f.vce) {
+      out.available.push_back(SimdBackend::ArmVce);
+    }
+    if (f.sme) {
+      out.available.push_back(SimdBackend::ArmSme);
+    }
+
+    if (f.sme) {
+      out.preferred = SimdBackend::ArmSme;
+    } else if (f.vce) {
+      out.preferred = SimdBackend::ArmVce;
+    } else if (f.neon) {
+      out.preferred = SimdBackend::ArmNeon;
+    } else {
+      out.preferred = SimdBackend::Scalar;
+    }
+    return out;
+  }
+
+  if (f.architecture == "x86_64") {
+    if (f.sse2) {
+      out.available.push_back(SimdBackend::X86Sse);
+    }
+    if (f.avx || f.avx2 || f.avx512f) {
+      out.available.push_back(SimdBackend::X86Avx);
+    }
+
+    // Placeholder until AMX runtime probing and kernels are added.
+    const bool hasAmx = false;
+    if (hasAmx) {
+      out.available.push_back(SimdBackend::X86Amx);
+    }
+
+    if (hasAmx) {
+      out.preferred = SimdBackend::X86Amx;
+    } else if (f.avx || f.avx2 || f.avx512f) {
+      out.preferred = SimdBackend::X86Avx;
+    } else if (f.sse2) {
+      out.preferred = SimdBackend::X86Sse;
+    } else {
+      out.preferred = SimdBackend::Scalar;
+    }
+    return out;
+  }
+
+  out.preferred = SimdBackend::Scalar;
+  return out;
+}
+
 std::string SerializeCpuFeatures(const CpuFeatureSet& f) {
   std::ostringstream oss;
   auto b = [](bool v) -> const char* { return v ? "true" : "false"; };
@@ -111,7 +188,9 @@ std::string SerializeCpuFeatures(const CpuFeatureSet& f) {
   oss <<   "\"fma\":"     << b(f.fma)     << "},\n";
   oss << "  \"arm\":{";
   oss <<   "\"neon\":"        << b(f.neon)        << ",";
+  oss <<   "\"vce\":"         << b(f.vce)         << ",";
   oss <<   "\"sve\":"         << b(f.sve)         << ",";
+  oss <<   "\"sme\":"         << b(f.sme)         << ",";
   oss <<   "\"sve2\":"        << b(f.sve2)        << ",";
   oss <<   "\"fp16\":"        << b(f.fp16)        << ",";
   oss <<   "\"dot_product\":" << b(f.dot_product) << "}\n";
