@@ -1,5 +1,74 @@
 ﻿# Changelog
 
+## 2026-05-04 (session 11)
+
+### Cornell box with diffuse / mirror / glossy cuboids; infinite convergence; GPU confirmed on Arc B580
+
+**Session goals:** Add material variety (mirror, glossy, diffuse cuboids) to the Cornell box; ensure the GPU path tracer runs on the discrete Arc B580; make the window accumulate samples indefinitely for continuous convergence.
+
+---
+
+**`assets/scenes/cornell_native.json` — scene rebuild**
+- Proper Cornell box: saturated red left wall `[0.65, 0.05, 0.05]`, green right wall `[0.12, 0.45, 0.12]`, white floor/ceiling/back wall, area light on ceiling `emission_intensity=12`
+- SDF sphere removed (GPU tracer does not support SDF intersection)
+- Three axis-aligned cuboids with distinct materials and sizes:
+
+| Object | x | y (height) | z | Material |
+|---|---|---|---|---|
+| Diffuse (tall, gray) | −0.70 → −0.20 | 0 → 1.0 | −0.60 → −0.10 | albedo=0.76, roughness=1.0 |
+| Mirror (medium, silver) | 0.05 → 0.55 | 0 → 0.80 | −0.50 → 0.00 | albedo=0.95, roughness=0.0 |
+| Glossy (short, warm gold) | 0.30 → 0.85 | 0 → 0.45 | 0.10 → 0.55 | albedo=[0.85,0.55,0.15], roughness=0.3 |
+
+Each cuboid is 6 faces × 2 triangles = 12 triangles, indices generated with a consistent CCW-outer winding (normal flip handled by the path tracer).
+
+---
+
+**BSDF — all three path tracers updated consistently**
+
+`src/pathtracer/PathTracer.cpp`, `src/cpu/Avx2PathTracer.cpp`, `src/shaders/gpu/pathtrace.comp`:
+
+| `roughness` | BSDF | Implementation |
+|---|---|---|
+| ≤ 0.001 | Perfect mirror | `dir = rd − 2·(n·rd)·n`; NEE skipped (delta BSDF) |
+| ≥ 0.999 | Lambertian diffuse | cosine-weighted hemisphere (unchanged) |
+| 0.001–0.999 | Glossy Phong lobe | sample around mirror direction; `exponent = max(0, 2/α⁴ − 2)` where `α = roughness²` |
+
+Throughput weight = `albedo` in all cases (energy-conserving approximation: `f_bsdf·cosθ / pdf = albedo`). `roughness=0.3` → `exponent ≈ 245` (tight highlight, clearly glossy).
+
+New `sample_phong_lobe()` helper added to `ScalarCpuPathTracer` (header + impl) and as an anonymous-namespace `inline` function in `Avx2PathTracer.cpp` and a GLSL function in `pathtrace.comp`.
+
+---
+
+**`src/cpu/CpuFeatures.cpp/.h` — AVX2 dispatch fix**
+- `BuildSimdDispatchInfo` now correctly sets `preferred = X86Avx2` when AVX2 is detected (previously collapsed all x86 AVX variants to `X86Avx`)
+- `X86Avx512` added to the preference chain above `X86Avx2`
+- `ToString(SimdBackend)` updated for `X86Avx2` and `X86Avx512`
+
+**`src/cpu/TiledCpuPathTracer.h/.cpp` — AVX2 tile dispatch**
+- Constructor detects CPU features via `QueryCpuFeatures()` + `BuildSimdDispatchInfo()`
+- `init_tile_tracers()` creates `Avx2CpuPathTracer` per tile when `preferred == X86Avx2`, else `ScalarCpuPathTracer`
+- `film()` accessor added to the interface
+- `TileState::tracer` promoted from `unique_ptr<ScalarCpuPathTracer>` to `unique_ptr<IPathTracer>`
+
+---
+
+**`src/app/main.cpp` — infinite accumulation + GPU name in overlay**
+- `previewSettings.spp = UINT32_MAX` — removes the 64-sample cap so the window accumulates indefinitely while the camera is stationary
+- Background render thread loops `while (!bgRenderStop)` (no spp limit)
+- Overlay shows `samples=N` (no denominator) and `backend: vulkan  [Intel(R) Arc(TM) B580 Graphics]`
+- `--list-gpus` flag enumerates Vulkan physical devices and prints the selected GPU
+
+**`src/gpu/VulkanGpuPathTracer.h/.cpp` — device enumeration + diagnostics**
+- `init_device()` logs ALL physical devices with name, type (`DISCRETE`/`INTEGRATED`), API version, and VRAM
+- New accessors: `gpu_name()`, `vram_mb()`, `gpu_type()`, `vulkan_api()`
+- On this machine: GPU0 = Intel UHD 770 (INTEGRATED, 16 GB), GPU1 = Intel Arc B580 (DISCRETE, 12 GB) → B580 selected
+
+**Vulkan push-constant layout fix**
+- `vec3 env_color` in GLSL `layout(push_constant)` has 16-byte alignment (std430), creating an 8-byte gap vs the C++ struct at offset 88. `pc.max_depth_f` was reading garbage → `uint(0)` → path loop never ran → all-black
+- Fixed by replacing the trailing `vec3 env_color; float max_depth_f` with four individual `float` scalars (`env_r`, `env_g`, `env_b`, `max_depth_f`); scalars are 4-byte aligned, no gap
+
+---
+
 ## 2026-05-04 (session 10)
 
 ### Real Vulkan GPU compute path tracer — Intel Arc B580, Windows + Linux plumbing

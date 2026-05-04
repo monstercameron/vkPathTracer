@@ -13,6 +13,8 @@ enum class SimdBackend : std::uint8_t {
   ArmSme,
   X86Sse,
   X86Avx,
+  X86Avx2,
+  X86Avx512,
   X86Amx,
 };
 

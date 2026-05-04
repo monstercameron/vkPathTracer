@@ -25,13 +25,15 @@ namespace vkpt::cpu {
 
 std::string ToString(SimdBackend backend) {
   switch (backend) {
-    case SimdBackend::Scalar: return "scalar";
-    case SimdBackend::ArmNeon: return "arm-neon";
-    case SimdBackend::ArmVce: return "arm-vce";
-    case SimdBackend::ArmSme: return "arm-sme";
-    case SimdBackend::X86Sse: return "x86-sse";
-    case SimdBackend::X86Avx: return "x86-avx";
-    case SimdBackend::X86Amx: return "x86-amx";
+    case SimdBackend::Scalar:    return "scalar";
+    case SimdBackend::ArmNeon:   return "arm-neon";
+    case SimdBackend::ArmVce:    return "arm-vce";
+    case SimdBackend::ArmSme:   return "arm-sme";
+    case SimdBackend::X86Sse:    return "x86-sse";
+    case SimdBackend::X86Avx:   return "x86-avx";
+    case SimdBackend::X86Avx2:  return "x86-avx2";
+    case SimdBackend::X86Avx512: return "x86-avx512";
+    case SimdBackend::X86Amx:   return "x86-amx";
     default: return "unknown";
   }
 }
@@ -141,28 +143,17 @@ SimdDispatchInfo BuildSimdDispatchInfo(const CpuFeatureSet& f) {
   }
 
   if (f.architecture == "x86_64") {
-    if (f.sse2) {
-      out.available.push_back(SimdBackend::X86Sse);
-    }
-    if (f.avx || f.avx2 || f.avx512f) {
-      out.available.push_back(SimdBackend::X86Avx);
-    }
+    out.available.push_back(SimdBackend::Scalar);
+    if (f.sse2)  { out.available.push_back(SimdBackend::X86Sse); }
+    if (f.avx)   { out.available.push_back(SimdBackend::X86Avx); }
+    if (f.avx2)  { out.available.push_back(SimdBackend::X86Avx2); }
+    if (f.avx512f) { out.available.push_back(SimdBackend::X86Avx512); }
 
-    // Placeholder until AMX runtime probing and kernels are added.
-    const bool hasAmx = false;
-    if (hasAmx) {
-      out.available.push_back(SimdBackend::X86Amx);
-    }
-
-    if (hasAmx) {
-      out.preferred = SimdBackend::X86Amx;
-    } else if (f.avx || f.avx2 || f.avx512f) {
-      out.preferred = SimdBackend::X86Avx;
-    } else if (f.sse2) {
-      out.preferred = SimdBackend::X86Sse;
-    } else {
-      out.preferred = SimdBackend::Scalar;
-    }
+    if (f.avx512f)       { out.preferred = SimdBackend::X86Avx512; }
+    else if (f.avx2)     { out.preferred = SimdBackend::X86Avx2; }
+    else if (f.avx)      { out.preferred = SimdBackend::X86Avx; }
+    else if (f.sse2)     { out.preferred = SimdBackend::X86Sse; }
+    else                 { out.preferred = SimdBackend::Scalar; }
     return out;
   }
 
