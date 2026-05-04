@@ -45,8 +45,12 @@ class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   const vkpt::pathtracer::FilmBuffer& film() const override { return m_film; }
   void shutdown() override;
 
-  bool     is_valid()    const { return m_valid; }
-  std::string last_error() const { return m_error; }
+  bool        is_valid()    const { return m_valid; }
+  std::string last_error()  const { return m_error; }
+  std::string gpu_name()    const { return m_gpuName; }
+  uint32_t    vram_mb()     const { return m_vramMb; }
+  std::string gpu_type()    const { return m_gpuType; }
+  uint32_t    vulkan_api()  const { return m_apiVersion; }
 
  private:
   // --- init / teardown -------------------------------------------------------
@@ -104,6 +108,10 @@ class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer {
 
   std::string m_spvPath;
   std::string m_error;
+  std::string m_gpuName;
+  std::string m_gpuType;
+  uint32_t    m_vramMb     = 0;
+  uint32_t    m_apiVersion = 0;
 
   bool m_valid          = false;
   bool m_configured     = false;

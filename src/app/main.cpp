@@ -250,6 +250,7 @@ void PrintUsage() {
   std::cout << "  --dump-config         Print resolved runtime config as JSON\n";
   std::cout << "  --config <path>       Load a config file (key=value format)\n";
   std::cout << "  --list-backends       Print known render backends and capabilities\n";
+  std::cout << "  --list-gpus           Enumerate Vulkan physical devices and select the best\n";
   std::cout << "  --headless            Initialize headless platform\n";
   std::cout << "  --window              Open desktop window and keep app running\n";
   std::cout << "  --window-width <px>   Window width (default 1280)\n";
@@ -1820,6 +1821,7 @@ int main(int argc, char** argv) {
   bool doRender      = false;
   bool uiModelSmoke  = false;
   bool openWindow    = false;
+  bool listGpus      = false;
   std::string configFilePath;
   std::string_view scenePath;
   std::string_view backend;
@@ -1851,6 +1853,7 @@ int main(int argc, char** argv) {
     else if (token == "--headless")       { headless      = true; }
     else if (token == "--render")         { doRender      = true; }
     else if (token == "--window")         { openWindow    = true; }
+    else if (token == "--list-gpus")      { listGpus      = true; }
     else if (token == "--crash-test")     { crashTest     = true; }
     else if (token == "--ui-model-smoke") { uiModelSmoke  = true; }
     else if (token == "--config") {
@@ -1993,6 +1996,37 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+#ifdef PT_ENABLE_VULKAN
+  if (listGpus) {
+    const std::string spvPath =
+#ifdef PT_SHADER_SPV_PATH
+        PT_SHADER_SPV_PATH;
+#else
+        "shaders/pathtrace.spv";
+#endif
+    // Init a temporary tracer just for device enumeration (it logs devices in init_device)
+    auto gpuTracer = std::make_unique<vkpt::gpu::VulkanGpuPathTracer>(spvPath);
+    if (gpuTracer->is_valid()) {
+      std::cout << "Selected GPU: " << gpuTracer->gpu_name() << "\n";
+      std::cout << "  Type  : " << gpuTracer->gpu_type() << "\n";
+      std::cout << "  VRAM  : " << gpuTracer->vram_mb() << " MB\n";
+      std::cout << "  Vulkan: "
+                << VK_VERSION_MAJOR(gpuTracer->vulkan_api()) << "."
+                << VK_VERSION_MINOR(gpuTracer->vulkan_api()) << "\n";
+    } else {
+      std::cerr << "Vulkan device init failed: " << gpuTracer->last_error() << "\n";
+    }
+    writeStatus("list_gpus");
+    return gpuTracer->is_valid() ? 0 : 1;
+  }
+#else
+  if (listGpus) {
+    std::cout << "PT_ENABLE_VULKAN not set in this build — no GPU info available.\n";
+    writeStatus("list_gpus_no_vulkan");
+    return 0;
+  }
+#endif
+
   // ---- --window (interactive shell placeholder) ----------------------------
   if (openWindow) {
     if (headless) {
@@ -2123,6 +2157,8 @@ int main(int argc, char** argv) {
     std::cout << "Close the window to exit.\n";
 
     std::unique_ptr<vkpt::pathtracer::IPathTracer> previewTracer;
+    std::string previewGpuName;   // GPU name shown in overlay (empty = CPU)
+    std::string previewGpuInfo;   // one-line device info for diagnostics
 #ifdef PT_ENABLE_VULKAN
     if (config.backend.value == "vulkan" || config.backend.value == "vulkan-compute") {
       const std::string spvPath =
@@ -2133,7 +2169,17 @@ int main(int argc, char** argv) {
 #endif
       auto gpuTracer = std::make_unique<vkpt::gpu::VulkanGpuPathTracer>(spvPath);
       if (gpuTracer->is_valid()) {
-        logger.log(vkpt::log::Severity::Info, "app", "Using Vulkan GPU path tracer");
+        previewGpuName = gpuTracer->gpu_name();
+        std::ostringstream ginfo;
+        ginfo << gpuTracer->gpu_name()
+              << "  [" << gpuTracer->gpu_type() << "]"
+              << "  " << gpuTracer->vram_mb() << " MB VRAM"
+              << "  Vulkan " << VK_VERSION_MAJOR(gpuTracer->vulkan_api())
+              << "." << VK_VERSION_MINOR(gpuTracer->vulkan_api());
+        previewGpuInfo = ginfo.str();
+        std::cout << "[gpu] " << previewGpuInfo << "\n";
+        logger.log(vkpt::log::Severity::Info, "app",
+                   "Using Vulkan GPU path tracer: " + previewGpuInfo);
         previewTracer = std::move(gpuTracer);
       } else {
         logger.log(vkpt::log::Severity::Warning, "app",
@@ -2738,11 +2784,15 @@ int main(int argc, char** argv) {
       SetWindowFrameStatus(desktopWindow, ui_runtime_state, ui_layout_state, frame);
       std::ostringstream statusText;
       statusText << "UI shell ready\n"
-                 << "backend: " << ui_runtime_state.active_renderer_backend << "\n"
+                 << "backend: " << ui_runtime_state.active_renderer_backend;
+      if (!previewGpuName.empty()) {
+        statusText << "  [" << previewGpuName << "]";
+      }
+      statusText << "\n"
                  << "scene: "   << ui_runtime_state.active_scene << "\n"
                  << "layout: "  << ui_runtime_state.active_layout_name << "\n"
-           << "path tracing: " << (previewTracerReady ? "on" : "failed")
-           << " samples=" << previewSampleIndex << "\n"
+                 << "path tracing: " << (previewTracerReady ? "on" : "failed")
+                 << "  samples=" << previewSampleIndex << "\n"
                  << "image: " << (previewNonBlack ? "non-black" : "dark/empty") << "\n"
                  << "status: "  << ui_runtime_state.status_message << "\n"
                  << "events: "  << ui_event_log.events().size();
