@@ -160,6 +160,8 @@ class QtWindow final : public IWindow {
   bool resize(std::size_t width, std::size_t height);
   void set_title(std::string_view title);
   void set_overlay_text(std::string_view text);
+  void set_startup_splash_text(std::string_view text);
+  void finish_startup_splash();
   void set_selection_overlay_boxes(const std::vector<QtSelectionOverlayBox>& boxes);
   void set_viewport_cursor(QtViewportCursor cursor);
   void set_menu_bar(const std::vector<QtMenuItem>& menus);
@@ -213,6 +215,9 @@ class QtWindow final : public IWindow {
   bool request_framebuffer_clear();
   bool enqueue_frame_update_locked(QWidget* widget);
   void deliver_pending_frame_to_widget(QWidget* widget);
+  void show_startup_splash();
+  void reveal_main_window_from_splash();
+  void close_startup_splash(bool animated);
   void record_frame_presented(std::uint64_t frameId,
                               std::size_t width,
                               std::size_t height);
@@ -229,6 +234,9 @@ class QtWindow final : public IWindow {
   std::string m_menuBarSignature;
   QWidget* m_shell = nullptr;
   QWidget* m_widget = nullptr;
+  QWidget* m_startupSplash = nullptr;
+  bool m_startupSplashActive = false;
+  bool m_mainWindowRevealed = false;
   std::deque<InputEvent> m_events;
   std::deque<QtDockPropertyEdit> m_dockPropertyEdits;
   int m_lastMouseX = 0;

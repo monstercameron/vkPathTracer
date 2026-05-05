@@ -52,10 +52,16 @@ enum class ToneMapMode : std::uint8_t {
   AcesApprox,
 };
 
+enum class OutputTransformMode : std::uint8_t {
+  Gamma = 0,
+  Linear,
+};
+
 struct FilmResolveSettings {
   float exposure = 1.0f;
-  float white_balance_kelvin = 6500.0f;  // reserved; currently a no-op
+  float white_balance_kelvin = 6500.0f;
   ToneMapMode tone_map = ToneMapMode::Linear;
+  OutputTransformMode output_transform = OutputTransformMode::Gamma;
   float gamma = 2.2f;
   bool clamp_output = true;
 };
@@ -274,6 +280,20 @@ struct RTSceneData {
   Vec3 camera_target{0.0f, 0.0f, -1.0f};
   Vec3 camera_up{0.0f, 1.0f, 0.0f};
   float camera_fov_deg = 60.0f;
+  float camera_focal_length_mm = 35.0f;
+  float camera_sensor_width_mm = 36.0f;
+  float camera_sensor_height_mm = 24.0f;
+  float camera_aperture_radius = 0.0f;
+  float camera_focus_distance = 0.0f;
+  float camera_f_stop = 0.0f;
+  float camera_shutter_seconds = 0.0166666675f;
+  float camera_iso = 100.0f;
+  float camera_exposure_compensation = 0.0f;
+  float camera_white_balance_kelvin = 6500.0f;
+  uint32_t camera_iris_blade_count = 0u;
+  float camera_iris_rotation_degrees = 0.0f;
+  float camera_iris_roundness = 1.0f;
+  float camera_anamorphic_squeeze = 1.0f;
 };
 
 struct GpuLayoutField {
@@ -307,8 +327,10 @@ struct FilmHdr {
 };
 
 // Apply resolve pipeline: exposure, tone map, gamma, clamp, LDR output.
-// white_balance is declared but currently a no-op placeholder.
 FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings);
+FilmResolveSettings CameraAdjustedFilmResolveSettings(const FilmResolveSettings& base,
+                                                       const RTSceneData& scene);
+Vec3 WhiteBalanceScale(float kelvin);
 std::string SerializeFilmResolveSettings(const FilmResolveSettings& settings);
 
 class FilmBuffer {

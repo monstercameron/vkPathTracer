@@ -305,6 +305,8 @@ bool Avx2CpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
 
 bool Avx2CpuPathTracer::load_scene_snapshot(const vkpt::pathtracer::RTSceneData& scene) {
   scene_      = scene;
+  m_film.set_resolve_settings(
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(settings_.film_resolve, scene_));
   has_scene_  = true;
   set_camera_basis();
   return true;
@@ -694,6 +696,18 @@ bool Avx2CpuPathTracer::render_sample_batch(uint32_t start_y,
   const float aspect  = static_cast<float>(settings_.width)
                       / std::max(1.0f, static_cast<float>(settings_.height));
   const float tan_hf  = std::tan(0.5f * (scene_.camera_fov_deg * kPi / 180.0f));
+  const float aperture_radius = scene_.camera_aperture_radius > 0.0f
+      ? scene_.camera_aperture_radius
+      : settings_.camera_aperture_radius;
+  const float focus_distance = scene_.camera_focus_distance > 0.0f
+      ? scene_.camera_focus_distance
+      : settings_.camera_focus_distance;
+  const uint32_t iris_blades = std::min(scene_.camera_iris_blade_count, 64u);
+  const float iris_roundness = std::clamp(scene_.camera_iris_roundness, 0.0f, 1.0f);
+  const float iris_rotation_rad = scene_.camera_iris_rotation_degrees * (kPi / 180.0f);
+  const float anamorphic_squeeze = std::isfinite(scene_.camera_anamorphic_squeeze)
+      ? std::max(0.01f, scene_.camera_anamorphic_squeeze)
+      : 1.0f;
   uint64_t local_rays = 0;
 
   for (uint32_t y = min_y; y < max_y; ++y) {
@@ -715,13 +729,24 @@ bool Avx2CpuPathTracer::render_sample_batch(uint32_t start_y,
         const float ny = (1.0f - 2.0f * fy) * tan_hf;
         Vec3 dir = normalize(cam_forward_ + cam_right_ * nx + cam_up_ * ny);
         Vec3 origin = scene_.camera_position;
-        if (settings_.camera_aperture_radius > 0.0f && settings_.camera_focus_distance > kEpsilon) {
-          const float lens_r = settings_.camera_aperture_radius * std::sqrt(jitter_rng.next01());
+        if (aperture_radius > 0.0f && focus_distance > kEpsilon) {
+          const float lens_radius_sample = std::sqrt(jitter_rng.next01());
           const float lens_phi = 2.0f * kPi * jitter_rng.next01();
+          float aperture_boundary = 1.0f;
+          if (iris_blades >= 3u && iris_roundness < 0.999f) {
+            const float sector = 2.0f * kPi / static_cast<float>(iris_blades);
+            const float local_phi = lens_phi - iris_rotation_rad;
+            const float wrapped = local_phi - sector * std::floor(local_phi / sector);
+            const float centered = wrapped > sector * 0.5f ? wrapped - sector : wrapped;
+            const float polygon_boundary =
+                std::cos(sector * 0.5f) / std::max(0.1f, std::cos(centered));
+            aperture_boundary = polygon_boundary * (1.0f - iris_roundness) + iris_roundness;
+          }
+          const float lens_r = aperture_radius * lens_radius_sample * aperture_boundary;
           const Vec3 lens_offset =
-              cam_right_ * (lens_r * std::cos(lens_phi)) +
+              cam_right_ * (lens_r * std::cos(lens_phi) * anamorphic_squeeze) +
               cam_up_ * (lens_r * std::sin(lens_phi));
-          const Vec3 focus_point = scene_.camera_position + dir * settings_.camera_focus_distance;
+          const Vec3 focus_point = scene_.camera_position + dir * focus_distance;
           origin = scene_.camera_position + lens_offset;
           dir = normalize(focus_point - origin);
         }
@@ -749,7 +774,7 @@ bool Avx2CpuPathTracer::render_sample_batch(uint32_t start_y,
                            settings_.seed);
         // Consume camera jitter samples so the path RNG starts at the same dimension.
         rng.next01(); rng.next01();
-        if (settings_.camera_aperture_radius > 0.0f && settings_.camera_focus_distance > kEpsilon) {
+        if (aperture_radius > 0.0f && focus_distance > kEpsilon) {
           rng.next01(); rng.next01();
         }
 

@@ -19,6 +19,7 @@ enum class QtPanelPropertyKind {
   Color,
   Asset,
   Entity,
+  Enum,
   Command,
 };
 

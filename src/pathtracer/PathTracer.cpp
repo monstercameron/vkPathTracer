@@ -1008,6 +1008,7 @@ bool NullPathTracer::load_scene_snapshot(const RTSceneData& scene) {
     return false;
   }
   m_scene = scene;
+  m_film.set_resolve_settings(CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_scene));
   m_has_scene = true;
   return true;
 }
@@ -1101,6 +1102,7 @@ bool ScalarCpuPathTracer::load_scene_snapshot(const RTSceneData& scene) {
     return false;
   }
   m_scene = scene;
+  m_film.set_resolve_settings(CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_scene));
   if (m_scene.materials.empty()) {
     m_scene.materials.push_back(RTMaterial{});
   }
@@ -1769,13 +1771,36 @@ Ray ScalarCpuPathTracer::camera_rays(uint32_t x,
   const float nx = (2.0f * fx - 1.0f) * aspect * tanHalfFov;
   const float ny = (1.0f - 2.0f * fy) * tanHalfFov;
   const Vec3 dir = normalize(m_camera_forward + m_camera_right * nx + m_camera_up * ny);
-  if (m_settings.camera_aperture_radius > 0.0f && m_settings.camera_focus_distance > kEpsilon) {
-    const float lens_r = m_settings.camera_aperture_radius * std::sqrt(rng.next01());
+  const float aperture_radius = m_scene.camera_aperture_radius > 0.0f
+      ? m_scene.camera_aperture_radius
+      : m_settings.camera_aperture_radius;
+  const float focus_distance = m_scene.camera_focus_distance > 0.0f
+      ? m_scene.camera_focus_distance
+      : m_settings.camera_focus_distance;
+  if (aperture_radius > 0.0f && focus_distance > kEpsilon) {
+    const float lens_radius_sample = std::sqrt(rng.next01());
     const float lens_phi = 2.0f * kPi * rng.next01();
+    float aperture_boundary = 1.0f;
+    const uint32_t iris_blades = std::min(m_scene.camera_iris_blade_count, 64u);
+    const float iris_roundness = clamp01(m_scene.camera_iris_roundness);
+    if (iris_blades >= 3u && iris_roundness < 0.999f) {
+      const float sector = 2.0f * kPi / static_cast<float>(iris_blades);
+      const float local_phi = lens_phi - radians(m_scene.camera_iris_rotation_degrees);
+      const float wrapped = local_phi - sector * std::floor(local_phi / sector);
+      const float centered = wrapped > sector * 0.5f ? wrapped - sector : wrapped;
+      const float polygon_boundary =
+          std::cos(sector * 0.5f) / std::max(0.1f, std::cos(centered));
+      aperture_boundary = polygon_boundary * (1.0f - iris_roundness) + iris_roundness;
+    }
+    const float lens_r = aperture_radius * lens_radius_sample * aperture_boundary;
+    const float anamorphic_squeeze =
+        std::isfinite(m_scene.camera_anamorphic_squeeze)
+            ? std::max(0.01f, m_scene.camera_anamorphic_squeeze)
+            : 1.0f;
     const Vec3 lens_offset =
-        m_camera_right * (lens_r * std::cos(lens_phi)) +
+        m_camera_right * (lens_r * std::cos(lens_phi) * anamorphic_squeeze) +
         m_camera_up * (lens_r * std::sin(lens_phi));
-    const Vec3 focus_point = m_scene.camera_position + dir * m_settings.camera_focus_distance;
+    const Vec3 focus_point = m_scene.camera_position + dir * focus_distance;
     const Vec3 origin = m_scene.camera_position + lens_offset;
     return Ray{origin, normalize(focus_point - origin)};
   }
@@ -2247,6 +2272,20 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
         entity != nullptr && entity->has_transform ? &entity->transform : nullptr,
         &cameraTransform);
     scene.camera_fov_deg = camera.fov;
+    scene.camera_focal_length_mm = camera.focal_length_mm;
+    scene.camera_sensor_width_mm = camera.sensor_width_mm;
+    scene.camera_sensor_height_mm = camera.sensor_height_mm;
+    scene.camera_aperture_radius = camera.aperture_radius;
+    scene.camera_focus_distance = camera.focus_distance;
+    scene.camera_f_stop = camera.f_stop;
+    scene.camera_shutter_seconds = camera.shutter_seconds;
+    scene.camera_iso = camera.iso;
+    scene.camera_exposure_compensation = camera.exposure_compensation;
+    scene.camera_white_balance_kelvin = camera.white_balance_kelvin;
+    scene.camera_iris_blade_count = camera.iris_blade_count;
+    scene.camera_iris_rotation_degrees = camera.iris_rotation_degrees;
+    scene.camera_iris_roundness = camera.iris_roundness;
+    scene.camera_anamorphic_squeeze = camera.anamorphic_squeeze;
     if (cameraTransform) {
       scene.camera_position = {transform.translation.x, transform.translation.y, transform.translation.z};
       const auto forward = normalize(rotate_quat(Vec3{0.0f, 0.0f, -1.0f}, transform.rotation));
@@ -2480,6 +2519,20 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_target", sizeof(Vec3), 1u, alignof(Vec3));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_up", sizeof(Vec3), 1u, alignof(Vec3));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_fov_deg", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_focal_length_mm", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_sensor_width_mm", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_sensor_height_mm", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_aperture_radius", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_focus_distance", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_f_stop", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_shutter_seconds", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_iso", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_exposure_compensation", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_white_balance_kelvin", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_iris_blade_count", sizeof(std::uint32_t), 1u, alignof(std::uint32_t));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_iris_rotation_degrees", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_iris_roundness", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_anamorphic_squeeze", sizeof(float), 1u, alignof(float));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_color", sizeof(Vec3), 1u, alignof(Vec3));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "materials", sizeof(RTMaterial), scene.materials.size(), alignof(RTMaterial));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "vertices", sizeof(Vec3), scene.vertices.size(), alignof(Vec3));
@@ -2530,6 +2583,65 @@ std::string SerializeRTSceneDataLayoutManifest(const RTSceneLayoutManifest& mani
   return out.str();
 }
 
+Vec3 ColorTemperatureToRgb(float kelvin) {
+  const float temperature = std::clamp(kelvin, 1000.0f, 40000.0f) / 100.0f;
+  float r = 1.0f;
+  float g = 1.0f;
+  float b = 1.0f;
+
+  if (temperature <= 66.0f) {
+    r = 1.0f;
+    g = std::clamp(0.39008158f * std::log(std::max(1.0f, temperature)) - 0.63184144f, 0.0f, 1.0f);
+    b = temperature <= 19.0f
+        ? 0.0f
+        : std::clamp(0.5432068f * std::log(std::max(1.0f, temperature - 10.0f)) - 1.1962541f, 0.0f, 1.0f);
+  } else {
+    r = std::clamp(1.2929362f * std::pow(temperature - 60.0f, -0.13320476f), 0.0f, 1.0f);
+    g = std::clamp(1.1298909f * std::pow(temperature - 60.0f, -0.075514846f), 0.0f, 1.0f);
+    b = 1.0f;
+  }
+
+  return {r, g, b};
+}
+
+Vec3 WhiteBalanceScale(float kelvin) {
+  const Vec3 d65 = ColorTemperatureToRgb(6500.0f);
+  const Vec3 target = ColorTemperatureToRgb(kelvin);
+  constexpr float kMinWhite = 1.0e-3f;
+  return {
+      d65.x / std::max(kMinWhite, target.x),
+      d65.y / std::max(kMinWhite, target.y),
+      d65.z / std::max(kMinWhite, target.z)};
+}
+
+FilmResolveSettings CameraAdjustedFilmResolveSettings(const FilmResolveSettings& base,
+                                                       const RTSceneData& scene) {
+  FilmResolveSettings out = base;
+  if (std::isfinite(scene.camera_f_stop) &&
+      std::isfinite(scene.camera_shutter_seconds) &&
+      std::isfinite(scene.camera_iso) &&
+      scene.camera_f_stop > 0.0f &&
+      scene.camera_shutter_seconds > 0.0f &&
+      scene.camera_iso > 0.0f) {
+    constexpr float kReferenceFStop = 2.8f;
+    constexpr float kReferenceShutter = 1.0f / 60.0f;
+    constexpr float kReferenceIso = 100.0f;
+    const float reference = (kReferenceShutter * kReferenceIso) / (kReferenceFStop * kReferenceFStop);
+    const float physical = (scene.camera_shutter_seconds * scene.camera_iso) /
+        (scene.camera_f_stop * scene.camera_f_stop);
+    out.exposure *= std::clamp(physical / std::max(1.0e-6f, reference), 1.0e-6f, 1.0e6f);
+  }
+  if (std::isfinite(scene.camera_exposure_compensation)) {
+    out.exposure *= std::pow(2.0f, std::clamp(scene.camera_exposure_compensation, -32.0f, 32.0f));
+  }
+  if (std::isfinite(scene.camera_white_balance_kelvin) &&
+      scene.camera_white_balance_kelvin >= 1000.0f &&
+      scene.camera_white_balance_kelvin <= 40000.0f) {
+    out.white_balance_kelvin = scene.camera_white_balance_kelvin;
+  }
+  return out;
+}
+
 FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings) {
   FilmLdr ldr;
   ldr.width = hdr.width;
@@ -2545,11 +2657,12 @@ FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings
   }
 
   const float inv_gamma = 1.0f / std::max(0.01f, settings.gamma);
+  const Vec3 white_balance = WhiteBalanceScale(settings.white_balance_kelvin);
 
   for (std::size_t i = 0; i < num_pixels; ++i) {
-    float r = hdr.rgbf[i * 3u + 0u] * settings.exposure;
-    float g = hdr.rgbf[i * 3u + 1u] * settings.exposure;
-    float b = hdr.rgbf[i * 3u + 2u] * settings.exposure;
+    float r = hdr.rgbf[i * 3u + 0u] * settings.exposure * white_balance.x;
+    float g = hdr.rgbf[i * 3u + 1u] * settings.exposure * white_balance.y;
+    float b = hdr.rgbf[i * 3u + 2u] * settings.exposure * white_balance.z;
     if (!std::isfinite(r)) r = 0.0f;
     if (!std::isfinite(g)) g = 0.0f;
     if (!std::isfinite(b)) b = 0.0f;
@@ -2578,10 +2691,11 @@ FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings
     g = tonemap(g);
     b = tonemap(b);
 
-    // Gamma correction.
-    r = std::pow(std::max(0.0f, r), inv_gamma);
-    g = std::pow(std::max(0.0f, g), inv_gamma);
-    b = std::pow(std::max(0.0f, b), inv_gamma);
+    if (settings.output_transform == OutputTransformMode::Gamma) {
+      r = std::pow(std::max(0.0f, r), inv_gamma);
+      g = std::pow(std::max(0.0f, g), inv_gamma);
+      b = std::pow(std::max(0.0f, b), inv_gamma);
+    }
 
     if (settings.clamp_output) {
       r = std::min(1.0f, std::max(0.0f, r));
@@ -2605,11 +2719,18 @@ std::string SerializeFilmResolveSettings(const FilmResolveSettings& settings) {
     case ToneMapMode::AcesApprox:   tone_map_str = "aces_approx";   break;
     default: break;
   }
+  const char* output_transform_str = "gamma";
+  switch (settings.output_transform) {
+    case OutputTransformMode::Linear: output_transform_str = "linear"; break;
+    case OutputTransformMode::Gamma:
+    default: break;
+  }
   std::ostringstream out;
   out << "{";
   out << "\"exposure\":" << settings.exposure << ",";
   out << "\"white_balance_kelvin\":" << settings.white_balance_kelvin << ",";
   out << "\"tone_map\":\"" << tone_map_str << "\",";
+  out << "\"output_transform\":\"" << output_transform_str << "\",";
   out << "\"gamma\":" << settings.gamma << ",";
   out << "\"clamp_output\":" << (settings.clamp_output ? "true" : "false");
   out << "}";

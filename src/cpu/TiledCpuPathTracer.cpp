@@ -47,6 +47,8 @@ bool TiledCpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& setti
 
 bool TiledCpuPathTracer::load_scene_snapshot(const vkpt::pathtracer::RTSceneData& scene) {
   m_scene = scene;
+  m_film.set_resolve_settings(
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_scene));
   m_initialized = false;
   m_tiles.clear();
   return true;

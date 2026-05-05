@@ -19,6 +19,7 @@
 #include "core/Logging.h"
 
 #include <QAbstractItemView>
+#include <QAbstractAnimation>
 #include <QApplication>
 #include <QByteArray>
 #include <QClipboard>
@@ -47,12 +48,14 @@
 #include <QObject>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QPalette>
 #include <QPoint>
 #include <QPointF>
 #include <QPen>
 #include <QPointer>
 #include <QPixmap>
 #include <QPolygonF>
+#include <QPropertyAnimation>
 #include <QPushButton>
 #include <QRect>
 #include <QRectF>
@@ -298,13 +301,243 @@ void* WindowIdToHandle(WId id) {
 #endif
 }
 
+QPalette StartupDarkPalette() {
+  QPalette palette;
+  palette.setColor(QPalette::Window, QColor(6, 8, 12));
+  palette.setColor(QPalette::WindowText, QColor(232, 237, 245));
+  palette.setColor(QPalette::Base, QColor(10, 15, 21));
+  palette.setColor(QPalette::AlternateBase, QColor(16, 24, 32));
+  palette.setColor(QPalette::ToolTipBase, QColor(20, 30, 40));
+  palette.setColor(QPalette::ToolTipText, QColor(245, 248, 252));
+  palette.setColor(QPalette::Text, QColor(232, 237, 245));
+  palette.setColor(QPalette::Button, QColor(18, 27, 38));
+  palette.setColor(QPalette::ButtonText, QColor(242, 246, 252));
+  palette.setColor(QPalette::BrightText, QColor(255, 255, 255));
+  palette.setColor(QPalette::Highlight, QColor(54, 112, 166));
+  palette.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
+  return palette;
+}
+
+QString StartupDarkStyleSheet() {
+  return QStringLiteral(
+      "QMainWindow, QWidget#vkpt.qt.viewport { background-color: #06080c; color: #e8edf5; }"
+      "QDockWidget { background-color: #0b1118; color: #e8edf5; }"
+      "QDockWidget::title { background-color: #101820; padding: 4px; }"
+      "QStatusBar, QMenuBar { background-color: #0b1118; color: #e8edf5; }"
+      "QMenu { background-color: #0b1118; color: #e8edf5; border: 1px solid #263241; }"
+      "QMenu::item:selected { background-color: #263b52; }"
+      "QTableWidget, QTreeWidget, QTextEdit { background-color: #0a0f15; alternate-background-color: #101820; color: #e8edf5; gridline-color: #263241; }"
+      "QHeaderView::section { background-color: #101820; color: #e8edf5; border: 1px solid #263241; padding: 3px; }"
+      "QPushButton { background-color: #172331; color: #f3f6fb; border: 1px solid #344457; padding: 3px 8px; border-radius: 3px; }"
+      "QPushButton:hover { background-color: #213249; }"
+      "QComboBox, QDoubleSpinBox { background-color: #0d141d; color: #f3f6fb; border: 1px solid #344457; padding: 2px; }");
+}
+
+void ApplyStartupSurface(QWidget* widget) {
+  if (widget == nullptr) {
+    return;
+  }
+  widget->setAutoFillBackground(true);
+  widget->setPalette(StartupDarkPalette());
+  widget->setAttribute(Qt::WA_StyledBackground, true);
+}
+
 }  // namespace
+
+class QtStartupSplash final : public QWidget {
+ public:
+  explicit QtStartupSplash()
+      : QWidget(nullptr,
+                Qt::SplashScreen | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint) {
+    setObjectName(QStringLiteral("vkpt.qt.startup_splash"));
+    setAttribute(Qt::WA_OpaquePaintEvent, true);
+    setAutoFillBackground(false);
+    resize(620, 340);
+
+    m_messages = QStringList{
+        QStringLiteral("Preparing renderer state"),
+        QStringLiteral("Loading scene assets"),
+        QStringLiteral("Building acceleration data"),
+        QStringLiteral("Compiling display pipeline"),
+        QStringLiteral("Resolving the first preview frame"),
+        QStringLiteral("Polishing the viewport handoff"),
+    };
+
+    auto* timer = new QTimer(this);
+    QObject::connect(timer, &QTimer::timeout, this, [this]() {
+      ++m_tick;
+      if (m_tick % 26u == 0u && !m_messages.isEmpty()) {
+        m_messageIndex = (m_messageIndex + 1) % m_messages.size();
+      }
+      update();
+    });
+    timer->start(32);
+    m_animationTimer = timer;
+  }
+
+  void setPhase(QString phase) {
+    if (phase.isEmpty() || m_phase == phase) {
+      return;
+    }
+    m_phase = std::move(phase);
+    m_tick = 0u;
+    update();
+  }
+
+  void showCentered(QWidget* reference) {
+    QRect anchorRect;
+    if (reference != nullptr && reference->screen() != nullptr) {
+      anchorRect = reference->screen()->availableGeometry();
+    } else if (QScreen* screen = QGuiApplication::primaryScreen()) {
+      anchorRect = screen->availableGeometry();
+    } else {
+      anchorRect = QRect(0, 0, 1280, 720);
+    }
+
+    move(anchorRect.center() - rect().center());
+    setWindowOpacity(1.0);
+    show();
+    raise();
+    activateWindow();
+  }
+
+  void finish(bool animated) {
+    if (m_finishing) {
+      return;
+    }
+    m_finishing = true;
+    if (m_animationTimer != nullptr) {
+      m_animationTimer->stop();
+    }
+
+    if (!animated) {
+      hide();
+      deleteLater();
+      return;
+    }
+
+    auto* fade = new QPropertyAnimation(this, "windowOpacity", this);
+    fade->setDuration(220);
+    fade->setStartValue(windowOpacity());
+    fade->setEndValue(0.0);
+    QObject::connect(fade, &QPropertyAnimation::finished, this, [this]() {
+      hide();
+      deleteLater();
+    });
+    fade->start(QAbstractAnimation::DeleteWhenStopped);
+  }
+
+ protected:
+  void paintEvent(QPaintEvent* /*event*/) override {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter.fillRect(rect(), QColor(5, 7, 11));
+
+    const QRectF panel = QRectF(rect()).adjusted(26.0, 24.0, -26.0, -24.0);
+    painter.setPen(QPen(QColor(37, 50, 66), 1.0));
+    painter.setBrush(QColor(8, 12, 18));
+    painter.drawRoundedRect(panel, 8.0, 8.0);
+
+    const QRectF accent(panel.left(), panel.top(), panel.width(), 3.0);
+    painter.fillRect(accent, QColor(76, 148, 210));
+
+    QFont titleFont = painter.font();
+    titleFont.setPointSize(22);
+    titleFont.setBold(true);
+    painter.setFont(titleFont);
+    painter.setPen(QColor(244, 248, 252));
+    painter.drawText(panel.adjusted(34.0, 34.0, -34.0, -238.0),
+                     Qt::AlignLeft | Qt::AlignVCenter,
+                     QStringLiteral("vkPathTracer"));
+
+    QFont subtitleFont = painter.font();
+    subtitleFont.setPointSize(10);
+    subtitleFont.setBold(false);
+    painter.setFont(subtitleFont);
+    painter.setPen(QColor(164, 178, 194));
+    painter.drawText(panel.adjusted(36.0, 80.0, -36.0, -206.0),
+                     Qt::AlignLeft | Qt::AlignVCenter,
+                     QStringLiteral("Starting the renderer"));
+
+    const QPointF spinnerCenter(panel.left() + 56.0, panel.top() + 168.0);
+    for (int i = 0; i < 12; ++i) {
+      const int active = static_cast<int>((m_tick / 2u + static_cast<unsigned>(i)) % 12u);
+      const int alpha = 48 + active * 15;
+      const double angle = (static_cast<double>(i) / 12.0) * 6.283185307179586;
+      const double inner = 15.0;
+      const double outer = 24.0;
+      QPen pen(QColor(86, 164, 220, std::min(230, alpha)), 3.0);
+      pen.setCapStyle(Qt::RoundCap);
+      painter.setPen(pen);
+      painter.drawLine(QPointF(spinnerCenter.x() + std::cos(angle) * inner,
+                               spinnerCenter.y() + std::sin(angle) * inner),
+                       QPointF(spinnerCenter.x() + std::cos(angle) * outer,
+                               spinnerCenter.y() + std::sin(angle) * outer));
+    }
+
+    QFont phaseFont = painter.font();
+    phaseFont.setPointSize(13);
+    phaseFont.setBold(true);
+    painter.setFont(phaseFont);
+    painter.setPen(QColor(232, 238, 246));
+    const QString phase = m_phase.isEmpty() ? QStringLiteral("Preparing Qt shell") : m_phase;
+    painter.drawText(panel.adjusted(96.0, 134.0, -40.0, -158.0),
+                     Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap,
+                     phase);
+
+    QFont messageFont = painter.font();
+    messageFont.setPointSize(10);
+    messageFont.setBold(false);
+    painter.setFont(messageFont);
+    painter.setPen(QColor(150, 166, 184));
+    painter.drawText(panel.adjusted(96.0, 174.0, -40.0, -120.0),
+                     Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap,
+                     currentLoadingMessage());
+
+    const QRectF bar(panel.left() + 36.0, panel.bottom() - 58.0, panel.width() - 72.0, 8.0);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(24, 34, 45));
+    painter.drawRoundedRect(bar, 4.0, 4.0);
+    const double progress = static_cast<double>(m_tick % 96u) / 96.0;
+    QRectF fill = bar;
+    fill.setWidth(std::max(18.0, bar.width() * (0.18 + progress * 0.82)));
+    painter.setBrush(QColor(70, 146, 208));
+    painter.drawRoundedRect(fill, 4.0, 4.0);
+
+    painter.setPen(QColor(106, 122, 140));
+    painter.drawText(panel.adjusted(36.0, 246.0, -36.0, -28.0),
+                     Qt::AlignLeft | Qt::AlignVCenter,
+                     QStringLiteral("The main viewport will appear after the first resolved frame is ready."));
+  }
+
+ private:
+  QString currentLoadingMessage() const {
+    if (m_messages.isEmpty()) {
+      return QStringLiteral("Preparing display handoff");
+    }
+    const int messageCount = static_cast<int>(m_messages.size());
+    const int index = std::clamp(m_messageIndex, 0, messageCount - 1);
+    return m_messages.at(index);
+  }
+
+  QString m_phase;
+  QStringList m_messages;
+  int m_messageIndex = 0;
+  unsigned m_tick = 0u;
+  bool m_finishing = false;
+  QTimer* m_animationTimer = nullptr;
+};
 
 class QtMainWindow final : public QMainWindow {
  public:
   explicit QtMainWindow(QtWindow* owner) : QMainWindow(nullptr), m_owner(owner) {
     setObjectName(QStringLiteral("vkpt.qt.main_window"));
     setDockOptions(QMainWindow::AllowNestedDocks | QMainWindow::AllowTabbedDocks);
+    setAnimated(false);
+    ApplyStartupSurface(this);
+    setStyleSheet(StartupDarkStyleSheet());
     statusBar()->setObjectName(QStringLiteral("vkpt.qt.status_bar"));
   }
 
@@ -313,6 +546,8 @@ class QtMainWindow final : public QMainWindow {
   }
 
   void setDockPanels(const std::vector<QtDockPanel>& panels) {
+    const bool previousUpdatesEnabled = updatesEnabled();
+    setUpdatesEnabled(false);
     std::unordered_set<std::string> seen;
     for (const auto& panel : panels) {
       if (panel.id.empty()) {
@@ -359,6 +594,8 @@ class QtMainWindow final : public QMainWindow {
       }
       m_layoutRestored = true;
     }
+    setUpdatesEnabled(previousUpdatesEnabled);
+    update();
   }
 
   void setStatusText(QString text) {
@@ -446,6 +683,7 @@ class QtMainWindow final : public QMainWindow {
       return existing->second;
     }
     auto* dock = new QDockWidget(ToQString(panel.title.empty() ? panel.id : panel.title), this);
+    ApplyStartupSurface(dock);
     dock->setObjectName(ToQString(std::string("vkpt.dock.") + panel.id));
     dock->setAllowedAreas(Qt::AllDockWidgetAreas);
     dock->setMinimumWidth(kQtDockMinimumWidth);
@@ -617,6 +855,10 @@ class QtMainWindow final : public QMainWindow {
     return property.editable && property.editor == "slider" && property.has_numeric_range;
   }
 
+  static bool isButtonProperty(const QtDockProperty& property) {
+    return property.editable && property.editor == "button";
+  }
+
   static int sliderSteps() {
     return 1000;
   }
@@ -751,6 +993,13 @@ class QtMainWindow final : public QMainWindow {
           spin->setValue(value);
           spin->setToolTip(ToQString(property.name));
         }
+      } else if (isButtonProperty(property)) {
+        auto* button = qobject_cast<QPushButton*>(cell);
+        if (button != nullptr) {
+          button->setText(ToQString(property.value.empty() ? property.name : property.value));
+          button->setEnabled(property.enabled);
+          button->setToolTip(ToQString(property.name));
+        }
       }
     }
   }
@@ -863,7 +1112,9 @@ class QtMainWindow final : public QMainWindow {
       for (std::size_t i = 0; i < panel.properties.size(); ++i) {
         const auto& property = panel.properties[i];
         const int row = static_cast<int>(i);
-        const bool usesValueWidget = isDropdownProperty(property) || isSliderProperty(property);
+        const bool usesValueWidget = isDropdownProperty(property) ||
+                                     isSliderProperty(property) ||
+                                     isButtonProperty(property);
         auto* nameItem = new QTableWidgetItem(ToQString(property.name));
         auto* valueItem = new QTableWidgetItem(ToQString(property.value));
         valueItem->setData(Qt::UserRole, ToQString(property.id));
@@ -995,6 +1246,24 @@ class QtMainWindow final : public QMainWindow {
 
           table->setCellWidget(row, valueColumn, editor);
           table->setRowHeight(row, 32);
+        } else if (isButtonProperty(property)) {
+          auto* button = new QPushButton(ToQString(property.value.empty() ? property.name : property.value), table);
+          button->setEnabled(property.enabled);
+          button->setToolTip(ToQString(property.name));
+          QObject::connect(button,
+                           &QPushButton::clicked,
+                           button,
+                           [owner = m_owner,
+                            panelId = panel.id,
+                            propertyId = property.id]() {
+                             if (owner != nullptr && !propertyId.empty()) {
+                               owner->emit_dock_property_edit(panelId,
+                                                              propertyId,
+                                                              "clicked");
+                             }
+                           });
+          table->setCellWidget(row, valueColumn, button);
+          table->setRowHeight(row, 32);
         }
         if (hasUnits) {
           auto* unitItem = new QTableWidgetItem(ToQString(property.unit));
@@ -1051,6 +1320,8 @@ class QtMainWindow final : public QMainWindow {
 class QtViewportWindow final : public QWidget {
  public:
   explicit QtViewportWindow(QtWindow* owner) : QWidget(nullptr), m_owner(owner) {
+    setObjectName(QStringLiteral("vkpt.qt.viewport"));
+    ApplyStartupSurface(this);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_NativeWindow, true);
@@ -1162,6 +1433,7 @@ class QtViewportWindow final : public QWidget {
     // UI thread rule: painting only draws the most recent immutable display image
     // and overlay. Rendering, resolving, and handoff publication happen elsewhere.
     if (!m_frame.isNull()) {
+      painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
       painter.drawImage(frameDisplayRect(), m_frame);
     }
 
@@ -1570,14 +1842,20 @@ bool QtWindow::initialize(std::size_t width, std::size_t height, std::string_vie
   m_menuBarSignature.clear();
   m_lastMouseX = 0;
   m_lastMouseY = 0;
+  m_mainWindowRevealed = false;
 
+  m_shell->setUpdatesEnabled(false);
   m_shell->resize(ClampToQtInt(width), ClampToQtInt(height));
   m_shell->setWindowTitle(ToQString(m_title));
+  m_widget->resize(ClampToQtInt(width), ClampToQtInt(height));
+  if (m_overlayText.empty()) {
+    m_overlayText = "vkPathTracer\nStarting Qt shell...\nPreparing renderer and UI panels.";
+  }
   static_cast<QtViewportWindow*>(m_widget)->setOverlayText(ToQString(m_overlayText));
-  m_shell->show();
-  m_shell->raise();
-  m_shell->activateWindow();
-  m_widget->setFocus(Qt::OtherFocusReason);
+  m_shell->setUpdatesEnabled(true);
+  (void)m_widget->winId();
+  show_startup_splash();
+  QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 4);
 
   m_open = true;
   update_metrics_from_widget();
@@ -1620,6 +1898,7 @@ void QtWindow::close() {
   } else if (m_widget != nullptr) {
     m_widget->hide();
   }
+  close_startup_splash(false);
 }
 
 WindowMetrics QtWindow::metrics() const {
@@ -1632,7 +1911,8 @@ bool QtWindow::poll_events() {
   }
 
   update_metrics_from_widget();
-  if (m_shell != nullptr && !m_shell->isVisible() && m_open) {
+  const bool hiddenForStartup = m_startupSplashActive && !m_mainWindowRevealed;
+  if (m_shell != nullptr && !m_shell->isVisible() && m_open && !hiddenForStartup) {
     mark_closed();
   } else if (m_shell == nullptr && m_widget != nullptr && !m_widget->isVisible() && m_open) {
     mark_closed();
@@ -1646,6 +1926,9 @@ bool QtWindow::resize(std::size_t width, std::size_t height) {
   }
   if (m_shell != nullptr) {
     m_shell->resize(ClampToQtInt(width), ClampToQtInt(height));
+    if (!m_mainWindowRevealed && m_widget != nullptr) {
+      m_widget->resize(ClampToQtInt(width), ClampToQtInt(height));
+    }
   } else if (m_widget != nullptr) {
     m_widget->resize(ClampToQtInt(width), ClampToQtInt(height));
   } else {
@@ -1669,6 +1952,17 @@ void QtWindow::set_overlay_text(std::string_view text) {
   if (m_widget != nullptr) {
     static_cast<QtViewportWindow*>(m_widget)->setOverlayText(ToQString(text));
   }
+}
+
+void QtWindow::set_startup_splash_text(std::string_view text) {
+  if (m_startupSplash == nullptr) {
+    return;
+  }
+  static_cast<QtStartupSplash*>(m_startupSplash)->setPhase(ToQString(text));
+}
+
+void QtWindow::finish_startup_splash() {
+  reveal_main_window_from_splash();
 }
 
 void QtWindow::set_selection_overlay_boxes(const std::vector<QtSelectionOverlayBox>& boxes) {
@@ -1963,7 +2257,94 @@ void QtWindow::deliver_pending_frame_to_widget(QWidget* widget) {
           {"width", std::to_string(frame.width)},
           {"height", std::to_string(frame.height)}
         });
+    return;
   }
+
+  reveal_main_window_from_splash();
+}
+
+void QtWindow::show_startup_splash() {
+  if (m_startupSplash != nullptr) {
+    return;
+  }
+
+  auto* splash = new QtStartupSplash();
+  m_startupSplash = splash;
+  m_startupSplashActive = true;
+  splash->setPhase(QStringLiteral("Preparing Qt shell"));
+  if (QObject* context = QCoreApplication::instance()) {
+    QObject::connect(splash, &QObject::destroyed, context, [this, splash]() {
+      if (m_startupSplash == splash) {
+        m_startupSplash = nullptr;
+      }
+      m_startupSplashActive = false;
+    });
+  }
+  splash->showCentered(m_shell);
+
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Info,
+      kQtLogSubsystem,
+      "Qt startup splash shown");
+}
+
+void QtWindow::reveal_main_window_from_splash() {
+  if (m_mainWindowRevealed) {
+    close_startup_splash(true);
+    return;
+  }
+
+  if (m_shell != nullptr) {
+    const bool animateReveal = m_startupSplashActive;
+    m_shell->setUpdatesEnabled(true);
+    m_shell->setWindowOpacity(animateReveal ? 0.0 : 1.0);
+    m_shell->show();
+    m_shell->raise();
+    m_shell->activateWindow();
+    if (m_widget != nullptr) {
+      m_widget->setFocus(Qt::OtherFocusReason);
+    }
+    m_mainWindowRevealed = true;
+    update_metrics_from_widget();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 4);
+
+    if (animateReveal) {
+      auto* fade = new QPropertyAnimation(m_shell, "windowOpacity", m_shell);
+      fade->setDuration(180);
+      fade->setStartValue(0.0);
+      fade->setEndValue(1.0);
+      fade->start(QAbstractAnimation::DeleteWhenStopped);
+    } else {
+      m_shell->setWindowOpacity(1.0);
+    }
+  } else if (m_widget != nullptr) {
+    m_widget->show();
+    m_widget->raise();
+    m_widget->activateWindow();
+    m_mainWindowRevealed = true;
+  }
+
+  close_startup_splash(true);
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Info,
+      kQtLogSubsystem,
+      "Qt main window revealed after startup splash",
+      {
+        {"width", std::to_string(m_metrics.width)},
+        {"height", std::to_string(m_metrics.height)}
+      });
+}
+
+void QtWindow::close_startup_splash(bool animated) {
+  if (m_startupSplash == nullptr) {
+    m_startupSplashActive = false;
+    return;
+  }
+
+  auto* splash = static_cast<QtStartupSplash*>(m_startupSplash);
+  m_startupSplash = nullptr;
+  m_startupSplashActive = false;
+  splash->finish(animated);
 }
 
 void QtWindow::record_frame_presented(std::uint64_t frameId,
@@ -2164,6 +2545,8 @@ void QtWindow::destroy() {
   m_events.clear();
   m_dockPropertyEdits.clear();
   m_menuBarSignature.clear();
+  close_startup_splash(false);
+  m_mainWindowRevealed = false;
   QWidget* shell = nullptr;
   QWidget* widget = nullptr;
   {
@@ -2337,6 +2720,9 @@ vkpt::core::Result<void> QtPlatform::initialize() {
     return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Unsupported);
   }
   QCoreApplication::setApplicationName(ToQString(m_name));
+  if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
+    app->setPalette(StartupDarkPalette());
+  }
 
   m_input.set_window(&m_window);
   m_surface.set_window(&m_window);

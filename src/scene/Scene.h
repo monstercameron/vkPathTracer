@@ -118,6 +118,20 @@ struct CameraComponent {
   float fov = 60.0f;
   float near_plane = 0.1f;
   float far_plane = 1000.0f;
+  float focal_length_mm = 35.0f;
+  float sensor_width_mm = 36.0f;
+  float sensor_height_mm = 24.0f;
+  float aperture_radius = 0.0f;
+  float focus_distance = 0.0f;
+  float f_stop = 0.0f;
+  float shutter_seconds = 0.0166666675f;
+  float iso = 100.0f;
+  float exposure_compensation = 0.0f;
+  float white_balance_kelvin = 6500.0f;
+  std::uint32_t iris_blade_count = 0u;
+  float iris_rotation_degrees = 0.0f;
+  float iris_roundness = 1.0f;
+  float anamorphic_squeeze = 1.0f;
 };
 
 struct LightComponent {
@@ -428,6 +442,20 @@ struct RenderSceneProxy {
     float fov = 60.0f;
     float near_plane = 0.1f;
     float far_plane = 1000.0f;
+    float focal_length_mm = 35.0f;
+    float sensor_width_mm = 36.0f;
+    float sensor_height_mm = 24.0f;
+    float aperture_radius = 0.0f;
+    float focus_distance = 0.0f;
+    float f_stop = 0.0f;
+    float shutter_seconds = 0.0166666675f;
+    float iso = 100.0f;
+    float exposure_compensation = 0.0f;
+    float white_balance_kelvin = 6500.0f;
+    std::uint32_t iris_blade_count = 0u;
+    float iris_rotation_degrees = 0.0f;
+    float iris_roundness = 1.0f;
+    float anamorphic_squeeze = 1.0f;
     Mat4 world_matrix{};
     Vec3 position{};
   };

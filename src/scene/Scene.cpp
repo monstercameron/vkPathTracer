@@ -469,6 +469,73 @@ bool read_vec3(const JsonValue& object, std::string_view key, Vec3& out) {
   return true;
 }
 
+void read_camera_component(const JsonValue& object, CameraComponent& camera) {
+  read_float(object, "fov", camera.fov);
+  read_float(object, "near_plane", camera.near_plane);
+  read_float(object, "far_plane", camera.far_plane);
+  read_float(object, "focal_length_mm", camera.focal_length_mm);
+  read_float(object, "sensor_width_mm", camera.sensor_width_mm);
+  read_float(object, "sensor_height_mm", camera.sensor_height_mm);
+  read_float(object, "aperture_radius", camera.aperture_radius);
+  read_float(object, "focus_distance", camera.focus_distance);
+  read_float(object, "f_stop", camera.f_stop);
+  read_float(object, "shutter_seconds", camera.shutter_seconds);
+  read_float(object, "iso", camera.iso);
+  read_float(object, "exposure_compensation", camera.exposure_compensation);
+  read_float(object, "white_balance_kelvin", camera.white_balance_kelvin);
+  read_u32(object, "iris_blade_count", camera.iris_blade_count);
+  read_float(object, "iris_rotation_degrees", camera.iris_rotation_degrees);
+  read_float(object, "iris_roundness", camera.iris_roundness);
+  read_float(object, "anamorphic_squeeze", camera.anamorphic_squeeze);
+}
+
+bool valid_camera_values(const CameraComponent& camera) {
+  return std::isfinite(camera.fov) && camera.fov > 0.0f &&
+         std::isfinite(camera.near_plane) && camera.near_plane > 0.0f &&
+         std::isfinite(camera.far_plane) && camera.far_plane > camera.near_plane &&
+         std::isfinite(camera.focal_length_mm) && camera.focal_length_mm > 0.0f &&
+         std::isfinite(camera.sensor_width_mm) && camera.sensor_width_mm > 0.0f &&
+         std::isfinite(camera.sensor_height_mm) && camera.sensor_height_mm > 0.0f &&
+         std::isfinite(camera.aperture_radius) && camera.aperture_radius >= 0.0f &&
+         std::isfinite(camera.focus_distance) && camera.focus_distance >= 0.0f &&
+         std::isfinite(camera.f_stop) && camera.f_stop >= 0.0f &&
+         std::isfinite(camera.shutter_seconds) && camera.shutter_seconds > 0.0f &&
+         std::isfinite(camera.iso) && camera.iso > 0.0f &&
+         std::isfinite(camera.exposure_compensation) &&
+         std::isfinite(camera.white_balance_kelvin) &&
+         camera.white_balance_kelvin >= 1000.0f &&
+         camera.white_balance_kelvin <= 40000.0f &&
+         camera.iris_blade_count <= 64u &&
+         std::isfinite(camera.iris_rotation_degrees) &&
+         std::isfinite(camera.iris_roundness) &&
+         camera.iris_roundness >= 0.0f &&
+         camera.iris_roundness <= 1.0f &&
+         std::isfinite(camera.anamorphic_squeeze) &&
+         camera.anamorphic_squeeze > 0.0f;
+}
+
+std::string camera_hash_blob(const CameraComponent& camera) {
+  std::ostringstream blob;
+  blob << std::to_string(camera.fov) << ':'
+       << std::to_string(camera.near_plane) << ':'
+       << std::to_string(camera.far_plane) << ':'
+       << std::to_string(camera.focal_length_mm) << ':'
+       << std::to_string(camera.sensor_width_mm) << ':'
+       << std::to_string(camera.sensor_height_mm) << ':'
+       << std::to_string(camera.aperture_radius) << ':'
+       << std::to_string(camera.focus_distance) << ':'
+       << std::to_string(camera.f_stop) << ':'
+       << std::to_string(camera.shutter_seconds) << ':'
+       << std::to_string(camera.iso) << ':'
+       << std::to_string(camera.exposure_compensation) << ':'
+       << std::to_string(camera.white_balance_kelvin) << ':'
+       << std::to_string(camera.iris_blade_count) << ':'
+       << std::to_string(camera.iris_rotation_degrees) << ':'
+       << std::to_string(camera.iris_roundness) << ':'
+       << std::to_string(camera.anamorphic_squeeze);
+  return blob.str();
+}
+
 bool read_vec3_list(const JsonValue& object, std::string_view key, std::vector<Vec3>& out) {
   out.clear();
   auto it = object.object.find(std::string(key));
@@ -1930,7 +1997,7 @@ SceneSnapshot SceneWorld::build_snapshot() const {
     const auto* cameraEnt = get_entity(first);
     if (cameraEnt && cameraEnt->camera.has_value()) {
       out.camera = SceneCameraDefinition{first, *cameraEnt->camera};
-      blob += "c" + std::to_string(first) + ":" + std::to_string(cameraEnt->camera->fov) + ";";
+      blob += "c" + std::to_string(first) + ":" + camera_hash_blob(*cameraEnt->camera) + ";";
     }
   }
   out.scene_hash = hash_scene_blob(blob);
@@ -1996,6 +2063,20 @@ RenderSceneProxy SceneWorld::extract_render_scene(vkpt::core::FrameIndex frame) 
     camera.fov = snapshot.camera->camera.fov;
     camera.near_plane = snapshot.camera->camera.near_plane;
     camera.far_plane = snapshot.camera->camera.far_plane;
+    camera.focal_length_mm = snapshot.camera->camera.focal_length_mm;
+    camera.sensor_width_mm = snapshot.camera->camera.sensor_width_mm;
+    camera.sensor_height_mm = snapshot.camera->camera.sensor_height_mm;
+    camera.aperture_radius = snapshot.camera->camera.aperture_radius;
+    camera.focus_distance = snapshot.camera->camera.focus_distance;
+    camera.f_stop = snapshot.camera->camera.f_stop;
+    camera.shutter_seconds = snapshot.camera->camera.shutter_seconds;
+    camera.iso = snapshot.camera->camera.iso;
+    camera.exposure_compensation = snapshot.camera->camera.exposure_compensation;
+    camera.white_balance_kelvin = snapshot.camera->camera.white_balance_kelvin;
+    camera.iris_blade_count = snapshot.camera->camera.iris_blade_count;
+    camera.iris_rotation_degrees = snapshot.camera->camera.iris_rotation_degrees;
+    camera.iris_roundness = snapshot.camera->camera.iris_roundness;
+    camera.anamorphic_squeeze = snapshot.camera->camera.anamorphic_squeeze;
     if (const auto* wt = world_transform(camera.entity_id)) {
       camera.world_matrix = wt->world_matrix;
       camera.position = wt->translation;
@@ -2299,9 +2380,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       }
       if (const auto cameraNode = item.object.find("camera"); cameraNode != item.object.end()) {
         entity.has_camera = true;
-        read_float(cameraNode->second, "fov", entity.camera.fov);
-        read_float(cameraNode->second, "near_plane", entity.camera.near_plane);
-        read_float(cameraNode->second, "far_plane", entity.camera.far_plane);
+        read_camera_component(cameraNode->second, entity.camera);
       }
       if (const auto lightNode = item.object.find("light"); lightNode != item.object.end()) {
         entity.has_light = true;
@@ -2384,9 +2463,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
     for (const auto& item : camerasNode->second.array) {
       SceneCameraDefinition cam;
       read_u64(item, "id", cam.id);
-      read_float(item, "fov", cam.camera.fov);
-      read_float(item, "near_plane", cam.camera.near_plane);
-      read_float(item, "far_plane", cam.camera.far_plane);
+      read_camera_component(item, cam.camera);
       doc.cameras.push_back(std::move(cam));
     }
   }
@@ -2657,9 +2734,7 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
         report("entity physics gravity scale is invalid " + std::to_string(entity.id));
       }
     }
-    if (entity.has_camera &&
-        (!std::isfinite(entity.camera.fov) || entity.camera.fov <= 0.0f ||
-         entity.camera.near_plane <= 0.0f || entity.camera.far_plane <= entity.camera.near_plane)) {
+    if (entity.has_camera && !valid_camera_values(entity.camera)) {
       report("entity camera has invalid clip/fov " + std::to_string(entity.id));
     }
     if (entity.has_light &&
@@ -2695,8 +2770,7 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
     if (!entityIds.contains(cam.id)) {
       report("camera references missing entity " + std::to_string(cam.id));
     }
-    if (!std::isfinite(cam.camera.fov) || cam.camera.fov <= 0.0f ||
-        cam.camera.near_plane <= 0.0f || cam.camera.far_plane <= cam.camera.near_plane) {
+    if (!valid_camera_values(cam.camera)) {
       report("camera has invalid clip/fov " + std::to_string(cam.id));
     }
   }
@@ -2861,6 +2935,27 @@ std::string SceneDocument::to_json(bool pretty) const {
     value.object["scale"] = vec3_value(transform.scale);
     return value;
   };
+  auto camera_value = [&](const CameraComponent& camera) {
+    JsonValue value = object_value();
+    value.object["fov"] = number_value(camera.fov);
+    value.object["near_plane"] = number_value(camera.near_plane);
+    value.object["far_plane"] = number_value(camera.far_plane);
+    value.object["focal_length_mm"] = number_value(camera.focal_length_mm);
+    value.object["sensor_width_mm"] = number_value(camera.sensor_width_mm);
+    value.object["sensor_height_mm"] = number_value(camera.sensor_height_mm);
+    value.object["aperture_radius"] = number_value(camera.aperture_radius);
+    value.object["focus_distance"] = number_value(camera.focus_distance);
+    value.object["f_stop"] = number_value(camera.f_stop);
+    value.object["shutter_seconds"] = number_value(camera.shutter_seconds);
+    value.object["iso"] = number_value(camera.iso);
+    value.object["exposure_compensation"] = number_value(camera.exposure_compensation);
+    value.object["white_balance_kelvin"] = number_value(camera.white_balance_kelvin);
+    value.object["iris_blade_count"] = number_value(static_cast<double>(camera.iris_blade_count));
+    value.object["iris_rotation_degrees"] = number_value(camera.iris_rotation_degrees);
+    value.object["iris_roundness"] = number_value(camera.iris_roundness);
+    value.object["anamorphic_squeeze"] = number_value(camera.anamorphic_squeeze);
+    return value;
+  };
 
   JsonValue root;
   root.kind = JsonValue::Kind::Object;
@@ -2971,11 +3066,7 @@ std::string SceneDocument::to_json(bool pretty) const {
       item.object["transform"] = transform_value(entity.transform);
     }
     if (entity.has_camera) {
-      JsonValue cameraNode = object_value();
-      cameraNode.object["fov"] = number_value(entity.camera.fov);
-      cameraNode.object["near_plane"] = number_value(entity.camera.near_plane);
-      cameraNode.object["far_plane"] = number_value(entity.camera.far_plane);
-      item.object["camera"] = std::move(cameraNode);
+      item.object["camera"] = camera_value(entity.camera);
     }
     if (entity.has_light) {
       JsonValue lightNode = object_value();
@@ -3059,9 +3150,10 @@ std::string SceneDocument::to_json(bool pretty) const {
   for (const auto& camera : cameras) {
     JsonValue item = object_value();
     item.object["id"] = number_value(static_cast<double>(camera.id));
-    item.object["fov"] = number_value(camera.camera.fov);
-    item.object["near_plane"] = number_value(camera.camera.near_plane);
-    item.object["far_plane"] = number_value(camera.camera.far_plane);
+    JsonValue cameraNode = camera_value(camera.camera);
+    for (auto& [key, value] : cameraNode.object) {
+      item.object[key] = std::move(value);
+    }
     camerasNode.array.push_back(std::move(item));
   }
   root.object["cameras"] = std::move(camerasNode);
@@ -3127,6 +3219,7 @@ SceneSnapshot SceneDocument::snapshot() const {
     }
     if (entity.has_camera && !out.camera) {
       out.camera = SceneCameraDefinition{entity.id, entity.camera};
+      blob += "c" + std::to_string(entity.id) + ":" + camera_hash_blob(entity.camera) + ";";
     }
     if (entity.has_physics_body) {
       blob += "p" + std::to_string(entity.id) + ":" +
@@ -3155,7 +3248,7 @@ SceneSnapshot SceneDocument::snapshot() const {
     if (!out.camera) {
       out.camera = camera;
     }
-    blob += "c" + std::to_string(camera.id) + ":" + std::to_string(camera.camera.fov) + ";";
+    blob += "c" + std::to_string(camera.id) + ":" + camera_hash_blob(camera.camera) + ";";
   }
   for (const auto& geometry_entry : geometry) {
     blob += "g" + std::to_string(geometry_entry.id) + ":" + geometry_entry.primitive + ":" +
@@ -3224,6 +3317,20 @@ RenderSceneProxy SceneDocument::extract_render_scene(vkpt::core::FrameIndex fram
     camera.fov = snap.camera->camera.fov;
     camera.near_plane = snap.camera->camera.near_plane;
     camera.far_plane = snap.camera->camera.far_plane;
+    camera.focal_length_mm = snap.camera->camera.focal_length_mm;
+    camera.sensor_width_mm = snap.camera->camera.sensor_width_mm;
+    camera.sensor_height_mm = snap.camera->camera.sensor_height_mm;
+    camera.aperture_radius = snap.camera->camera.aperture_radius;
+    camera.focus_distance = snap.camera->camera.focus_distance;
+    camera.f_stop = snap.camera->camera.f_stop;
+    camera.shutter_seconds = snap.camera->camera.shutter_seconds;
+    camera.iso = snap.camera->camera.iso;
+    camera.exposure_compensation = snap.camera->camera.exposure_compensation;
+    camera.white_balance_kelvin = snap.camera->camera.white_balance_kelvin;
+    camera.iris_blade_count = snap.camera->camera.iris_blade_count;
+    camera.iris_rotation_degrees = snap.camera->camera.iris_rotation_degrees;
+    camera.iris_roundness = snap.camera->camera.iris_roundness;
+    camera.anamorphic_squeeze = snap.camera->camera.anamorphic_squeeze;
     camera.world_matrix = identity_matrix();
     proxy.camera = camera;
   }
