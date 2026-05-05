@@ -819,8 +819,10 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         bool  is_clearcoat = (model == 7u) || (MatClearcoat(mi) > 0.05);
         bool  is_toon = (model == 8u);
 
-        // NEE: sample one point light (skip for perfect mirrors)
-        if (num_lights > 0u && !is_mirror && !is_transmissive) {
+        // NEE: sample one point light. The editor preview also adds a compact
+        // specular/direct term so mirror, metal, glass, and clearcoat families
+        // visibly respond under point lights even with a black environment.
+        if (num_lights > 0u) {
             uint  li   = uint(RandF(rng) * float(num_lights));
             li = min(li, num_lights - 1u);
             uint  lb   = li * 8u;
@@ -849,7 +851,33 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
                 bool occ = OccludedScene(hit.pos + n * 0.002, ldir, dist - 0.004);
                 if (!occ) {
                     float3 irrad  = lcol * (lint / (dist2 + 1e-4));
-                    float3 direct = albedo * (1.0 / 3.14159265) * irrad * cos_t * float(num_lights);
+                    float3 direct = float3(0.0, 0.0, 0.0);
+                    if (!is_mirror && !is_transmissive) {
+                        direct += albedo * (1.0 / 3.14159265) * irrad * cos_t * float(num_lights);
+                    }
+                    if (is_mirror || is_metallic || is_clearcoat || is_transmissive || roughness < 0.65) {
+                        float3 view_dir = normalize(-rd);
+                        float3 half_dir = normalize(ldir + view_dir);
+                        float effectiveRoughness = max(0.025, roughness * (is_metallic ? 0.65 : 1.0));
+                        float a2 = effectiveRoughness * effectiveRoughness;
+                        float specPower = clamp(2.0 / max(0.0005, a2 * a2) - 2.0, 4.0, 512.0);
+                        float spec = pow(saturate(dot(n, half_dir)), specPower);
+                        float cosView = saturate(dot(n, view_dir));
+                        float ior = MatIor(mi);
+                        float f0 = (1.0 - ior) / (1.0 + ior);
+                        f0 *= f0;
+                        float fresnel = f0 + (1.0 - f0) * pow(1.0 - cosView, 5.0);
+                        float specStrength = saturate((1.0 - roughness) * 0.8 +
+                                                      MatMetallic(mi) * 0.45 +
+                                                      MatClearcoat(mi) * 0.35 +
+                                                      (is_mirror ? 0.75 : 0.0) +
+                                                      (is_transmissive ? fresnel : 0.0));
+                        float3 specTint = lerp(float3(1.0, 1.0, 1.0), albedo, is_metallic ? 0.85 : 0.12);
+                        direct += specTint * irrad * spec * cos_t * float(num_lights) * max(0.15, specStrength);
+                    }
+                    if (is_transmissive) {
+                        direct += albedo * irrad * cos_t * float(num_lights) * (0.08 + 0.22 * MatAlpha(mi));
+                    }
                     rad += thr * direct;
                 }
             }
