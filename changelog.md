@@ -1,5 +1,25 @@
 ﻿# Changelog
 
+## 2026-05-05 (session 16)
+
+### Qt platform completion, D3D12 preview fixes, and TODO implementation pass
+
+**Qt/window platform:**
+- Added the guarded Qt platform path, Qt-enabled presets, runtime/build metadata, and platform selection docs.
+- Added Windows `windeployqt` deployment for Qt-enabled executables so Qt DLLs/plugins are copied beside `ptapp.exe`.
+- Fixed the Qt live preview path to honor `--width`/`--height` render resolution independently of `--window-width`/`--window-height`.
+- Verified `ptapp --window --platform qt --backend d3d12 --scene assets/scenes/cornell_native.json` with the Cornell scene rendering in the Qt GUI.
+
+**D3D12/rendering:**
+- Switched the D3D12 film accumulation UAV to a raw buffer/`RWByteAddressBuffer` path so shader read-modify-write accumulation compiles reliably.
+- Preserved the inward-wound Cornell-box backface-culling behavior for orbiting interior views.
+- Expanded backend contracts, debug views, frame graph metadata, material descriptors, and scene parsing/validation support.
+
+**Diagnostics, benchmarks, and tools:**
+- Added `ptdoctor`, richer release gates, Qt GUI smoke scripts, TODO audit tooling, and broader smoke coverage.
+- Added benchmark schema extensions, asset/material/lighting inventories, and documentation for platform, Qt lifecycle, native surfaces, threading, and diagnostics.
+- Updated `todos.md` to reflect completed work and remaining unchecked follow-up items.
+
 ## 2026-05-05 (session 15)
 
 ### Tonemap exposure tuning and soft-shadow light radius sampling

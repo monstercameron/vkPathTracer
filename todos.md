@@ -489,7 +489,7 @@ in-memory ring buffer
 
 ---
 
-## [x] A06 — Implement subsystem lifecycle logging
+## [ ] A06 — Implement subsystem lifecycle logging
 
 **Deliverable:** standard lifecycle log macros or helper calls.
 
@@ -651,7 +651,7 @@ Modes:
 
 ---
 
-## [x] A15 — Add artifact directory policy
+## [ ] A15 — Add artifact directory policy
 
 **Deliverable:** standardized output folder layout.
 
@@ -709,7 +709,7 @@ describe capabilities
 
 ---
 
-## [ ] A18 — Add crash reporter interface boundary
+## [x] A18 — Add crash reporter interface boundary
 
 **Deliverable:** `ICrashReporter` interface used by app/diagnostics.
 
@@ -729,7 +729,7 @@ write_crash_artifact_bundle
 
 ---
 
-## [ ] A19 — Add engine config and feature flag contracts
+## [x] A19 — Add engine config and feature flag contracts
 
 **Deliverable:** `EngineConfig` and `FeatureFlags` runtime contracts.
 
@@ -739,7 +739,7 @@ write_crash_artifact_bundle
 
 ---
 
-## [ ] A20 — Add standalone ptdoctor CLI entrypoint
+## [x] A20 — Add standalone ptdoctor CLI entrypoint
 
 **Deliverable:** dedicated `ptdoctor` executable wrapper.
 
@@ -1068,7 +1068,7 @@ benchmark metadata
 
 ---
 
-## [ ] B16 — Add render extraction proxy
+## [x] B16 — Add render extraction proxy
 
 **Deliverable:** `RenderSceneProxy`.
 
@@ -1088,7 +1088,7 @@ benchmark metadata
 
 ---
 
-## [ ] B18 — Add frame lifecycle controller
+## [x] B18 — Add frame lifecycle controller
 
 **Deliverable:** central frame loop state machine.
 
@@ -1114,7 +1114,7 @@ FrameEnd
 
 ---
 
-## [ ] B19 — Add scene runtime contracts
+## [x] B19 — Add scene runtime contracts
 
 **Deliverable:** `ISceneLoader`, `ISceneRuntime`, and `IEcsWorld` interfaces.
 
@@ -1124,7 +1124,7 @@ FrameEnd
 
 ---
 
-## [ ] B20 — Add canonical handle aliases
+## [x] B20 — Add canonical handle aliases
 
 **Deliverable:** plan-conform handle aliases/types.
 
@@ -1339,7 +1339,7 @@ dump_manifest
 
 ---
 
-## [x] C08 — Implement Vulkan compute backend MVP
+## [ ] C08 — Implement Vulkan compute backend MVP
 
 **Deliverable:** Vulkan backend capable of compute dispatch and readback.
 
@@ -1349,7 +1349,7 @@ dump_manifest
 
 ---
 
-## [ ] C09 — Add Vulkan timestamp query support
+## [x] C09 — Add Vulkan timestamp query support
 
 **Deliverable:** GPU timing for Vulkan path.
 
@@ -1359,7 +1359,7 @@ dump_manifest
 
 ---
 
-## [x] C10 — Add Vulkan software-BVH compute path integration
+## [ ] C10 — Add Vulkan software-BVH compute path integration
 
 **Deliverable:** Vulkan compute path can accept pathtracer buffers and dispatch baseline kernel.
 
@@ -1409,7 +1409,7 @@ acceleration structure limits
 
 ---
 
-## [x] C14 — Add Metal backend skeleton
+## [ ] C14 — Add Metal backend skeleton
 
 **Deliverable:** Metal backend compiles on macOS behind flag.
 
@@ -1419,7 +1419,7 @@ acceleration structure limits
 
 ---
 
-## [x] C15 — Add Metal ray tracing capability probe
+## [ ] C15 — Add Metal ray tracing capability probe
 
 **Deliverable:** Metal RT support check.
 
@@ -1429,7 +1429,7 @@ acceleration structure limits
 
 ---
 
-## [x] C16 — Add WebGPU backend skeleton
+## [ ] C16 — Add WebGPU backend skeleton
 
 **Deliverable:** WebGPU backend compiles for Emscripten/WebAssembly.
 
@@ -1439,7 +1439,7 @@ acceleration structure limits
 
 ---
 
-## [x] C17 — Add WebGPU compute dispatch test
+## [ ] C17 — Add WebGPU compute dispatch test
 
 **Deliverable:** browser/WASM compute smoke test.
 
@@ -1449,7 +1449,7 @@ acceleration structure limits
 
 ---
 
-## [ ] C18 — Add optional OpenGL compute experiment gate
+## [x] C18 — Add optional OpenGL compute experiment gate
 
 **Deliverable:** optional backend stub only behind `PT_ENABLE_OPENGL_EXPERIMENTAL`.
 
@@ -1459,7 +1459,7 @@ acceleration structure limits
 
 ---
 
-## [ ] C19 — Add backend selection policy
+## [x] C19 — Add backend selection policy
 
 **Deliverable:** deterministic backend chooser.
 
@@ -1504,7 +1504,7 @@ last error
 
 ---
 
-## [ ] C21 — Complete capability schema set
+## [x] C21 — Complete capability schema set
 
 **Deliverable:** missing capability structs from plan.
 
@@ -1526,7 +1526,7 @@ MemoryBudgetCapabilities
 
 ---
 
-## [ ] C22 — Add frame context descriptors
+## [x] C22 — Add frame context descriptors
 
 **Deliverable:** `FrameContext` and `FrameGraphDesc` contracts.
 
@@ -1536,7 +1536,7 @@ MemoryBudgetCapabilities
 
 ---
 
-## [ ] C23 — Add explicit WGSL shader path for WebGPU
+## [x] C23 — Add explicit WGSL shader path for WebGPU
 
 **Deliverable:** first-class WGSL shader source/manifest path for WebGPU backend.
 
@@ -1546,7 +1546,7 @@ MemoryBudgetCapabilities
 
 ---
 
-## [ ] C24 — Register non-Vulkan backend adapters in factory
+## [x] C24 — Register non-Vulkan backend adapters in factory
 
 **Deliverable:** backend factory wiring for D3D12, Metal, and WebGPU adapter stubs.
 
@@ -1867,7 +1867,7 @@ dot-product optional
 
 ---
 
-## [x] D17 — Implement AVX2 experiment kernel
+## [ ] D17 — Implement AVX2 experiment kernel
 
 **Deliverable:** AVX2 packet intersection experiment.
 
@@ -1877,7 +1877,7 @@ dot-product optional
 
 ---
 
-## [x] D18 — Implement AVX-512 experiment kernel
+## [ ] D18 — Implement AVX-512 experiment kernel
 
 **Deliverable:** AVX-512 packet intersection experiment.
 
@@ -1887,7 +1887,7 @@ dot-product optional
 
 ---
 
-## [x] D19 — Implement NEON experiment kernel
+## [ ] D19 — Implement NEON experiment kernel
 
 **Deliverable:** ARM NEON packet intersection experiment.
 
@@ -1897,7 +1897,7 @@ dot-product optional
 
 ---
 
-## [x] D20 — Implement SVE experiment kernel
+## [ ] D20 — Implement SVE experiment kernel
 
 **Deliverable:** ARM SVE packet experiment.
 
@@ -1998,7 +1998,7 @@ gamma/output transform
 
 ---
 
-## [ ] D27 — Add ray accelerator interface boundary
+## [x] D27 — Add ray accelerator interface boundary
 
 **Deliverable:** `IRayAccelerator` and `ICpuRayKernel` interfaces.
 
@@ -2008,7 +2008,7 @@ gamma/output transform
 
 ---
 
-## [ ] D28 — Add explicit tracing settings contracts
+## [x] D28 — Add explicit tracing settings contracts
 
 **Deliverable:** `PathTraceSettings`, `IntegratorSettings`, and `FilmSettings` plan-level contracts.
 
@@ -2028,7 +2028,7 @@ gamma/output transform
 
 ---
 
-## [ ] D30 — Add `ISimdKernel` interface contract
+## [x] D30 — Add `ISimdKernel` interface contract
 
 **Deliverable:** explicit `ISimdKernel` abstraction for SIMD packet kernels.
 
@@ -2071,7 +2071,7 @@ benchmark scoring
 
 ---
 
-## [ ] E01 — Define asset ID and registry
+## [x] E01 — Define asset ID and registry
 
 **Deliverable:** `AssetRegistry`.
 
@@ -2093,7 +2093,7 @@ BenchmarkSceneAsset
 
 ---
 
-## [ ] E02 — Define importer interface
+## [x] E02 — Define importer interface
 
 **Deliverable:** `IAssetImporter`.
 
@@ -2113,7 +2113,7 @@ emit_diagnostics
 
 ---
 
-## [ ] E03 — Add texture asset model
+## [x] E03 — Add texture asset model
 
 **Deliverable:** canonical texture descriptor.
 
@@ -2441,7 +2441,7 @@ visible emissive object
 
 ---
 
-## [ ] E16 — Add EXR texture/output support plan hook
+## [x] E16 — Add EXR texture/output support plan hook
 
 **Deliverable:** EXR asset/output interface.
 
@@ -2475,7 +2475,7 @@ Physics Chaos placeholder
 
 ---
 
-## [x] E18 — Add debug view declarations
+## [ ] E18 — Add debug view declarations
 
 **Deliverable:** debug output registry.
 
@@ -2533,7 +2533,7 @@ debug view selector
 
 ---
 
-## [x] E20 — Add editor command descriptors
+## [ ] E20 — Add editor command descriptors
 
 **Deliverable:** editor command model.
 
@@ -2579,7 +2579,7 @@ scripted benchmark path
 
 ---
 
-## [ ] E22 — Add material registry interface contract
+## [x] E22 — Add material registry interface contract
 
 **Deliverable:** `IMaterialRegistry` interface boundary.
 
@@ -2856,7 +2856,7 @@ adaptive/auto
 
 ---
 
-## [x] F11 — Add Vulkan compute vs Vulkan RT experiment
+## [ ] F11 — Add Vulkan compute vs Vulkan RT experiment
 
 **Deliverable:** Vulkan renderer path comparison.
 
@@ -2882,7 +2882,7 @@ Material Gauntlet
 
 ---
 
-## [x] F12 — Add D3D12 compute vs DXR experiment
+## [ ] F12 — Add D3D12 compute vs DXR experiment
 
 **Deliverable:** D3D12 renderer path comparison.
 
@@ -2899,7 +2899,7 @@ D3D12 DXR, if supported
 
 ---
 
-## [x] F13 — Add Metal compute vs Metal RT experiment
+## [ ] F13 — Add Metal compute vs Metal RT experiment
 
 **Deliverable:** Metal renderer path comparison.
 
@@ -2916,7 +2916,7 @@ Metal acceleration-structure ray tracing, if supported
 
 ---
 
-## [x] F14 — Add WebGPU workgroup-size experiment
+## [ ] F14 — Add WebGPU workgroup-size experiment
 
 **Deliverable:** WebGPU compute tuning sweep.
 
@@ -2978,7 +2978,7 @@ CPU material validation
 
 ---
 
-## [x] F17 — Add startup self-test
+## [ ] F17 — Add startup self-test
 
 **Deliverable:** app self-test sequence.
 
@@ -3073,7 +3073,7 @@ latest_status.json generated
 
 ---
 
-## [ ] F21 — Add benchmark runner interface
+## [x] F21 — Add benchmark runner interface
 
 **Deliverable:** `IBenchmarkRunner` interface.
 
@@ -3092,7 +3092,7 @@ summarize_results
 
 ---
 
-## [ ] F22 — Add profiler service contract
+## [x] F22 — Add profiler service contract
 
 **Deliverable:** `IProfiler` interface and benchmark capability summary.
 
@@ -3112,7 +3112,7 @@ describe_capabilities
 
 ---
 
-## [ ] F23 — Add benchmark capability schema contract
+## [x] F23 — Add benchmark capability schema contract
 
 **Deliverable:** `BenchmarkCapabilities` structure serialized into benchmark metadata.
 
@@ -4555,7 +4555,7 @@ Fullscreen Viewport With Overlay
 
 ---
 
-## [x] G17 — Add viewport panel
+## [ ] G17 — Add viewport panel
 
 **Deliverable:** central render viewport panel.
 
@@ -4579,7 +4579,7 @@ gizmo overlay
 
 ---
 
-## [x] G18 — Add viewport camera controls
+## [ ] G18 — Add viewport camera controls
 
 **Deliverable:** interactive camera controller.
 
@@ -4610,7 +4610,7 @@ frame all
 
 ---
 
-## [x] G19 — Add viewport object picking
+## [ ] G19 — Add viewport object picking
 
 **Deliverable:** click-to-select support.
 
@@ -4628,7 +4628,7 @@ scene tree selection fallback
 
 ---
 
-## [x] G20 — Add hover highlight
+## [ ] G20 — Add hover highlight
 
 **Deliverable:** hover state and visual highlight.
 
@@ -4647,7 +4647,7 @@ scene tree row hover sync
 
 ---
 
-## [x] G21 — Add selection highlight with bounding boxes
+## [ ] G21 — Add selection highlight with bounding boxes
 
 **Deliverable:** selected object bounding boxes.
 
@@ -4668,7 +4668,7 @@ inspector target highlight
 
 ---
 
-## [x] G22 — Add marquee/box selection
+## [ ] G22 — Add marquee/box selection
 
 **Deliverable:** drag rectangle selection in viewport.
 
@@ -4687,7 +4687,7 @@ toggle selection
 
 ---
 
-## [x] G23 — Add Ctrl-click multi-select
+## [ ] G23 — Add Ctrl-click multi-select
 
 **Deliverable:** Ctrl-click selection toggling.
 
@@ -4706,7 +4706,7 @@ Ctrl+Shift applies additive range where applicable
 
 ---
 
-## [x] G24 — Add transform gizmo framework
+## [ ] G24 — Add transform gizmo framework
 
 **Deliverable:** gizmo controller and tool modes.
 
@@ -4745,7 +4745,7 @@ group origin
 
 ---
 
-## [x] G25 — Add translation gizmo
+## [ ] G25 — Add translation gizmo
 
 **Deliverable:** move handles.
 
@@ -4767,7 +4767,7 @@ free move, optional
 
 ---
 
-## [x] G26 — Add rotation gizmo
+## [ ] G26 — Add rotation gizmo
 
 **Deliverable:** rotation handles.
 
@@ -4786,7 +4786,7 @@ screen-space ring
 
 ---
 
-## [x] G27 — Add scale gizmo
+## [ ] G27 — Add scale gizmo
 
 **Deliverable:** scale handles.
 
@@ -4806,7 +4806,7 @@ plane scale, optional
 
 ---
 
-## [x] G28 — Add transform snapping controls
+## [ ] G28 — Add transform snapping controls
 
 **Deliverable:** snapping model.
 
@@ -4826,7 +4826,7 @@ snap step settings
 
 ---
 
-## [x] G29 — Add multi-object transform behavior
+## [ ] G29 — Add multi-object transform behavior
 
 **Deliverable:** multi-selection transform policy.
 
@@ -4845,7 +4845,7 @@ transform around selection bounds center
 
 ---
 
-## [x] G30 — Add inspector panel shell
+## [ ] G30 — Add inspector panel shell
 
 **Deliverable:** inspector panel with selected object summary.
 
@@ -4867,7 +4867,7 @@ mixed-value state for multi-select
 
 ---
 
-## [x] G31 — Add transform inspector
+## [ ] G31 — Add transform inspector
 
 **Deliverable:** numeric transform editor.
 
@@ -4888,7 +4888,7 @@ copy/paste transform
 
 ---
 
-## [x] G32 — Add material inspector
+## [ ] G32 — Add material inspector
 
 **Deliverable:** material property editor.
 
@@ -4916,7 +4916,7 @@ texture slot pickers
 
 ---
 
-## [x] G33 — Add light inspector
+## [ ] G33 — Add light inspector
 
 **Deliverable:** light property editor.
 
@@ -4941,7 +4941,7 @@ sampling weight
 
 ---
 
-## [x] G34 — Add camera inspector
+## [ ] G34 — Add camera inspector
 
 **Deliverable:** camera property editor.
 
@@ -4968,7 +4968,7 @@ set active camera
 
 ---
 
-## [x] G35 — Add component inspector framework
+## [ ] G35 — Add component inspector framework
 
 **Deliverable:** generic component editor.
 
@@ -4994,7 +4994,7 @@ Metadata
 
 ---
 
-## [x] G36 — Add multi-selection inspector
+## [ ] G36 — Add multi-selection inspector
 
 **Deliverable:** multi-object property editor.
 
@@ -5016,7 +5016,7 @@ batch script attachment
 
 ---
 
-## [x] G37 — Add ECS scene tree panel
+## [ ] G37 — Add ECS scene tree panel
 
 **Deliverable:** hierarchical ECS tree.
 
@@ -5045,7 +5045,7 @@ hover highlight
 
 ---
 
-## [x] G38 — Add ECS tree parent/child operations
+## [ ] G38 — Add ECS tree parent/child operations
 
 **Deliverable:** hierarchy editing commands.
 
@@ -5068,7 +5068,7 @@ hide/show
 
 ---
 
-## [x] G39 — Add ECS tree drag/drop sibling reorder
+## [ ] G39 — Add ECS tree drag/drop sibling reorder
 
 **Deliverable:** drag/drop reordering in tree.
 
@@ -5087,7 +5087,7 @@ drop to root
 
 ---
 
-## [x] G40 — Add grouping workflow
+## [ ] G40 — Add grouping workflow
 
 **Deliverable:** non-destructive group operation.
 
@@ -5108,7 +5108,7 @@ ungroup restores children
 
 ---
 
-## [x] G41 — Add merge workflow
+## [ ] G41 — Add merge workflow
 
 **Deliverable:** explicit merge operation.
 
@@ -5128,7 +5128,7 @@ compound physics shape merge, optional
 
 ---
 
-## [x] G42 — Add split merged object workflow
+## [ ] G42 — Add split merged object workflow
 
 **Deliverable:** undo/split interface for merged results.
 
@@ -5138,7 +5138,7 @@ compound physics shape merge, optional
 
 ---
 
-## [x] G43 — Add asset/file management panel shell
+## [ ] G43 — Add asset/file management panel shell
 
 **Deliverable:** project file browser.
 
@@ -5164,7 +5164,7 @@ Imports
 
 ---
 
-## [x] G44 — Add asset search/filter/sort
+## [ ] G44 — Add asset search/filter/sort
 
 **Deliverable:** asset browser filtering.
 
@@ -5187,7 +5187,7 @@ sort by size
 
 ---
 
-## [x] G45 — Add asset preview cards
+## [ ] G45 — Add asset preview cards
 
 **Deliverable:** preview cards for assets.
 
@@ -5210,7 +5210,7 @@ missing asset warning
 
 ---
 
-## [x] G46 — Add drag/drop from asset browser to viewport
+## [ ] G46 — Add drag/drop from asset browser to viewport
 
 **Deliverable:** asset-to-scene drag/drop.
 
@@ -5231,7 +5231,7 @@ benchmark scene dropped into benchmark panel selects scene
 
 ---
 
-## [x] G47 — Add OS file drag/drop
+## [ ] G47 — Add OS file drag/drop
 
 **Deliverable:** external file drop support.
 
@@ -5252,7 +5252,7 @@ benchmark reference image picker
 
 ---
 
-## [x] G48 — Add file picker controls
+## [ ] G48 — Add file picker controls
 
 **Deliverable:** reusable file picker widget.
 
@@ -5274,7 +5274,7 @@ open containing folder
 
 ---
 
-## [x] G49 — Add import validation modal
+## [ ] G49 — Add import validation modal
 
 **Deliverable:** import confirmation/diagnostics modal.
 
@@ -5297,7 +5297,7 @@ cancel/import buttons
 
 ---
 
-## [x] G50 — Add script panel
+## [ ] G50 — Add script panel
 
 **Deliverable:** Lua script management panel.
 
@@ -5323,7 +5323,7 @@ script event log
 
 ---
 
-## [x] G51 — Add Lua lifecycle visibility
+## [ ] G51 — Add Lua lifecycle visibility
 
 **Deliverable:** script lifecycle view.
 
@@ -5352,7 +5352,7 @@ on_unload
 
 ---
 
-## [x] G52 — Add script parameter inspector
+## [ ] G52 — Add script parameter inspector
 
 **Deliverable:** script-exposed parameter UI.
 
@@ -5516,7 +5516,7 @@ backend path
 
 ---
 
-## [x] G58 — Add benchmark history panel
+## [ ] G58 — Add benchmark history panel
 
 **Deliverable:** history list of recent runs.
 
@@ -5539,7 +5539,7 @@ regression/improvement marker
 
 ---
 
-## [x] G59 — Add console/log panel
+## [ ] G59 — Add console/log panel
 
 **Deliverable:** in-app log viewer.
 
@@ -5614,7 +5614,7 @@ modal confirm/cancel
 
 ---
 
-## [x] G62 — Add editor command history panel
+## [ ] G62 — Add editor command history panel
 
 **Deliverable:** visual undo/redo history.
 
@@ -5635,7 +5635,7 @@ redoable state
 
 ---
 
-## [x] G63 — Add modal and notification system
+## [ ] G63 — Add modal and notification system
 
 **Deliverable:** standard UI modals/toasts.
 
@@ -5687,7 +5687,7 @@ F11 fullscreen
 
 ---
 
-## [x] G65 — Add UI accessibility/scaling controls
+## [ ] G65 — Add UI accessibility/scaling controls
 
 **Deliverable:** UI scaling and readability controls.
 
@@ -5708,7 +5708,7 @@ tooltip delay
 
 ---
 
-## [x] G66 — Add web UI compatibility plan
+## [ ] G66 — Add web UI compatibility plan
 
 **Deliverable:** web-compatible UI mode.
 
@@ -5730,7 +5730,7 @@ WebGPU backend capability warnings
 
 ---
 
-## [x] G67 — Add UI performance budget
+## [ ] G67 — Add UI performance budget
 
 **Deliverable:** UI profiling metrics.
 
@@ -5753,7 +5753,7 @@ overlay draw time
 
 ---
 
-## [x] G68 — Add UI-thread policy
+## [ ] G68 — Add UI-thread policy
 
 **Deliverable:** thread ownership policy.
 
@@ -6155,3 +6155,31 @@ logs and crash snapshots remain useful
 Use this as the top of the UI/editor plan:
 
 > Build a standard cross-platform editor UI for the C++23 pathtracer with a menu bar, dockable/floating panels, viewport selection, bounding-box highlighting, translate/rotate/scale gizmos, an inspector with numeric/slider/toggle controls, ECS hierarchy tree editing, multi-selection, grouping, merging, drag/drop asset management, Lua script lifecycle controls, and a benchmark panel that separates raw performance from hardware-normalized efficiency. The UI must be command-driven, backend-agnostic, multithread-safe, layout-persistent, and fully logged so agents can diagnose crashes and user actions without requiring the human operator to understand C++ internals.
+---
+
+# 15. Audit reconciliation backlog
+
+Audit date: 2026-05-05.
+
+This section records gaps found while reconciling checked todos against the current implementation. Items above were re-opened when the implementation was model-only, documented-only, partially wired, or missing acceptance coverage.
+
+## 15.1 Audit hardening todos
+
+- [ ] AUD01 - Add a repeatable todo-audit command that lists checked todo IDs, required evidence, and validation commands.
+- [ ] AUD02 - Add a rule that a todo can only be checked when its acceptance command or source evidence is documented beside the todo.
+- [ ] AUD03 - Add CI coverage for the smoke command, release gate, scene validation pack, and UI model smoke path.
+- [x] AUD04 - Add a checked-todo regression report to `artifacts/status/latest_status.json` or a neighboring audit artifact.
+
+## 15.2 Cross-workstream gap todos
+
+- [ ] AUD05 - Add the missing shared contracts from the master interface list: `IApplicationMode`, `ICrashReporter`, `EngineConfig`, `FeatureFlags`, `RenderSceneProxy`, `FrameContext`, `FrameGraphDesc`, `IBenchmarkRunner`, `IProfiler`, `IMaterialRegistry`, `IRayAccelerator`, and `ISimdKernel`.
+- [ ] AUD06 - Add validation tests for crash artifact file names and contents, including logs, runtime config, frame state, resource state, backend state, and scene state.
+- [x] AUD07 - Add a real standalone `ptdoctor` target and keep `ptapp --doctor` as a compatibility wrapper.
+- [x] AUD08 - Implement task graph execution or remove claims that deterministic task graph scheduling is complete.
+- [x] AUD09 - Implement BVH traversal and wire it into ray queries before marking BVH traversal/build integration complete.
+- [ ] AUD10 - Add real backend adapter coverage for Metal, WebGPU/WGSL, OpenGL experimental gating, and backend factory registration.
+- [ ] AUD11 - Add real asset/importer infrastructure for asset IDs, importer registry, glTF/GLB, OBJ/MTL, PNG/JPEG texture decoding, and EXR support policy.
+- [ ] AUD12 - Add benchmark experiment implementations for D3D12/DXR, Metal, WebGPU, Vulkan RT, GPU memory pressure, shader variants, and hardware-normalized scoring.
+- [ ] AUD13 - Replace model-only UI todos with actual docked/floating panels, viewport picking, hover/selection overlays, transform gizmos, inspectors, asset browser, script panel, benchmark panel, log panel, status bar, modals, shortcuts, and accessibility controls.
+- [x] AUD14 - Add UI release-gate checks that exercise the G70 checklist instead of only CLI doctor/crash/benchmark commands.
+- [ ] AUD15 - Add Web UI compatibility implementation or explicitly defer Web UI claims until a browser canvas/WebGPU build exists.
