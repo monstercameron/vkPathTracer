@@ -140,6 +140,17 @@ std::string_view AcceleratorKindToString(AcceleratorKind kind) {
   }
 }
 
+std::string_view AcceleratorSelectionPresetToString(AcceleratorSelectionPreset preset) {
+  switch (preset) {
+    case AcceleratorSelectionPreset::Auto:
+      return "auto";
+    case AcceleratorSelectionPreset::HighPerformance:
+      return "high-performance";
+    default:
+      return "auto";
+  }
+}
+
 std::string_view PassTypeToString(PassType type) {
   switch (type) {
     case PassType::Upload:
@@ -559,6 +570,7 @@ std::string SerializeAcceleratorCapabilities(const AcceleratorCapabilities& caps
 std::string SerializeRayBudgetRequest(const RayBudgetRequest& request) {
   std::ostringstream out;
   out << '{';
+  out << "\"accelerator_preset\":" << Quote(AcceleratorSelectionPresetToString(request.accelerator_preset)) << ',';
   out << "\"polygon_frame_budget_ms\":" << request.polygon_frame_budget_ms << ',';
   out << "\"reserved_polygon_ms\":" << request.reserved_polygon_ms << ',';
   out << "\"merge_budget_ms\":" << request.merge_budget_ms << ',';

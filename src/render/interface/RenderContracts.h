@@ -35,6 +35,11 @@ enum class AcceleratorKind {
   VirtualGpu
 };
 
+enum class AcceleratorSelectionPreset {
+  Auto,
+  HighPerformance
+};
+
 enum class PassType {
   Upload,
   Compute,
@@ -131,6 +136,7 @@ inline bool HasUsage(ResourceBindingUsage value, ResourceBindingUsage flag) {
 
 std::string_view BackendKindToString(BackendKind kind);
 std::string_view AcceleratorKindToString(AcceleratorKind kind);
+std::string_view AcceleratorSelectionPresetToString(AcceleratorSelectionPreset preset);
 
 using ResourceHandle = vkpt::core::RuntimeHandle;
 
@@ -362,6 +368,7 @@ struct AcceleratorCapabilities {
 };
 
 struct RayBudgetRequest {
+  AcceleratorSelectionPreset accelerator_preset = AcceleratorSelectionPreset::Auto;
   double polygon_frame_budget_ms = 16.6667;
   double reserved_polygon_ms = 5.0;
   double merge_budget_ms = 1.0;
