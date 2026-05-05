@@ -2692,7 +2692,6 @@ bool D3D12GpuPathTracer::create_dxr_desc_heap() {
 }
 
 bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
-  {
   if (!m_device5 || !m_cmdList || !m_vertBuf || !m_idxBuf || m_gpuVerts.empty() || m_gpuIdx.empty()) {
     m_error = "build_dxr_acceleration_structures: missing device5 or scene buffers";
     return false;
