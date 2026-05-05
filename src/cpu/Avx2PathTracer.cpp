@@ -206,8 +206,9 @@ inline Vec3 sample_phong_lobe(Rng& rng, const Vec3& refl, float exponent,
 // ---- Avx2CpuPathTracer member functions ------------------------------------
 
 bool Avx2CpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
-  settings_ = s;
-  m_film.resize(s.width, s.height);
+  settings_ = vkpt::pathtracer::MakeRenderSettings(vkpt::pathtracer::MakePathTraceSettings(s));
+  m_film.resize(settings_.width, settings_.height);
+  m_film.set_resolve_settings(settings_.film_resolve);
   m_film.clear();
   counters_ = {};
   configured_ = true;
@@ -224,6 +225,21 @@ bool Avx2CpuPathTracer::load_scene_snapshot(const vkpt::pathtracer::RTSceneData&
 
 bool Avx2CpuPathTracer::build_or_update_acceleration() {
   // Mirror scalar tracer: camera basis from scene data.
+  set_camera_basis();
+  return true;
+}
+
+bool Avx2CpuPathTracer::update_camera(const vkpt::pathtracer::Vec3& pos,
+                                      const vkpt::pathtracer::Vec3& target,
+                                      const vkpt::pathtracer::Vec3& up,
+                                      float fov_deg) {
+  if (!configured_ || !has_scene_) {
+    return false;
+  }
+  scene_.camera_position = pos;
+  scene_.camera_target = target;
+  scene_.camera_up = up;
+  scene_.camera_fov_deg = fov_deg;
   set_camera_basis();
   return true;
 }
@@ -263,7 +279,8 @@ struct Hit8 {
 
 static void intersect_scene8(const RaySoA& ray8,
                              const vkpt::pathtracer::RTSceneData& scene,
-                             Hit8& out) {
+                             Hit8& out,
+                             vkpt::pathtracer::SampleCounters* counters = nullptr) {
   // one __m256 per hit quantity
   __m256 best_t = _mm256_set1_ps(std::numeric_limits<float>::infinity());
   __m256 hit_t  = _mm256_set1_ps(std::numeric_limits<float>::infinity());
@@ -289,6 +306,9 @@ static void intersect_scene8(const RaySoA& ray8,
       if (i0 >= scene.vertices.size() ||
           i1 >= scene.vertices.size() ||
           i2 >= scene.vertices.size()) continue;
+      if (counters) {
+        ++counters->triangle_tests;
+      }
       const Vec3& v0 = scene.vertices[i0];
       const Vec3& v1 = scene.vertices[i1];
       const Vec3& v2 = scene.vertices[i2];
@@ -297,6 +317,9 @@ static void intersect_scene8(const RaySoA& ray8,
       // Pass current best_t so only closer hits are accepted
       int mask = intersect8(ray8, v0, v1, v2, best_t, new_t, new_u, new_v);
       if (!mask) continue;
+      if (counters && (mask & 1)) {
+        ++counters->triangle_hits;
+      }
       any_hit |= mask;
 
       // For lanes that got a new closer hit, update best_t and normal/mat
@@ -357,7 +380,8 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
                       const Vec3& cam_up,
                       const vkpt::pathtracer::RenderSettings& settings,
                       Rng& rng,
-                      uint64_t& ray_counter) {
+                      uint64_t& ray_counter,
+                      vkpt::pathtracer::SampleCounters* counters) {
   (void)cam_forward; (void)cam_right; (void)cam_up;
 
   Vec3 radiance{0.0f, 0.0f, 0.0f};
@@ -383,7 +407,7 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
     }
 
     Hit8 hits{};
-    intersect_scene8(ray8, scene, hits);
+    intersect_scene8(ray8, scene, hits, counters);
 
     if (!hits.hit[0]) {
       radiance = radiance + throughput * scene.environment_color;
@@ -437,6 +461,9 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
         const float cos_theta = dot(shading_normal, ldir);
         if (cos_theta > 0.0f) {
           vkpt::pathtracer::Ray shadow_ray{hits.pos[0] + shading_normal * 0.002f, ldir};
+          if (counters) {
+            ++counters->shadow_tests;
+          }
           RaySoA sr8;
           for (int i = 0; i < 8; ++i) {
             reinterpret_cast<float*>(&sr8.ox)[i] = shadow_ray.origin.x;
@@ -447,7 +474,7 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
             reinterpret_cast<float*>(&sr8.dz)[i] = shadow_ray.direction.z;
           }
           Hit8 sh{};
-          intersect_scene8(sr8, scene, sh);
+          intersect_scene8(sr8, scene, sh, counters);
           const bool occluded = sh.hit[0] && sh.t[0] < dist - 0.004f;
           if (!occluded) {
             const Vec3 irradiance = lt.color * (lt.intensity / (dist_sq + kEpsilon));
@@ -485,8 +512,9 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
 
     if (std::max({throughput.x, throughput.y, throughput.z}) < 0.001f) break;
 
-    const float rr = std::min(0.99f, std::max(0.1f, std::max({throughput.x, throughput.y, throughput.z})));
-    if (depth >= 3 && rng.next01() > rr) break;
+    const float rr = std::min(settings.russian_roulette_max_survival,
+        std::max(settings.russian_roulette_min_survival, std::max({throughput.x, throughput.y, throughput.z})));
+    if (depth >= settings.russian_roulette_start_depth && rng.next01() > rr) break;
     throughput = throughput / rr;
 
     ray.origin    = hits.pos[0] + shading_normal * 0.002f;
@@ -531,10 +559,21 @@ bool Avx2CpuPathTracer::render_sample_batch(uint32_t start_y,
                        / static_cast<float>(std::max(1u, settings_.height));
         const float nx = (2.0f * fx - 1.0f) * aspect * tan_hf;
         const float ny = (1.0f - 2.0f * fy) * tan_hf;
-        const Vec3 dir = normalize(cam_forward_ + cam_right_ * nx + cam_up_ * ny);
-        reinterpret_cast<float*>(&ray8.ox)[i] = scene_.camera_position.x;
-        reinterpret_cast<float*>(&ray8.oy)[i] = scene_.camera_position.y;
-        reinterpret_cast<float*>(&ray8.oz)[i] = scene_.camera_position.z;
+        Vec3 dir = normalize(cam_forward_ + cam_right_ * nx + cam_up_ * ny);
+        Vec3 origin = scene_.camera_position;
+        if (settings_.camera_aperture_radius > 0.0f && settings_.camera_focus_distance > kEpsilon) {
+          const float lens_r = settings_.camera_aperture_radius * std::sqrt(jitter_rng.next01());
+          const float lens_phi = 2.0f * kPi * jitter_rng.next01();
+          const Vec3 lens_offset =
+              cam_right_ * (lens_r * std::cos(lens_phi)) +
+              cam_up_ * (lens_r * std::sin(lens_phi));
+          const Vec3 focus_point = scene_.camera_position + dir * settings_.camera_focus_distance;
+          origin = scene_.camera_position + lens_offset;
+          dir = normalize(focus_point - origin);
+        }
+        reinterpret_cast<float*>(&ray8.ox)[i] = origin.x;
+        reinterpret_cast<float*>(&ray8.oy)[i] = origin.y;
+        reinterpret_cast<float*>(&ray8.oz)[i] = origin.z;
         reinterpret_cast<float*>(&ray8.dx)[i] = dir.x;
         reinterpret_cast<float*>(&ray8.dy)[i] = dir.y;
         reinterpret_cast<float*>(&ray8.dz)[i] = dir.z;
@@ -554,12 +593,17 @@ bool Avx2CpuPathTracer::render_sample_batch(uint32_t start_y,
         const uint32_t x = x_base + i;
         Rng rng = make_rng(x, y, settings_.width, sample_index, frame_index,
                            settings_.seed);
-        // Consume the two jitter samples so the path RNG starts fresh
+        // Consume camera jitter samples so the path RNG starts at the same dimension.
         rng.next01(); rng.next01();
+        if (settings_.camera_aperture_radius > 0.0f && settings_.camera_focus_distance > kEpsilon) {
+          rng.next01(); rng.next01();
+        }
 
         // Build a single-ray SoA for this pixel's path tracing
         vkpt::pathtracer::Ray cam_ray{
-          scene_.camera_position,
+          { reinterpret_cast<const float*>(&ray8.ox)[i],
+            reinterpret_cast<const float*>(&ray8.oy)[i],
+            reinterpret_cast<const float*>(&ray8.oz)[i] },
           { reinterpret_cast<const float*>(&ray8.dx)[i],
             reinterpret_cast<const float*>(&ray8.dy)[i],
             reinterpret_cast<const float*>(&ray8.dz)[i] }
@@ -568,7 +612,7 @@ bool Avx2CpuPathTracer::render_sample_batch(uint32_t start_y,
         uint64_t rc = 0;
         const Vec3 sample = trace_one(cam_ray, scene_,
                                       cam_forward_, cam_right_, cam_up_,
-                                      settings_, rng, rc);
+                                      settings_, rng, rc, &counters_);
         local_rays += rc;
 
         if (std::isfinite(sample.x) && std::isfinite(sample.y) && std::isfinite(sample.z)) {
@@ -592,6 +636,12 @@ vkpt::pathtracer::SampleCounters Avx2CpuPathTracer::read_counters() const {
                     .load(std::memory_order_relaxed);
   out.rays    = std::atomic_ref<const uint64_t>(counters_.rays)
                     .load(std::memory_order_relaxed);
+  out.triangle_tests = std::atomic_ref<const uint64_t>(counters_.triangle_tests)
+                    .load(std::memory_order_relaxed);
+  out.triangle_hits = std::atomic_ref<const uint64_t>(counters_.triangle_hits)
+                    .load(std::memory_order_relaxed);
+  out.shadow_tests = std::atomic_ref<const uint64_t>(counters_.shadow_tests)
+                    .load(std::memory_order_relaxed);
   return out;
 }
 
@@ -600,6 +650,7 @@ void Avx2CpuPathTracer::shutdown() {
   has_scene_  = false;
   m_film      = vkpt::pathtracer::FilmBuffer{};
   scene_      = vkpt::pathtracer::RTSceneData{};
+  counters_   = {};
 }
 
 } // namespace vkpt::cpu

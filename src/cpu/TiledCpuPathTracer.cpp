@@ -1,8 +1,13 @@
 #include "cpu/TiledCpuPathTracer.h"
+
+#if defined(PT_ENABLE_AVX2)
 #include "cpu/Avx2PathTracer.h"
+#endif
+
 #include "cpu/CpuFeatures.h"
 
 #include <algorithm>
+#include <limits>
 #include <thread>
 
 namespace vkpt::cpu {
@@ -28,11 +33,15 @@ TiledCpuPathTracer::~TiledCpuPathTracer() {
 }
 
 bool TiledCpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& settings) {
-  m_settings = settings;
+  m_settings = vkpt::pathtracer::MakeRenderSettings(vkpt::pathtracer::MakePathTraceSettings(settings));
   m_initialized = false;
   m_tiles.clear();
-  m_film.resize(settings.width, settings.height);
+  m_film.resize(m_settings.width, m_settings.height);
+  m_film.set_resolve_settings(m_settings.film_resolve);
   m_film.clear();
+  if (m_jobSystem && m_settings.deterministic) {
+    m_jobSystem->set_deterministic(true);
+  }
   return true;
 }
 
@@ -55,27 +64,29 @@ bool TiledCpuPathTracer::build_or_update_acceleration() {
     const uint32_t i0 = inds[t * 3 + 0];
     const uint32_t i1 = inds[t * 3 + 1];
     const uint32_t i2 = inds[t * 3 + 2];
+    if (i0 >= verts.size() || i1 >= verts.size() || i2 >= verts.size()) {
+      continue;
+    }
     BvhAabb aabb;
     for (int k = 0; k < 3; ++k) {
       aabb.min[k] = std::numeric_limits<float>::max();
       aabb.max[k] = -std::numeric_limits<float>::max();
     }
-    if (i0 < verts.size() && i1 < verts.size() && i2 < verts.size()) {
-      const float* v0 = &verts[i0].x;
-      const float* v1 = &verts[i1].x;
-      const float* v2 = &verts[i2].x;
-      for (int k = 0; k < 3; ++k) {
-        aabb.min[k] = std::min({v0[k], v1[k], v2[k]});
-        aabb.max[k] = std::max({v0[k], v1[k], v2[k]});
-      }
+    const float* v0 = &verts[i0].x;
+    const float* v1 = &verts[i1].x;
+    const float* v2 = &verts[i2].x;
+    for (int k = 0; k < 3; ++k) {
+      aabb.min[k] = std::min({v0[k], v1[k], v2[k]});
+      aabb.max[k] = std::max({v0[k], v1[k], v2[k]});
     }
     prim_aabbs.push_back(aabb);
   }
 
-  auto bvh_result = m_bvhBuilder.build(
+  const bool deterministic = m_config.deterministic || m_settings.deterministic;
+  (void)m_bvhBuilder.build(
       prim_aabbs,
       m_jobSystem.get(),
-      m_config.deterministic);
+      deterministic);
   m_bvhStats = m_bvhBuilder.last_stats();
 
   // Initialize tile tracers
@@ -96,12 +107,26 @@ void TiledCpuPathTracer::init_tile_tracers() {
     m_tiles[i].start_y = start_y;
     m_tiles[i].end_y = end_y;
 
-    if (m_simdDispatch.preferred == vkpt::cpu::SimdBackend::X86Avx2) {
+#if defined(PT_ENABLE_AVX2)
+    const bool use_avx2_tile =
+        !m_settings.deterministic &&
+        m_externalAccelerator == nullptr &&
+        m_scene.sdf_primitives.empty() &&
+        m_simdDispatch.preferred == vkpt::cpu::SimdBackend::X86Avx2;
+    if (use_avx2_tile) {
       m_tiles[i].tracer = std::make_unique<vkpt::cpu::Avx2CpuPathTracer>();
     } else {
       m_tiles[i].tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
     }
+#else
+    m_tiles[i].tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+#endif
     m_tiles[i].tracer->configure(m_settings);
+    if (m_externalAccelerator) {
+      if (auto* kernel = dynamic_cast<vkpt::pathtracer::ICpuRayKernel*>(m_tiles[i].tracer.get())) {
+        kernel->set_accelerator(m_externalAccelerator);
+      }
+    }
     m_tiles[i].tracer->load_scene_snapshot(m_scene);
     m_tiles[i].tracer->build_or_update_acceleration();
     m_tiles[i].tracer->reset_accumulation();
@@ -118,6 +143,41 @@ bool TiledCpuPathTracer::reset_accumulation() {
     }
   }
   return true;
+}
+
+bool TiledCpuPathTracer::set_accelerator(vkpt::pathtracer::IRayAccelerator* accelerator) {
+  m_externalAccelerator = accelerator;
+  bool applied = true;
+  for (auto& tile : m_tiles) {
+    if (!tile.tracer) {
+      continue;
+    }
+    auto* kernel = dynamic_cast<vkpt::pathtracer::ICpuRayKernel*>(tile.tracer.get());
+    applied = kernel != nullptr && kernel->set_accelerator(accelerator) && applied;
+  }
+  return applied;
+}
+
+bool TiledCpuPathTracer::update_camera(const vkpt::pathtracer::Vec3& pos,
+                                       const vkpt::pathtracer::Vec3& target,
+                                       const vkpt::pathtracer::Vec3& up,
+                                       float fov_deg) {
+  m_scene.camera_position = pos;
+  m_scene.camera_target = target;
+  m_scene.camera_up = up;
+  m_scene.camera_fov_deg = fov_deg;
+  bool ok = true;
+  for (auto& tile : m_tiles) {
+    if (!tile.tracer) {
+      continue;
+    }
+    if (!tile.tracer->update_camera(pos, target, up, fov_deg)) {
+      ok = tile.tracer->load_scene_snapshot(m_scene) &&
+           tile.tracer->build_or_update_acceleration() &&
+           ok;
+    }
+  }
+  return ok;
 }
 
 bool TiledCpuPathTracer::render_sample_batch(
@@ -164,7 +224,11 @@ void TiledCpuPathTracer::merge_tiles() {
     m_counters.triangle_tests += tc.triangle_tests;
     m_counters.triangle_hits += tc.triangle_hits;
     m_counters.sdf_tests += tc.sdf_tests;
+    m_counters.sdf_steps += tc.sdf_steps;
     m_counters.sdf_hits += tc.sdf_hits;
+    m_counters.sdf_misses += tc.sdf_misses;
+    m_counters.bvh_node_visits += tc.bvh_node_visits;
+    m_counters.bvh_leaf_visits += tc.bvh_leaf_visits;
     m_counters.shadow_tests += tc.shadow_tests;
   }
 }
@@ -184,6 +248,7 @@ vkpt::pathtracer::SampleCounters TiledCpuPathTracer::read_counters() const {
 void TiledCpuPathTracer::shutdown() {
   m_tiles.clear();
   m_initialized = false;
+  m_externalAccelerator = nullptr;
   if (m_jobSystem) {
     m_jobSystem->shutdown();
   }

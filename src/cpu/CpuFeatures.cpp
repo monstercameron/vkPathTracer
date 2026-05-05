@@ -23,6 +23,25 @@
 
 namespace vkpt::cpu {
 
+namespace {
+
+#if defined(VKPT_ARCH_X86)
+uint64_t xgetbv0() {
+#if defined(_MSC_VER)
+  return _xgetbv(0);
+#elif defined(__clang__) || defined(__GNUC__)
+  uint32_t eax = 0;
+  uint32_t edx = 0;
+  __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
+  return (static_cast<uint64_t>(edx) << 32u) | eax;
+#else
+  return 0;
+#endif
+}
+#endif
+
+}  // namespace
+
 std::string ToString(SimdBackend backend) {
   switch (backend) {
     case SimdBackend::Scalar:    return "scalar";
@@ -71,6 +90,8 @@ CpuFeatureSet QueryCpuFeatures() {
   f.architecture = "x86_64";
 
   // Probe CPUID leaf 1 for SSE/AVX baseline
+  bool os_avx = false;
+  bool os_avx512 = false;
   {
     unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
 #if defined(__clang__) || defined(__GNUC__)
@@ -84,8 +105,13 @@ CpuFeatureSet QueryCpuFeatures() {
       f.sse2   = (edx >> 26) & 1u;
       f.sse4_1 = (ecx >> 19) & 1u;
       f.sse4_2 = (ecx >> 20) & 1u;
-      f.avx    = (ecx >> 28) & 1u;
-      f.fma    = (ecx >> 12) & 1u;
+      const bool cpu_avx = ((ecx >> 28) & 1u) != 0u;
+      const bool osxsave = ((ecx >> 27) & 1u) != 0u;
+      const uint64_t xcr0 = osxsave ? xgetbv0() : 0u;
+      os_avx = (xcr0 & 0x6u) == 0x6u;
+      os_avx512 = (xcr0 & 0xe6u) == 0xe6u;
+      f.avx = cpu_avx && os_avx;
+      f.fma = f.avx && (((ecx >> 12) & 1u) != 0u);
     }
   }
 
@@ -100,11 +126,11 @@ CpuFeatureSet QueryCpuFeatures() {
     eax = cpuInfo[0]; ebx = cpuInfo[1]; ecx = cpuInfo[2]; edx = cpuInfo[3];
     if (true) {
 #endif
-      f.avx2     = (ebx >>  5) & 1u;
-      f.avx512f  = (ebx >> 16) & 1u;
-      f.avx512dq = (ebx >> 17) & 1u;
-      f.avx512bw = (ebx >> 30) & 1u;
-      f.avx512vl = (ebx >> 31) & 1u;
+      f.avx2     = f.avx && (((ebx >>  5) & 1u) != 0u);
+      f.avx512f  = os_avx512 && (((ebx >> 16) & 1u) != 0u);
+      f.avx512dq = os_avx512 && (((ebx >> 17) & 1u) != 0u);
+      f.avx512bw = os_avx512 && (((ebx >> 30) & 1u) != 0u);
+      f.avx512vl = os_avx512 && (((ebx >> 31) & 1u) != 0u);
     }
   }
 
@@ -143,7 +169,6 @@ SimdDispatchInfo BuildSimdDispatchInfo(const CpuFeatureSet& f) {
   }
 
   if (f.architecture == "x86_64") {
-    out.available.push_back(SimdBackend::Scalar);
     if (f.sse2)  { out.available.push_back(SimdBackend::X86Sse); }
     if (f.avx)   { out.available.push_back(SimdBackend::X86Avx); }
     if (f.avx2)  { out.available.push_back(SimdBackend::X86Avx2); }

@@ -1,0 +1,72 @@
+{
+  "schema": "vkpt.asset_capability_matrix.v1",
+  "version": "1.0",
+  "importers": [
+    {
+      "id": "gltf_glb_mvp",
+      "extensions": [".gltf", ".glb"],
+      "features": [
+        "gltf2",
+        "glb",
+        "static_mesh_metadata",
+        "material_metadata",
+        "texture_references"
+      ],
+      "decode_status": "metadata_only",
+      "lossy_notes": [
+        "geometry buffers are not decoded in the MVP importer",
+        "materials are declared as metallic-roughness descriptors for fallback renderer binding"
+      ]
+    },
+    {
+      "id": "obj_mtl_mvp",
+      "extensions": [".obj"],
+      "features": [
+        "obj",
+        "mtl",
+        "static_mesh_metadata",
+        "legacy_material_to_pbr_fallback"
+      ],
+      "decode_status": "metadata_only",
+      "lossy_notes": [
+        "non-triangle face triangulation is declared but deferred",
+        "MTL diffuse/specular/opacity fields map to compatibility fallback descriptors"
+      ]
+    },
+    {
+      "id": "texture_metadata",
+      "extensions": [".png", ".jpg", ".jpeg"],
+      "features": [
+        "png_header",
+        "jpeg_header",
+        "texture_metadata",
+        "sampler_defaults"
+      ],
+      "decode_status": "header_validation",
+      "lossy_notes": [
+        "pixel decode/upload is deferred; width, height, format, color space and semantic are available"
+      ]
+    },
+    {
+      "id": "exr_policy",
+      "extensions": [".exr"],
+      "features": [
+        "exr_header_magic",
+        "hdr_texture_policy",
+        "reference_output_policy"
+      ],
+      "decode_status": "policy_hook",
+      "lossy_notes": [
+        "OpenEXR decode/write is represented for Agent D/F integration but is not implemented here"
+      ]
+    }
+  ],
+  "exr": {
+    "policy_id": "exr_metadata_policy_v1",
+    "input_declared": true,
+    "input_decode_available": false,
+    "output_declared": true,
+    "output_write_available": false,
+    "notes": "OpenEXR assets are declared for HDR/reference workflows; full decode/write requires an EXR backend integration."
+  }
+}

@@ -10,7 +10,7 @@
 namespace vkpt::render {
 
 bool VulkanShaderCompiler::supports_feature(std::string_view feature) const {
-  return feature == "compute" || feature == "storage-buffers" || feature == "storage-textures" || feature == "subgroups";
+  return feature == "compute" || feature == "storage-buffers" || feature == "storage-textures";
 }
 
 bool VulkanShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc,
@@ -64,7 +64,24 @@ std::vector<CachedManifest> VulkanShaderCache::dump_manifest() const {
   std::vector<CachedManifest> out;
   out.reserve(m_entries.size());
   for (const auto& entry : m_entries) {
-    out.push_back({entry.second, "vulkan"});
+    ShaderManifest manifest;
+    manifest.shader_family = "cached";
+    manifest.entry_point = "main";
+    manifest.backend = "vulkan";
+    manifest.source_format = ShaderSourceFormat::Glsl;
+    manifest.source_hash = MakeShaderManifestHash(entry.first);
+    manifest.variant_hash = MakeShaderManifestHash(entry.second);
+    manifest.cache_key = entry.first;
+    manifest.artifact_path = entry.second;
+    manifest.manifest_dump_path = BuildShaderManifestDumpPath("shader_cache", manifest);
+    manifest.compile_success = true;
+    manifest.validation_success = true;
+    out.push_back({SerializeShaderManifest(manifest),
+                   "vulkan",
+                   manifest.cache_key,
+                   manifest.artifact_path,
+                   manifest.manifest_dump_path,
+                   manifest.compile_success});
   }
   return out;
 }
@@ -255,16 +272,23 @@ RenderBackendCapabilities VulkanComputeBackend::capabilities() const {
   caps.compute = true;
   caps.storage_buffers = true;
   caps.storage_textures = true;
-  caps.timestamp_queries = true;
-  caps.subgroups = true;
-  caps.descriptor_indexing = true;
+  caps.timestamp_queries = false;
+  caps.timestamp_fallback_reason =
+      "simulated Vulkan adapter does not create a VkQueryPool; use CPU frame timing";
+  caps.subgroups = false;
+  caps.descriptor_indexing = false;
   caps.bindless_like_resources = false;
   caps.texture_formats = true;
   caps.ray_tracing = false;
-  caps.presentation = true;
+  caps.ray_query = false;
+  caps.ray_query_supported = false;
+  caps.acceleration_structure_supported = false;
+  caps.shader_group_handle_size = 0u;
+  caps.max_as_size = 0u;
+  caps.presentation = false;
   caps.readback = true;
   caps.is_simulated = true;
-  caps.supports_present = true;
+  caps.supports_present = false;
   caps.supports_multiqueue = false;
   caps.max_workgroup_size_x = 256u;
   caps.max_workgroup_size_y = 256u;
@@ -272,6 +296,25 @@ RenderBackendCapabilities VulkanComputeBackend::capabilities() const {
   caps.max_buffer_alignment = 256u;
   caps.memory_model = "simulated-glsl";
   caps.notes = "No external Vulkan SDK required in this gate; simulated backend path.";
+  caps.platform.platform_name = "headless-vulkan-sim";
+  caps.platform.headless = true;
+  caps.platform.notes = "No VkInstance, VkDevice, VkSurfaceKHR, or native handles are exposed.";
+  caps.ray_tracing_caps.unsupported_reason =
+      "VK_KHR_acceleration_structure, VK_KHR_ray_tracing_pipeline, and VK_KHR_ray_query are not probed by the simulated adapter";
+  caps.shader.glsl = true;
+  caps.shader.supported_source_formats = {"glsl"};
+  caps.shader.notes = "GLSL compute contract only; SPIR-V compilation is handled by external build tooling when enabled.";
+  caps.texture_formats_caps.rgba8_unorm = true;
+  caps.texture_formats_caps.rgba16_float = true;
+  caps.texture_formats_caps.rgba32_float = true;
+  caps.texture_formats_caps.storage_texture_formats = true;
+  caps.texture_formats_caps.sampled_texture_formats = true;
+  caps.texture_formats_caps.guaranteed_formats = {"RGBA8", "RGBA16F", "RGBA32F"};
+  caps.memory_budget.upload_alignment_bytes = 256u;
+  caps.memory_budget.readback_alignment_bytes = 256u;
+  caps.memory_budget.max_buffer_size_bytes = 1024ull * 1024ull * 1024ull;
+  caps.memory_budget.budget_unavailable_reason =
+      "VK_EXT_memory_budget is not available because the simulated adapter does not create a physical device";
   return caps;
 }
 
@@ -333,19 +376,31 @@ bool RunVulkanComputeSmoke(vkpt::render::IRenderBackend& backend) {
     return false;
   }
 
+  FrameGraphDesc graphDesc;
+  graphDesc.debug_label = "vulkan_compute_smoke";
+  graphDesc.passes = {
+      {0u, "write", PassType::Copy, {}, {sourceBuffer}},
+      {1u, "compute", PassType::Compute, {sourceBuffer}, {sourceBuffer}},
+      {2u, "readback", PassType::Readback, {sourceBuffer}, {}},
+  };
+  graphDesc.dependencies = {{0u, 1u}, {1u, 2u}};
   auto frameGraph = backend.create_frame_graph();
-  const auto writePass = frameGraph->add_pass("write", PassType::Copy, {}, {sourceBuffer});
-  const auto computePass = frameGraph->add_pass("compute", PassType::Compute, {sourceBuffer}, {sourceBuffer});
-  const auto readbackPass = frameGraph->add_pass("readback", PassType::Readback, {sourceBuffer}, {});
-  frameGraph->add_dependency(writePass, computePass);
-  frameGraph->add_dependency(computePass, readbackPass);
+  std::vector<std::string> buildDiagnostics;
+  if (!frameGraph->build(graphDesc, &buildDiagnostics)) {
+    allocator->destroy_buffer(sourceBuffer);
+    device->end();
+    return false;
+  }
+  FrameContext frame;
+  frame.frame_index = 0u;
+  frame.debug_label = graphDesc.debug_label;
   auto context = device->create_command_context();
   if (!context || !frameGraph->validate(nullptr)) {
     allocator->destroy_buffer(sourceBuffer);
     device->end();
     return false;
   }
-  if (!frameGraph->execute(*context)) {
+  if (!frameGraph->execute(*context, frame)) {
     allocator->destroy_buffer(sourceBuffer);
     device->end();
     return false;
@@ -460,17 +515,20 @@ VulkanBVHPassResult RunVulkanBVHPass(
   }
 
   // -- Build frame graph and execute -----------------------------------------
+  FrameGraphDesc graphDesc;
+  graphDesc.debug_label = "vulkan_bvh_pathtrace";
+  graphDesc.target_width = std::max<uint32_t>(width, 1u);
+  graphDesc.target_height = std::max<uint32_t>(height, 1u);
+  graphDesc.passes = {
+      {0u, "bvh_upload", PassType::Copy, {}, {vertexBuf, indexBuf, bvhBuf}},
+      {1u, "bvh_build", PassType::Compute, {vertexBuf, indexBuf}, {bvhBuf}},
+      {2u, "pathtracer", PassType::Compute, {bvhBuf, vertexBuf, indexBuf}, {filmTex}},
+      {3u, "film_resolve", PassType::Readback, {filmTex}, {}},
+  };
+  graphDesc.dependencies = {{0u, 1u}, {1u, 2u}, {2u, 3u}};
   auto fg = backend.create_frame_graph();
-  const auto uploadPass  = fg->add_pass("bvh_upload",   PassType::Copy,     {},                            {vertexBuf, indexBuf, bvhBuf});
-  const auto buildPass   = fg->add_pass("bvh_build",    PassType::Compute,  {vertexBuf, indexBuf},         {bvhBuf});
-  const auto ptPass      = fg->add_pass("pathtracer",   PassType::Compute,  {bvhBuf, vertexBuf, indexBuf}, {filmTex});
-  const auto resolvePass = fg->add_pass("film_resolve", PassType::Readback, {filmTex},                     {});
-  fg->add_dependency(uploadPass, buildPass);
-  fg->add_dependency(buildPass,  ptPass);
-  fg->add_dependency(ptPass,     resolvePass);
-
   std::vector<std::string> validateDiagnostics;
-  if (!fg->validate(&validateDiagnostics)) {
+  if (!fg->build(graphDesc, &validateDiagnostics)) {
     allocator->destroy_texture(filmTex);
     allocator->destroy_buffer(bvhBuf);
     allocator->destroy_buffer(indexBuf);
@@ -482,7 +540,14 @@ VulkanBVHPassResult RunVulkanBVHPass(
   }
 
   auto ctx = device->create_command_context();
-  if (!ctx || !fg->execute(*ctx)) {
+  FrameContext frame;
+  frame.frame_index = 0u;
+  frame.viewport_width = graphDesc.target_width;
+  frame.viewport_height = graphDesc.target_height;
+  frame.output_target = filmTex;
+  frame.readback_target = filmTex;
+  frame.debug_label = graphDesc.debug_label;
+  if (!ctx || !fg->execute(*ctx, frame)) {
     allocator->destroy_texture(filmTex);
     allocator->destroy_buffer(bvhBuf);
     allocator->destroy_buffer(indexBuf);

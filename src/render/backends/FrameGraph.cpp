@@ -20,6 +20,34 @@ std::uint32_t FrameGraph::add_pass(std::string_view name,
   return static_cast<std::uint32_t>(m_passes.size() - 1);
 }
 
+bool FrameGraph::build(const FrameGraphDesc& desc, std::vector<std::string>* diagnostics) {
+  if (diagnostics) {
+    diagnostics->clear();
+  }
+  m_passes.clear();
+  m_dependencies.clear();
+
+  for (const auto& pass : desc.passes) {
+    (void)pass.id;
+    add_pass(pass.name, pass.type, pass.reads, pass.writes);
+  }
+
+  for (const auto& dep : desc.dependencies) {
+    if (!add_dependency(dep.first, dep.second)) {
+      if (diagnostics) {
+        diagnostics->push_back("invalid dependency in frame graph desc: " +
+                               std::to_string(dep.first) + " -> " + std::to_string(dep.second));
+      }
+      return false;
+    }
+  }
+
+  if (!desc.validate_hazards) {
+    return true;
+  }
+  return validate(diagnostics);
+}
+
 bool FrameGraph::add_dependency(std::uint32_t from, std::uint32_t to) {
   if (from >= m_passes.size() || to >= m_passes.size() || from == to) {
     return false;
@@ -167,6 +195,13 @@ bool FrameGraph::validate(std::vector<std::string>* diagnostics) const {
 
 bool FrameGraph::execute(IRenderCommandContext& context,
                          const std::vector<std::uint32_t>* execution_order) const {
+  FrameContext frame;
+  return execute(context, frame, execution_order);
+}
+
+bool FrameGraph::execute(IRenderCommandContext& context,
+                         const FrameContext& frame,
+                         const std::vector<std::uint32_t>* execution_order) const {
   std::vector<std::string> diagnostics;
   if (!validate(&diagnostics)) {
     return false;
@@ -195,7 +230,9 @@ bool FrameGraph::execute(IRenderCommandContext& context,
       return false;
     }
     if (pass.type == PassType::Compute) {
-      if (!context.dispatch(1, 1, 1)) {
+      const auto dispatchX = std::max<std::uint32_t>(1u, (frame.viewport_width + 7u) / 8u);
+      const auto dispatchY = std::max<std::uint32_t>(1u, (frame.viewport_height + 7u) / 8u);
+      if (!context.dispatch(dispatchX, dispatchY, 1)) {
         return false;
       }
     }

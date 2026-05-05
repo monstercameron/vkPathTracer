@@ -17,9 +17,13 @@ class FrameGraph final : public IFrameGraph {
                          std::vector<ResourceHandle> reads,
                          std::vector<ResourceHandle> writes) override;
 
+  bool build(const FrameGraphDesc& desc, std::vector<std::string>* diagnostics = nullptr) override;
   bool add_dependency(std::uint32_t from, std::uint32_t to) override;
   bool validate(std::vector<std::string>* diagnostics) const override;
   bool execute(IRenderCommandContext& context,
+               const std::vector<std::uint32_t>* execution_order = nullptr) const override;
+  bool execute(IRenderCommandContext& context,
+               const FrameContext& frame,
                const std::vector<std::uint32_t>* execution_order = nullptr) const override;
 
   const std::vector<Pass>& passes() const override { return m_passes; }

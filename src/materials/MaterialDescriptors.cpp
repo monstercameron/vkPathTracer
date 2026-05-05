@@ -1,9 +1,74 @@
 #include "materials/MaterialDescriptors.h"
 
 #include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <limits>
 #include <sstream>
+#include <utility>
 
 namespace vkpt::materials {
+
+namespace {
+
+std::string EscapeJson(std::string_view text) {
+  std::string out;
+  out.reserve(text.size() + 8);
+  for (const char c : text) {
+    switch (c) {
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        out.push_back(c);
+        break;
+    }
+  }
+  return out;
+}
+
+bool InRange01(float value) {
+  return std::isfinite(value) && value >= 0.0f && value <= 1.0f;
+}
+
+bool IsFinitePositive(float value) {
+  return std::isfinite(value) && value > 0.0f;
+}
+
+std::uint64_t Fnv1a64(std::string_view text) {
+  constexpr std::uint64_t kOffset = 1469598103934665603ull;
+  constexpr std::uint64_t kPrime = 1099511628211ull;
+  std::uint64_t hash = kOffset;
+  for (const unsigned char c : text) {
+    hash ^= static_cast<std::uint64_t>(c);
+    hash *= kPrime;
+  }
+  return hash;
+}
+
+std::string Hex64(std::uint64_t value) {
+  std::ostringstream out;
+  out << std::hex << std::setfill('0') << std::setw(16) << value;
+  return out.str();
+}
+
+void AppendFloat(std::ostringstream& out, float value) {
+  out << std::fixed << std::setprecision(6) << value;
+}
+
+}  // namespace
 
 const char* ToString(MaterialFamily family) {
   switch (family) {
@@ -90,6 +155,15 @@ const char* ToString(ImplementationStatus status) {
     case ImplementationStatus::Backlog:      return "backlog";
     case ImplementationStatus::Deferred:     return "deferred";
     default:                                 return "unknown";
+  }
+}
+
+const char* ToString(AlphaMode mode) {
+  switch (mode) {
+    case AlphaMode::Opaque: return "opaque";
+    case AlphaMode::Mask:   return "mask";
+    case AlphaMode::Blend:  return "blend";
+    default:                return "opaque";
   }
 }
 
@@ -200,6 +274,348 @@ const MaterialDescriptor* FindMaterial(std::string_view id) {
     if (d.id == id) return &d;
   }
   return nullptr;
+}
+
+MaterialDesc MakeMaterialDescFromDescriptor(const MaterialDescriptor& descriptor) {
+  MaterialDesc desc;
+  desc.family = descriptor.family;
+  desc.id = descriptor.id;
+  desc.display_name = descriptor.display_name;
+  desc.benchmark_approved = descriptor.benchmark_approved;
+  desc.compatibility_notes.push_back(descriptor.notes);
+
+  switch (descriptor.family) {
+    case MaterialFamily::Diffuse:
+      desc.base_color = {0.75f, 0.75f, 0.75f, 1.0f};
+      desc.roughness = 1.0f;
+      break;
+    case MaterialFamily::Emissive:
+    case MaterialFamily::EnvironmentEmissive:
+    case MaterialFamily::BlackbodyEmission:
+    case MaterialFamily::FirePlasma:
+    case MaterialFamily::FireSparkleEmission:
+    case MaterialFamily::LightEmittingTextile:
+      desc.base_color = {1.0f, 1.0f, 1.0f, 1.0f};
+      desc.emission = {1.0f, 1.0f, 1.0f};
+      desc.emission_intensity = 1.0f;
+      break;
+    case MaterialFamily::Mirror:
+      desc.roughness = 0.0f;
+      desc.metallic = 1.0f;
+      break;
+    case MaterialFamily::Specular:
+    case MaterialFamily::Glossy:
+      desc.roughness = 0.25f;
+      break;
+    case MaterialFamily::GgxRoughConductor:
+    case MaterialFamily::MetallicPbr:
+    case MaterialFamily::AnisotropicGgx:
+    case MaterialFamily::BrushedMetal:
+    case MaterialFamily::GroundMetal:
+      desc.metallic = 1.0f;
+      desc.roughness = 0.35f;
+      break;
+    case MaterialFamily::GgxRoughDielectric:
+    case MaterialFamily::DielectricGlass:
+    case MaterialFamily::SpectralGlassApprox:
+    case MaterialFamily::FrostedGlass:
+    case MaterialFamily::DirtyGlass:
+    case MaterialFamily::WaterFluidSurface:
+    case MaterialFamily::IceCrystal:
+    case MaterialFamily::Resin:
+    case MaterialFamily::Epoxy:
+    case MaterialFamily::Gemstone:
+      desc.ior = 1.5f;
+      desc.transmission = 1.0f;
+      desc.roughness = descriptor.family == MaterialFamily::FrostedGlass ? 0.5f : 0.02f;
+      break;
+    case MaterialFamily::Clearcoat:
+    case MaterialFamily::CarPaint:
+    case MaterialFamily::EnergyConservingLayered:
+      desc.clearcoat = 1.0f;
+      desc.roughness = 0.2f;
+      break;
+    case MaterialFamily::NormalMappedPbr:
+      desc.normal_map = "normal";
+      desc.texture_bindings.push_back({"normal", "", "default_linear_repeat", "normal"});
+      break;
+    case MaterialFamily::AlphaMask:
+      desc.alpha_mode = AlphaMode::Mask;
+      desc.alpha_cutoff = 0.5f;
+      break;
+    case MaterialFamily::Velvet:
+    case MaterialFamily::FabricCloth:
+    case MaterialFamily::PearlLustre:
+      desc.sheen = 0.6f;
+      break;
+    default:
+      break;
+  }
+
+  if (desc.sampler_bindings.empty()) {
+    desc.sampler_bindings.push_back({});
+  }
+  return desc;
+}
+
+std::string SerializeMaterialDesc(const MaterialDesc& desc) {
+  std::ostringstream out;
+  out << "{";
+  out << "\"id\":\"" << EscapeJson(desc.id) << "\",";
+  out << "\"display_name\":\"" << EscapeJson(desc.display_name) << "\",";
+  out << "\"family\":\"" << ToString(desc.family) << "\",";
+  out << "\"base_color\":[";
+  for (std::size_t i = 0; i < desc.base_color.size(); ++i) {
+    if (i > 0) out << ",";
+    AppendFloat(out, desc.base_color[i]);
+  }
+  out << "],\"roughness\":";
+  AppendFloat(out, desc.roughness);
+  out << ",\"metallic\":";
+  AppendFloat(out, desc.metallic);
+  out << ",\"ior\":";
+  AppendFloat(out, desc.ior);
+  out << ",\"transmission\":";
+  AppendFloat(out, desc.transmission);
+  out << ",\"emission\":[";
+  for (std::size_t i = 0; i < desc.emission.size(); ++i) {
+    if (i > 0) out << ",";
+    AppendFloat(out, desc.emission[i]);
+  }
+  out << "],\"emission_intensity\":";
+  AppendFloat(out, desc.emission_intensity);
+  out << ",\"normal_map\":\"" << EscapeJson(desc.normal_map) << "\",";
+  out << "\"alpha_mode\":\"" << ToString(desc.alpha_mode) << "\",";
+  out << "\"alpha_cutoff\":";
+  AppendFloat(out, desc.alpha_cutoff);
+  out << ",\"clearcoat\":";
+  AppendFloat(out, desc.clearcoat);
+  out << ",\"sheen\":";
+  AppendFloat(out, desc.sheen);
+  out << ",\"anisotropy\":";
+  AppendFloat(out, desc.anisotropy);
+  out << ",\"texture_bindings\":[";
+  for (std::size_t i = 0; i < desc.texture_bindings.size(); ++i) {
+    const auto& binding = desc.texture_bindings[i];
+    if (i > 0) out << ",";
+    out << "{";
+    out << "\"slot\":\"" << EscapeJson(binding.slot) << "\",";
+    out << "\"texture_asset_urn\":\"" << EscapeJson(binding.texture_asset_urn) << "\",";
+    out << "\"sampler_id\":\"" << EscapeJson(binding.sampler_id) << "\",";
+    out << "\"channel_semantic\":\"" << EscapeJson(binding.channel_semantic) << "\"";
+    out << "}";
+  }
+  out << "],\"sampler_bindings\":[";
+  for (std::size_t i = 0; i < desc.sampler_bindings.size(); ++i) {
+    const auto& sampler = desc.sampler_bindings[i];
+    if (i > 0) out << ",";
+    out << "{";
+    out << "\"sampler_id\":\"" << EscapeJson(sampler.sampler_id) << "\",";
+    out << "\"wrap_u\":\"" << EscapeJson(sampler.wrap_u) << "\",";
+    out << "\"wrap_v\":\"" << EscapeJson(sampler.wrap_v) << "\",";
+    out << "\"min_filter\":\"" << EscapeJson(sampler.min_filter) << "\",";
+    out << "\"mag_filter\":\"" << EscapeJson(sampler.mag_filter) << "\",";
+    out << "\"anisotropy\":";
+    AppendFloat(out, sampler.anisotropy);
+    out << "}";
+  }
+  out << "],\"compatibility_notes\":[";
+  for (std::size_t i = 0; i < desc.compatibility_notes.size(); ++i) {
+    if (i > 0) out << ",";
+    out << "\"" << EscapeJson(desc.compatibility_notes[i]) << "\"";
+  }
+  out << "],\"fallback_material_id\":\"" << EscapeJson(desc.fallback_material_id) << "\",";
+  out << "\"benchmark_approved\":" << (desc.benchmark_approved ? "true" : "false");
+  out << "}";
+  return out.str();
+}
+
+std::string HashMaterialDesc(const MaterialDesc& desc) {
+  return Hex64(Fnv1a64(SerializeMaterialDesc(desc)));
+}
+
+MaterialRegistry::MaterialRegistry() {
+  m_families = GetMaterialRegistry();
+  m_presets.reserve(m_families.size());
+  for (const auto& descriptor : m_families) {
+    m_presets.push_back(MakeMaterialDescFromDescriptor(descriptor));
+  }
+}
+
+bool MaterialRegistry::register_family(MaterialDescriptor descriptor) {
+  if (descriptor.id.empty() || descriptor.family == MaterialFamily::Unknown) {
+    return false;
+  }
+  const auto it = std::find_if(m_families.begin(), m_families.end(),
+                               [&](const MaterialDescriptor& existing) { return existing.id == descriptor.id; });
+  if (it != m_families.end()) {
+    return false;
+  }
+  m_families.push_back(std::move(descriptor));
+  return true;
+}
+
+bool MaterialRegistry::register_preset(MaterialDesc desc) {
+  if (desc.id.empty() || desc.family == MaterialFamily::Unknown) {
+    return false;
+  }
+  const auto it = std::find_if(m_presets.begin(), m_presets.end(),
+                               [&](const MaterialDesc& existing) { return existing.id == desc.id; });
+  if (it != m_presets.end()) {
+    return false;
+  }
+  if (desc.fallback_material_id.empty()) {
+    desc.fallback_material_id = m_fallbackId;
+  }
+  m_presets.push_back(std::move(desc));
+  return true;
+}
+
+MaterialValidationResult MaterialRegistry::validate_material(const MaterialDesc& desc) const {
+  MaterialValidationResult result;
+  result.fallback_material_id = desc.fallback_material_id.empty() ? m_fallbackId : desc.fallback_material_id;
+
+  auto invalidate = [&](std::string message) {
+    result.valid = false;
+    result.warnings.push_back(std::move(message));
+  };
+  auto warn = [&](std::string message) {
+    result.warnings.push_back(std::move(message));
+  };
+
+  if (desc.id.empty()) {
+    invalidate("material id is empty");
+  }
+  const auto family_it = std::find_if(m_families.begin(), m_families.end(),
+                                      [&](const MaterialDescriptor& family) { return family.family == desc.family; });
+  if (family_it == m_families.end()) {
+    invalidate("material family is not registered");
+  }
+  for (const auto value : desc.base_color) {
+    if (!InRange01(value)) {
+      invalidate("base_color components must be finite in [0,1]");
+      break;
+    }
+  }
+  if (!InRange01(desc.roughness)) invalidate("roughness must be finite in [0,1]");
+  if (!InRange01(desc.metallic)) invalidate("metallic must be finite in [0,1]");
+  if (!IsFinitePositive(desc.ior)) invalidate("ior must be finite and positive");
+  if (!InRange01(desc.transmission)) invalidate("transmission must be finite in [0,1]");
+  if (!std::isfinite(desc.emission_intensity) || desc.emission_intensity < 0.0f) {
+    invalidate("emission_intensity must be finite and non-negative");
+  }
+  for (const auto value : desc.emission) {
+    if (!std::isfinite(value) || value < 0.0f) {
+      invalidate("emission components must be finite and non-negative");
+      break;
+    }
+  }
+  if (!InRange01(desc.alpha_cutoff)) invalidate("alpha_cutoff must be finite in [0,1]");
+  if (!InRange01(desc.clearcoat)) invalidate("clearcoat must be finite in [0,1]");
+  if (!InRange01(desc.sheen)) invalidate("sheen must be finite in [0,1]");
+  if (!InRange01(desc.anisotropy)) invalidate("anisotropy must be finite in [0,1]");
+
+  for (const auto& binding : desc.texture_bindings) {
+    if (binding.slot.empty()) {
+      invalidate("texture binding has empty slot");
+    }
+    if (binding.texture_asset_urn.empty()) {
+      warn("texture binding '" + binding.slot + "' has no texture asset assigned");
+    }
+  }
+  for (const auto& sampler : desc.sampler_bindings) {
+    if (sampler.sampler_id.empty()) {
+      invalidate("sampler binding has empty sampler_id");
+    }
+    if (!std::isfinite(sampler.anisotropy) || sampler.anisotropy < 1.0f || sampler.anisotropy > 16.0f) {
+      invalidate("sampler anisotropy must be finite in [1,16]");
+    }
+  }
+  if (!desc.normal_map.empty()) {
+    const auto has_normal_binding = std::any_of(desc.texture_bindings.begin(), desc.texture_bindings.end(),
+                                                [](const MaterialTextureBinding& binding) {
+                                                  return binding.slot == "normal";
+                                                });
+    if (!has_normal_binding) {
+      warn("normal_map is set but no normal texture binding is present");
+    }
+  }
+  if (!result.valid) {
+    result.warnings.push_back("invalid material should resolve to fallback '" + result.fallback_material_id + "'");
+  }
+  return result;
+}
+
+const MaterialDesc& MaterialRegistry::resolve_fallback(std::string_view requested_id) const {
+  if (const auto* requested = find_preset(requested_id)) {
+    const auto validation = validate_material(*requested);
+    if (validation.valid) {
+      return *requested;
+    }
+    if (const auto* fallback = find_preset(validation.fallback_material_id)) {
+      return *fallback;
+    }
+  }
+  if (const auto* fallback = find_preset(m_fallbackId)) {
+    return *fallback;
+  }
+  return m_presets.front();
+}
+
+bool MaterialRegistry::query_benchmark_approval(std::string_view material_id) const {
+  if (const auto* preset = find_preset(material_id)) {
+    return preset->benchmark_approved;
+  }
+  if (const auto* descriptor = FindMaterial(material_id)) {
+    return descriptor->benchmark_approved;
+  }
+  return false;
+}
+
+const MaterialDesc* MaterialRegistry::find_preset(std::string_view material_id) const {
+  for (const auto& preset : m_presets) {
+    if (preset.id == material_id) {
+      return &preset;
+    }
+  }
+  return nullptr;
+}
+
+std::string MaterialRegistry::dump_registry() const {
+  std::ostringstream out;
+  out << "{\"schema\":\"vkpt.material_registry.v2\",\"families\":[";
+  for (std::size_t i = 0; i < m_families.size(); ++i) {
+    if (i > 0) out << ",";
+    const auto& family = m_families[i];
+    out << "{";
+    out << "\"family\":\"" << ToString(family.family) << "\",";
+    out << "\"id\":\"" << EscapeJson(family.id) << "\",";
+    out << "\"display_name\":\"" << EscapeJson(family.display_name) << "\",";
+    out << "\"status\":\"" << ToString(family.status) << "\",";
+    out << "\"benchmark_approved\":" << (family.benchmark_approved ? "true" : "false") << ",";
+    out << "\"notes\":\"" << EscapeJson(family.notes) << "\"";
+    out << "}";
+  }
+  out << "],\"presets\":[";
+  for (std::size_t i = 0; i < m_presets.size(); ++i) {
+    if (i > 0) out << ",";
+    out << SerializeMaterialDesc(m_presets[i]);
+  }
+  out << "]}";
+  return out.str();
+}
+
+const std::vector<MaterialDescriptor>& MaterialRegistry::families() const {
+  return m_families;
+}
+
+const std::vector<MaterialDesc>& MaterialRegistry::presets() const {
+  return m_presets;
+}
+
+IMaterialRegistry& GetDefaultMaterialRegistry() {
+  static MaterialRegistry registry;
+  return registry;
 }
 
 std::string SerializeMaterialRegistry() {

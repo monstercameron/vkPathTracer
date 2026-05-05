@@ -21,7 +21,7 @@ Buffer<float>    MatBuf    : register(t3, space0);
 Buffer<uint>     InstBuf   : register(t4, space0);   // kept for binding compat
 Buffer<float>    LightBuf  : register(t5, space0);   // reserved for NEE
 Buffer<uint>     TriMatBuf : register(t6, space0);
-RWBuffer<float4> FilmBuf   : register(u0, space0);
+RWByteAddressBuffer FilmBuf : register(u0, space0);
 
 // ---- Payload (64 bytes — must match MaxPayloadSizeInBytes in PSO) -----------
 struct PathPayload {
@@ -40,6 +40,14 @@ uint  Pcg(uint v);
 float RandF(inout uint rng);
 float Halton2(uint idx);
 float Halton3(uint idx);
+
+float4 LoadFilm(uint pixel) {
+    return asfloat(FilmBuf.Load4(pixel * 16u));
+}
+
+void StoreFilm(uint pixel, float4 value) {
+    FilmBuf.Store4(pixel * 16u, asuint(value));
+}
 
 // ---- Raygen ----------------------------------------------------------------
 [shader("raygeneration")]
@@ -96,8 +104,8 @@ void RayGen() {
         total += payload.radiance;
     }
 
-    float4 prev = FilmBuf[pixel];
-    FilmBuf[pixel] = float4(prev.xyz + total, prev.w + (float)rpp);
+    float4 prev = LoadFilm(pixel);
+    StoreFilm(pixel, float4(prev.xyz + total, prev.w + (float)rpp));
 }
 
 // ---- Miss ------------------------------------------------------------------

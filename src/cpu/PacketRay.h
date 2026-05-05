@@ -7,8 +7,16 @@ namespace vkpt::cpu {
 // Maximum packet width supported by any kernel (AVX-512 = 16 lanes).
 static constexpr uint32_t kMaxPacketWidth = 16u;
 
+inline uint32_t active_lane_mask(uint32_t lane_count) {
+  if (lane_count >= kMaxPacketWidth) {
+    return 0xffffu;
+  }
+  return lane_count == 0u ? 0u : ((1u << lane_count) - 1u);
+}
+
 // Ray packet in SoA (Structure of Arrays) layout for SIMD-friendliness.
 // Rays in lanes [0, count) are active; remaining lanes are unused.
+// Kernels must preserve lane order and mask off lanes outside active_lane_mask(count).
 struct RayPacket {
   float origin_x[kMaxPacketWidth] = {};
   float origin_y[kMaxPacketWidth] = {};

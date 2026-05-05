@@ -11,8 +11,7 @@ namespace vkpt::render {
 
 bool D3D12ShaderCompiler::supports_feature(std::string_view feature) const {
   return feature == "compute" || feature == "storage-buffers" || feature == "storage-textures"
-      || feature == "subgroups" || feature == "wave-ops" || feature == "ray-tracing"
-      || feature == "ray-query";
+      || feature == "hlsl";
 }
 
 bool D3D12ShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc,
@@ -66,7 +65,24 @@ std::vector<CachedManifest> D3D12ShaderCache::dump_manifest() const {
   std::vector<CachedManifest> out;
   out.reserve(m_entries.size());
   for (const auto& entry : m_entries) {
-    out.push_back({entry.second, "d3d12"});
+    ShaderManifest manifest;
+    manifest.shader_family = "cached";
+    manifest.entry_point = "main";
+    manifest.backend = "d3d12";
+    manifest.source_format = ShaderSourceFormat::Hlsl;
+    manifest.source_hash = MakeShaderManifestHash(entry.first);
+    manifest.variant_hash = MakeShaderManifestHash(entry.second);
+    manifest.cache_key = entry.first;
+    manifest.artifact_path = entry.second;
+    manifest.manifest_dump_path = BuildShaderManifestDumpPath("shader_cache", manifest);
+    manifest.compile_success = true;
+    manifest.validation_success = true;
+    out.push_back({SerializeShaderManifest(manifest),
+                   "d3d12",
+                   manifest.cache_key,
+                   manifest.artifact_path,
+                   manifest.manifest_dump_path,
+                   manifest.compile_success});
   }
   return out;
 }
@@ -257,28 +273,52 @@ RenderBackendCapabilities D3D12Backend::capabilities() const {
   caps.compute = true;
   caps.storage_buffers = true;
   caps.storage_textures = true;
-  caps.timestamp_queries = true;
-  caps.subgroups = true;
-  caps.descriptor_indexing = true;
+  caps.timestamp_queries = false;
+  caps.timestamp_fallback_reason =
+      "simulated D3D12 adapter does not create a timestamp query heap; use CPU frame timing";
+  caps.subgroups = false;
+  caps.descriptor_indexing = false;
   caps.bindless_like_resources = false;
   caps.texture_formats = true;
-  caps.ray_tracing = true;
-  caps.ray_query = true;
-  caps.ray_query_supported = true;
-  caps.acceleration_structure_supported = true;
-  caps.shader_group_handle_size = 32u;
-  caps.max_as_size = 16ull * 1024 * 1024 * 1024; // 16 GB
-  caps.presentation = true;
+  caps.ray_tracing = false;
+  caps.ray_query = false;
+  caps.ray_query_supported = false;
+  caps.acceleration_structure_supported = false;
+  caps.shader_group_handle_size = 0u;
+  caps.max_as_size = 0u;
+  caps.presentation = false;
   caps.readback = true;
   caps.is_simulated = true;
-  caps.supports_present = true;
-  caps.supports_multiqueue = true;
+  caps.supports_present = false;
+  caps.supports_multiqueue = false;
   caps.max_workgroup_size_x = 1024u;
   caps.max_workgroup_size_y = 1024u;
   caps.max_workgroup_size_z = 64u;
   caps.max_buffer_alignment = 256u;
   caps.memory_model = "simulated-hlsl-sm6.6";
   caps.notes = "No external Direct3D 12 SDK required in this gate; simulated backend path.";
+  caps.platform.platform_name = "headless-d3d12-sim";
+  caps.platform.headless = true;
+  caps.platform.notes = "No ID3D12Device, IDXGISwapChain, or native handles are exposed.";
+  caps.ray_tracing_caps.tier = "not-probed";
+  caps.ray_tracing_caps.unsupported_reason =
+      "DXR tier is not probed by the simulated adapter because no native D3D12 device is created";
+  caps.shader.hlsl = true;
+  caps.shader.supported_source_formats = {"hlsl"};
+  caps.shader.shader_model = "sm6-contract";
+  caps.shader.notes = "HLSL compile contract only; DXIL generation is not linked in this skeleton.";
+  caps.texture_formats_caps.rgba8_unorm = true;
+  caps.texture_formats_caps.bgra8_unorm = true;
+  caps.texture_formats_caps.rgba16_float = true;
+  caps.texture_formats_caps.rgba32_float = true;
+  caps.texture_formats_caps.storage_texture_formats = true;
+  caps.texture_formats_caps.sampled_texture_formats = true;
+  caps.texture_formats_caps.guaranteed_formats = {"RGBA8", "BGRA8", "RGBA16F", "RGBA32F"};
+  caps.memory_budget.upload_alignment_bytes = 256u;
+  caps.memory_budget.readback_alignment_bytes = 256u;
+  caps.memory_budget.max_buffer_size_bytes = 1024ull * 1024ull * 1024ull;
+  caps.memory_budget.budget_unavailable_reason =
+      "IDXGIAdapter3 memory budget is not available because the simulated adapter does not create a DXGI adapter";
   return caps;
 }
 
@@ -340,19 +380,31 @@ bool RunD3D12ComputeSmoke(vkpt::render::IRenderBackend& backend) {
     return false;
   }
 
+  FrameGraphDesc graphDesc;
+  graphDesc.debug_label = "d3d12_compute_smoke";
+  graphDesc.passes = {
+      {0u, "write", PassType::Copy, {}, {sourceBuffer}},
+      {1u, "compute", PassType::Compute, {sourceBuffer}, {sourceBuffer}},
+      {2u, "readback", PassType::Readback, {sourceBuffer}, {}},
+  };
+  graphDesc.dependencies = {{0u, 1u}, {1u, 2u}};
   auto frameGraph = backend.create_frame_graph();
-  const auto writePass = frameGraph->add_pass("write", PassType::Copy, {}, {sourceBuffer});
-  const auto computePass = frameGraph->add_pass("compute", PassType::Compute, {sourceBuffer}, {sourceBuffer});
-  const auto readbackPass = frameGraph->add_pass("readback", PassType::Readback, {sourceBuffer}, {});
-  frameGraph->add_dependency(writePass, computePass);
-  frameGraph->add_dependency(computePass, readbackPass);
+  std::vector<std::string> buildDiagnostics;
+  if (!frameGraph->build(graphDesc, &buildDiagnostics)) {
+    allocator->destroy_buffer(sourceBuffer);
+    device->end();
+    return false;
+  }
+  FrameContext frame;
+  frame.frame_index = 0u;
+  frame.debug_label = graphDesc.debug_label;
   auto context = device->create_command_context();
   if (!context || !frameGraph->validate(nullptr)) {
     allocator->destroy_buffer(sourceBuffer);
     device->end();
     return false;
   }
-  if (!frameGraph->execute(*context)) {
+  if (!frameGraph->execute(*context, frame)) {
     allocator->destroy_buffer(sourceBuffer);
     device->end();
     return false;

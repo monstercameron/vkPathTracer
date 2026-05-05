@@ -178,6 +178,19 @@ inline uint32_t intersect_triangle_packet_avx2_full(
   return all_hits;
 }
 
+class Avx2SimdKernel final : public ISimdKernel {
+ public:
+  SimdKernelInfo info() const override {
+    return {SimdMode::AVX2, kAvx2LaneWidth, PacketLanePolicy::ZeroPaddedTail, true, true, "avx2"};
+  }
+
+  uint32_t intersect_triangle_packet(const RayPacket& packet,
+                                     const TriangleSOA& triangle,
+                                     HitPacket& hits) const override {
+    return intersect_triangle_packet_avx2_full(packet, triangle, hits);
+  }
+};
+
 }  // namespace vkpt::cpu
 
 #endif  // __AVX2__

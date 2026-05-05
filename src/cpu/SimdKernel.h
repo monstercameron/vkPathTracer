@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "cpu/CpuFeatures.h"
+#include "cpu/PacketRay.h"
 
 namespace vkpt::cpu {
 
@@ -36,6 +37,7 @@ inline const char* SimdModeName(SimdMode m) {
 // Prefers: AVX512 > AVX2 > AVX > SSE4 (x86) | SVE > NEON (ARM).
 // Falls back to Scalar if nothing else applies.
 inline SimdMode SelectBestSimdMode(const CpuFeatureSet& features) {
+  (void)features;
 #if defined(__aarch64__) || defined(_M_ARM64)
   #if defined(__ARM_FEATURE_SVE)
     if (features.sve) return SimdMode::SVE;
@@ -54,5 +56,31 @@ inline SimdMode SelectBestSimdMode(const CpuFeatureSet& features) {
 #endif
   return SimdMode::Scalar;
 }
+
+enum class PacketLanePolicy : uint8_t {
+  ActivePrefix = 0,
+  ZeroPaddedTail,
+  ScalarTail,
+  PreserveLaneOrder,
+};
+
+struct SimdKernelInfo {
+  SimdMode mode = SimdMode::Scalar;
+  uint32_t lane_width = 1u;
+  PacketLanePolicy lane_policy = PacketLanePolicy::ActivePrefix;
+  bool compiled = true;
+  bool runtime_supported = true;
+  std::string_view name = "scalar";
+};
+
+class ISimdKernel {
+ public:
+  virtual ~ISimdKernel() = default;
+
+  virtual SimdKernelInfo info() const = 0;
+  virtual uint32_t intersect_triangle_packet(const RayPacket& packet,
+                                             const TriangleSOA& triangle,
+                                             HitPacket& hits) const = 0;
+};
 
 }  // namespace vkpt::cpu

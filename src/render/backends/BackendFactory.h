@@ -10,6 +10,8 @@
 namespace vkpt::render {
 
 std::vector<std::string> AvailableBackendNames();
+std::vector<BackendCandidateDesc> DescribeBackendCandidates();
+BackendSelectionDecision SelectBackend(const BackendSelectionRequest& request);
 std::unique_ptr<IRenderBackend> CreateBackend(std::string_view backend_name);
 std::string NormalizeBackendName(std::string_view backend_name);
 

@@ -141,6 +141,19 @@ inline uint32_t intersect_triangle_packet_sve(
   return all_hits;
 }
 
+class SveSimdKernel final : public ISimdKernel {
+ public:
+  SimdKernelInfo info() const override {
+    return {SimdMode::SVE, sve_float_lane_count(), PacketLanePolicy::PreserveLaneOrder, true, true, "sve"};
+  }
+
+  uint32_t intersect_triangle_packet(const RayPacket& packet,
+                                     const TriangleSOA& triangle,
+                                     HitPacket& hits) const override {
+    return intersect_triangle_packet_sve(packet, triangle, hits);
+  }
+};
+
 }  // namespace vkpt::cpu
 
 #endif  // __ARM_FEATURE_SVE

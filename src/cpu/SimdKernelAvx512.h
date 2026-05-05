@@ -120,6 +120,19 @@ inline uint32_t intersect_triangle_packet_avx512(
   return hit_bits;
 }
 
+class Avx512SimdKernel final : public ISimdKernel {
+ public:
+  SimdKernelInfo info() const override {
+    return {SimdMode::AVX512, kAvx512LaneWidth, PacketLanePolicy::ZeroPaddedTail, true, true, "avx512"};
+  }
+
+  uint32_t intersect_triangle_packet(const RayPacket& packet,
+                                     const TriangleSOA& triangle,
+                                     HitPacket& hits) const override {
+    return intersect_triangle_packet_avx512(packet, triangle, hits);
+  }
+};
+
 }  // namespace vkpt::cpu
 
 #endif  // __AVX512F__
