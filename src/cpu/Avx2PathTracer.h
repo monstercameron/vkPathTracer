@@ -1,5 +1,7 @@
 #pragma once
 
+#include <immintrin.h>
+
 #include "pathtracer/PathTracer.h"
 
 namespace vkpt::cpu {
@@ -15,10 +17,16 @@ struct RaySoA {
 // Path tracing logic (camera, RNG, shading, NEE) mirrors ScalarCpuPathTracer.
 class Avx2CpuPathTracer final : public vkpt::pathtracer::IPathTracer {
  public:
+  using vkpt::pathtracer::IPathTracer::configure;
+
   bool configure(const vkpt::pathtracer::RenderSettings& settings) override;
   bool load_scene_snapshot(const vkpt::pathtracer::RTSceneData& scene) override;
   bool build_or_update_acceleration() override;
   bool reset_accumulation() override;
+  bool update_camera(const vkpt::pathtracer::Vec3& pos,
+                     const vkpt::pathtracer::Vec3& target,
+                     const vkpt::pathtracer::Vec3& up,
+                     float fov_deg) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y,
                            uint32_t sample_index, uint32_t frame_index) override;
   vkpt::pathtracer::FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }

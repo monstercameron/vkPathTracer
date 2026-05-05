@@ -74,6 +74,15 @@ std::string FormatBytes(const void* ptr, size_t bytes) {
   return ss.str();
 }
 
+D3D12_UNORDERED_ACCESS_VIEW_DESC MakeRawBufferUavDesc(UINT64 byteSize) {
+  D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+  uav.Format = DXGI_FORMAT_R32_TYPELESS;
+  uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+  uav.Buffer.NumElements = static_cast<UINT>(byteSize / sizeof(uint32_t));
+  uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+  return uav;
+}
+
 // ============================================================================
 // BVH builder types and recursive construction
 // ============================================================================
@@ -503,9 +512,9 @@ bool D3D12GpuPathTracer::reset_accumulation() {
   rb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
   m_cmdList->ResourceBarrier(1, &rb);
   m_cmdList->SetDescriptorHeaps(1, m_clearHeap.GetAddressOf());
-  const FLOAT clearValues[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-  m_cmdList->ClearUnorderedAccessViewFloat(gpuHandle, cpuHandle, m_filmBuf.Get(),
-                                          clearValues, 0, nullptr);
+  const UINT clearValues[4] = {0u, 0u, 0u, 0u};
+  m_cmdList->ClearUnorderedAccessViewUint(gpuHandle, cpuHandle, m_filmBuf.Get(),
+                                         clearValues, 0, nullptr);
 
   rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
@@ -761,10 +770,8 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
 
     // Slot 7: u0 — FilmBuf (RGBA32F accumulation)
     {
-      D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-      uav.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;
-      uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
-      uav.Buffer.NumElements = static_cast<UINT>(m_filmPixels);
+      const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
+      D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(filmSize);
       D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
       h.ptr += static_cast<SIZE_T>(7) * inc;
       m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h);
@@ -1424,10 +1431,7 @@ bool D3D12GpuPathTracer::create_film_buffer() {
     return false;
   }
   {
-    D3D12_UNORDERED_ACCESS_VIEW_DESC clearUav{};
-    clearUav.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    clearUav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
-    clearUav.Buffer.NumElements = m_filmPixels;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC clearUav = MakeRawBufferUavDesc(filmSize);
     m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &clearUav,
         m_clearHeap->GetCPUDescriptorHandleForHeapStart());
   }
@@ -1921,10 +1925,8 @@ bool D3D12GpuPathTracer::create_dxr_desc_heap() {
   makeSrv(4, m_ltBuf.Get(),     m_gpuLights.size() * sizeof(float),    DXGI_FORMAT_R32_FLOAT);
   makeSrv(5, m_triMatBuf.Get(), m_gpuTriMat.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
 
-  D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-  uav.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;
-  uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
-  uav.Buffer.NumElements = m_filmPixels;
+  const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
+  D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(filmSize);
   D3D12_CPU_DESCRIPTOR_HANDLE h6 = cpu;
   h6.ptr += 6 * inc;
   m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h6);

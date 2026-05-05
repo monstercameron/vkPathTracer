@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,6 +37,50 @@ struct Ray {
   Vec3 direction{};
 };
 
+enum class ToneMapMode : std::uint8_t {
+  Linear = 0,
+  Reinhard,
+  FilmicApprox,
+  AcesApprox,
+};
+
+struct FilmResolveSettings {
+  float exposure = 1.0f;
+  float white_balance_kelvin = 6500.0f;  // reserved; currently a no-op
+  ToneMapMode tone_map = ToneMapMode::Linear;
+  float gamma = 2.2f;
+  bool clamp_output = true;
+};
+
+struct IntegratorSettings {
+  uint32_t max_depth = 6;
+  bool enable_nee = false;
+  bool enable_mis = false;
+  uint32_t russian_roulette_start_depth = 3;
+  float russian_roulette_min_survival = 0.1f;
+  float russian_roulette_max_survival = 0.99f;
+};
+
+struct CameraSettings {
+  float aperture_radius = 0.0f;
+  float focus_distance = 0.0f;
+};
+
+struct FilmSettings {
+  FilmResolveSettings resolve{};
+};
+
+struct PathTraceSettings {
+  uint32_t width = 256;
+  uint32_t height = 256;
+  uint32_t spp = 8;
+  uint64_t seed = 0x12345678ULL;
+  bool deterministic = true;
+  IntegratorSettings integrator{};
+  CameraSettings camera{};
+  FilmSettings film{};
+};
+
 struct RenderSettings {
   uint32_t width = 256;
   uint32_t height = 256;
@@ -44,7 +89,18 @@ struct RenderSettings {
   uint64_t seed = 0x12345678ULL;
   bool enable_nee = false;
   bool enable_mis = false;
+  bool deterministic = true;
+  uint32_t russian_roulette_start_depth = 3;
+  float russian_roulette_min_survival = 0.1f;
+  float russian_roulette_max_survival = 0.99f;
+  float camera_aperture_radius = 0.0f;
+  float camera_focus_distance = 0.0f;
+  FilmResolveSettings film_resolve{};
 };
+
+PathTraceSettings MakePathTraceSettings(const RenderSettings& settings);
+RenderSettings MakeRenderSettings(const PathTraceSettings& settings);
+std::string SerializePathTraceSettings(const PathTraceSettings& settings);
 
 struct NeeResult {
   Vec3 radiance{};
@@ -73,8 +129,12 @@ struct SampleCounters {
   uint64_t rays = 0;
   uint64_t triangle_tests = 0;
   uint64_t sdf_tests = 0;
+  uint64_t sdf_steps = 0;
   uint64_t triangle_hits = 0;
   uint64_t sdf_hits = 0;
+  uint64_t sdf_misses = 0;
+  uint64_t bvh_node_visits = 0;
+  uint64_t bvh_leaf_visits = 0;
   uint64_t shadow_tests = 0;
 };
 
@@ -175,22 +235,7 @@ struct FilmHdr {
   std::vector<float> rgbf;
 };
 
-enum class ToneMapMode : std::uint8_t {
-  Linear = 0,
-  Reinhard,
-  FilmicApprox,
-  AcesApprox,
-};
-
-struct FilmResolveSettings {
-  float exposure = 1.0f;
-  float white_balance_kelvin = 6500.0f;  // placeholder — no-op for now
-  ToneMapMode tone_map = ToneMapMode::Linear;
-  float gamma = 2.2f;
-  bool clamp_output = true;
-};
-
-// Apply resolve pipeline: exposure → tone map → gamma → clamp → LDR output.
+// Apply resolve pipeline: exposure, tone map, gamma, clamp, LDR output.
 // white_balance is declared but currently a no-op placeholder.
 FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings);
 std::string SerializeFilmResolveSettings(const FilmResolveSettings& settings);
@@ -207,7 +252,10 @@ class FilmBuffer {
   // Overwrites any existing data in that row range.
   void import_tile(const FilmBuffer& src, uint32_t start_y, uint32_t end_y);
   FilmLdr resolve_ldr() const;
+  FilmLdr resolve_ldr(const FilmResolveSettings& settings) const;
   FilmHdr resolve_hdr() const;
+  void set_resolve_settings(const FilmResolveSettings& settings) { m_resolveSettings = settings; }
+  const FilmResolveSettings& resolve_settings() const { return m_resolveSettings; }
 
   uint32_t width() const { return m_width; }
   uint32_t height() const { return m_height; }
@@ -221,13 +269,64 @@ class FilmBuffer {
   std::vector<Vec3> m_accumulation;
   std::vector<uint32_t> m_sampleCounts;
   std::vector<float> m_invalidSamples;
+  FilmResolveSettings m_resolveSettings{};
 };
+
+struct RayQueryHit {
+  bool hit = false;
+  float t = 0.0f;
+  Vec3 position{};
+  Vec3 normal{};
+  uint32_t material_index = 0;
+  uint32_t primitive_index = 0;
+};
+
+struct RayQueryStats {
+  uint64_t triangle_tests = 0;
+  uint64_t triangle_hits = 0;
+  uint64_t bvh_node_visits = 0;
+  uint64_t bvh_leaf_visits = 0;
+};
+
+struct RayAcceleratorBuildInfo {
+  bool built = false;
+  std::size_t primitive_count = 0;
+  std::size_t node_count = 0;
+  std::size_t leaf_count = 0;
+  double build_ms = 0.0;
+  bool deterministic = false;
+};
+
+class IRayAccelerator {
+ public:
+  virtual ~IRayAccelerator() = default;
+
+  virtual bool build(const RTSceneData& scene, bool deterministic) = 0;
+  virtual bool intersect(const Ray& ray, RayQueryHit& out, RayQueryStats* stats = nullptr) const = 0;
+  virtual RayAcceleratorBuildInfo build_info() const = 0;
+  virtual void reset() = 0;
+};
+
+class ICpuRayKernel {
+ public:
+  virtual ~ICpuRayKernel() = default;
+
+  virtual std::string_view name() const = 0;
+  virtual bool set_accelerator(IRayAccelerator* accelerator) = 0;
+  virtual bool render_sample_batch(uint32_t start_y,
+                                   uint32_t end_y,
+                                   uint32_t sample_index,
+                                   uint32_t frame_index) = 0;
+};
+
+std::unique_ptr<IRayAccelerator> CreateCpuBvhAccelerator();
 
 class IPathTracer {
  public:
   virtual ~IPathTracer() = default;
 
   virtual bool configure(const RenderSettings& settings) = 0;
+  virtual bool configure(const PathTraceSettings& settings) { return configure(MakeRenderSettings(settings)); }
   virtual bool load_scene_snapshot(const RTSceneData& scene) = 0;
   virtual bool build_or_update_acceleration() = 0;
   virtual bool reset_accumulation() = 0;
@@ -245,13 +344,45 @@ class IPathTracer {
 
 float MisWeight(float pdf_a, float pdf_b);
 
-class ScalarCpuPathTracer final : public IPathTracer {
+class NullPathTracer final : public IPathTracer {
  public:
+  using IPathTracer::configure;
+
   bool configure(const RenderSettings& settings) override;
   bool load_scene_snapshot(const RTSceneData& scene) override;
   bool build_or_update_acceleration() override;
   bool reset_accumulation() override;
+  bool update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
+  FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }
+  FilmHdr resolve_hdr() const override { return m_film.resolve_hdr(); }
+  SampleCounters read_counters() const override { return m_counters; }
+  void shutdown() override;
+  const FilmBuffer& film() const override { return m_film; }
+
+ private:
+  RenderSettings m_settings{};
+  RTSceneData m_scene{};
+  FilmBuffer m_film{};
+  SampleCounters m_counters{};
+  bool m_configured = false;
+  bool m_has_scene = false;
+};
+
+class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
+ public:
+  using IPathTracer::configure;
+
+  ~ScalarCpuPathTracer() override;
+
+  bool configure(const RenderSettings& settings) override;
+  bool load_scene_snapshot(const RTSceneData& scene) override;
+  bool build_or_update_acceleration() override;
+  bool reset_accumulation() override;
+  bool update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) override;
+  bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
+  std::string_view name() const override { return "scalar-cpu"; }
+  bool set_accelerator(IRayAccelerator* accelerator) override;
   bool render_sample_pixels(const uint32_t* pixel_indices,
                             uint32_t pixel_count,
                             uint32_t sample_index,
@@ -306,9 +437,13 @@ class ScalarCpuPathTracer final : public IPathTracer {
   static Vec3 evaluate_bsdf(const RTMaterial& material, const Vec3& normal, const Vec3& in_dir, const Vec3& out_dir, float& pdf);
 
   RenderSettings m_settings;
+  PathTraceSettings m_trace_settings;
   RTSceneData m_scene;
   FilmBuffer m_film;
   mutable SampleCounters m_counters{};
+  std::unique_ptr<IRayAccelerator> m_accelerator;
+  IRayAccelerator* m_external_accelerator = nullptr;
+  RayAcceleratorBuildInfo m_accel_info{};
   bool m_configured = false;
   bool m_has_scene = false;
   uint32_t m_worker_count = 1;

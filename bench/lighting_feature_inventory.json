@@ -1,105 +1,195 @@
 {
+  "schema": "vkpt.lighting_inventory.v1",
   "pack_name": "Core light feature inventory",
-  "version": "1.0",
+  "version": "1.1",
   "features": [
     {
-      "name": "point",
-      "units": {
-        "intensity": "candela",
-        "radius": "meter"
-      },
-      "parameters": ["color", "intensity", "radius", "falloff"]
+      "id": "point",
+      "scene_type": "point",
+      "display_name": "Point",
+      "intensity_unit": "candela",
+      "importance_sampled": false,
+      "visible_to_camera": false,
+      "parameters": [
+        { "name": "color", "unit": "linear_rgb", "semantic": "radiant color", "required": true },
+        { "name": "intensity", "unit": "candela", "semantic": "luminous intensity", "required": true },
+        { "name": "radius", "unit": "meter", "semantic": "soft shadow radius", "required": false },
+        { "name": "falloff", "unit": "inverse_square", "semantic": "distance attenuation", "required": false }
+      ]
     },
     {
-      "name": "spot",
-      "units": {
-        "intensity": "candela",
-        "beam_angle": "deg",
-        "radius": "meter"
-      },
-      "parameters": ["color", "intensity", "radius", "direction", "beam_angle", "blend"]
+      "id": "spot",
+      "scene_type": "spot",
+      "display_name": "Spot",
+      "intensity_unit": "candela",
+      "importance_sampled": false,
+      "visible_to_camera": false,
+      "parameters": [
+        { "name": "color", "unit": "linear_rgb", "semantic": "radiant color", "required": true },
+        { "name": "intensity", "unit": "candela", "semantic": "luminous intensity", "required": true },
+        { "name": "radius", "unit": "meter", "semantic": "source radius", "required": false },
+        { "name": "direction", "unit": "unit_vector", "semantic": "spot direction", "required": true },
+        { "name": "beam_angle", "unit": "degree", "semantic": "inner cone angle", "required": true },
+        { "name": "blend", "unit": "unit_interval", "semantic": "edge softness", "required": false }
+      ]
     },
     {
-      "name": "directional",
-      "units": {
-        "intensity": "lux"
-      },
-      "parameters": ["color", "intensity", "direction"]
+      "id": "directional",
+      "scene_type": "directional",
+      "display_name": "Directional",
+      "intensity_unit": "lux",
+      "importance_sampled": false,
+      "visible_to_camera": false,
+      "parameters": [
+        { "name": "color", "unit": "linear_rgb", "semantic": "radiant color", "required": true },
+        { "name": "intensity", "unit": "lux", "semantic": "illuminance", "required": true },
+        { "name": "direction", "unit": "unit_vector", "semantic": "incoming light direction", "required": true }
+      ]
     },
     {
-      "name": "sphere area",
-      "units": {
-        "radiant_flux": "lumen",
-        "radius": "meter"
-      },
-      "parameters": ["color", "intensity", "radius", "center"]
+      "id": "sphere_area",
+      "scene_type": "sphere_area",
+      "display_name": "Sphere Area",
+      "intensity_unit": "lumen",
+      "importance_sampled": true,
+      "visible_to_camera": true,
+      "parameters": [
+        { "name": "color", "unit": "linear_rgb", "semantic": "radiant color", "required": true },
+        { "name": "intensity", "unit": "lumen", "semantic": "radiant flux fallback", "required": true },
+        { "name": "radius", "unit": "meter", "semantic": "sphere radius", "required": true },
+        { "name": "center", "unit": "meter", "semantic": "world-space center", "required": true }
+      ]
     },
     {
-      "name": "rectangle area",
-      "units": {
-        "radiant_flux": "lumen",
-        "size": "meter"
-      },
-      "parameters": ["color", "intensity", "width", "height", "normal", "u_axis", "v_axis"]
+      "id": "rectangle_area",
+      "scene_type": "rectangle_area",
+      "display_name": "Rectangle Area",
+      "intensity_unit": "lumen",
+      "importance_sampled": true,
+      "visible_to_camera": true,
+      "parameters": [
+        { "name": "color", "unit": "linear_rgb", "semantic": "radiant color", "required": true },
+        { "name": "intensity", "unit": "lumen", "semantic": "radiant flux fallback", "required": true },
+        { "name": "width", "unit": "meter", "semantic": "emitter width", "required": true },
+        { "name": "height", "unit": "meter", "semantic": "emitter height", "required": true },
+        { "name": "normal", "unit": "unit_vector", "semantic": "surface normal", "required": true },
+        { "name": "u_axis", "unit": "unit_vector", "semantic": "local U axis", "required": true },
+        { "name": "v_axis", "unit": "unit_vector", "semantic": "local V axis", "required": true }
+      ]
     },
     {
-      "name": "disk area",
-      "units": {
-        "radiant_flux": "lumen",
-        "radius": "meter"
-      },
-      "parameters": ["color", "intensity", "radius", "normal", "center"]
+      "id": "disk_area",
+      "scene_type": "disk_area",
+      "display_name": "Disk Area",
+      "intensity_unit": "lumen",
+      "importance_sampled": true,
+      "visible_to_camera": true,
+      "parameters": [
+        { "name": "color", "unit": "linear_rgb", "semantic": "radiant color", "required": true },
+        { "name": "intensity", "unit": "lumen", "semantic": "radiant flux fallback", "required": true },
+        { "name": "radius", "unit": "meter", "semantic": "disk radius", "required": true },
+        { "name": "normal", "unit": "unit_vector", "semantic": "surface normal", "required": true },
+        { "name": "center", "unit": "meter", "semantic": "world-space center", "required": true }
+      ]
     },
     {
-      "name": "line area",
-      "units": {
-        "radiant_flux": "lumen",
-        "length": "meter"
-      },
-      "parameters": ["color", "intensity", "start", "end", "radius"]
+      "id": "line_area",
+      "scene_type": "line_area",
+      "display_name": "Line Area",
+      "intensity_unit": "lumen",
+      "importance_sampled": true,
+      "visible_to_camera": true,
+      "parameters": [
+        { "name": "color", "unit": "linear_rgb", "semantic": "radiant color", "required": true },
+        { "name": "intensity", "unit": "lumen", "semantic": "radiant flux fallback", "required": true },
+        { "name": "start", "unit": "meter", "semantic": "segment start", "required": true },
+        { "name": "end", "unit": "meter", "semantic": "segment end", "required": true },
+        { "name": "radius", "unit": "meter", "semantic": "tube radius", "required": false }
+      ]
     },
     {
-      "name": "portal",
-      "units": {
-        "intensity": "relative"
-      },
-      "parameters": ["color", "intensity", "width", "height", "normal", "forward"]
+      "id": "portal",
+      "scene_type": "portal",
+      "display_name": "Portal",
+      "intensity_unit": "relative",
+      "importance_sampled": true,
+      "visible_to_camera": false,
+      "parameters": [
+        { "name": "color", "unit": "linear_rgb", "semantic": "tint", "required": false },
+        { "name": "intensity", "unit": "relative", "semantic": "sampling weight", "required": true },
+        { "name": "width", "unit": "meter", "semantic": "portal width", "required": true },
+        { "name": "height", "unit": "meter", "semantic": "portal height", "required": true },
+        { "name": "normal", "unit": "unit_vector", "semantic": "portal normal", "required": true },
+        { "name": "forward", "unit": "unit_vector", "semantic": "environment lookup direction", "required": true }
+      ]
     },
     {
-      "name": "mesh emissive",
-      "units": {
-        "radiance": "W·sr-1·m-2"
-      },
-      "parameters": ["mesh_id", "color", "intensity", "unit_scale"]
+      "id": "mesh_emissive",
+      "scene_type": "mesh_emissive",
+      "display_name": "Mesh Emissive",
+      "intensity_unit": "W sr-1 m-2",
+      "importance_sampled": true,
+      "visible_to_camera": true,
+      "parameters": [
+        { "name": "mesh_id", "unit": "asset_id", "semantic": "emitter mesh asset", "required": true },
+        { "name": "color", "unit": "linear_rgb", "semantic": "radiance color", "required": true },
+        { "name": "intensity", "unit": "W sr-1 m-2", "semantic": "radiance scale", "required": true },
+        { "name": "unit_scale", "unit": "meter", "semantic": "mesh unit conversion", "required": false }
+      ]
     },
     {
-      "name": "environment sky",
-      "units": {
-        "intensity": "cd·m-2"
-      },
-      "parameters": ["color", "intensity", "turbidity", "elevation"]
+      "id": "environment_sky",
+      "scene_type": "environment_sky",
+      "display_name": "Environment Sky",
+      "intensity_unit": "cd m-2",
+      "importance_sampled": true,
+      "visible_to_camera": false,
+      "parameters": [
+        { "name": "color", "unit": "linear_rgb", "semantic": "sky tint", "required": false },
+        { "name": "intensity", "unit": "cd m-2", "semantic": "environment luminance", "required": true },
+        { "name": "turbidity", "unit": "unitless", "semantic": "atmosphere turbidity", "required": false },
+        { "name": "elevation", "unit": "degree", "semantic": "sun elevation", "required": false }
+      ]
     },
     {
-      "name": "open sky",
-      "units": {
-        "intensity": "cd·m-2"
-      },
-      "parameters": ["intensity", "sun_color", "sun_elevation"]
+      "id": "open_sky",
+      "scene_type": "open_sky",
+      "display_name": "Open Sky",
+      "intensity_unit": "cd m-2",
+      "importance_sampled": true,
+      "visible_to_camera": false,
+      "parameters": [
+        { "name": "intensity", "unit": "cd m-2", "semantic": "sky luminance", "required": true },
+        { "name": "sun_color", "unit": "linear_rgb", "semantic": "sun tint", "required": false },
+        { "name": "sun_elevation", "unit": "degree", "semantic": "sun elevation", "required": false }
+      ]
     },
     {
-      "name": "blackbody emitter",
-      "units": {
-        "temperature": "kelvin",
-        "intensity": "watt"
-      },
-      "parameters": ["temperature_k", "intensity", "scale"]
+      "id": "blackbody_emitter",
+      "scene_type": "blackbody_emitter",
+      "display_name": "Blackbody Emitter",
+      "intensity_unit": "watt",
+      "importance_sampled": true,
+      "visible_to_camera": true,
+      "parameters": [
+        { "name": "temperature_k", "unit": "kelvin", "semantic": "blackbody temperature", "required": true },
+        { "name": "intensity", "unit": "watt", "semantic": "radiant power", "required": true },
+        { "name": "scale", "unit": "unitless", "semantic": "emission multiplier", "required": false }
+      ]
     },
     {
-      "name": "visible emissive object",
-      "units": {
-        "intensity": "candela"
-      },
-      "parameters": ["object_id", "color", "intensity", "mask_threshold"]
+      "id": "visible_emissive_object",
+      "scene_type": "visible_emissive_object",
+      "display_name": "Visible Emissive Object",
+      "intensity_unit": "candela",
+      "importance_sampled": true,
+      "visible_to_camera": true,
+      "parameters": [
+        { "name": "object_id", "unit": "entity_id", "semantic": "visible source entity", "required": true },
+        { "name": "color", "unit": "linear_rgb", "semantic": "emission color", "required": true },
+        { "name": "intensity", "unit": "candela", "semantic": "luminous intensity fallback", "required": true },
+        { "name": "mask_threshold", "unit": "unit_interval", "semantic": "visibility mask threshold", "required": false }
+      ]
     }
   ]
 }

@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string_view>
+#include <utility>
 
 #include <cstdlib>
 #include <cstring>
@@ -44,7 +48,7 @@ class JsonParserImpl {
     skip_ws();
     auto result = parse_value();
     skip_ws();
-    if (m_position != m_text.size()) {
+    if (!m_valid || m_position != m_text.size()) {
       return {};
     }
     return result;
@@ -65,6 +69,14 @@ class JsonParserImpl {
       ++m_position;
       return true;
     }
+    return false;
+  }
+
+  bool expect(char ch) {
+    if (consume(ch)) {
+      return true;
+    }
+    m_valid = false;
     return false;
   }
 
@@ -92,6 +104,7 @@ class JsonParserImpl {
     if (head == 't' || head == 'f' || head == 'n') {
       return parse_literal();
     }
+    m_valid = false;
     return JsonValue{};
   }
 
@@ -114,13 +127,14 @@ class JsonParserImpl {
       value.kind = JsonValue::Kind::Null;
       return value;
     }
+    m_valid = false;
     return value;
   }
 
   JsonValue parse_string() {
     JsonValue value;
     value.kind = JsonValue::Kind::String;
-    if (!consume('"')) {
+    if (!expect('"')) {
       return value;
     }
     while (m_position < m_text.size()) {
@@ -130,6 +144,10 @@ class JsonParserImpl {
       }
       if (ch == '\\') {
         char e = peek();
+        if (e == '\0') {
+          m_valid = false;
+          return value;
+        }
         ++m_position;
         switch (e) {
           case '"':
@@ -157,13 +175,18 @@ class JsonParserImpl {
             value.string.push_back('\t');
             break;
           default:
-            value.string.push_back(e);
-            break;
+            m_valid = false;
+            return value;
         }
       } else {
+        if (static_cast<unsigned char>(ch) < 0x20u) {
+          m_valid = false;
+          return value;
+        }
         value.string.push_back(ch);
       }
     }
+    m_valid = false;
     return value;
   }
 
@@ -174,13 +197,27 @@ class JsonParserImpl {
     if (peek() == '-') {
       ++m_position;
     }
-    while (std::isdigit(static_cast<unsigned char>(peek()))) {
+    const auto integer_start = m_position;
+    if (peek() == '0') {
       ++m_position;
+    } else {
+      while (std::isdigit(static_cast<unsigned char>(peek()))) {
+        ++m_position;
+      }
+    }
+    if (m_position == integer_start) {
+      m_valid = false;
+      return value;
     }
     if (peek() == '.') {
       ++m_position;
+      const auto fractional_start = m_position;
       while (std::isdigit(static_cast<unsigned char>(peek()))) {
         ++m_position;
+      }
+      if (m_position == fractional_start) {
+        m_valid = false;
+        return value;
       }
     }
     if (peek() == 'e' || peek() == 'E') {
@@ -188,57 +225,84 @@ class JsonParserImpl {
       if (peek() == '+' || peek() == '-') {
         ++m_position;
       }
+      const auto exponent_start = m_position;
       while (std::isdigit(static_cast<unsigned char>(peek()))) {
         ++m_position;
       }
+      if (m_position == exponent_start) {
+        m_valid = false;
+        return value;
+      }
     }
     value.number = std::strtod(std::string(m_text.substr(start, m_position - start)).c_str(), nullptr);
+    if (!std::isfinite(value.number)) {
+      m_valid = false;
+    }
     return value;
   }
 
   JsonValue parse_array() {
     JsonValue value;
     value.kind = JsonValue::Kind::Array;
-    if (!consume('[')) {
+    if (!expect('[')) {
       return value;
     }
     skip_ws();
     if (consume(']')) {
       return value;
     }
-    do {
+    while (m_valid) {
       value.array.push_back(parse_value());
       skip_ws();
-    } while (consume(','));
-    consume(']');
+      if (consume(']')) {
+        return value;
+      }
+      if (!expect(',')) {
+        return value;
+      }
+      skip_ws();
+    }
     return value;
   }
 
   JsonValue parse_object() {
     JsonValue value;
     value.kind = JsonValue::Kind::Object;
-    if (!consume('{')) {
+    if (!expect('{')) {
       return value;
     }
     skip_ws();
     if (consume('}')) {
       return value;
     }
-    do {
+    while (m_valid) {
       skip_ws();
+      if (peek() != '"') {
+        m_valid = false;
+        return value;
+      }
       auto key = parse_string();
       skip_ws();
-      consume(':');
+      if (!expect(':')) {
+        return value;
+      }
       skip_ws();
       value.object.emplace(key.string, parse_value());
       skip_ws();
-    } while (consume(','));
-    consume('}');
+      if (consume('}')) {
+        return value;
+      }
+      if (!expect(',')) {
+        return value;
+      }
+      skip_ws();
+    }
     return value;
   }
 
   std::string_view m_text;
   std::size_t m_position = 0;
+  bool m_valid = true;
 };
 
 void stringify_impl(const JsonValue& value, std::ostringstream& out, bool pretty, std::size_t depth);
@@ -350,7 +414,9 @@ bool read_string(const JsonValue& object, std::string_view key, std::string& out
 
 bool read_u64(const JsonValue& object, std::string_view key, std::uint64_t& out) {
   auto it = object.object.find(std::string(key));
-  if (it == object.object.end() || it->second.kind != JsonValue::Kind::Number) {
+  if (it == object.object.end() || it->second.kind != JsonValue::Kind::Number ||
+      it->second.number < 0.0 ||
+      it->second.number > static_cast<double>(std::numeric_limits<std::uint64_t>::max())) {
     return false;
   }
   out = static_cast<std::uint64_t>(it->second.number);
@@ -368,7 +434,7 @@ bool read_u32(const JsonValue& object, std::string_view key, std::uint32_t& out)
 
 bool read_float(const JsonValue& object, std::string_view key, float& out) {
   auto it = object.object.find(std::string(key));
-  if (it == object.object.end() || it->second.kind != JsonValue::Kind::Number) {
+  if (it == object.object.end() || it->second.kind != JsonValue::Kind::Number || !std::isfinite(it->second.number)) {
     return false;
   }
   out = static_cast<float>(it->second.number);
@@ -389,6 +455,11 @@ bool read_vec3(const JsonValue& object, std::string_view key, Vec3& out) {
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array || it->second.array.size() != 3) {
     return false;
   }
+  if (std::any_of(it->second.array.begin(), it->second.array.end(), [](const JsonValue& value) {
+        return value.kind != JsonValue::Kind::Number || !std::isfinite(value.number);
+      })) {
+    return false;
+  }
   out.x = static_cast<float>(it->second.array[0].number);
   out.y = static_cast<float>(it->second.array[1].number);
   out.z = static_cast<float>(it->second.array[2].number);
@@ -404,6 +475,11 @@ bool read_vec3_list(const JsonValue& object, std::string_view key, std::vector<V
   out.reserve(it->second.array.size());
   for (const auto& element : it->second.array) {
     if (element.kind != JsonValue::Kind::Array || element.array.size() != 3) {
+      return false;
+    }
+    if (std::any_of(element.array.begin(), element.array.end(), [](const JsonValue& value) {
+          return value.kind != JsonValue::Kind::Number || !std::isfinite(value.number);
+        })) {
       return false;
     }
     Vec3 value{};
@@ -423,7 +499,8 @@ bool read_u32_list(const JsonValue& object, std::string_view key, std::vector<st
   }
   out.reserve(it->second.array.size());
   for (const auto& element : it->second.array) {
-    if (element.kind != JsonValue::Kind::Number) {
+    if (element.kind != JsonValue::Kind::Number || element.number < 0.0 ||
+        element.number > static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
       return false;
     }
     out.push_back(static_cast<std::uint32_t>(element.number));
@@ -434,6 +511,11 @@ bool read_u32_list(const JsonValue& object, std::string_view key, std::vector<st
 bool read_quat(const JsonValue& object, std::string_view key, Quat& out) {
   auto it = object.object.find(std::string(key));
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array || it->second.array.size() != 4) {
+    return false;
+  }
+  if (std::any_of(it->second.array.begin(), it->second.array.end(), [](const JsonValue& value) {
+        return value.kind != JsonValue::Kind::Number || !std::isfinite(value.number);
+      })) {
     return false;
   }
   out.x = static_cast<float>(it->second.array[0].number);
@@ -451,8 +533,102 @@ TransformComponent read_transform(const JsonValue& object) {
   return transform;
 }
 
-Vec3 combine_vectors(const Vec3& parent, const Vec3& child) {
-  return {parent.x + child.x, parent.y + child.y, parent.z + child.z};
+uint64_t monotonic_ns() {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count());
+}
+
+Mat4 identity_matrix() {
+  Mat4 out{};
+  out.values[0] = 1.0f;
+  out.values[5] = 1.0f;
+  out.values[10] = 1.0f;
+  out.values[15] = 1.0f;
+  return out;
+}
+
+Quat normalize_quat(Quat q) {
+  const float len_sq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+  if (len_sq <= 0.0f || !std::isfinite(len_sq)) {
+    return {};
+  }
+  const float inv_len = 1.0f / std::sqrt(len_sq);
+  q.x *= inv_len;
+  q.y *= inv_len;
+  q.z *= inv_len;
+  q.w *= inv_len;
+  return q;
+}
+
+Quat multiply_quat(const Quat& lhs, const Quat& rhs) {
+  return normalize_quat({
+      lhs.w * rhs.x + lhs.x * rhs.w + lhs.y * rhs.z - lhs.z * rhs.y,
+      lhs.w * rhs.y - lhs.x * rhs.z + lhs.y * rhs.w + lhs.z * rhs.x,
+      lhs.w * rhs.z + lhs.x * rhs.y - lhs.y * rhs.x + lhs.z * rhs.w,
+      lhs.w * rhs.w - lhs.x * rhs.x - lhs.y * rhs.y - lhs.z * rhs.z});
+}
+
+Mat4 multiply_matrix(const Mat4& lhs, const Mat4& rhs) {
+  Mat4 out{};
+  for (std::size_t col = 0u; col < 4u; ++col) {
+    for (std::size_t row = 0u; row < 4u; ++row) {
+      float value = 0.0f;
+      for (std::size_t k = 0u; k < 4u; ++k) {
+        value += lhs.values[k * 4u + row] * rhs.values[col * 4u + k];
+      }
+      out.values[col * 4u + row] = value;
+    }
+  }
+  return out;
+}
+
+Mat4 make_transform_matrix(const TransformComponent& transform) {
+  const auto q = normalize_quat(transform.rotation);
+  const float xx = q.x * q.x;
+  const float yy = q.y * q.y;
+  const float zz = q.z * q.z;
+  const float xy = q.x * q.y;
+  const float xz = q.x * q.z;
+  const float yz = q.y * q.z;
+  const float wx = q.w * q.x;
+  const float wy = q.w * q.y;
+  const float wz = q.w * q.z;
+
+  Mat4 out = identity_matrix();
+  out.values[0] = (1.0f - 2.0f * (yy + zz)) * transform.scale.x;
+  out.values[1] = (2.0f * (xy + wz)) * transform.scale.x;
+  out.values[2] = (2.0f * (xz - wy)) * transform.scale.x;
+
+  out.values[4] = (2.0f * (xy - wz)) * transform.scale.y;
+  out.values[5] = (1.0f - 2.0f * (xx + zz)) * transform.scale.y;
+  out.values[6] = (2.0f * (yz + wx)) * transform.scale.y;
+
+  out.values[8] = (2.0f * (xz + wy)) * transform.scale.z;
+  out.values[9] = (2.0f * (yz - wx)) * transform.scale.z;
+  out.values[10] = (1.0f - 2.0f * (xx + yy)) * transform.scale.z;
+
+  out.values[12] = transform.translation.x;
+  out.values[13] = transform.translation.y;
+  out.values[14] = transform.translation.z;
+  return out;
+}
+
+Vec3 matrix_translation(const Mat4& matrix) {
+  return {matrix.values[12], matrix.values[13], matrix.values[14]};
+}
+
+bool finite_vec3(const Vec3& value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+bool finite_quat(const Quat& value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z) && std::isfinite(value.w);
+}
+
+bool valid_transform_values(const TransformComponent& transform) {
+  return finite_vec3(transform.translation) && finite_vec3(transform.scale) && finite_quat(transform.rotation) &&
+         transform.scale.x != 0.0f && transform.scale.y != 0.0f && transform.scale.z != 0.0f;
 }
 
 vkpt::core::Hash256 hash_scene_blob(std::string_view blob) {
@@ -530,6 +706,35 @@ std::string_view to_string(TransformAuthority authority) {
   }
 }
 
+std::string_view to_string(FrameStage stage) {
+  switch (stage) {
+    case FrameStage::FrameBegin:
+      return "FrameBegin";
+    case FrameStage::Input:
+      return "Input";
+    case FrameStage::CommandCollection:
+      return "CommandCollection";
+    case FrameStage::FixedUpdate:
+      return "FixedUpdate";
+    case FrameStage::VariableUpdate:
+      return "VariableUpdate";
+    case FrameStage::TransformAssembly:
+      return "TransformAssembly";
+    case FrameStage::SceneMutationApply:
+      return "SceneMutationApply";
+    case FrameStage::RenderPreparation:
+      return "RenderPreparation";
+    case FrameStage::RenderSubmit:
+      return "RenderSubmit";
+    case FrameStage::PresentOrExport:
+      return "PresentOrExport";
+    case FrameStage::FrameEnd:
+      return "FrameEnd";
+    default:
+      return "FrameBegin";
+  }
+}
+
 std::optional<JsonValue> JsonParser::parse(std::string_view text) {
   JsonParserImpl parser(text);
   return parser.parse();
@@ -537,6 +742,61 @@ std::optional<JsonValue> JsonParser::parse(std::string_view text) {
 
 std::string JsonParser::stringify(const JsonValue& value) {
   return vkpt::scene::stringify(value, false);
+}
+
+const FrameContext& FrameLifecycleController::context() const {
+  return m_context;
+}
+
+const std::vector<FrameStageTiming>& FrameLifecycleController::timings() const {
+  return m_timings;
+}
+
+void FrameLifecycleController::begin_frame(vkpt::core::FrameIndex frame, double delta_seconds, bool deterministic) {
+  if (m_stageOpen) {
+    end_stage(m_context.stage);
+  }
+  m_context.frame = frame;
+  m_context.delta_seconds = delta_seconds;
+  m_context.deterministic = deterministic;
+  begin_stage(FrameStage::FrameBegin);
+}
+
+void FrameLifecycleController::begin_stage(FrameStage stage) {
+  if (m_stageOpen) {
+    end_stage(m_context.stage);
+  }
+  m_context.stage = stage;
+  m_stageStartNs = monotonic_ns();
+  m_stageOpen = true;
+  vkpt::log::Logger::instance().log(vkpt::log::Severity::Debug, "frame", "stage begin",
+                                    {{"stage", std::string(to_string(stage))}},
+                                    m_context.frame);
+}
+
+void FrameLifecycleController::end_stage(FrameStage stage) {
+  if (!m_stageOpen) {
+    return;
+  }
+  const auto end_ns = monotonic_ns();
+  m_timings.push_back(FrameStageTiming{m_context.frame, stage, m_stageStartNs, end_ns});
+  m_stageOpen = false;
+  vkpt::log::Logger::instance().log(vkpt::log::Severity::Debug, "frame", "stage end",
+                                    {{"stage", std::string(to_string(stage))},
+                                     {"duration_ns", std::to_string(end_ns >= m_stageStartNs ? end_ns - m_stageStartNs : 0u)}},
+                                    m_context.frame);
+}
+
+void FrameLifecycleController::end_frame() {
+  if (m_stageOpen) {
+    end_stage(m_context.stage);
+  }
+  begin_stage(FrameStage::FrameEnd);
+  end_stage(FrameStage::FrameEnd);
+}
+
+void FrameLifecycleController::clear_history() {
+  m_timings.clear();
 }
 
 WorldSystemScheduler::WorldSystemScheduler(std::vector<WorldSystemPhase> phaseOrder) {
@@ -669,6 +929,14 @@ bool SceneWorld::destroy_entity(vkpt::core::StableId id) {
   }
   it->second.alive = false;
   m_entities_order.erase(std::remove(m_entities_order.begin(), m_entities_order.end(), id), m_entities_order.end());
+  if (const auto childIt = m_children.find(id); childIt != m_children.end()) {
+    for (const auto child : childIt->second) {
+      if (auto* childRecord = get_entity(child)) {
+        childRecord->hierarchy.reset();
+        mark_dirty_recursive(child);
+      }
+    }
+  }
   m_children.erase(id);
   for (auto& parentChildren : m_children) {
     parentChildren.second.erase(std::remove(parentChildren.second.begin(), parentChildren.second.end(), id),
@@ -703,16 +971,24 @@ bool SceneWorld::set_transform(vkpt::core::StableId id,
     return false;
   }
   const auto existing = m_transformAuthority.find(id);
-  if (existing != m_transformAuthority.end()) {
-    if (authority_rank(authority) < authority_rank(existing->second.authority)) {
+  if (existing != m_transformAuthority.end() && existing->second.frame == frame) {
+    const auto previous_rank = authority_rank(existing->second.authority);
+    const auto next_rank = authority_rank(authority);
+    const bool writer_conflict = existing->second.writer != writer;
+    const bool lower_authority = next_rank < previous_rank;
+    const bool tie_loses = next_rank == previous_rank && writer_conflict && std::string(writer) > existing->second.writer;
+    if (writer_conflict || lower_authority) {
+      const auto selected = (lower_authority || tie_loses) ? existing->second.authority : authority;
       m_authority_conflicts.push_back(
-          {id, existing->second.writer, std::string(writer), existing->second.authority, frame});
+          {id, existing->second.writer, std::string(writer), selected, frame});
       vkpt::log::Logger::instance().log(vkpt::log::Severity::Warning, "scene", "transform authority conflict",
                                          {{"entity", std::to_string(id)},
                                           {"writer_a", existing->second.writer},
                                           {"writer_b", std::string(writer)},
-                                          {"selected", std::string(to_string(existing->second.authority))},
+                                          {"selected", std::string(to_string(selected))},
                                           {"frame", std::to_string(frame)}});
+    }
+    if (lower_authority || tie_loses) {
       return false;
     }
   }
@@ -774,6 +1050,7 @@ bool SceneWorld::set_hierarchy_parent(vkpt::core::StableId child, vkpt::core::St
     auto& list = m_children[parent];
     if (std::find(list.begin(), list.end(), child) == list.end()) {
       list.push_back(child);
+      std::sort(list.begin(), list.end());
     }
   }
   mark_dirty_recursive(child);
@@ -877,9 +1154,19 @@ bool SceneWorld::remove_component(vkpt::core::StableId id, ComponentKind kind) {
       return true;
     case ComponentKind::Transform:
       record->transform.reset();
+      m_worldTransforms.erase(id);
+      mark_dirty_recursive(id);
       return true;
     case ComponentKind::Hierarchy:
+      if (record->hierarchy && record->hierarchy->parent != 0) {
+        auto parentIt = m_children.find(record->hierarchy->parent);
+        if (parentIt != m_children.end()) {
+          parentIt->second.erase(std::remove(parentIt->second.begin(), parentIt->second.end(), id),
+                                 parentIt->second.end());
+        }
+      }
       record->hierarchy.reset();
+      mark_dirty_recursive(id);
       return true;
     case ComponentKind::Camera:
       record->camera.reset();
@@ -1009,15 +1296,18 @@ std::vector<vkpt::core::StableId> SceneWorld::query(ComponentKind kind) const {
 WorldTransform SceneWorld::compute_world_transform_unchecked(const EntityRecord* entity) const {
   WorldTransform out{};
   if (!entity || !entity->transform.has_value()) {
+    out.world_matrix = identity_matrix();
     return out;
   }
   out = {};
   out.translation = entity->transform->translation;
-  out.rotation = entity->transform->rotation;
+  out.rotation = normalize_quat(entity->transform->rotation);
   out.scale = entity->transform->scale;
+  out.world_matrix = make_transform_matrix(*entity->transform);
   out.dirty = false;
   auto get_parent_transform = [&](vkpt::core::StableId parent_id) -> WorldTransform {
     WorldTransform parent{};
+    parent.world_matrix = identity_matrix();
     const auto it = m_worldTransforms.find(parent_id);
     if (it != m_worldTransforms.end()) {
       return it->second;
@@ -1031,17 +1321,26 @@ WorldTransform SceneWorld::compute_world_transform_unchecked(const EntityRecord*
   if (entity->hierarchy && entity->hierarchy->parent != 0) {
     const auto parentId = entity->hierarchy->parent;
     const auto parentTransform = get_parent_transform(parentId);
-    out.translation = combine_vectors(parentTransform.translation, out.translation);
+    const auto localMatrix = out.world_matrix;
+    out.world_matrix = multiply_matrix(parentTransform.world_matrix, localMatrix);
+    out.translation = matrix_translation(out.world_matrix);
+    out.rotation = multiply_quat(parentTransform.rotation, out.rotation);
+    out.scale = {parentTransform.scale.x * out.scale.x,
+                 parentTransform.scale.y * out.scale.y,
+                 parentTransform.scale.z * out.scale.z};
   }
   return out;
 }
 
 void SceneWorld::mark_dirty_recursive(vkpt::core::StableId id) {
   auto* entity = get_entity(id);
-  if (!entity || !entity->transform.has_value()) {
+  if (!entity) {
     return;
   }
-  entity->transform->dirty = true;
+  if (entity->transform.has_value()) {
+    entity->transform->dirty = true;
+  }
+  m_worldTransforms.erase(id);
   const auto it = m_children.find(id);
   if (it == m_children.end()) {
     return;
@@ -1095,6 +1394,22 @@ const std::vector<WorldAuthorityConflict>& SceneWorld::authority_conflicts() con
   return m_authority_conflicts;
 }
 
+bool SceneWorld::has_authority(vkpt::core::StableId id,
+                               TransformAuthority authority,
+                               std::string_view writer,
+                               vkpt::core::FrameIndex frame) const {
+  const auto existing = m_transformAuthority.find(id);
+  if (existing == m_transformAuthority.end() || existing->second.frame != frame) {
+    return true;
+  }
+  const auto previous_rank = authority_rank(existing->second.authority);
+  const auto next_rank = authority_rank(authority);
+  if (next_rank != previous_rank) {
+    return next_rank > previous_rank;
+  }
+  return existing->second.writer == writer || std::string(writer) < existing->second.writer;
+}
+
 uint32_t SceneWorld::kind_mask(ComponentKind kind) const {
   return component_kind_mask(kind);
 }
@@ -1103,29 +1418,38 @@ SceneSnapshot SceneWorld::build_snapshot() const {
   SceneSnapshot out;
   out.benchmark = {};
   out.asset_refs.reserve(m_entities_order.size());
+  std::string blob = "scene:";
   for (const auto id : m_entities_order) {
     const auto* entity = get_entity(id);
     if (!entity) {
       continue;
     }
     out.entity_ids.push_back(id);
-    if (entity->mesh_renderer.has_value()) {
+    blob += "e" + std::to_string(id) + ":" + entity->identity.name + ";";
+    auto resolve_world = [&]() {
       WorldTransform world{};
-      const auto* wt = world_transform(id);
-      if (wt) {
+      world.world_matrix = identity_matrix();
+      if (const auto* wt = world_transform(id)) {
         world = *wt;
+      } else {
+        world = compute_world_transform_unchecked(entity);
       }
+      return world;
+    };
+    if (entity->mesh_renderer.has_value()) {
+      const auto world = resolve_world();
       out.renderables.push_back(SceneSnapshot::RenderableObject{
           id, entity->mesh_renderer->mesh_id, entity->mesh_renderer->material_id, world});
+      blob += "r" + std::to_string(entity->mesh_renderer->mesh_id) + ":" +
+              std::to_string(entity->mesh_renderer->material_id) + ";";
+      blob += "t" + std::to_string(world.translation.x) + "," + std::to_string(world.translation.y) + "," +
+              std::to_string(world.translation.z) + ";";
     }
     if (entity->light.has_value()) {
-      WorldTransform world{};
-      const auto* wt = world_transform(id);
-      if (wt) {
-        world = *wt;
-      }
+      const auto world = resolve_world();
       out.lights.push_back(
           SceneSnapshot::LightObject{id, *entity->light, world});
+      blob += "l" + entity->light->type + ":" + std::to_string(entity->light->intensity) + ";";
     }
     if (entity->material_override.has_value() && std::none_of(out.materials.begin(), out.materials.end(),
         [&](const SceneSnapshot::MaterialObject& material) {
@@ -1134,6 +1458,7 @@ SceneSnapshot SceneWorld::build_snapshot() const {
       SceneSnapshot::MaterialObject material;
       material.id = entity->material_override->material_id;
       out.materials.push_back(material);
+      blob += "mat" + std::to_string(material.id) + ";";
     }
   }
   if (!query(ComponentKind::Camera).empty()) {
@@ -1141,14 +1466,85 @@ SceneSnapshot SceneWorld::build_snapshot() const {
     const auto* cameraEnt = get_entity(first);
     if (cameraEnt && cameraEnt->camera.has_value()) {
       out.camera = SceneCameraDefinition{first, *cameraEnt->camera};
+      blob += "c" + std::to_string(first) + ":" + std::to_string(cameraEnt->camera->fov) + ";";
     }
-  }
-  std::string blob = "scene:";
-  for (const auto id : out.entity_ids) {
-    blob += std::to_string(id) + ";";
   }
   out.scene_hash = hash_scene_blob(blob);
   return out;
+}
+
+RenderSceneProxy SceneWorld::extract_render_scene(vkpt::core::FrameIndex frame) const {
+  RenderSceneProxy proxy;
+  const auto snapshot = build_snapshot();
+  proxy.scene_hash = snapshot.scene_hash;
+  proxy.frame = frame;
+  proxy.benchmark = snapshot.benchmark;
+  proxy.renderables.reserve(snapshot.renderables.size());
+  proxy.lights.reserve(snapshot.lights.size());
+  proxy.materials.reserve(snapshot.materials.size());
+
+  for (const auto& renderable : snapshot.renderables) {
+    RenderSceneProxy::Renderable out;
+    out.entity_id = renderable.entity_id;
+    out.geometry_id = renderable.mesh_id;
+    out.material_id = renderable.material_id;
+    if (const auto* wt = world_transform(renderable.entity_id)) {
+      out.world_matrix = wt->world_matrix;
+      out.translation = wt->translation;
+      out.scale = wt->scale;
+    } else {
+      out.world_matrix = make_transform_matrix(renderable.transform);
+      out.translation = renderable.transform.translation;
+      out.scale = renderable.transform.scale;
+    }
+    proxy.renderables.push_back(out);
+  }
+
+  for (const auto& light : snapshot.lights) {
+    RenderSceneProxy::Light out;
+    out.entity_id = light.entity_id;
+    out.type = light.light.type;
+    out.color = light.light.color;
+    out.intensity = light.light.intensity;
+    out.radius = light.light.radius;
+    if (const auto* wt = world_transform(light.entity_id)) {
+      out.world_matrix = wt->world_matrix;
+      out.position = wt->translation;
+    } else {
+      out.world_matrix = make_transform_matrix(light.transform);
+      out.position = light.transform.translation;
+    }
+    proxy.lights.push_back(out);
+  }
+
+  for (const auto& material : snapshot.materials) {
+    proxy.materials.push_back(RenderSceneProxy::Material{
+        material.id,
+        material.material.albedo,
+        material.material.roughness,
+        material.material.emission,
+        material.material.emission_intensity});
+  }
+
+  if (snapshot.camera) {
+    RenderSceneProxy::Camera camera;
+    camera.entity_id = snapshot.camera->id;
+    camera.fov = snapshot.camera->camera.fov;
+    camera.near_plane = snapshot.camera->camera.near_plane;
+    camera.far_plane = snapshot.camera->camera.far_plane;
+    if (const auto* wt = world_transform(camera.entity_id)) {
+      camera.world_matrix = wt->world_matrix;
+      camera.position = wt->translation;
+    } else if (const auto* entity = get_entity(camera.entity_id); entity && entity->transform) {
+      camera.world_matrix = make_transform_matrix(*entity->transform);
+      camera.position = entity->transform->translation;
+    } else {
+      camera.world_matrix = identity_matrix();
+    }
+    proxy.camera = camera;
+  }
+
+  return proxy;
 }
 
 void SceneWorld::clear() {
@@ -1261,6 +1657,25 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
   SceneDocument doc;
   std::unordered_set<std::uint64_t> usedIds;
   const auto& rootObj = *root;
+  auto require_kind_if_present = [&](std::string_view key, JsonValue::Kind kind) {
+    const auto it = rootObj.object.find(std::string(key));
+    return it == rootObj.object.end() || it->second.kind == kind;
+  };
+  if (!require_kind_if_present("schema", JsonValue::Kind::String) ||
+      !require_kind_if_present("metadata", JsonValue::Kind::Object) ||
+      !require_kind_if_present("assets", JsonValue::Kind::Array) ||
+      !require_kind_if_present("materials", JsonValue::Kind::Array) ||
+      !require_kind_if_present("geometry", JsonValue::Kind::Array) ||
+      !require_kind_if_present("sdf_primitives", JsonValue::Kind::Array) ||
+      !require_kind_if_present("entities", JsonValue::Kind::Array) ||
+      !require_kind_if_present("transforms", JsonValue::Kind::Array) ||
+      !require_kind_if_present("cameras", JsonValue::Kind::Array) ||
+      !require_kind_if_present("lights", JsonValue::Kind::Array) ||
+      !require_kind_if_present("benchmark", JsonValue::Kind::Object)) {
+    return vkpt::core::Result<SceneDocument>::error(vkpt::core::ErrorCode::InvalidArgument);
+  }
+
+  read_string(rootObj, "schema", doc.metadata.schema);
 
   if (const auto metadataNode = rootObj.object.find("metadata"); metadataNode != rootObj.object.end()) {
     read_string(metadataNode->second, "schema", doc.metadata.schema);
@@ -1471,13 +1886,112 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_file(std::string_view
 }
 
 bool SceneDocument::validate(std::vector<std::string>* issues) const {
+  bool ok = true;
   auto report = [&](const std::string& message) {
+    ok = false;
     if (issues) {
       issues->push_back(message);
     }
   };
   std::unordered_set<vkpt::core::StableId> entityIds;
   std::unordered_set<vkpt::core::StableId> materialIds;
+  std::unordered_set<vkpt::core::StableId> geometryIds;
+  std::unordered_set<vkpt::core::StableId> assetIds;
+  std::unordered_set<vkpt::core::StableId> sdfIds;
+  std::unordered_map<vkpt::core::StableId, vkpt::core::StableId> parentByEntity;
+
+  if (metadata.schema.empty()) {
+    report("metadata schema is empty");
+  } else if (metadata.schema != "1.0") {
+    report("unsupported schema " + metadata.schema);
+  }
+
+  for (const auto& asset : assets) {
+    if (asset.id == 0) {
+      report("asset id is zero");
+    }
+    if (!assetIds.insert(asset.id).second) {
+      report("duplicate asset id " + std::to_string(asset.id));
+    }
+    if (asset.type.empty()) {
+      report("asset type is empty for " + std::to_string(asset.id));
+    }
+    if (asset.uri.empty()) {
+      report("asset uri is empty for " + std::to_string(asset.id));
+    }
+  }
+
+  for (const auto& material : materials) {
+    if (material.id == 0) {
+      report("material id is zero");
+    }
+    if (!materialIds.insert(material.id).second) {
+      report("duplicate material id " + std::to_string(material.id));
+    }
+    if (!finite_vec3(material.albedo) || !finite_vec3(material.emission)) {
+      report("material contains non-finite color " + std::to_string(material.id));
+    }
+    if (!std::isfinite(material.roughness) || material.roughness < 0.0f || material.roughness > 1.0f) {
+      report("material roughness out of range " + std::to_string(material.id));
+    }
+    if (!std::isfinite(material.emission_intensity) || material.emission_intensity < 0.0f) {
+      report("material emission intensity out of range " + std::to_string(material.id));
+    }
+  }
+
+  for (const auto& geometry_entry : geometry) {
+    if (geometry_entry.id == 0) {
+      report("geometry id is zero");
+    }
+    if (!geometryIds.insert(geometry_entry.id).second) {
+      report("duplicate geometry id " + std::to_string(geometry_entry.id));
+    }
+    if (geometry_entry.primitive.empty()) {
+      report("geometry primitive is empty " + std::to_string(geometry_entry.id));
+    }
+    if (geometry_entry.material_id != 0 && !materialIds.empty() && !materialIds.contains(geometry_entry.material_id)) {
+      report("geometry references missing material " + std::to_string(geometry_entry.material_id));
+    }
+    if (geometry_entry.primitive == "triangle") {
+      if (geometry_entry.vertices.empty()) {
+        report("triangle geometry has no vertices " + std::to_string(geometry_entry.id));
+      }
+      if (geometry_entry.indices.empty() || geometry_entry.indices.size() % 3u != 0u) {
+        report("triangle geometry indices are not triangles " + std::to_string(geometry_entry.id));
+      }
+      for (const auto index : geometry_entry.indices) {
+        if (index >= geometry_entry.vertices.size()) {
+          report("geometry index out of range " + std::to_string(geometry_entry.id));
+          break;
+        }
+      }
+    }
+    for (const auto& vertex : geometry_entry.vertices) {
+      if (!finite_vec3(vertex)) {
+        report("geometry contains non-finite vertex " + std::to_string(geometry_entry.id));
+        break;
+      }
+    }
+  }
+
+  for (const auto& sdf : sdf_primitives) {
+    if (sdf.id == 0) {
+      report("sdf primitive id is zero");
+    }
+    if (!sdfIds.insert(sdf.id).second) {
+      report("duplicate sdf primitive id " + std::to_string(sdf.id));
+    }
+    if (sdf.shape.empty()) {
+      report("sdf primitive shape is empty " + std::to_string(sdf.id));
+    }
+    if (!valid_transform_values(sdf.transform)) {
+      report("sdf primitive has invalid transform " + std::to_string(sdf.id));
+    }
+    if (!std::isfinite(sdf.primitive.radius) || sdf.primitive.radius < 0.0f) {
+      report("sdf primitive radius is invalid " + std::to_string(sdf.id));
+    }
+  }
+
   for (const auto& entity : entities) {
     if (entity.id == 0) {
       report("entity id is zero");
@@ -1488,34 +2002,89 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
     if (entity.hierarchy.parent != 0 && entity.id == entity.hierarchy.parent) {
       report("entity has self parent " + std::to_string(entity.id));
     }
-  }
-  for (const auto& material : materials) {
-    if (!materialIds.insert(material.id).second) {
-      report("duplicate material id " + std::to_string(material.id));
+    if (entity.hierarchy.parent != 0) {
+      parentByEntity[entity.id] = entity.hierarchy.parent;
+    }
+    if (entity.has_transform && !valid_transform_values(entity.transform)) {
+      report("entity has invalid transform " + std::to_string(entity.id));
+    }
+    if (entity.has_mesh) {
+      if (!geometryIds.empty() && !geometryIds.contains(entity.mesh.mesh_id)) {
+        report("entity references missing geometry " + std::to_string(entity.mesh.mesh_id));
+      }
+      if (entity.mesh.material_id != 0 && !materialIds.empty() && !materialIds.contains(entity.mesh.material_id)) {
+        report("entity references missing material " + std::to_string(entity.mesh.material_id));
+      }
+    }
+    if (entity.material.material_id != 0 && !materialIds.empty() && !materialIds.contains(entity.material.material_id)) {
+      report("entity material override references missing material " + std::to_string(entity.material.material_id));
+    }
+    if (entity.has_camera &&
+        (!std::isfinite(entity.camera.fov) || entity.camera.fov <= 0.0f ||
+         entity.camera.near_plane <= 0.0f || entity.camera.far_plane <= entity.camera.near_plane)) {
+      report("entity camera has invalid clip/fov " + std::to_string(entity.id));
+    }
+    if (entity.has_light &&
+        (!finite_vec3(entity.light.color) || !std::isfinite(entity.light.intensity) || entity.light.intensity < 0.0f ||
+         !std::isfinite(entity.light.radius) || entity.light.radius < 0.0f)) {
+      report("entity light has invalid values " + std::to_string(entity.id));
     }
   }
   for (const auto& transform : transforms) {
-    const bool exists = std::any_of(entities.begin(), entities.end(),
-                                   [&](const SceneEntityDefinition& entity) { return entity.id == transform.id; });
-    if (!exists) {
+    if (!entityIds.contains(transform.id)) {
       report("transform references missing entity " + std::to_string(transform.id));
+    }
+    if (transform.parent != 0) {
+      if (!entityIds.contains(transform.parent)) {
+        report("transform references missing parent " + std::to_string(transform.parent));
+      }
+      parentByEntity[transform.id] = transform.parent;
+    }
+    if (!valid_transform_values(transform.transform)) {
+      report("transform has invalid values " + std::to_string(transform.id));
     }
   }
   for (const auto& light : lights) {
-    const bool found = std::any_of(entities.begin(), entities.end(),
-                                  [&](const SceneEntityDefinition& entity) { return entity.id == light.id; });
-    if (!found) {
+    if (!entityIds.contains(light.id)) {
       report("light references missing entity " + std::to_string(light.id));
+    }
+    if (!finite_vec3(light.light.color) || !std::isfinite(light.light.intensity) || light.light.intensity < 0.0f ||
+        !std::isfinite(light.light.radius) || light.light.radius < 0.0f) {
+      report("light has invalid values " + std::to_string(light.id));
     }
   }
   for (const auto& cam : cameras) {
-    const bool found = std::any_of(entities.begin(), entities.end(),
-                                  [&](const SceneEntityDefinition& entity) { return entity.id == cam.id; });
-    if (!found) {
+    if (!entityIds.contains(cam.id)) {
       report("camera references missing entity " + std::to_string(cam.id));
     }
+    if (!std::isfinite(cam.camera.fov) || cam.camera.fov <= 0.0f ||
+        cam.camera.near_plane <= 0.0f || cam.camera.far_plane <= cam.camera.near_plane) {
+      report("camera has invalid clip/fov " + std::to_string(cam.id));
+    }
   }
-  return issues ? issues->empty() : true;
+
+  for (const auto& [child, parent] : parentByEntity) {
+    if (parent != 0 && !entityIds.contains(parent)) {
+      report("hierarchy references missing parent " + std::to_string(parent));
+    }
+    std::unordered_set<vkpt::core::StableId> visited;
+    auto current = child;
+    while (parentByEntity.contains(current)) {
+      if (!visited.insert(current).second) {
+        report("hierarchy cycle includes entity " + std::to_string(child));
+        break;
+      }
+      current = parentByEntity[current];
+      if (current == 0) {
+        break;
+      }
+    }
+  }
+
+  if (benchmark.enabled && benchmark.frame_target != 0 && benchmark.warmup_frames > benchmark.frame_target) {
+    report("benchmark warmup_frames exceeds frame_target");
+  }
+  return ok;
 }
 
 bool SceneDocument::has_section(std::string_view name) const {
@@ -1531,44 +2100,53 @@ vkpt::core::Result<SceneWorld> SceneDocument::to_world() const {
     if (!id) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
-    if (entity.has_transform) {
-      world.set_component(id, ComponentKind::Transform, entity.transform);
+    if (entity.has_transform && !world.set_component(id, ComponentKind::Transform, entity.transform)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
-    if (entity.has_camera) {
-      world.set_component(id, ComponentKind::Camera, entity.camera);
+    if (entity.has_camera && !world.set_component(id, ComponentKind::Camera, entity.camera)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
-    if (entity.has_light) {
-      world.set_component(id, ComponentKind::Light, entity.light);
+    if (entity.has_light && !world.set_component(id, ComponentKind::Light, entity.light)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
-    if (entity.has_mesh) {
-      world.set_component(id, ComponentKind::MeshRenderer, entity.mesh);
+    if (entity.has_mesh && !world.set_component(id, ComponentKind::MeshRenderer, entity.mesh)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
-    if (entity.material.material_id != 0) {
-      world.set_component(id, ComponentKind::MaterialOverride, entity.material);
+    if (entity.material.material_id != 0 && !world.set_component(id, ComponentKind::MaterialOverride, entity.material)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
-    if (entity.hierarchy.parent != 0) {
-      world.set_hierarchy_parent(id, entity.hierarchy.parent);
+    if (entity.hierarchy.parent != 0 && !world.set_hierarchy_parent(id, entity.hierarchy.parent)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::InvalidArgument);
     }
-    if (!entity.animation.clip.empty()) {
-      world.set_component(id, ComponentKind::Animation, entity.animation);
+    if (!entity.animation.clip.empty() && !world.set_component(id, ComponentKind::Animation, entity.animation)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
-    if (!entity.script.script.empty()) {
-      world.set_component(id, ComponentKind::Script, entity.script);
-      world.set_component(id, ComponentKind::BenchmarkTag, entity.benchmark_tag);
+    if (!entity.script.script.empty() &&
+        (!world.set_component(id, ComponentKind::Script, entity.script) ||
+         !world.set_component(id, ComponentKind::BenchmarkTag, entity.benchmark_tag))) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
   }
   for (const auto& cam : cameras) {
-    world.set_component(cam.id, ComponentKind::Camera, cam.camera);
+    if (!world.set_component(cam.id, ComponentKind::Camera, cam.camera)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::InvalidArgument);
+    }
   }
   for (const auto& light : lights) {
-    world.set_component(light.id, ComponentKind::Light, light.light);
+    if (!world.set_component(light.id, ComponentKind::Light, light.light)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::InvalidArgument);
+    }
   }
   for (const auto& transform : transforms) {
     if (transform.id != 0) {
       if (transform.parent != 0) {
-        world.set_hierarchy_parent(transform.id, transform.parent);
+        if (!world.set_hierarchy_parent(transform.id, transform.parent)) {
+          return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::InvalidArgument);
+        }
       }
-      world.set_transform(transform.id, transform.transform, TransformAuthority::Authored, "document", 0);
+      if (!world.set_transform(transform.id, transform.transform, TransformAuthority::Authored, "document", 0)) {
+        return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::InvalidArgument);
+      }
     }
   }
   world.recompute_world_transforms();
@@ -1630,36 +2208,65 @@ std::string SceneDocument::export_hash_hex() const {
 
 SceneSnapshot SceneDocument::snapshot() const {
   SceneSnapshot out;
-  std::string blob = "scene:";
-  blob.reserve(128);
+  if (auto world = to_world()) {
+    out = world.value().build_snapshot();
+  }
+
+  std::string blob = "scene:" + metadata.schema + ":" + metadata.scene_name + ";";
+  out.entity_ids.clear();
+  out.renderables.clear();
+  out.lights.clear();
   for (const auto& entity : entities) {
     out.entity_ids.push_back(entity.id);
-    blob += std::to_string(entity.id);
+    blob += "e" + std::to_string(entity.id) + ":" + entity.name + ";";
     if (entity.has_mesh) {
-      out.renderables.push_back({entity.id, entity.mesh.mesh_id, entity.material.material_id, entity.transform});
-      blob += "m" + std::to_string(entity.mesh.mesh_id) + ":" + std::to_string(entity.material.material_id);
+      out.renderables.push_back({entity.id, entity.mesh.mesh_id, entity.mesh.material_id, entity.transform});
+      blob += "m" + std::to_string(entity.mesh.mesh_id) + ":" + std::to_string(entity.mesh.material_id) + ";";
     }
     if (entity.has_light) {
       out.lights.push_back({entity.id, entity.light, entity.transform});
-      blob += "l" + std::to_string(entity.light.intensity);
+      blob += "l" + entity.light.type + ":" + std::to_string(entity.light.intensity) + ";";
+    }
+    if (entity.has_camera && !out.camera) {
+      out.camera = SceneCameraDefinition{entity.id, entity.camera};
     }
   }
+  out.materials.clear();
   for (const auto& material : materials) {
     out.materials.push_back({material.id, material});
-    blob += "mat" + std::to_string(material.id);
+    blob += "mat" + std::to_string(material.id) + ":" + material.name + ":" +
+            std::to_string(material.roughness) + ";";
   }
+  out.asset_refs.clear();
   for (const auto& asset : assets) {
     out.asset_refs.push_back(asset.uri);
-    blob += "a" + asset.uri;
-  }
-  if (!entities.empty()) {
-    out.camera = SceneCameraDefinition{entities.front().id, entities.front().camera};
+    blob += "a" + std::to_string(asset.id) + ":" + asset.uri + ";";
   }
   for (const auto& camera : cameras) {
     if (!out.camera) {
       out.camera = camera;
     }
-    blob += "c" + std::to_string(camera.id);
+    blob += "c" + std::to_string(camera.id) + ":" + std::to_string(camera.camera.fov) + ";";
+  }
+  for (const auto& geometry_entry : geometry) {
+    blob += "g" + std::to_string(geometry_entry.id) + ":" + geometry_entry.primitive + ":" +
+            std::to_string(geometry_entry.material_id) + ":" +
+            std::to_string(geometry_entry.vertices.size()) + ":" +
+            std::to_string(geometry_entry.indices.size()) + ";";
+  }
+  for (const auto& transform : transforms) {
+    blob += "x" + std::to_string(transform.id) + ":" + std::to_string(transform.parent) + ":" +
+            std::to_string(transform.transform.translation.x) + "," +
+            std::to_string(transform.transform.translation.y) + "," +
+            std::to_string(transform.transform.translation.z) + ";";
+  }
+  for (const auto& light : lights) {
+    blob += "L" + std::to_string(light.id) + ":" + light.light.type + ":" +
+            std::to_string(light.light.intensity) + ";";
+  }
+  for (const auto& sdf : sdf_primitives) {
+    blob += "sdf" + std::to_string(sdf.id) + ":" + sdf.shape + ":" +
+            std::to_string(sdf.primitive.radius) + ";";
   }
   out.benchmark = benchmark;
   if (out.benchmark.enabled) {
@@ -1669,6 +2276,89 @@ SceneSnapshot SceneDocument::snapshot() const {
   }
   out.scene_hash = hash_scene_blob(blob);
   return out;
+}
+
+RenderSceneProxy SceneDocument::extract_render_scene(vkpt::core::FrameIndex frame) const {
+  RenderSceneProxy proxy;
+  const auto snap = snapshot();
+  proxy.scene_hash = snap.scene_hash;
+  proxy.frame = frame;
+  proxy.benchmark = benchmark;
+
+  if (auto loaded = to_world()) {
+    proxy = loaded.value().extract_render_scene(frame);
+    proxy.scene_hash = snap.scene_hash;
+    proxy.benchmark = benchmark;
+  }
+
+  proxy.materials.clear();
+  proxy.materials.reserve(materials.size());
+  for (const auto& material : materials) {
+    proxy.materials.push_back(RenderSceneProxy::Material{
+        material.id,
+        material.albedo,
+        material.roughness,
+        material.emission,
+        material.emission_intensity});
+  }
+
+  if (!proxy.camera && snap.camera) {
+    RenderSceneProxy::Camera camera;
+    camera.entity_id = snap.camera->id;
+    camera.fov = snap.camera->camera.fov;
+    camera.near_plane = snap.camera->camera.near_plane;
+    camera.far_plane = snap.camera->camera.far_plane;
+    camera.world_matrix = identity_matrix();
+    proxy.camera = camera;
+  }
+
+  return proxy;
+}
+
+vkpt::core::Result<SceneDocument> JsonSceneLoader::load_document_from_text(std::string_view text) {
+  return SceneDocument::load_from_text(text);
+}
+
+vkpt::core::Result<SceneDocument> JsonSceneLoader::load_document_from_file(std::string_view path) {
+  return SceneDocument::load_from_file(path);
+}
+
+SceneRuntime::SceneRuntime(SceneWorld world) : m_world(std::move(world)) {}
+
+IEcsWorld& SceneRuntime::world() {
+  return m_world;
+}
+
+const IEcsWorld& SceneRuntime::world() const {
+  return m_world;
+}
+
+SceneWorld& SceneRuntime::scene_world() {
+  return m_world;
+}
+
+const SceneWorld& SceneRuntime::scene_world() const {
+  return m_world;
+}
+
+vkpt::core::Result<void> SceneRuntime::load_document(const SceneDocument& document) {
+  return document.apply_to_world(m_world);
+}
+
+SceneSnapshot SceneRuntime::snapshot() const {
+  return m_world.build_snapshot();
+}
+
+RenderSceneProxy SceneRuntime::extract_render_scene(vkpt::core::FrameIndex frame) const {
+  return m_world.extract_render_scene(frame);
+}
+
+FrameLifecycleController& SceneRuntime::frame_lifecycle() {
+  return m_frameLifecycle;
+}
+
+const FrameLifecycleController& SceneRuntime::frame_lifecycle() const {
+  return m_frameLifecycle;
 }
 
 }  // namespace vkpt::scene

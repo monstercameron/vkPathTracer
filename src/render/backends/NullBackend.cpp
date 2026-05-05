@@ -60,7 +60,24 @@ std::vector<CachedManifest> NullShaderCache::dump_manifest() const {
   std::vector<CachedManifest> out;
   out.reserve(m_entries.size());
   for (const auto& entry : m_entries) {
-    out.push_back({entry.second, "null"});
+    ShaderManifest manifest;
+    manifest.shader_family = "cached";
+    manifest.entry_point = "main";
+    manifest.backend = "null";
+    manifest.source_format = ShaderSourceFormat::Unknown;
+    manifest.source_hash = MakeShaderManifestHash(entry.first);
+    manifest.variant_hash = MakeShaderManifestHash(entry.second);
+    manifest.cache_key = entry.first;
+    manifest.artifact_path = entry.second;
+    manifest.manifest_dump_path = BuildShaderManifestDumpPath("shader_cache", manifest);
+    manifest.compile_success = true;
+    manifest.validation_success = true;
+    out.push_back({SerializeShaderManifest(manifest),
+                   "null",
+                   manifest.cache_key,
+                   manifest.artifact_path,
+                   manifest.manifest_dump_path,
+                   manifest.compile_success});
   }
   return out;
 }
@@ -239,13 +256,18 @@ RenderBackendCapabilities NullBackend::capabilities() const {
   caps.storage_buffers = true;
   caps.storage_textures = true;
   caps.timestamp_queries = false;
+  caps.timestamp_fallback_reason = "null backend has no GPU timestamp queue; use CPU frame timing";
   caps.subgroups = false;
   caps.descriptor_indexing = false;
   caps.bindless_like_resources = false;
   caps.texture_formats = true;
   caps.ray_tracing = false;
+  caps.ray_query = false;
+  caps.ray_query_supported = false;
+  caps.acceleration_structure_supported = false;
   caps.presentation = false;
   caps.readback = true;
+  caps.is_simulated = true;
   caps.supports_present = false;
   caps.supports_multiqueue = false;
   caps.max_workgroup_size_x = 64u;
@@ -254,6 +276,22 @@ RenderBackendCapabilities NullBackend::capabilities() const {
   caps.max_buffer_alignment = 256u;
   caps.memory_model = "null";
   caps.notes = "Simulated backend for lifecycle and diagnostics.";
+  caps.platform.platform_name = "headless";
+  caps.platform.headless = true;
+  caps.platform.notes = "No native renderer surface is created.";
+  caps.ray_tracing_caps.unsupported_reason = "null backend has no hardware ray tracing device";
+  caps.shader.supported_source_formats = {"none"};
+  caps.shader.notes = "Accepts synthetic compute descriptors for lifecycle tests.";
+  caps.texture_formats_caps.rgba8_unorm = true;
+  caps.texture_formats_caps.rgba16_float = true;
+  caps.texture_formats_caps.storage_texture_formats = true;
+  caps.texture_formats_caps.sampled_texture_formats = true;
+  caps.texture_formats_caps.guaranteed_formats = {"RGBA8", "RGBA16F"};
+  caps.texture_formats_caps.notes = "Formats are simulated in CPU memory.";
+  caps.memory_budget.upload_alignment_bytes = 256u;
+  caps.memory_budget.readback_alignment_bytes = 256u;
+  caps.memory_budget.max_buffer_size_bytes = 256ull * 1024ull * 1024ull;
+  caps.memory_budget.budget_unavailable_reason = "null backend does not own GPU memory";
   return caps;
 }
 

@@ -101,4 +101,17 @@ inline void reset_hit_packet(HitPacket& hits, uint32_t lane_count) {
   }
 }
 
+class ScalarSimdKernel final : public ISimdKernel {
+ public:
+  SimdKernelInfo info() const override {
+    return {SimdMode::Scalar, 1u, PacketLanePolicy::ScalarTail, true, true, "scalar"};
+  }
+
+  uint32_t intersect_triangle_packet(const RayPacket& packet,
+                                     const TriangleSOA& triangle,
+                                     HitPacket& hits) const override {
+    return intersect_triangle_packet_scalar(packet, triangle, hits);
+  }
+};
+
 }  // namespace vkpt::cpu

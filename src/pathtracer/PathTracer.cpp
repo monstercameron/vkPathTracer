@@ -1,5 +1,8 @@
 #include "pathtracer/PathTracer.h"
 
+#include "cpu/ParallelBvhBuilder.h"
+#include "cpu/SimdKernelDispatch.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -72,11 +75,6 @@ uint32_t adler32(const std::vector<uint8_t>& bytes) {
   return (b << 16) | a;
 }
 
-void write_u16_be(std::vector<uint8_t>& out, uint16_t value) {
-  out.push_back(static_cast<uint8_t>((value >> 8) & 0xffu));
-  out.push_back(static_cast<uint8_t>(value & 0xffu));
-}
-
 void write_u16_le(std::vector<uint8_t>& out, uint16_t value) {
   out.push_back(static_cast<uint8_t>(value & 0xffu));
   out.push_back(static_cast<uint8_t>((value >> 8) & 0xffu));
@@ -87,13 +85,6 @@ void write_u32_be(std::vector<uint8_t>& out, uint32_t value) {
   out.push_back(static_cast<uint8_t>((value >> 16) & 0xffu));
   out.push_back(static_cast<uint8_t>((value >> 8) & 0xffu));
   out.push_back(static_cast<uint8_t>(value & 0xffu));
-}
-
-void write_u32_le(std::vector<uint8_t>& out, uint32_t value) {
-  out.push_back(static_cast<uint8_t>(value & 0xffu));
-  out.push_back(static_cast<uint8_t>((value >> 8) & 0xffu));
-  out.push_back(static_cast<uint8_t>((value >> 16) & 0xffu));
-  out.push_back(static_cast<uint8_t>((value >> 24) & 0xffu));
 }
 
 void append_chunk(std::vector<uint8_t>& out, std::string_view type, const std::vector<uint8_t>& data) {
@@ -127,11 +118,6 @@ std::vector<uint8_t> encode_deflate_stored(const std::vector<uint8_t>& raw) {
 
   write_u32_be(out, adler32(raw));
   return out;
-}
-
-uint8_t to_byte(float linear) {
-  float clamped = std::min(1.0f, std::max(0.0f, linear));
-  return static_cast<uint8_t>(clamped * 255.0f + 0.5f);
 }
 
 vkpt::pathtracer::Vec3 operator+(const vkpt::pathtracer::Vec3& lhs, const vkpt::pathtracer::Vec3& rhs) {
@@ -194,11 +180,6 @@ vkpt::pathtracer::Vec3 normalize(const vkpt::pathtracer::Vec3& value) {
   return value / l;
 }
 
-vkpt::pathtracer::Vec3 clamp01(const vkpt::pathtracer::Vec3& value) {
-  const auto c = [](float v) { return std::min(1.0f, std::max(0.0f, v)); };
-  return {c(value.x), c(value.y), c(value.z)};
-}
-
 vkpt::pathtracer::Vec3 rotate_x(const vkpt::pathtracer::Vec3& value, float angle) {
   const float s = std::sin(angle);
   const float c = std::cos(angle);
@@ -215,10 +196,6 @@ vkpt::pathtracer::Vec3 rotate_z(const vkpt::pathtracer::Vec3& value, float angle
   const float s = std::sin(angle);
   const float c = std::cos(angle);
   return {c * value.x - s * value.y, s * value.x + c * value.y, value.z};
-}
-
-vkpt::pathtracer::Vec3 rotate_euler(const vkpt::pathtracer::Vec3& value, const vkpt::pathtracer::Vec3& rotation) {
-  return rotate_x(rotate_y(rotate_z(value, rotation.z), rotation.y), rotation.x);
 }
 
 vkpt::pathtracer::Vec3 rotate_euler_inv(const vkpt::pathtracer::Vec3& value, const vkpt::pathtracer::Vec3& rotation) {
@@ -240,10 +217,6 @@ vkpt::pathtracer::Vec3 divide_by_scale(const vkpt::pathtracer::Vec3& value, cons
 
 vkpt::pathtracer::Vec3 parse_shape_position(const vkpt::scene::Vec3& pos) {
   return {pos.x, pos.y, pos.z};
-}
-
-vkpt::pathtracer::Vec3 parse_shape_rotation(const vkpt::scene::Vec3& rot) {
-  return {rot.x, rot.y, rot.z};
 }
 
 vkpt::pathtracer::Vec3 parse_shape_rotation(const vkpt::scene::Quat& rot) {
@@ -268,9 +241,318 @@ float radians(float deg) {
   return deg * (kPi / 180.0f);
 }
 
+bool intersect_triangle_local(const vkpt::pathtracer::RTTriangle& tri,
+                              const std::vector<vkpt::pathtracer::Vec3>& vertices,
+                              const vkpt::pathtracer::Ray& ray,
+                              float& t,
+                              float& u,
+                              float& v) {
+  if (tri.i0 >= vertices.size() || tri.i1 >= vertices.size() || tri.i2 >= vertices.size()) {
+    return false;
+  }
+  const vkpt::pathtracer::Vec3 p0 = vertices[tri.i0];
+  const vkpt::pathtracer::Vec3 p1 = vertices[tri.i1];
+  const vkpt::pathtracer::Vec3 p2 = vertices[tri.i2];
+  const vkpt::pathtracer::Vec3 e1 = p1 - p0;
+  const vkpt::pathtracer::Vec3 e2 = p2 - p0;
+  const vkpt::pathtracer::Vec3 h = cross(ray.direction, e2);
+  const float det = dot(e1, h);
+  if (std::fabs(det) < kEpsilon) {
+    return false;
+  }
+  const float inv_det = 1.0f / det;
+  const vkpt::pathtracer::Vec3 s = ray.origin - p0;
+  u = dot(s, h) * inv_det;
+  if (u < 0.0f || u > 1.0f) {
+    return false;
+  }
+  const vkpt::pathtracer::Vec3 q = cross(s, e1);
+  v = dot(ray.direction, q) * inv_det;
+  if (v < 0.0f || u + v > 1.0f) {
+    return false;
+  }
+  t = dot(e2, q) * inv_det;
+  return t > kEpsilon;
+}
+
+bool intersect_aabb(const vkpt::cpu::BvhAabb& aabb,
+                    const vkpt::pathtracer::Ray& ray,
+                    float max_t,
+                    float& t_near) {
+  float t_min = kEpsilon;
+  float t_max = max_t;
+  const float origin[3] = {ray.origin.x, ray.origin.y, ray.origin.z};
+  const float direction[3] = {ray.direction.x, ray.direction.y, ray.direction.z};
+  for (int axis = 0; axis < 3; ++axis) {
+    if (std::fabs(direction[axis]) <= kEpsilon) {
+      if (origin[axis] < aabb.min[axis] || origin[axis] > aabb.max[axis]) {
+        return false;
+      }
+      continue;
+    }
+    const float inv_d = 1.0f / direction[axis];
+    float t0 = (aabb.min[axis] - origin[axis]) * inv_d;
+    float t1 = (aabb.max[axis] - origin[axis]) * inv_d;
+    if (t0 > t1) {
+      std::swap(t0, t1);
+    }
+    t_min = std::max(t_min, t0);
+    t_max = std::min(t_max, t1);
+    if (t_min > t_max) {
+      return false;
+    }
+  }
+  t_near = t_min;
+  return t_max > kEpsilon;
+}
+
+class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
+ public:
+  bool build(const vkpt::pathtracer::RTSceneData& scene, bool deterministic) override {
+    reset();
+    m_vertices = scene.vertices;
+    m_info.deterministic = deterministic;
+
+    std::vector<vkpt::cpu::BvhAabb> primitive_aabbs;
+    for (const auto& instance : scene.instances) {
+      for (uint32_t triangle = 0; triangle < instance.triangle_count; ++triangle) {
+        const uint32_t base_tri = (instance.first_triangle + triangle) * 3u;
+        if (base_tri + 2u >= scene.indices.size()) {
+          continue;
+        }
+        const vkpt::pathtracer::RTTriangle tri{
+            scene.indices[base_tri + 0u],
+            scene.indices[base_tri + 1u],
+            scene.indices[base_tri + 2u],
+        };
+        if (tri.i0 >= m_vertices.size() || tri.i1 >= m_vertices.size() || tri.i2 >= m_vertices.size()) {
+          continue;
+        }
+
+        const auto& v0 = m_vertices[tri.i0];
+        const auto& v1 = m_vertices[tri.i1];
+        const auto& v2 = m_vertices[tri.i2];
+        vkpt::cpu::BvhAabb aabb{};
+        aabb.min[0] = std::min({v0.x, v1.x, v2.x}) - kEpsilon;
+        aabb.min[1] = std::min({v0.y, v1.y, v2.y}) - kEpsilon;
+        aabb.min[2] = std::min({v0.z, v1.z, v2.z}) - kEpsilon;
+        aabb.max[0] = std::max({v0.x, v1.x, v2.x}) + kEpsilon;
+        aabb.max[1] = std::max({v0.y, v1.y, v2.y}) + kEpsilon;
+        aabb.max[2] = std::max({v0.z, v1.z, v2.z}) + kEpsilon;
+
+        const auto e1 = v1 - v0;
+        const auto e2 = v2 - v0;
+        m_primitives.push_back({tri,
+                                instance.material_index,
+                                static_cast<uint32_t>(m_primitives.size()),
+                                normalize(cross(e1, e2))});
+        primitive_aabbs.push_back(aabb);
+      }
+    }
+
+    m_info.primitive_count = m_primitives.size();
+    if (m_primitives.empty()) {
+      m_info.built = true;
+      return true;
+    }
+
+    m_bvh = m_builder.build(primitive_aabbs, nullptr, deterministic);
+    const auto stats = m_builder.last_stats();
+    m_info.built = true;
+    m_info.node_count = stats.node_count;
+    m_info.leaf_count = stats.leaf_count;
+    m_info.build_ms = stats.build_ms;
+    return !m_bvh.nodes.empty();
+  }
+
+  bool intersect(const vkpt::pathtracer::Ray& ray,
+                 vkpt::pathtracer::RayQueryHit& out,
+                 vkpt::pathtracer::RayQueryStats* stats = nullptr) const override {
+    out = {};
+    if (m_bvh.nodes.empty() || m_primitives.empty()) {
+      return false;
+    }
+
+    float best_t = std::numeric_limits<float>::infinity();
+    std::vector<int32_t> stack;
+    stack.reserve(64u);
+    stack.push_back(0);
+
+    while (!stack.empty()) {
+      const int32_t node_index = stack.back();
+      stack.pop_back();
+      if (node_index < 0 || static_cast<std::size_t>(node_index) >= m_bvh.nodes.size()) {
+        continue;
+      }
+
+      const auto& node = m_bvh.nodes[static_cast<std::size_t>(node_index)];
+      if (stats) {
+        ++stats->bvh_node_visits;
+      }
+      float node_t = 0.0f;
+      if (!intersect_aabb(node.aabb, ray, best_t, node_t)) {
+        continue;
+      }
+
+      if (node.is_leaf()) {
+        if (stats) {
+          ++stats->bvh_leaf_visits;
+        }
+        for (int32_t i = 0; i < node.prim_count; ++i) {
+          const int32_t ordered_index = node.first_prim + i;
+          if (ordered_index < 0 || static_cast<std::size_t>(ordered_index) >= m_bvh.prim_indices.size()) {
+            continue;
+          }
+          const uint32_t primitive_index = m_bvh.prim_indices[static_cast<std::size_t>(ordered_index)];
+          if (primitive_index >= m_primitives.size()) {
+            continue;
+          }
+          if (stats) {
+            ++stats->triangle_tests;
+          }
+          const auto& primitive = m_primitives[primitive_index];
+          float t = best_t;
+          float u = 0.0f;
+          float v = 0.0f;
+          if (!intersect_triangle_local(primitive.triangle, m_vertices, ray, t, u, v) || t >= best_t) {
+            continue;
+          }
+          if (stats) {
+            ++stats->triangle_hits;
+          }
+          best_t = t;
+          out.hit = true;
+          out.t = t;
+          out.position = ray.origin + ray.direction * t;
+          out.normal = primitive.normal;
+          out.material_index = primitive.material_index;
+          out.primitive_index = primitive.primitive_index;
+        }
+        continue;
+      }
+
+      float left_t = 0.0f;
+      float right_t = 0.0f;
+      const bool hit_left = node.left_child >= 0 &&
+          intersect_aabb(m_bvh.nodes[static_cast<std::size_t>(node.left_child)].aabb, ray, best_t, left_t);
+      const bool hit_right = node.right_child >= 0 &&
+          intersect_aabb(m_bvh.nodes[static_cast<std::size_t>(node.right_child)].aabb, ray, best_t, right_t);
+      if (hit_left && hit_right) {
+        if (left_t <= right_t) {
+          stack.push_back(node.right_child);
+          stack.push_back(node.left_child);
+        } else {
+          stack.push_back(node.left_child);
+          stack.push_back(node.right_child);
+        }
+      } else if (hit_left) {
+        stack.push_back(node.left_child);
+      } else if (hit_right) {
+        stack.push_back(node.right_child);
+      }
+    }
+
+    return out.hit;
+  }
+
+  vkpt::pathtracer::RayAcceleratorBuildInfo build_info() const override {
+    return m_info;
+  }
+
+  void reset() override {
+    m_vertices.clear();
+    m_primitives.clear();
+    m_bvh = {};
+    m_info = {};
+  }
+
+ private:
+  struct Primitive {
+    vkpt::pathtracer::RTTriangle triangle{};
+    uint32_t material_index = 0;
+    uint32_t primitive_index = 0;
+    vkpt::pathtracer::Vec3 normal{};
+  };
+
+  std::vector<vkpt::pathtracer::Vec3> m_vertices;
+  std::vector<Primitive> m_primitives;
+  vkpt::cpu::ParallelBvhBuilder m_builder;
+  vkpt::cpu::BvhBuildResult m_bvh;
+  vkpt::pathtracer::RayAcceleratorBuildInfo m_info{};
+};
+
 }  // namespace
 
 namespace vkpt::pathtracer {
+
+PathTraceSettings MakePathTraceSettings(const RenderSettings& settings) {
+  PathTraceSettings out;
+  out.width = settings.width;
+  out.height = settings.height;
+  out.spp = settings.spp;
+  out.seed = settings.seed;
+  out.deterministic = settings.deterministic;
+  out.integrator.max_depth = std::max(1u, settings.max_depth);
+  out.integrator.enable_nee = settings.enable_nee;
+  out.integrator.enable_mis = settings.enable_mis;
+  out.integrator.russian_roulette_start_depth = settings.russian_roulette_start_depth;
+  out.integrator.russian_roulette_min_survival = settings.russian_roulette_min_survival;
+  out.integrator.russian_roulette_max_survival = settings.russian_roulette_max_survival;
+  out.camera.aperture_radius = std::max(0.0f, settings.camera_aperture_radius);
+  out.camera.focus_distance = std::max(0.0f, settings.camera_focus_distance);
+  out.film.resolve = settings.film_resolve;
+  return out;
+}
+
+RenderSettings MakeRenderSettings(const PathTraceSettings& settings) {
+  RenderSettings out;
+  out.width = settings.width;
+  out.height = settings.height;
+  out.spp = settings.spp;
+  out.seed = settings.seed;
+  out.deterministic = settings.deterministic;
+  out.max_depth = std::max(1u, settings.integrator.max_depth);
+  out.enable_nee = settings.integrator.enable_nee;
+  out.enable_mis = settings.integrator.enable_mis;
+  out.russian_roulette_start_depth = settings.integrator.russian_roulette_start_depth;
+  out.russian_roulette_min_survival = settings.integrator.russian_roulette_min_survival;
+  out.russian_roulette_max_survival = settings.integrator.russian_roulette_max_survival;
+  out.camera_aperture_radius = std::max(0.0f, settings.camera.aperture_radius);
+  out.camera_focus_distance = std::max(0.0f, settings.camera.focus_distance);
+  out.film_resolve = settings.film.resolve;
+  return out;
+}
+
+std::string SerializePathTraceSettings(const PathTraceSettings& settings) {
+  std::ostringstream out;
+  out << "{";
+  out << "\"width\":" << settings.width << ",";
+  out << "\"height\":" << settings.height << ",";
+  out << "\"spp\":" << settings.spp << ",";
+  out << "\"seed\":" << settings.seed << ",";
+  out << "\"deterministic\":" << (settings.deterministic ? "true" : "false") << ",";
+  out << "\"integrator\":{";
+  out << "\"max_depth\":" << settings.integrator.max_depth << ",";
+  out << "\"enable_nee\":" << (settings.integrator.enable_nee ? "true" : "false") << ",";
+  out << "\"enable_mis\":" << (settings.integrator.enable_mis ? "true" : "false") << ",";
+  out << "\"russian_roulette_start_depth\":" << settings.integrator.russian_roulette_start_depth << ",";
+  out << "\"russian_roulette_min_survival\":" << settings.integrator.russian_roulette_min_survival << ",";
+  out << "\"russian_roulette_max_survival\":" << settings.integrator.russian_roulette_max_survival;
+  out << "},";
+  out << "\"camera\":{";
+  out << "\"aperture_radius\":" << settings.camera.aperture_radius << ",";
+  out << "\"focus_distance\":" << settings.camera.focus_distance;
+  out << "},";
+  out << "\"film\":{";
+  out << "\"resolve\":" << SerializeFilmResolveSettings(settings.film.resolve);
+  out << "}";
+  out << "}";
+  return out.str();
+}
+
+std::unique_ptr<IRayAccelerator> CreateCpuBvhAccelerator() {
+  return std::make_unique<CpuBvhAccelerator>();
+}
 
 FilmBuffer::FilmBuffer(uint32_t width, uint32_t height) {
   resize(width, height);
@@ -322,75 +604,11 @@ void FilmBuffer::import_tile(const FilmBuffer& src, uint32_t start_y, uint32_t e
 }
 
 FilmLdr FilmBuffer::resolve_ldr() const {
-  FilmLdr out;
-  out.width = m_width;
-  out.height = m_height;
-  out.rgba8.assign(static_cast<std::size_t>(m_width) * m_height * 4, 0u);
+  return resolve_ldr(m_resolveSettings);
+}
 
-  float logLumSum = 0.0f;
-  uint32_t logLumCount = 0u;
-  float maxChannel = 0.0f;
-  const float kLogBias = 1.0e-4f;
-
-  for (uint32_t y = 0; y < m_height; ++y) {
-    for (uint32_t x = 0; x < m_width; ++x) {
-      const auto idx = static_cast<std::size_t>(y) * m_width + x;
-      const float invSamples = 1.0f / std::max(1u, m_sampleCounts[idx]);
-      const Vec3 linear{
-          std::max(0.0f, m_accumulation[idx].x * invSamples),
-          std::max(0.0f, m_accumulation[idx].y * invSamples),
-          std::max(0.0f, m_accumulation[idx].z * invSamples)};
-      maxChannel = std::max(maxChannel, std::max(linear.x, std::max(linear.y, linear.z)));
-      const float lum = luminance(linear);
-      if (lum > 0.0f) {
-        logLumSum += std::log(kLogBias + lum);
-        ++logLumCount;
-      }
-    }
-  }
-
-  const float logAvgLum =
-      (logLumCount > 0u) ? std::exp(logLumSum / static_cast<float>(logLumCount)) : 0.0f;
-  float exposure = 1.0f;
-  if (logAvgLum > 0.0f) {
-    exposure = 0.18f / logAvgLum;
-  }
-  if (maxChannel > 0.0f) {
-    exposure = std::max(exposure, 2.5f / maxChannel);
-  }
-  exposure = std::clamp(exposure, 1.0f / 65536.0f, 65536.0f);
-
-  vkpt::log::Logger::instance().log(vkpt::log::Severity::Debug,
-                                    "traceprobe",
-                                    "film resolve ldr",
-                                    {
-                                      {"width", std::to_string(m_width)},
-                                      {"height", std::to_string(m_height)},
-                                      {"log_avg_lum", std::to_string(logAvgLum)},
-                                      {"max_channel", std::to_string(maxChannel)},
-                                      {"exposure", std::to_string(exposure)}
-                                    });
-
-  for (uint32_t y = 0; y < m_height; ++y) {
-    for (uint32_t x = 0; x < m_width; ++x) {
-      const auto idx = static_cast<std::size_t>(y) * m_width + x;
-      const float invSamples = 1.0f / std::max(1u, m_sampleCounts[idx]);
-      const Vec3 linear{
-          std::max(0.0f, m_accumulation[idx].x * invSamples),
-          std::max(0.0f, m_accumulation[idx].y * invSamples),
-          std::max(0.0f, m_accumulation[idx].z * invSamples)};
-      const Vec3 mapped{
-          (linear.x * exposure) / (1.0f + linear.x * exposure),
-          (linear.y * exposure) / (1.0f + linear.y * exposure),
-          (linear.z * exposure) / (1.0f + linear.z * exposure)};
-      const auto base = static_cast<std::size_t>(y) * m_width * 4 + static_cast<std::size_t>(x) * 4;
-      out.rgba8[base + 0] = to_byte(std::pow(std::max(0.0f, mapped.x), 1.0f / 2.2f));
-      out.rgba8[base + 1] = to_byte(std::pow(std::max(0.0f, mapped.y), 1.0f / 2.2f));
-      out.rgba8[base + 2] = to_byte(std::pow(std::max(0.0f, mapped.z), 1.0f / 2.2f));
-      out.rgba8[base + 3] = 255;
-    }
-  }
-  return out;
+FilmLdr FilmBuffer::resolve_ldr(const FilmResolveSettings& settings) const {
+  return ApplyFilmResolve(resolve_hdr(), settings);
 }
 
 FilmHdr FilmBuffer::resolve_hdr() const {
@@ -434,25 +652,106 @@ Vec3 ScalarCpuPathTracer::make_unit(const Vec3& value) const {
   return normalize(value);
 }
 
+bool NullPathTracer::configure(const RenderSettings& settings) {
+  m_settings = MakeRenderSettings(MakePathTraceSettings(settings));
+  m_film.resize(m_settings.width, m_settings.height);
+  m_film.set_resolve_settings(m_settings.film_resolve);
+  m_film.clear();
+  m_counters = {};
+  m_configured = true;
+  m_has_scene = false;
+  m_scene = {};
+  return true;
+}
+
+bool NullPathTracer::load_scene_snapshot(const RTSceneData& scene) {
+  if (!m_configured) {
+    return false;
+  }
+  m_scene = scene;
+  m_has_scene = true;
+  return true;
+}
+
+bool NullPathTracer::build_or_update_acceleration() {
+  return m_configured;
+}
+
+bool NullPathTracer::reset_accumulation() {
+  if (!m_configured) {
+    return false;
+  }
+  m_film.clear();
+  m_counters = {};
+  return true;
+}
+
+bool NullPathTracer::update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) {
+  if (!m_configured) {
+    return false;
+  }
+  m_scene.camera_position = pos;
+  m_scene.camera_target = target;
+  m_scene.camera_up = up;
+  m_scene.camera_fov_deg = fov_deg;
+  return true;
+}
+
+bool NullPathTracer::render_sample_batch(uint32_t start_y,
+                                         uint32_t end_y,
+                                         uint32_t sample_index,
+                                         uint32_t frame_index) {
+  (void)start_y;
+  (void)end_y;
+  (void)sample_index;
+  (void)frame_index;
+  return m_configured;
+}
+
+void NullPathTracer::shutdown() {
+  m_settings = {};
+  m_scene = {};
+  m_film = FilmBuffer{};
+  m_counters = {};
+  m_configured = false;
+  m_has_scene = false;
+}
+
+ScalarCpuPathTracer::~ScalarCpuPathTracer() = default;
+
+bool ScalarCpuPathTracer::set_accelerator(IRayAccelerator* accelerator) {
+  m_external_accelerator = accelerator;
+  m_accel_info = accelerator ? accelerator->build_info() : RayAcceleratorBuildInfo{};
+  return true;
+}
+
 bool ScalarCpuPathTracer::configure(const RenderSettings& settings) {
-  m_settings = settings;
-  m_film = FilmBuffer{settings.width, settings.height};
+  m_trace_settings = MakePathTraceSettings(settings);
+  m_settings = MakeRenderSettings(m_trace_settings);
+  m_film = FilmBuffer{m_settings.width, m_settings.height};
+  m_film.set_resolve_settings(m_settings.film_resolve);
   m_film.clear();
   m_counters = {};
   m_worker_count = std::max(1u, std::thread::hardware_concurrency());
   const auto features = vkpt::cpu::QueryCpuFeatures();
   m_simd_dispatch = vkpt::cpu::BuildSimdDispatchInfo(features);
+  const auto kernel_info = vkpt::cpu::SelectSimdKernel(features).info();
   vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,
                                     "pathtracer",
                                     "cpu tracer dispatch configured",
                                     {
                                       {"workers", std::to_string(m_worker_count)},
                                       {"simd_preferred", vkpt::cpu::ToString(m_simd_dispatch.preferred)},
+                                      {"simd_kernel", std::string(kernel_info.name)},
+                                      {"simd_lane_width", std::to_string(kernel_info.lane_width)},
                                       {"simd_available", std::to_string(m_simd_dispatch.available.size())}
                                     });
   m_configured = true;
   m_has_scene = false;
   m_scene = RTSceneData{};
+  m_accelerator = CreateCpuBvhAccelerator();
+  m_external_accelerator = nullptr;
+  m_accel_info = {};
   return true;
 }
 
@@ -472,6 +771,44 @@ bool ScalarCpuPathTracer::build_or_update_acceleration() {
   if (!m_has_scene) {
     return false;
   }
+  if (!m_accelerator) {
+    m_accelerator = CreateCpuBvhAccelerator();
+  }
+  IRayAccelerator* accelerator = m_external_accelerator ? m_external_accelerator : m_accelerator.get();
+  if (accelerator == nullptr || !accelerator->build(m_scene, m_settings.deterministic)) {
+    return false;
+  }
+  m_accel_info = accelerator->build_info();
+  vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,
+                                    "pathtracer",
+                                    "cpu bvh built",
+                                    {
+                                      {"primitives", std::to_string(m_accel_info.primitive_count)},
+                                      {"nodes", std::to_string(m_accel_info.node_count)},
+                                      {"leaves", std::to_string(m_accel_info.leaf_count)},
+                                      {"build_ms", std::to_string(m_accel_info.build_ms)},
+                                      {"deterministic", m_accel_info.deterministic ? "true" : "false"}
+                                    });
+  m_camera_forward = normalize(m_scene.camera_target - m_scene.camera_position);
+  m_camera_right = normalize(cross(m_camera_forward, m_scene.camera_up));
+  if (length_sq(m_camera_right) <= kEpsilon * kEpsilon) {
+    m_camera_right = {1.0f, 0.0f, 0.0f};
+  }
+  m_camera_up = normalize(cross(m_camera_right, m_camera_forward));
+  if (length_sq(m_camera_up) <= kEpsilon * kEpsilon) {
+    m_camera_up = {0.0f, 1.0f, 0.0f};
+  }
+  return true;
+}
+
+bool ScalarCpuPathTracer::update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) {
+  if (!m_configured || !m_has_scene) {
+    return false;
+  }
+  m_scene.camera_position = pos;
+  m_scene.camera_target = target;
+  m_scene.camera_up = up;
+  m_scene.camera_fov_deg = fov_deg;
   m_camera_forward = normalize(m_scene.camera_target - m_scene.camera_position);
   m_camera_right = normalize(cross(m_camera_forward, m_scene.camera_up));
   if (length_sq(m_camera_right) <= kEpsilon * kEpsilon) {
@@ -581,20 +918,27 @@ bool ScalarCpuPathTracer::intersect_sphere(const RTSdfPrimitive& primitive,
 }
 
 bool ScalarCpuPathTracer::intersect_box(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const {
+  atomic_add_u64(m_counters.sdf_tests);
+  uint32_t steps = 0u;
   for (uint32_t i = 0; i < kMaxMarchSteps; ++i) {
-    atomic_add_u64(m_counters.sdf_tests);
+    ++steps;
     const Vec3 point = ray.origin + ray.direction * t;
     const float d = sdf_distance(primitive, point);
     if (d <= kEpsilon) {
       sdf_normal(primitive, point, normal);
+      atomic_add_u64(m_counters.sdf_steps, steps);
       atomic_add_u64(m_counters.sdf_hits);
       return true;
     }
     t += std::max(kMinMarchStep, d);
     if (t > kMaxMarchDistance) {
+      atomic_add_u64(m_counters.sdf_steps, steps);
+      atomic_add_u64(m_counters.sdf_misses);
       return false;
     }
   }
+  atomic_add_u64(m_counters.sdf_steps, steps);
+  atomic_add_u64(m_counters.sdf_misses);
   return false;
 }
 
@@ -620,39 +964,58 @@ bool ScalarCpuPathTracer::intersect_capsule(const RTSdfPrimitive& primitive, con
 bool ScalarCpuPathTracer::intersect_scene(const Ray& ray, Hit& out) const {
   out = {};
   float bestT = std::numeric_limits<float>::infinity();
+  const IRayAccelerator* accelerator = m_external_accelerator ? m_external_accelerator : m_accelerator.get();
+  const bool use_accelerator = accelerator && m_accel_info.built && m_accel_info.primitive_count > 0u;
 
-  for (const auto& instance : m_scene.instances) {
-    for (uint32_t triangle = 0; triangle < instance.triangle_count; ++triangle) {
-      const uint32_t baseTri = (instance.first_triangle + triangle) * 3;
-      if (baseTri + 2 >= m_scene.indices.size()) {
-        continue;
-      }
-      const RTTriangle tri{
-          m_scene.indices[baseTri + 0],
-          m_scene.indices[baseTri + 1],
-          m_scene.indices[baseTri + 2],
-      };
-      float t = 0.0f;
-      float u = 0.0f;
-      float v = 0.0f;
-      if (!intersect_triangle(tri, ray, t, u, v)) {
-        atomic_add_u64(m_counters.triangle_hits);
-        continue;
-      }
-      if (t >= bestT) {
-        continue;
-      }
-      if (tri.i0 >= m_scene.vertices.size() || tri.i1 >= m_scene.vertices.size() || tri.i2 >= m_scene.vertices.size()) {
-        continue;
-      }
-      const Vec3 e1 = m_scene.vertices[tri.i1] - m_scene.vertices[tri.i0];
-      const Vec3 e2 = m_scene.vertices[tri.i2] - m_scene.vertices[tri.i0];
+  if (use_accelerator) {
+    RayQueryHit accel_hit{};
+    RayQueryStats stats{};
+    if (accelerator->intersect(ray, accel_hit, &stats) && accel_hit.hit) {
       out.hit = true;
-      out.t = t;
-      out.position = ray.origin + ray.direction * t;
-      out.normal = make_unit(cross(e1, e2));
-      out.material_index = instance.material_index;
-      bestT = t;
+      out.t = accel_hit.t;
+      out.position = accel_hit.position;
+      out.normal = accel_hit.normal;
+      out.material_index = accel_hit.material_index;
+      bestT = accel_hit.t;
+    }
+    atomic_add_u64(m_counters.triangle_tests, stats.triangle_tests);
+    atomic_add_u64(m_counters.triangle_hits, stats.triangle_hits);
+    atomic_add_u64(m_counters.bvh_node_visits, stats.bvh_node_visits);
+    atomic_add_u64(m_counters.bvh_leaf_visits, stats.bvh_leaf_visits);
+  } else {
+    for (const auto& instance : m_scene.instances) {
+      for (uint32_t triangle = 0; triangle < instance.triangle_count; ++triangle) {
+        const uint32_t baseTri = (instance.first_triangle + triangle) * 3;
+        if (baseTri + 2 >= m_scene.indices.size()) {
+          continue;
+        }
+        const RTTriangle tri{
+            m_scene.indices[baseTri + 0],
+            m_scene.indices[baseTri + 1],
+            m_scene.indices[baseTri + 2],
+        };
+        float t = 0.0f;
+        float u = 0.0f;
+        float v = 0.0f;
+        if (!intersect_triangle(tri, ray, t, u, v)) {
+          continue;
+        }
+        atomic_add_u64(m_counters.triangle_hits);
+        if (t >= bestT) {
+          continue;
+        }
+        if (tri.i0 >= m_scene.vertices.size() || tri.i1 >= m_scene.vertices.size() || tri.i2 >= m_scene.vertices.size()) {
+          continue;
+        }
+        const Vec3 e1 = m_scene.vertices[tri.i1] - m_scene.vertices[tri.i0];
+        const Vec3 e2 = m_scene.vertices[tri.i2] - m_scene.vertices[tri.i0];
+        out.hit = true;
+        out.t = t;
+        out.position = ray.origin + ray.direction * t;
+        out.normal = make_unit(cross(e1, e2));
+        out.material_index = instance.material_index;
+        bestT = t;
+      }
     }
   }
 
@@ -912,9 +1275,10 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
     if (std::max(throughput.x, std::max(throughput.y, throughput.z)) < 0.001f) {
       break;
     }
-    const float rr = std::min(0.99f, std::max(0.1f,
+    const float rr = std::min(m_trace_settings.integrator.russian_roulette_max_survival,
+        std::max(m_trace_settings.integrator.russian_roulette_min_survival,
         std::max(throughput.x, std::max(throughput.y, throughput.z))));
-    if (depth >= 3 && rng.next01() > rr) {
+    if (depth >= m_trace_settings.integrator.russian_roulette_start_depth && rng.next01() > rr) {
       break;
     }
     throughput = throughput / rr;
@@ -952,6 +1316,16 @@ Ray ScalarCpuPathTracer::camera_rays(uint32_t x,
   const float nx = (2.0f * fx - 1.0f) * aspect * tanHalfFov;
   const float ny = (1.0f - 2.0f * fy) * tanHalfFov;
   const Vec3 dir = normalize(m_camera_forward + m_camera_right * nx + m_camera_up * ny);
+  if (m_settings.camera_aperture_radius > 0.0f && m_settings.camera_focus_distance > kEpsilon) {
+    const float lens_r = m_settings.camera_aperture_radius * std::sqrt(rng.next01());
+    const float lens_phi = 2.0f * kPi * rng.next01();
+    const Vec3 lens_offset =
+        m_camera_right * (lens_r * std::cos(lens_phi)) +
+        m_camera_up * (lens_r * std::sin(lens_phi));
+    const Vec3 focus_point = m_scene.camera_position + dir * m_settings.camera_focus_distance;
+    const Vec3 origin = m_scene.camera_position + lens_offset;
+    return Ray{origin, normalize(focus_point - origin)};
+  }
   return Ray{m_scene.camera_position, dir};
 }
 
@@ -1099,7 +1473,9 @@ bool ScalarCpuPathTracer::render_sample_pixels(const uint32_t* pixel_indices,
                                         {"pixel_span", std::to_string(minPixel) + "-" + std::to_string(maxPixel)},
                                         {"avg_lum", std::to_string(avgLum)},
                                         {"sample_max", std::to_string(sampleMax)},
-                                        {"samples", std::to_string(sampleCount)}
+                                        {"samples", std::to_string(sampleCount)},
+                                        {"sdf_steps", std::to_string(atomic_load_u64(m_counters.sdf_steps))},
+                                        {"bvh_node_visits", std::to_string(atomic_load_u64(m_counters.bvh_node_visits))}
                                       });
   }
   return true;
@@ -1111,8 +1487,12 @@ SampleCounters ScalarCpuPathTracer::read_counters() const {
   out.rays = atomic_load_u64(m_counters.rays);
   out.triangle_tests = atomic_load_u64(m_counters.triangle_tests);
   out.sdf_tests = atomic_load_u64(m_counters.sdf_tests);
+  out.sdf_steps = atomic_load_u64(m_counters.sdf_steps);
   out.triangle_hits = atomic_load_u64(m_counters.triangle_hits);
   out.sdf_hits = atomic_load_u64(m_counters.sdf_hits);
+  out.sdf_misses = atomic_load_u64(m_counters.sdf_misses);
+  out.bvh_node_visits = atomic_load_u64(m_counters.bvh_node_visits);
+  out.bvh_leaf_visits = atomic_load_u64(m_counters.bvh_leaf_visits);
   out.shadow_tests = atomic_load_u64(m_counters.shadow_tests);
   return out;
 }
@@ -1122,6 +1502,9 @@ void ScalarCpuPathTracer::shutdown() {
   m_has_scene = false;
   m_film = FilmBuffer{};
   m_scene = RTSceneData{};
+  m_accelerator.reset();
+  m_external_accelerator = nullptr;
+  m_accel_info = {};
 }
 
 vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::SceneDocument& doc) {
@@ -1511,6 +1894,13 @@ FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings
   ldr.height = hdr.height;
   const std::size_t num_pixels = static_cast<std::size_t>(hdr.width) * hdr.height;
   ldr.rgba8.resize(num_pixels * 4u, 255u);
+  if (hdr.rgbf.size() < num_pixels * 3u) {
+    std::fill(ldr.rgba8.begin(), ldr.rgba8.end(), 0u);
+    for (std::size_t i = 0; i < num_pixels; ++i) {
+      ldr.rgba8[i * 4u + 3u] = 255u;
+    }
+    return ldr;
+  }
 
   const float inv_gamma = 1.0f / std::max(0.01f, settings.gamma);
 
@@ -1518,6 +1908,9 @@ FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings
     float r = hdr.rgbf[i * 3u + 0u] * settings.exposure;
     float g = hdr.rgbf[i * 3u + 1u] * settings.exposure;
     float b = hdr.rgbf[i * 3u + 2u] * settings.exposure;
+    if (!std::isfinite(r)) r = 0.0f;
+    if (!std::isfinite(g)) g = 0.0f;
+    if (!std::isfinite(b)) b = 0.0f;
 
     auto tonemap = [&](float x) -> float {
       switch (settings.tone_map) {

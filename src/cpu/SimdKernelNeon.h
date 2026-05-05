@@ -200,6 +200,19 @@ inline uint32_t intersect_triangle_packet_neon(
   return all_hits;
 }
 
+class NeonSimdKernel final : public ISimdKernel {
+ public:
+  SimdKernelInfo info() const override {
+    return {SimdMode::NEON, kNeonLaneWidth, PacketLanePolicy::ZeroPaddedTail, true, true, "neon"};
+  }
+
+  uint32_t intersect_triangle_packet(const RayPacket& packet,
+                                     const TriangleSOA& triangle,
+                                     HitPacket& hits) const override {
+    return intersect_triangle_packet_neon(packet, triangle, hits);
+  }
+};
+
 }  // namespace vkpt::cpu
 
 #endif  // __ARM_NEON

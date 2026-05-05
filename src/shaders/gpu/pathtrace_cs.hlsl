@@ -20,7 +20,7 @@ Buffer<uint>     InstBuf  : register(t3);
 Buffer<float>    LightBuf : register(t4);
 Buffer<float>    BvhBuf    : register(t5);
 Buffer<uint>     TriMatBuf : register(t6);
-RWBuffer<float4> FilmBuf  : register(u0);
+RWByteAddressBuffer FilmBuf : register(u0);
 RWBuffer<uint>   LdrBuf   : register(u1); // tonemapped RGBA8 output (R|G<<8|B<<16|0xFF<<24)
 
 // ---- Forward declarations (fxc requires them) -------------------------------
@@ -34,6 +34,14 @@ Hit   IntersectScene(float3 ro, float3 rd);
 float3 SampleHemisphere(float3 n, inout uint rng);
 float3 SamplePhongLobe(float3 refl, float exponent, float3 normal, inout uint rng);
 float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env);
+
+float4 LoadFilm(uint pixel) {
+    return asfloat(FilmBuf.Load4(pixel * 16u));
+}
+
+void StoreFilm(uint pixel, float4 value) {
+    FilmBuf.Store4(pixel * 16u, asuint(value));
+}
 
 [numthreads(8, 8, 1)]
 void main(uint3 gid : SV_DispatchThreadID) {
@@ -62,9 +70,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
         total_color += Trace(cam_pos, dir, rng, env_col);
     }
 
-    float4 prev = FilmBuf[pixel];
-    FilmBuf[pixel] = float4(prev.x + total_color.x, prev.y + total_color.y,
-                            prev.z + total_color.z, prev.w + float(rpp));
+    float4 prev = LoadFilm(pixel);
+    StoreFilm(pixel, float4(prev.x + total_color.x, prev.y + total_color.y,
+                            prev.z + total_color.z, prev.w + float(rpp)));
 }
 
 // ============================================================================
@@ -78,7 +86,7 @@ void tonemap_main(uint3 gid : SV_DispatchThreadID) {
     if (gid.x >= width || gid.y >= height) return;
     uint pixel = gid.y * width + gid.x;
 
-    float4 acc = FilmBuf[pixel];
+    float4 acc = LoadFilm(pixel);
     float  cnt = max(1.0f, acc.w);
     float3 c   = acc.xyz / cnt;
 
@@ -145,7 +153,8 @@ bool IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, inout float b
     float3 e2 = v2 - v0;
     float3 h  = cross(rd, e2);
     float a   = dot(e1, h);
-    // Backface culling: skip triangles whose front face points away from the ray.
+    // Cornell scene faces are wound inward, so this culls exterior backsides
+    // while keeping the interior visible from the orbiting camera.
     if (a < 1e-5) return false;
     float f = 1.0 / a;
     float3 s = ro - v0;

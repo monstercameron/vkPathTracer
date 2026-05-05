@@ -61,6 +61,21 @@ enum class SceneSchemaError {
   ValidationFailure
 };
 
+enum class FrameStage : std::uint8_t {
+  FrameBegin,
+  Input,
+  CommandCollection,
+  FixedUpdate,
+  VariableUpdate,
+  TransformAssembly,
+  SceneMutationApply,
+  RenderPreparation,
+  RenderSubmit,
+  PresentOrExport,
+  FrameEnd,
+  Count
+};
+
 struct Vec3 {
   float x = 0.0f;
   float y = 0.0f;
@@ -331,11 +346,117 @@ struct SceneSnapshot {
   SceneBenchmarkMetadata benchmark{};
 };
 
-class SceneWorld {
+struct RenderSceneProxy {
+  vkpt::core::Hash256 scene_hash{};
+  vkpt::core::FrameIndex frame = 0;
+
+  struct Renderable {
+    vkpt::core::StableEntityId entity_id = 0;
+    vkpt::core::AssetId geometry_id = 0;
+    vkpt::core::MaterialId material_id = 0;
+    Mat4 world_matrix{};
+    Vec3 translation{};
+    Vec3 scale{1.0f, 1.0f, 1.0f};
+  };
+
+  struct Light {
+    vkpt::core::StableEntityId entity_id = 0;
+    std::string type;
+    Vec3 color{1.0f, 1.0f, 1.0f};
+    float intensity = 1.0f;
+    float radius = 0.0f;
+    Mat4 world_matrix{};
+    Vec3 position{};
+  };
+
+  struct Material {
+    vkpt::core::MaterialId id = 0;
+    Vec3 albedo{1.0f, 1.0f, 1.0f};
+    float roughness = 1.0f;
+    Vec3 emission{0.0f, 0.0f, 0.0f};
+    float emission_intensity = 0.0f;
+  };
+
+  struct Camera {
+    vkpt::core::StableEntityId entity_id = 0;
+    float fov = 60.0f;
+    float near_plane = 0.1f;
+    float far_plane = 1000.0f;
+    Mat4 world_matrix{};
+    Vec3 position{};
+  };
+
+  std::vector<Renderable> renderables;
+  std::vector<Light> lights;
+  std::vector<Material> materials;
+  std::optional<Camera> camera;
+  SceneBenchmarkMetadata benchmark{};
+
+  bool empty() const {
+    return renderables.empty() && lights.empty() && materials.empty() && !camera.has_value();
+  }
+};
+
+struct FrameContext {
+  vkpt::core::FrameIndex frame = 0;
+  double delta_seconds = 0.0;
+  FrameStage stage = FrameStage::FrameBegin;
+  bool deterministic = false;
+};
+
+struct FrameStageTiming {
+  vkpt::core::FrameIndex frame = 0;
+  FrameStage stage = FrameStage::FrameBegin;
+  uint64_t start_ns = 0u;
+  uint64_t end_ns = 0u;
+  uint64_t duration_ns() const { return end_ns >= start_ns ? end_ns - start_ns : 0u; }
+};
+
+class FrameLifecycleController {
+ public:
+  const FrameContext& context() const;
+  const std::vector<FrameStageTiming>& timings() const;
+
+  void begin_frame(vkpt::core::FrameIndex frame, double delta_seconds, bool deterministic = false);
+  void begin_stage(FrameStage stage);
+  void end_stage(FrameStage stage);
+  void end_frame();
+  void clear_history();
+
+ private:
+  FrameContext m_context{};
+  std::vector<FrameStageTiming> m_timings;
+  uint64_t m_stageStartNs = 0u;
+  bool m_stageOpen = false;
+};
+
+class IEcsWorld {
+ public:
+  virtual ~IEcsWorld() = default;
+
+  virtual vkpt::core::StableEntityId create_entity(std::string_view name = {}, vkpt::core::StableEntityId stable_hint = 0) = 0;
+  virtual bool destroy_entity(vkpt::core::StableEntityId id) = 0;
+  virtual bool entity_exists(vkpt::core::StableEntityId id) const = 0;
+  virtual bool set_component(vkpt::core::StableEntityId id, ComponentKind kind, const ComponentVariant& component) = 0;
+  virtual bool add_component(vkpt::core::StableEntityId id, ComponentKind kind, const ComponentVariant& component) = 0;
+  virtual bool remove_component(vkpt::core::StableEntityId id, ComponentKind kind) = 0;
+  virtual bool set_transform(vkpt::core::StableEntityId id, const TransformComponent& transform,
+                             TransformAuthority authority = TransformAuthority::Authored,
+                             std::string_view writer = "scene",
+                             vkpt::core::FrameIndex frame = 0) = 0;
+  virtual const std::vector<vkpt::core::StableEntityId>& all_entities() const = 0;
+  virtual std::vector<vkpt::core::StableEntityId> query(ComponentKind kind) const = 0;
+  virtual void recompute_world_transforms() = 0;
+  virtual const WorldTransform* world_transform(vkpt::core::StableEntityId id) const = 0;
+  virtual SceneSnapshot build_snapshot() const = 0;
+  virtual RenderSceneProxy extract_render_scene(vkpt::core::FrameIndex frame = 0) const = 0;
+};
+
+class SceneWorld : public IEcsWorld {
  public:
   struct EntityRecord {
-    vkpt::core::StableId stable_id = 0;
-    vkpt::core::RuntimeHandle runtime_id = 0;
+    vkpt::core::StableEntityId stable_id = 0;
+    vkpt::core::EntityHandle runtime_id = 0;
     bool alive = false;
     IdentityComponent identity;
     std::optional<TransformComponent> transform;
@@ -351,51 +472,52 @@ class SceneWorld {
     std::optional<BenchmarkTagComponent> benchmark_tag;
   };
 
-  vkpt::core::StableId create_entity(std::string_view name = {}, vkpt::core::StableId stable_hint = 0);
-  bool destroy_entity(vkpt::core::StableId id);
-  bool entity_exists(vkpt::core::StableId id) const;
+  vkpt::core::StableEntityId create_entity(std::string_view name = {}, vkpt::core::StableEntityId stable_hint = 0) override;
+  bool destroy_entity(vkpt::core::StableEntityId id) override;
+  bool entity_exists(vkpt::core::StableEntityId id) const override;
 
-  bool set_component(vkpt::core::StableId id, ComponentKind kind, const ComponentVariant& component);
-  bool add_component(vkpt::core::StableId id, ComponentKind kind, const ComponentVariant& component);
-  bool remove_component(vkpt::core::StableId id, ComponentKind kind);
+  bool set_component(vkpt::core::StableEntityId id, ComponentKind kind, const ComponentVariant& component) override;
+  bool add_component(vkpt::core::StableEntityId id, ComponentKind kind, const ComponentVariant& component) override;
+  bool remove_component(vkpt::core::StableEntityId id, ComponentKind kind) override;
 
-  bool set_identity(vkpt::core::StableId id, const IdentityComponent& component);
-  bool set_transform(vkpt::core::StableId id, const TransformComponent& transform,
+  bool set_identity(vkpt::core::StableEntityId id, const IdentityComponent& component);
+  bool set_transform(vkpt::core::StableEntityId id, const TransformComponent& transform,
                      TransformAuthority authority = TransformAuthority::Authored,
                      std::string_view writer = "scene",
-                     vkpt::core::FrameIndex frame = 0);
-  bool assign_material(vkpt::core::StableId id, vkpt::core::StableId material_id);
-  bool assign_light(vkpt::core::StableId id, const LightComponent& light);
-  bool assign_camera(vkpt::core::StableId id, const CameraComponent& camera);
-  bool set_hierarchy_parent(vkpt::core::StableId child, vkpt::core::StableId parent);
+                     vkpt::core::FrameIndex frame = 0) override;
+  bool assign_material(vkpt::core::StableEntityId id, vkpt::core::MaterialId material_id);
+  bool assign_light(vkpt::core::StableEntityId id, const LightComponent& light);
+  bool assign_camera(vkpt::core::StableEntityId id, const CameraComponent& camera);
+  bool set_hierarchy_parent(vkpt::core::StableEntityId child, vkpt::core::StableEntityId parent);
 
-  const EntityRecord* get_entity(vkpt::core::StableId id) const;
-  EntityRecord* get_entity(vkpt::core::StableId id);
-  const std::vector<vkpt::core::StableId>& all_entities() const;
-  std::vector<vkpt::core::StableId> query(ComponentKind kind) const;
+  const EntityRecord* get_entity(vkpt::core::StableEntityId id) const;
+  EntityRecord* get_entity(vkpt::core::StableEntityId id);
+  const std::vector<vkpt::core::StableEntityId>& all_entities() const override;
+  std::vector<vkpt::core::StableEntityId> query(ComponentKind kind) const override;
 
-  void recompute_world_transforms();
-  const WorldTransform* world_transform(vkpt::core::StableId id) const;
+  void recompute_world_transforms() override;
+  const WorldTransform* world_transform(vkpt::core::StableEntityId id) const override;
   const std::vector<WorldAuthorityConflict>& authority_conflicts() const;
 
-  SceneSnapshot build_snapshot() const;
+  SceneSnapshot build_snapshot() const override;
+  RenderSceneProxy extract_render_scene(vkpt::core::FrameIndex frame = 0) const override;
 
   void clear();
 
  private:
-  vkpt::core::StableId m_nextStableId = 1;
-  vkpt::core::RuntimeHandle m_nextHandle = 1;
-  std::vector<vkpt::core::StableId> m_entities_order;
-  std::unordered_map<vkpt::core::StableId, EntityRecord> m_entities;
-  std::unordered_map<vkpt::core::StableId, std::vector<vkpt::core::StableId>> m_children;
-  std::unordered_map<vkpt::core::StableId, TransformAuthorityState> m_transformAuthority;
-  std::unordered_map<vkpt::core::StableId, WorldTransform> m_worldTransforms;
+  vkpt::core::StableEntityId m_nextStableId = 1;
+  vkpt::core::EntityHandle m_nextHandle = 1;
+  std::vector<vkpt::core::StableEntityId> m_entities_order;
+  std::unordered_map<vkpt::core::StableEntityId, EntityRecord> m_entities;
+  std::unordered_map<vkpt::core::StableEntityId, std::vector<vkpt::core::StableEntityId>> m_children;
+  std::unordered_map<vkpt::core::StableEntityId, TransformAuthorityState> m_transformAuthority;
+  std::unordered_map<vkpt::core::StableEntityId, WorldTransform> m_worldTransforms;
   std::vector<WorldAuthorityConflict> m_authority_conflicts;
 
-  void mark_dirty_recursive(vkpt::core::StableId id);
-  bool is_ancestor(vkpt::core::StableId ancestor, vkpt::core::StableId candidate) const;
+  void mark_dirty_recursive(vkpt::core::StableEntityId id);
+  bool is_ancestor(vkpt::core::StableEntityId ancestor, vkpt::core::StableEntityId candidate) const;
   WorldTransform compute_world_transform_unchecked(const EntityRecord* entity) const;
-  bool has_authority(vkpt::core::StableId id, TransformAuthority authority, std::string_view writer, vkpt::core::FrameIndex frame) const;
+  bool has_authority(vkpt::core::StableEntityId id, TransformAuthority authority, std::string_view writer, vkpt::core::FrameIndex frame) const;
   std::uint32_t kind_mask(ComponentKind kind) const;
 };
 
@@ -525,9 +647,57 @@ class SceneDocument {
   std::string to_json(bool pretty = false) const;
   std::string export_hash_hex() const;
   SceneSnapshot snapshot() const;
+  RenderSceneProxy extract_render_scene(vkpt::core::FrameIndex frame = 0) const;
+};
+
+class ISceneLoader {
+ public:
+  virtual ~ISceneLoader() = default;
+  virtual vkpt::core::Result<SceneDocument> load_document_from_text(std::string_view text) = 0;
+  virtual vkpt::core::Result<SceneDocument> load_document_from_file(std::string_view path) = 0;
+};
+
+class JsonSceneLoader final : public ISceneLoader {
+ public:
+  vkpt::core::Result<SceneDocument> load_document_from_text(std::string_view text) override;
+  vkpt::core::Result<SceneDocument> load_document_from_file(std::string_view path) override;
+};
+
+class ISceneRuntime {
+ public:
+  virtual ~ISceneRuntime() = default;
+  virtual IEcsWorld& world() = 0;
+  virtual const IEcsWorld& world() const = 0;
+  virtual vkpt::core::Result<void> load_document(const SceneDocument& document) = 0;
+  virtual SceneSnapshot snapshot() const = 0;
+  virtual RenderSceneProxy extract_render_scene(vkpt::core::FrameIndex frame = 0) const = 0;
+  virtual FrameLifecycleController& frame_lifecycle() = 0;
+  virtual const FrameLifecycleController& frame_lifecycle() const = 0;
+};
+
+class SceneRuntime final : public ISceneRuntime {
+ public:
+  SceneRuntime() = default;
+  explicit SceneRuntime(SceneWorld world);
+
+  IEcsWorld& world() override;
+  const IEcsWorld& world() const override;
+  SceneWorld& scene_world();
+  const SceneWorld& scene_world() const;
+
+  vkpt::core::Result<void> load_document(const SceneDocument& document) override;
+  SceneSnapshot snapshot() const override;
+  RenderSceneProxy extract_render_scene(vkpt::core::FrameIndex frame = 0) const override;
+  FrameLifecycleController& frame_lifecycle() override;
+  const FrameLifecycleController& frame_lifecycle() const override;
+
+ private:
+  SceneWorld m_world;
+  FrameLifecycleController m_frameLifecycle;
 };
 
 std::string_view to_string(ComponentKind kind);
 std::string_view to_string(TransformAuthority authority);
+std::string_view to_string(FrameStage stage);
 
 }  // namespace vkpt::scene

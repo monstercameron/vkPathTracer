@@ -17,6 +17,20 @@ using FrameIndex = std::uint64_t;
 using Hash128 = std::array<std::uint8_t, 16>;
 using Hash256 = std::array<std::uint8_t, 32>;
 
+using StableEntityId = StableId;
+using EntityHandle = RuntimeHandle;
+using AssetId = StableId;
+using MaterialId = StableId;
+using TextureHandle = RuntimeHandle;
+using BufferHandle = RuntimeHandle;
+using PipelineHandle = RuntimeHandle;
+using ShaderHandle = RuntimeHandle;
+using SceneHandle = RuntimeHandle;
+using BackendDeviceHandle = RuntimeHandle;
+using AccelerationHandle = RuntimeHandle;
+using BenchmarkRunId = RuntimeHandle;
+using JobHandle = RuntimeHandle;
+
 enum class ErrorCode : std::uint8_t {
   Ok = 0,
   InvalidArgument,
