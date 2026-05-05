@@ -1,18 +1,22 @@
 #include "diagnostics/CrashHooks.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <exception>
 #include <string>
 
-#include "diagnostics/CrashRecorder.h"
 #include "core/Logging.h"
+#include "diagnostics/ICrashReporter.h"
 
 // Keep the crash artifact directory in a static buffer so signal handlers can
 // access it without heap allocation.
 namespace {
 static char g_crashDir[512] = "artifacts/crashes";
+static std::atomic_bool g_crashHandling{false};
+static std::terminate_handler g_previousTerminateHandler = nullptr;
 }
 
 namespace vkpt::diagnostics {
@@ -20,6 +24,13 @@ namespace vkpt::diagnostics {
 // ---- Shared crash handler body (called from every handler) ------------------
 
 static void handle_crash_signal(const char* signal_name) noexcept {
+  if (g_crashHandling.exchange(true, std::memory_order_acq_rel)) {
+    std::fprintf(stderr, "\n[crash-hooks] signal while already handling crash: %s\n",
+                 signal_name);
+    std::fflush(stderr);
+    return;
+  }
+
   // Attempt to log via the structured logger; may fail if heap is corrupt.
   try {
     vkpt::log::Logger::instance().log(
@@ -32,14 +43,37 @@ static void handle_crash_signal(const char* signal_name) noexcept {
   std::fflush(stderr);
 
   // Write crash artifacts (best-effort; may throw and get caught internally).
-  CrashRecorder::instance().set_last_error(signal_name);
-  const std::string dir = CrashRecorder::instance().flush(g_crashDir);
+  std::string dir;
+  try {
+    dir = DefaultCrashReporter().write_crash_artifact_bundle(signal_name);
+  } catch (...) {
+    dir.clear();
+  }
   if (!dir.empty()) {
     std::fprintf(stderr, "[crash-hooks] artifacts written to: %s\n", dir.c_str());
   } else {
     std::fprintf(stderr, "[crash-hooks] artifact write failed.\n");
   }
   std::fflush(stderr);
+}
+
+[[noreturn]] static void PtTerminateHandler() noexcept {
+  handle_crash_signal("std::terminate");
+  if (g_previousTerminateHandler && g_previousTerminateHandler != PtTerminateHandler) {
+    g_previousTerminateHandler();
+  }
+  std::abort();
+}
+
+static void configure_crash_reporter(const std::string& crash_artifact_dir) {
+  const auto len = std::min(crash_artifact_dir.size(), sizeof(g_crashDir) - 1u);
+  std::memcpy(g_crashDir, crash_artifact_dir.data(), len);
+  g_crashDir[len] = '\0';
+
+  CrashReporterSessionInfo session;
+  session.artifact_dir = g_crashDir;
+  DefaultCrashReporter().begin_session(session);
+  g_previousTerminateHandler = std::set_terminate(PtTerminateHandler);
 }
 
 // ============================================================================
@@ -63,9 +97,7 @@ static LONG WINAPI PtUnhandledExceptionFilter(EXCEPTION_POINTERS* info) {
 }
 
 void install_crash_hooks(const std::string& crash_artifact_dir) {
-  const auto len = std::min(crash_artifact_dir.size(), sizeof(g_crashDir) - 1u);
-  std::memcpy(g_crashDir, crash_artifact_dir.data(), len);
-  g_crashDir[len] = '\0';
+  configure_crash_reporter(crash_artifact_dir);
 
   SetUnhandledExceptionFilter(PtUnhandledExceptionFilter);
 
@@ -103,9 +135,7 @@ static void posix_signal_handler(int sig) noexcept {
 }
 
 void install_crash_hooks(const std::string& crash_artifact_dir) {
-  const auto len = std::min(crash_artifact_dir.size(), sizeof(g_crashDir) - 1u);
-  std::memcpy(g_crashDir, crash_artifact_dir.data(), len);
-  g_crashDir[len] = '\0';
+  configure_crash_reporter(crash_artifact_dir);
 
   const int signals[] = { SIGSEGV, SIGABRT, SIGFPE, SIGILL
 #if defined(SIGBUS)

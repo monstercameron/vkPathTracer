@@ -6,7 +6,7 @@ namespace vkpt::diagnostics {
 
 // ---- CrashHooks -------------------------------------------------------------
 // Install OS-level crash handlers that:
-//   1. Write a crash artifact via CrashRecorder::flush().
+//   1. Write a crash artifact via ICrashReporter.
 //   2. Flush the structured logger.
 //   3. Re-raise / continue the default OS crash path.
 //
@@ -15,8 +15,9 @@ namespace vkpt::diagnostics {
 // to stay safe in the crash signal context.
 //
 // Supported platforms:
-//   Windows — SEH unhandled exception filter + SetAbortBehavior
-//   POSIX   — SIGSEGV, SIGABRT, SIGFPE, SIGILL, SIGBUS signal handlers
+//   Windows - SEH unhandled exception filter + SetAbortBehavior
+//   POSIX   - SIGSEGV, SIGABRT, SIGFPE, SIGILL, SIGBUS signal handlers
+//   C++     - std::terminate handler on all platforms
 
 void install_crash_hooks(const std::string& crash_artifact_dir = "artifacts/crashes");
 

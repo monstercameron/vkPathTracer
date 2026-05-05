@@ -1,43 +1,35 @@
 #include "jobs/JobSystem.h"
 
 #include <algorithm>
-#include <condition_variable>
-#include <deque>
-#include <thread>
+#include <chrono>
+#include <utility>
 
 namespace vkpt::jobs {
 
-namespace {
-
-struct JobState {
-  vkpt::core::RuntimeHandle id = 0u;
-  std::atomic<int> pending = 1;
+struct JobSystem::JobState {
+  vkpt::core::JobHandle id = 0u;
+  std::atomic<std::size_t> pending = 1u;
   std::mutex mutex;
   std::condition_variable cv;
   JobFunction job;
+  std::weak_ptr<JobState> parent;
+  std::exception_ptr failure;
 };
+
+namespace {
+
+std::size_t iteration_count(std::size_t begin, std::size_t end, std::size_t step) {
+  if (begin >= end) {
+    return 0u;
+  }
+  const std::size_t stride = step == 0u ? 1u : step;
+  return ((end - begin) + stride - 1u) / stride;
+}
 
 }  // namespace
 
-struct JobSystem::JobEntry {
-  JobState state;
-  bool is_main_thread_job = false;
-};
-
-static void RunJob(JobState& state) {
-  if (state.job) {
-    state.job();
-  }
-  {
-    std::scoped_lock lock(state.mutex);
-    state.pending = 0;
-  }
-  state.cv.notify_all();
-}
-
 JobSystem::JobSystem(std::size_t workerCount) {
   const auto requested = workerCount == 0u ? std::max<std::size_t>(1u, std::thread::hardware_concurrency()) : workerCount;
-  m_nextWorkerCount = requested;
   m_workers.reserve(requested);
   for (std::size_t i = 0; i < requested; ++i) {
     m_workers.emplace_back([this]() { worker_loop(); });
@@ -48,63 +40,218 @@ JobSystem::~JobSystem() {
   shutdown();
 }
 
-vkpt::core::RuntimeHandle JobSystem::submit_internal(JobFunction job) {
-  auto id = m_nextJobId.fetch_add(1, std::memory_order_relaxed);
+vkpt::core::JobHandle JobSystem::submit_internal(JobFunction job,
+                                                 std::shared_ptr<JobState> parent,
+                                                 bool main_thread) {
+  if (m_stopped.load(std::memory_order_acquire)) {
+    return 0u;
+  }
+
+  auto state = std::make_shared<JobState>();
+  state->id = m_nextJobId.fetch_add(1u, std::memory_order_relaxed);
+  state->job = std::move(job);
+  state->parent = std::move(parent);
   {
     std::scoped_lock lock(m_jobsMutex);
-    m_jobs.push_back(std::make_unique<JobEntry>());
-    auto& entry = *m_jobs.back();
-    entry.state.id = id;
-    entry.state.job = std::move(job);
+    m_jobs.emplace(state->id, state);
   }
   {
     std::scoped_lock lock(m_queueMutex);
-    m_queue.push_back(id);
-  }
-  m_jobsCv.notify_one();
-  return id;
-}
-
-vkpt::core::RuntimeHandle JobSystem::submit_job(JobFunction job) {
-  const auto id = submit_internal(std::move(job));
-  return id;
-}
-
-vkpt::core::RuntimeHandle JobSystem::submit_range_job(std::size_t begin, std::size_t end, std::size_t step, JobFunction job) {
-  auto wrapped = [begin, end, step, job = std::move(job)]() {
-    for (std::size_t i = begin; i < end; i += (step == 0u ? 1u : step)) {
-      (void)i;
-      if (job) {
-        job();
-      }
+    if (main_thread) {
+      m_mainQueue.push_back(state->id);
+    } else {
+      m_queue.push_back(state->id);
     }
-  };
-  const auto id = submit_internal(std::move(wrapped));
-  return id;
+  }
+  if (!main_thread) {
+    m_jobsCv.notify_one();
+  }
+  return state->id;
 }
 
-bool JobSystem::wait(vkpt::core::RuntimeHandle id) {
-  JobState* target = nullptr;
+vkpt::core::JobHandle JobSystem::create_group(std::size_t pending_count) {
+  if (m_stopped.load(std::memory_order_acquire)) {
+    return 0u;
+  }
+  auto state = std::make_shared<JobState>();
+  state->id = m_nextJobId.fetch_add(1u, std::memory_order_relaxed);
+  state->pending.store(pending_count, std::memory_order_release);
   {
     std::scoped_lock lock(m_jobsMutex);
-    auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [id](const std::unique_ptr<JobEntry>& e) { return e->state.id == id; });
-    if (it == m_jobs.end()) {
+    m_jobs.emplace(state->id, state);
+  }
+  if (pending_count == 0u) {
+    state->cv.notify_all();
+  }
+  return state->id;
+}
+
+vkpt::core::JobHandle JobSystem::create_completed_job() {
+  return create_group(0u);
+}
+
+std::shared_ptr<JobSystem::JobState> JobSystem::find_job(vkpt::core::JobHandle id) const {
+  std::scoped_lock lock(m_jobsMutex);
+  const auto it = m_jobs.find(id);
+  if (it == m_jobs.end()) {
+    return {};
+  }
+  return it->second;
+}
+
+void JobSystem::complete_job(const std::shared_ptr<JobState>& state, std::exception_ptr failure) {
+  if (!state) {
+    return;
+  }
+
+  std::shared_ptr<JobState> parent;
+  {
+    std::scoped_lock lock(state->mutex);
+    if (state->pending.load(std::memory_order_acquire) == 0u) {
+      if (failure && !state->failure) {
+        state->failure = failure;
+      }
+      return;
+    }
+    if (failure && !state->failure) {
+      state->failure = failure;
+    }
+    const auto old_pending = state->pending.fetch_sub(1u, std::memory_order_acq_rel);
+    if (old_pending <= 1u) {
+      state->pending.store(0u, std::memory_order_release);
+      parent = state->parent.lock();
+    }
+  }
+  state->cv.notify_all();
+
+  if (parent) {
+    complete_job(parent, failure);
+  }
+}
+
+void JobSystem::run_job(const std::shared_ptr<JobState>& state) {
+  if (!state) {
+    return;
+  }
+
+  std::exception_ptr failure;
+  try {
+    if (state->job) {
+      state->job();
+    }
+  } catch (...) {
+    failure = std::current_exception();
+  }
+  complete_job(state, failure);
+}
+
+bool JobSystem::try_run_one_queued_job() {
+  std::unique_lock<std::recursive_mutex> serial;
+  if (m_deterministic.load(std::memory_order_acquire)) {
+    serial = std::unique_lock<std::recursive_mutex>(m_serialMutex);
+  }
+
+  vkpt::core::JobHandle id = 0u;
+  {
+    std::scoped_lock lock(m_queueMutex);
+    if (m_queue.empty()) {
       return false;
     }
-    target = &(*it)->state;
+    id = m_queue.front();
+    m_queue.pop_front();
   }
-  std::unique_lock lock(target->mutex);
-  target->cv.wait(lock, [&]() { return target->pending.load(std::memory_order_acquire) == 0; });
+
+  run_job(find_job(id));
   return true;
 }
 
-bool JobSystem::wait_group(const std::vector<vkpt::core::RuntimeHandle>& ids) {
-  for (const auto id : ids) {
-    if (!wait(id)) {
-      return false;
-    }
+vkpt::core::JobHandle JobSystem::submit_job(JobFunction job) {
+  return submit_internal(std::move(job));
+}
+
+vkpt::core::JobHandle JobSystem::submit_main_thread_job(JobFunction job) {
+  return submit_internal(std::move(job), {}, true);
+}
+
+vkpt::core::JobHandle JobSystem::submit_range_job(std::size_t begin, std::size_t end, std::size_t step, JobFunction job) {
+  if (!job) {
+    return create_completed_job();
   }
-  return true;
+  return submit_indexed_range_job(begin, end, step, [job = std::move(job)](std::size_t) mutable {
+    job();
+  });
+}
+
+vkpt::core::JobHandle JobSystem::submit_indexed_range_job(std::size_t begin,
+                                                          std::size_t end,
+                                                          std::size_t step,
+                                                          IndexedRangeJobFunction job) {
+  if (!job) {
+    return create_completed_job();
+  }
+
+  const std::size_t stride = step == 0u ? 1u : step;
+  const std::size_t iterations = iteration_count(begin, end, stride);
+  if (iterations == 0u) {
+    return create_completed_job();
+  }
+
+  if (m_deterministic.load(std::memory_order_acquire) || worker_count() <= 1u || iterations == 1u) {
+    return submit_internal([begin, stride, iterations, job = std::move(job)]() mutable {
+      for (std::size_t ordinal = 0u; ordinal < iterations; ++ordinal) {
+        job(begin + ordinal * stride);
+      }
+    });
+  }
+
+  const std::size_t target_chunks = std::max<std::size_t>(1u, worker_count() * 4u);
+  const std::size_t chunk_count = std::min(iterations, target_chunks);
+  const std::size_t chunk_size = (iterations + chunk_count - 1u) / chunk_count;
+  const auto group_id = create_group(chunk_count);
+  auto group = find_job(group_id);
+  if (!group) {
+    return 0u;
+  }
+
+  for (std::size_t chunk = 0u; chunk < chunk_count; ++chunk) {
+    const std::size_t first_ordinal = chunk * chunk_size;
+    const std::size_t last_ordinal = std::min(iterations, first_ordinal + chunk_size);
+    submit_internal([begin, stride, first_ordinal, last_ordinal, job]() mutable {
+      for (std::size_t ordinal = first_ordinal; ordinal < last_ordinal; ++ordinal) {
+        job(begin + ordinal * stride);
+      }
+    }, group);
+  }
+
+  return group_id;
+}
+
+bool JobSystem::wait(vkpt::core::JobHandle id) {
+  auto target = find_job(id);
+  if (!target) {
+    return false;
+  }
+
+  while (target->pending.load(std::memory_order_acquire) != 0u) {
+    if (try_run_one_queued_job()) {
+      continue;
+    }
+    std::unique_lock lock(target->mutex);
+    target->cv.wait_for(lock, std::chrono::milliseconds(1), [&]() {
+      return target->pending.load(std::memory_order_acquire) == 0u;
+    });
+  }
+
+  std::scoped_lock lock(target->mutex);
+  return target->failure == nullptr;
+}
+
+bool JobSystem::wait_group(const std::vector<vkpt::core::JobHandle>& ids) {
+  bool ok = true;
+  for (const auto id : ids) {
+    ok = wait(id) && ok;
+  }
+  return ok;
 }
 
 std::size_t JobSystem::worker_count() const {
@@ -113,42 +260,34 @@ std::size_t JobSystem::worker_count() const {
 
 void JobSystem::pump_main_thread() {
   while (true) {
-    vkpt::core::RuntimeHandle next = 0u;
+    vkpt::core::JobHandle next = 0u;
     {
-      std::scoped_lock lock(m_mainMutex);
+      std::scoped_lock lock(m_queueMutex);
       if (m_mainQueue.empty()) {
         return;
       }
       next = m_mainQueue.front();
       m_mainQueue.pop_front();
     }
-    JobState* target = nullptr;
-    {
-      std::scoped_lock lock(m_jobsMutex);
-      auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [next](const std::unique_ptr<JobEntry>& e) { return e->state.id == next; });
-      if (it == m_jobs.end()) {
-        continue;
-      }
-      target = &(*it)->state;
-    }
-    RunJob(*target);
+    run_job(find_job(next));
   }
 }
 
 bool JobSystem::deterministic() const {
-  return m_deterministic;
+  return m_deterministic.load(std::memory_order_acquire);
 }
 
 void JobSystem::set_deterministic(bool enabled) {
-  m_deterministic = enabled;
+  m_deterministic.store(enabled, std::memory_order_release);
+  m_jobsCv.notify_all();
 }
 
 bool JobSystem::shutdown() {
-  {
-    std::scoped_lock lock(m_queueMutex);
-    m_stopped = true;
-  }
+  const bool was_stopped = m_stopped.exchange(true, std::memory_order_acq_rel);
   m_jobsCv.notify_all();
+  if (was_stopped) {
+    return true;
+  }
 
   for (auto& worker : m_workers) {
     if (worker.joinable()) {
@@ -160,50 +299,16 @@ bool JobSystem::shutdown() {
 
 void JobSystem::worker_loop() {
   while (true) {
-    std::unique_lock lock(m_queueMutex);
-    m_jobsCv.wait(lock, [this]() { return m_stopped || !m_queue.empty(); });
-    if (m_stopped && m_queue.empty()) {
-      return;
-    }
-    if (!m_deterministic && !m_queue.empty()) {
-      const auto id = m_queue.front();
-      m_queue.pop_front();
-      lock.unlock();
-
-      JobState* target = nullptr;
-      {
-        std::scoped_lock jobsLock(m_jobsMutex);
-        auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [id](const std::unique_ptr<JobEntry>& e) { return e->state.id == id; });
-        if (it == m_jobs.end()) {
-          continue;
-        }
-        target = &(*it)->state;
+    {
+      std::unique_lock lock(m_queueMutex);
+      m_jobsCv.wait(lock, [this]() { return m_stopped.load(std::memory_order_acquire) || !m_queue.empty(); });
+      if (m_stopped.load(std::memory_order_acquire) && m_queue.empty()) {
+        return;
       }
-      if (target && target->job) {
-        RunJob(*target);
-      }
-      continue;
     }
 
-    if (m_deterministic && !m_queue.empty()) {
-      const auto id = m_queue.front();
-      m_queue.pop_front();
-      lock.unlock();
-
-      JobState* target = nullptr;
-      {
-        std::scoped_lock jobsLock(m_jobsMutex);
-        auto it = std::find_if(m_jobs.begin(), m_jobs.end(), [id](const std::unique_ptr<JobEntry>& e) { return e->state.id == id; });
-        if (it == m_jobs.end()) {
-          continue;
-        }
-        target = &(*it)->state;
-      }
-      if (target && target->job) {
-        // serialize: only one worker executes at a time in deterministic mode
-        std::scoped_lock serial(m_serialMutex);
-        RunJob(*target);
-      }
+    if (!try_run_one_queued_job()) {
+      std::this_thread::yield();
     }
   }
 }

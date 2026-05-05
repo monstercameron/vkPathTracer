@@ -5,10 +5,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "core/Types.h"
@@ -16,14 +18,20 @@
 namespace vkpt::jobs {
 
 using JobFunction = std::function<void()>;
+using IndexedRangeJobFunction = std::function<void(std::size_t)>;
 
 class IJobSystem {
  public:
   virtual ~IJobSystem() = default;
-  virtual vkpt::core::RuntimeHandle submit_job(JobFunction job) = 0;
-  virtual vkpt::core::RuntimeHandle submit_range_job(std::size_t begin, std::size_t end, std::size_t step, JobFunction job) = 0;
-  virtual bool wait(vkpt::core::RuntimeHandle id) = 0;
-  virtual bool wait_group(const std::vector<vkpt::core::RuntimeHandle>& ids) = 0;
+  virtual vkpt::core::JobHandle submit_job(JobFunction job) = 0;
+  virtual vkpt::core::JobHandle submit_main_thread_job(JobFunction job) = 0;
+  virtual vkpt::core::JobHandle submit_range_job(std::size_t begin, std::size_t end, std::size_t step, JobFunction job) = 0;
+  virtual vkpt::core::JobHandle submit_indexed_range_job(std::size_t begin,
+                                                        std::size_t end,
+                                                        std::size_t step,
+                                                        IndexedRangeJobFunction job) = 0;
+  virtual bool wait(vkpt::core::JobHandle id) = 0;
+  virtual bool wait_group(const std::vector<vkpt::core::JobHandle>& ids) = 0;
   virtual std::size_t worker_count() const = 0;
   virtual void pump_main_thread() = 0;
   virtual bool deterministic() const = 0;
@@ -36,10 +44,15 @@ class JobSystem final : public IJobSystem {
   explicit JobSystem(std::size_t workerCount = 0u);
   ~JobSystem() override;
 
-  vkpt::core::RuntimeHandle submit_job(JobFunction job) override;
-  vkpt::core::RuntimeHandle submit_range_job(std::size_t begin, std::size_t end, std::size_t step, JobFunction job) override;
-  bool wait(vkpt::core::RuntimeHandle id) override;
-  bool wait_group(const std::vector<vkpt::core::RuntimeHandle>& ids) override;
+  vkpt::core::JobHandle submit_job(JobFunction job) override;
+  vkpt::core::JobHandle submit_main_thread_job(JobFunction job) override;
+  vkpt::core::JobHandle submit_range_job(std::size_t begin, std::size_t end, std::size_t step, JobFunction job) override;
+  vkpt::core::JobHandle submit_indexed_range_job(std::size_t begin,
+                                                 std::size_t end,
+                                                 std::size_t step,
+                                                 IndexedRangeJobFunction job) override;
+  bool wait(vkpt::core::JobHandle id) override;
+  bool wait_group(const std::vector<vkpt::core::JobHandle>& ids) override;
   std::size_t worker_count() const override;
   void pump_main_thread() override;
   bool deterministic() const override;
@@ -47,25 +60,30 @@ class JobSystem final : public IJobSystem {
   bool shutdown() override;
 
  private:
-  struct JobEntry;
-  vkpt::core::RuntimeHandle submit_internal(JobFunction job);
+  struct JobState;
+  vkpt::core::JobHandle submit_internal(JobFunction job,
+                                        std::shared_ptr<JobState> parent = {},
+                                        bool main_thread = false);
+  vkpt::core::JobHandle create_group(std::size_t pending_count);
+  vkpt::core::JobHandle create_completed_job();
+  std::shared_ptr<JobState> find_job(vkpt::core::JobHandle id) const;
+  bool try_run_one_queued_job();
+  void run_job(const std::shared_ptr<JobState>& state);
+  void complete_job(const std::shared_ptr<JobState>& state, std::exception_ptr failure = {});
   void worker_loop();
 
  private:
-  std::vector<std::unique_ptr<JobEntry>> m_jobs;
+  std::unordered_map<vkpt::core::JobHandle, std::shared_ptr<JobState>> m_jobs;
   mutable std::mutex m_jobsMutex;
   std::condition_variable m_jobsCv;
   std::mutex m_queueMutex;
-  std::condition_variable m_mainCv;
-  std::mutex m_mainMutex;
-  std::mutex m_serialMutex;  // serializes job execution in deterministic mode
-  std::deque<vkpt::core::RuntimeHandle> m_queue;
-  std::deque<vkpt::core::RuntimeHandle> m_mainQueue;
+  std::recursive_mutex m_serialMutex;
+  std::deque<vkpt::core::JobHandle> m_queue;
+  std::deque<vkpt::core::JobHandle> m_mainQueue;
   std::vector<std::thread> m_workers;
-  std::size_t m_nextWorkerCount = 0u;
-  bool m_stopped = false;
-  bool m_deterministic = false;
-  std::atomic<vkpt::core::RuntimeHandle> m_nextJobId{1u};
+  std::atomic_bool m_stopped{false};
+  std::atomic_bool m_deterministic{false};
+  std::atomic<vkpt::core::JobHandle> m_nextJobId{1u};
 };
 
 }  // namespace vkpt::jobs

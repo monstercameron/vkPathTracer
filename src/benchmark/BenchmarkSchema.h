@@ -59,6 +59,15 @@ struct BenchmarkMemory {
   double current_mb = 0.0;
 };
 
+struct BenchmarkScore {
+  double samples_per_sec_per_thread = 0.0;
+  double paths_per_sec_per_thread = 0.0;
+  double samples_per_sec_per_megapixel = 0.0;
+  double normalized_score = 0.0;
+  uint32_t hardware_threads = 0;
+  std::string normalization_basis;
+};
+
 struct BenchmarkResultBuildInfo {
   std::string app_version;
   std::string git_hash;
@@ -94,6 +103,7 @@ struct BenchmarkResult {
   std::vector<BenchmarkTimingEvent> timing_breakdown;
   BenchmarkThroughput throughput;
   BenchmarkMemory memory;
+  BenchmarkScore score;
   std::string image_hash;
   double reference_error = 0.0;
   std::vector<std::string> diagnostics;
@@ -104,6 +114,8 @@ struct BenchmarkResult {
   std::string beauty_exr;
   std::string diff_heatmap_png;
   std::string reference_exr;
+  std::string profiler_trace_json;
+  std::string logs_jsonl;
 };
 
 struct BenchmarkRunDesc {
@@ -119,6 +131,75 @@ struct BenchmarkRunDesc {
   std::string reference_image;
   std::string tolerance_policy;
   uint32_t max_depth = 6;
+  uint32_t worker_count = 0;
+  uint32_t tile_height = 16;
+  bool deterministic = false;
+};
+
+struct BenchmarkArtifactContract {
+  std::vector<std::string> required_files;
+  std::vector<std::string> optional_files;
+  bool require_non_empty = true;
+};
+
+struct BenchmarkArtifactValidation {
+  bool ok = false;
+  std::string artifact_directory;
+  std::vector<std::string> present_files;
+  std::vector<std::string> missing_files;
+  std::vector<std::string> empty_files;
+  std::vector<std::string> invalid_files;
+};
+
+struct ProfilerCapabilities {
+  std::string schema_version = "1.0";
+  bool cpu_zones = true;
+  bool gpu_zones = true;
+  bool job_timings = true;
+  bool frame_stage_timings = true;
+  bool asset_import_timings = true;
+  bool bvh_build_timings = true;
+  bool shader_compile_timings = true;
+  bool render_pass_timings = true;
+  bool json_trace_export = true;
+};
+
+struct BenchmarkCapabilities {
+  std::string schema_version = "1.0";
+  std::vector<std::string> commands;
+  std::vector<std::string> artifact_exports;
+  std::vector<std::string> experiment_support;
+  std::vector<std::string> backend_experiment_targets;
+  bool descriptor_files = true;
+  bool artifact_validation = true;
+  bool normalized_scores = true;
+  bool benchmark_runner_interface = true;
+  bool profiler_service_contract = true;
+  bool profiler_trace_export = true;
+};
+
+using ProfilerEventHandle = uint64_t;
+
+class IProfiler {
+ public:
+  virtual ~IProfiler() = default;
+  virtual ProfilerEventHandle begin_event(ProfilerEventKind kind,
+                                          std::string_view name,
+                                          std::string_view category,
+                                          uint32_t thread_id) = 0;
+  virtual void end_event(ProfilerEventHandle handle) = 0;
+  virtual std::string emit_trace() const = 0;
+  virtual void reset_frame() = 0;
+  virtual ProfilerCapabilities describe_capabilities() const = 0;
+};
+
+class IBenchmarkRunner {
+ public:
+  virtual ~IBenchmarkRunner() = default;
+  virtual vkpt::core::Result<BenchmarkResult> run_once(const BenchmarkRunDesc& desc) = 0;
+  virtual vkpt::core::Result<std::vector<BenchmarkResult>> run_suite(const std::vector<BenchmarkRunDesc>& descs) = 0;
+  virtual BenchmarkArtifactValidation validate_artifacts(std::string_view artifact_directory) const = 0;
+  virtual std::string summarize_results(const std::vector<BenchmarkResult>& results) const = 0;
 };
 
 vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_view text);
@@ -131,6 +212,18 @@ bool ValidateBenchmarkRunDesc(const BenchmarkRunDesc& desc, std::string* message
 
 std::string SerializeBenchmarkResult(const BenchmarkResult& result);
 std::string SerializeBenchmarkRunDesc(const BenchmarkRunDesc& desc);
+std::string SerializeBenchmarkArtifactValidation(const BenchmarkArtifactValidation& validation);
+std::string SerializeBenchmarkCapabilities(const BenchmarkCapabilities& capabilities);
+std::string SerializeProfilerCapabilities(const ProfilerCapabilities& capabilities);
+
+BenchmarkArtifactContract DefaultBenchmarkArtifactContract();
+BenchmarkArtifactValidation ValidateBenchmarkArtifactsOnDisk(std::string_view artifact_directory);
+BenchmarkCapabilities DefaultBenchmarkCapabilities();
+ProfilerCapabilities DefaultProfilerCapabilities();
+BenchmarkScore ComputeBenchmarkScore(const BenchmarkThroughput& throughput,
+                                     const Resolution& resolution,
+                                     uint32_t hardware_threads);
+std::string SummarizeBenchmarkResults(const std::vector<BenchmarkResult>& results);
 
 std::string SerializeProfilerEvent(const ProfilerEvent& event);
 std::string SerializeProfilerTrace(const std::vector<ProfilerEvent>& trace);
