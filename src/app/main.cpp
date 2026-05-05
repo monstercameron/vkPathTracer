@@ -68,6 +68,7 @@
 #include "render/backends/BackendFactory.h"
 #include "render/backends/D3D12Backend.h"
 #include "render/backends/VulkanBackend.h"
+#include "render/RenderCoordinator.h"
 #include "render/interface/RenderContracts.h"
 #include "jobs/JobSystem.h"
 
@@ -1322,6 +1323,46 @@ void ApplyWindowMetricsToLayout(vkpt::editor::UiLayoutDocument& layout_state,
     layout_state.panels.front().height = static_cast<float>(height);
   }
 }
+
+#ifndef PT_ENABLE_QT
+std::optional<vkpt::scene::SceneWorld> BuildSceneWorldSnapshot(
+    const vkpt::scene::SceneDocument& document) {
+  auto worldResult = document.to_world();
+  if (!worldResult) {
+    return std::nullopt;
+  }
+  auto world = std::move(worldResult.value());
+  world.recompute_world_transforms();
+  return world;
+}
+
+vkpt::scene::TransformComponent ResolveEntityWorldTransform(
+    const vkpt::scene::SceneEntityDefinition& entity,
+    const vkpt::scene::SceneWorld* world) {
+  if (world != nullptr) {
+    if (const auto* worldTransform = world->world_transform(entity.id)) {
+      vkpt::scene::TransformComponent transform = *worldTransform;
+      transform.dirty = entity.has_transform ? entity.transform.dirty : false;
+      return transform;
+    }
+  }
+  return entity.has_transform ? entity.transform : vkpt::scene::TransformComponent{};
+}
+
+int RunDynamicPhysicsPerformanceGate(std::string scenePath,
+                                     std::string backend,
+                                     uint32_t width,
+                                     uint32_t height,
+                                     uint32_t frames) {
+  (void)scenePath;
+  (void)backend;
+  (void)width;
+  (void)height;
+  (void)frames;
+  std::cerr << "dynamic physics gate requires a Qt/D3D12-enabled build\n";
+  return 2;
+}
+#endif
 
 #ifdef PT_ENABLE_QT
 struct QtDockProperty {
@@ -6801,30 +6842,14 @@ int main(int argc, char** argv) {
       // Camera updates are a small command channel; display frames use QtWindow's queued handoff.
       const uint32_t qtPreviewPublishHz = std::max<uint32_t>(1u, config.ui_present_hz.value);
       constexpr uint32_t kQtPreviewImmediatePublishes = 4u;
-      const auto kQtPreviewPublishInterval =
-          std::chrono::microseconds(std::max<uint32_t>(1u, 1000000u / qtPreviewPublishHz));
-      std::atomic<bool> qtBgStop{false};
-      std::atomic<bool> qtBgFailed{false};
       std::atomic<uint32_t> qtPublishedSample{0u};
       std::atomic<uint32_t> qtPublishedWidth{qtSettings.width};
       std::atomic<uint32_t> qtPublishedHeight{qtSettings.height};
       std::atomic<std::uint64_t> qtPublishedRays{0u};
       std::atomic<std::uint64_t> qtPublishedFrames{0u};
       std::atomic<std::uint64_t> qtDroppedFrames{0u};
-      auto qtFramebufferHandoffAlive = std::make_shared<std::atomic<bool>>(true);
-
-      std::mutex qtCameraCommandMutex;
-      struct QtCameraCommand {
-        bool camPending = false;
-        vkpt::pathtracer::Vec3 camPos{}, camTarget{}, camUp{};
-        float camFov = 0.0f;
-      } qtCameraCommand;
-      std::mutex qtSceneCommandMutex;
-      struct QtSceneCommand {
-        bool scenePending = false;
-        vkpt::pathtracer::RTSceneData scene;
-      } qtSceneCommand;
-      const bool qtUseBg = (windowFrameLimit == 0u) &&
+      std::unique_ptr<vkpt::render::RenderCoordinator> qtRenderCoordinator;
+      const bool qtUseBg =
           (dynamic_cast<vkpt::cpu::TiledCpuPathTracer*>(qtTracer.get()) != nullptr);
 #ifdef PT_ENABLE_QT
       QtDockDeviceStats qtDeviceStats;
@@ -6858,112 +6883,20 @@ int main(int argc, char** argv) {
         }
       }
 #endif
-      std::thread qtBgThread;
       if (qtTracerReady && qtUseBg) {
-        BootStep("starting background cpu render thread");
-        qtBgThread = std::thread([&]() {
-          uint32_t s = 0;
-          auto lastPublish = std::chrono::steady_clock::time_point{};
-          while (!qtBgStop.load(std::memory_order_relaxed)) {
-            QtSceneCommand sceneCommand{};
-            bool hasSceneCommand = false;
-            {
-              std::lock_guard<std::mutex> lock(qtSceneCommandMutex);
-              if (qtSceneCommand.scenePending) {
-                sceneCommand = std::move(qtSceneCommand);
-                qtSceneCommand.scenePending = false;
-                hasSceneCommand = true;
-              }
-            }
-
-            if (hasSceneCommand) {
-              if (!qtTracer->load_scene_snapshot(sceneCommand.scene) ||
-                  !qtTracer->build_or_update_acceleration() ||
-                  !qtTracer->reset_accumulation()) {
-                qtBgFailed.store(true, std::memory_order_release);
-                break;
-              }
-              s = 0u;
-              qtPublishedSample.store(0u, std::memory_order_relaxed);
-              qtPublishedRays.store(0u, std::memory_order_relaxed);
-              lastPublish = std::chrono::steady_clock::time_point{};
-            }
-
-            // Pick up any pending camera update between samples (no blocking).
-            QtCameraCommand cameraCommand{};
-            bool hasCameraCommand = false;
-            {
-              std::lock_guard<std::mutex> lock(qtCameraCommandMutex);
-              if (qtCameraCommand.camPending) {
-                cameraCommand = qtCameraCommand;
-                qtCameraCommand.camPending = false;
-                hasCameraCommand = true;
-              }
-            }
-
-            if (hasCameraCommand) {
-              const bool ok = qtTracer->update_camera(
-                  cameraCommand.camPos, cameraCommand.camTarget,
-                  cameraCommand.camUp, cameraCommand.camFov);
-              if (!ok) {
-                vkpt::pathtracer::RTSceneData camScene;
-                {
-                  std::lock_guard<std::mutex> lock(qtSceneBaseMutex);
-                  camScene = qtSceneBase;
-                }
-                camScene.camera_position = cameraCommand.camPos;
-                camScene.camera_target = cameraCommand.camTarget;
-                camScene.camera_up = cameraCommand.camUp;
-                camScene.camera_fov_deg = cameraCommand.camFov;
-                qtTracer->load_scene_snapshot(camScene);
-                qtTracer->build_or_update_acceleration();
-              }
-              qtTracer->reset_accumulation();
-              s = 0u;
-              qtPublishedSample.store(0u, std::memory_order_relaxed);
-              qtPublishedRays.store(0u, std::memory_order_relaxed);
-              lastPublish = std::chrono::steady_clock::time_point{};
-            }
-            if (!qtTracer->render_sample_batch(0, qtSettings.height, s, 0)) {
-              qtBgFailed.store(true, std::memory_order_release);
-              break;
-            }
-
-            const uint32_t completedSample = s + 1u;
-            qtPublishedSample.store(completedSample, std::memory_order_relaxed);
-            qtPublishedRays.store(qtTracer->read_counters().rays, std::memory_order_relaxed);
-            const auto now = std::chrono::steady_clock::now();
-            const bool publishNow =
-                completedSample <= kQtPreviewImmediatePublishes ||
-                lastPublish == std::chrono::steady_clock::time_point{} ||
-                (now - lastPublish) >= kQtPreviewPublishInterval;
-
-            if (publishNow) {
-              auto ldr = qtTracer->resolve_ldr();
-              qtPublishedWidth.store(ldr.width, std::memory_order_relaxed);
-              qtPublishedHeight.store(ldr.height, std::memory_order_relaxed);
-              bool queued = false;
-#ifdef PT_ENABLE_QT
-              queued = QueueQtWindowFramebuffer(qtWindow,
-                                                qtFramebufferHandoffAlive,
-                                                std::move(ldr.rgba8),
-                                                ldr.width,
-                                                ldr.height);
-#else
-              (void)ldr;
-#endif
-              if (queued) {
-                qtPublishedFrames.fetch_add(1u, std::memory_order_relaxed);
-                lastPublish = now;
-              } else {
-                qtDroppedFrames.fetch_add(1u, std::memory_order_relaxed);
-              }
-            } else {
-              qtDroppedFrames.fetch_add(1u, std::memory_order_relaxed);
-            }
-            ++s;
-          }
-        });
+        BootStep("starting background cpu render coordinator");
+        vkpt::render::RenderCoordinatorConfig coordinatorConfig{};
+        coordinatorConfig.publish_hz = qtPreviewPublishHz;
+        coordinatorConfig.immediate_publish_count = kQtPreviewImmediatePublishes;
+        qtRenderCoordinator = std::make_unique<vkpt::render::RenderCoordinator>(
+            std::move(qtTracer),
+            qtSettings,
+            qtScene,
+            coordinatorConfig);
+        if (!qtRenderCoordinator->start()) {
+          qtTracerReady = false;
+          BootStep("background cpu render coordinator start failed");
+        }
       }
 
       uint32_t qtSampleIndex = 0;
@@ -7056,14 +6989,13 @@ int main(int argc, char** argv) {
         qtScene.camera_fov_deg = qtCameraPose.fov_deg;
         qtPublishedSample.store(0u, std::memory_order_relaxed);
         qtPublishedRays.store(0u, std::memory_order_relaxed);
-        if (qtUseBg) {
-          std::lock_guard<std::mutex> lock(qtCameraCommandMutex);
-          qtCameraCommand.camPos = qtScene.camera_position;
-          qtCameraCommand.camTarget = qtScene.camera_target;
-          qtCameraCommand.camUp = qtScene.camera_up;
-          qtCameraCommand.camFov = qtScene.camera_fov_deg;
-          qtCameraCommand.camPending = true;
-        } else if (qtTracerReady) {
+        if (qtUseBg && qtRenderCoordinator) {
+          qtRenderCoordinator->post_camera(vkpt::render::RenderCameraCommand{
+              qtScene.camera_position,
+              qtScene.camera_target,
+              qtScene.camera_up,
+              qtScene.camera_fov_deg});
+        } else if (!qtUseBg && qtTracerReady) {
           const bool camOk = qtTracer->update_camera(
               qtScene.camera_position, qtScene.camera_target,
               qtScene.camera_up, qtScene.camera_fov_deg);
@@ -7327,11 +7259,9 @@ int main(int argc, char** argv) {
           qtSceneBase = qtScene;
         }
         qtPublishedSample.store(0u, std::memory_order_relaxed);
-        if (qtUseBg) {
-          std::lock_guard<std::mutex> lock(qtSceneCommandMutex);
-          qtSceneCommand.scene = qtScene;
-          qtSceneCommand.scenePending = true;
-        } else if (qtTracerReady) {
+        if (qtUseBg && qtRenderCoordinator) {
+          qtRenderCoordinator->post_scene(qtScene);
+        } else if (!qtUseBg && qtTracerReady) {
           qtTracerReady = qtTracer->load_scene_snapshot(qtScene) &&
                           qtTracer->build_or_update_acceleration() &&
                           qtTracer->reset_accumulation();
@@ -9231,14 +9161,13 @@ int main(int argc, char** argv) {
             syncQtFpsAnglesFromPose();
 #endif
             qtOrbitLastAngleDeg = angleDeg;
-            if (qtUseBg) {
-              // Post camera update; bg thread will apply it between samples.
-              std::lock_guard<std::mutex> lock(qtCameraCommandMutex);
-              qtCameraCommand.camPos = qtScene.camera_position;
-              qtCameraCommand.camTarget = qtScene.camera_target;
-              qtCameraCommand.camUp = qtScene.camera_up;
-              qtCameraCommand.camFov = qtScene.camera_fov_deg;
-              qtCameraCommand.camPending = true;
+            if (qtUseBg && qtRenderCoordinator) {
+              // Post camera update; coordinator will apply it between samples.
+              qtRenderCoordinator->post_camera(vkpt::render::RenderCameraCommand{
+                  qtScene.camera_position,
+                  qtScene.camera_target,
+                  qtScene.camera_up,
+                  qtScene.camera_fov_deg});
             } else {
               // Synchronous (GPU) path — update directly on main thread.
               const bool camOk = qtTracer->update_camera(
@@ -9254,17 +9183,32 @@ int main(int argc, char** argv) {
           }
         }
 
-        if (qtUseBg) {
-          if (qtBgFailed.exchange(false, std::memory_order_acq_rel)) {
+        if (qtUseBg && qtRenderCoordinator) {
+          const auto coordinatorStats = qtRenderCoordinator->stats();
+          qtPublishedFrames.store(coordinatorStats.handoff.published, std::memory_order_relaxed);
+          qtDroppedFrames.store(coordinatorStats.handoff.dropped, std::memory_order_relaxed);
+          qtPublishedRays.store(coordinatorStats.counters.rays, std::memory_order_relaxed);
+          if (coordinatorStats.failed) {
             qtTracerReady = false;
-            qtPreviewStatus = "render sample failed";
-            std::cerr << "[qt] background render_sample_batch failed\n";
-            logger.log(vkpt::log::Severity::Error, "app", "Qt background render sample failed", {
-              {"sample", std::to_string(qtPublishedSample.load(std::memory_order_relaxed))},
+            qtPreviewStatus = coordinatorStats.error.empty() ? "render sample failed" : coordinatorStats.error;
+            std::cerr << "[qt] background render coordinator failed\n";
+            logger.log(vkpt::log::Severity::Error, "app", "Qt background render coordinator failed", {
+              {"sample", std::to_string(coordinatorStats.sample_count)},
               {"effective_preview_present_hz", std::to_string(qtPreviewPublishHz)}
             });
           }
-        } else if (windowFrameLimit == 0u && qtTracerReady) {
+          if (auto frame = qtRenderCoordinator->acquire_latest_frame()) {
+            qtPublishedSample.store(frame->sample_count, std::memory_order_relaxed);
+            qtPublishedWidth.store(frame->width, std::memory_order_relaxed);
+            qtPublishedHeight.store(frame->height, std::memory_order_relaxed);
+            qtPublishedRays.store(frame->counters.rays, std::memory_order_relaxed);
+#ifdef PT_ENABLE_QT
+            if (qtWindow != nullptr) {
+              qtWindow->set_framebuffer_rgba(frame->rgba8, frame->width, frame->height);
+            }
+#endif
+          }
+        } else if (!qtUseBg && windowFrameLimit == 0u && qtTracerReady) {
           bool renderedThisTick = false;
           qtLastGpuBatchesPerTick = 0u;
           while (qtTracerReady && qtLastGpuBatchesPerTick < kQtMaxGpuBatchesPerTick) {
@@ -9345,11 +9289,10 @@ int main(int argc, char** argv) {
         {"frames", std::to_string(qtFrameCount)},
         {"status", qtPreviewStatus}
       });
-      qtBgStop.store(true, std::memory_order_release);
-      if (qtBgThread.joinable()) {
-        logger.log(vkpt::log::Severity::Info, "app", "Qt background render thread join begin");
-        qtBgThread.join();
-        logger.log(vkpt::log::Severity::Info, "app", "Qt background render thread joined");
+      if (qtRenderCoordinator) {
+        logger.log(vkpt::log::Severity::Info, "app", "Qt background render coordinator stop begin");
+        qtRenderCoordinator->stop();
+        logger.log(vkpt::log::Severity::Info, "app", "Qt background render coordinator stopped");
       }
 #ifdef PT_ENABLE_QT
       DrainQtQueuedWork();
@@ -9374,7 +9317,6 @@ int main(int argc, char** argv) {
           {"latest_presented_id", std::to_string(qtStats.latestPresentedId)}
         });
       }
-      qtFramebufferHandoffAlive->store(false, std::memory_order_release);
       DrainQtQueuedWork();
 #endif
       BootStep("qt render loop exited; shutting down platform");
@@ -9644,21 +9586,11 @@ int main(int argc, char** argv) {
     const auto previewTraceBudgetPerFrame = std::chrono::milliseconds(16);
     uint32_t previewChunkCounter = 0u;
 
-    // Background render thread state (used when TiledCpuPathTracer is active).
-    // The tiled tracer blocks the calling thread in wait_group() for an entire
-    // sample which would stall the Win32 message pump.  We run it on a
-    // dedicated thread so the main loop stays responsive.
-    std::atomic<bool> bgRenderStop{false};
-    std::mutex bgFrameMutex;
-    struct BgFrame {
-      std::vector<uint8_t> rgba8;
-      uint32_t width  = 0;
-      uint32_t height = 0;
-      uint32_t sample = 0;
-      bool fresh = false;
-    } bgFrame;
+    // Background tiled CPU preview is owned by RenderCoordinator. The main
+    // thread posts commands and consumes immutable frames; it never mutates the
+    // active tiled tracer after the coordinator starts.
+    std::unique_ptr<vkpt::render::RenderCoordinator> bgRenderCoordinator;
     bool useBgRender = false;
-    std::thread bgRenderThread;
 
     auto resetPreviewPixelOrder = [&](uint32_t sampleIndex) {
       std::iota(previewPixelOrder.begin(), previewPixelOrder.end(), 0u);
@@ -9796,30 +9728,25 @@ int main(int argc, char** argv) {
                  },
                  0);
 
-      // Launch background render thread for TiledCpuPathTracer so the main
-      // thread's Win32 message pump is never blocked.
-      if (windowFrameLimit == 0u &&
-          dynamic_cast<vkpt::cpu::TiledCpuPathTracer*>(previewTracer.get()) != nullptr) {
+      // Launch a coordinator for TiledCpuPathTracer so the main thread's Win32
+      // message pump is never blocked and never mutates the live tracer.
+      if (dynamic_cast<vkpt::cpu::TiledCpuPathTracer*>(previewTracer.get()) != nullptr) {
         useBgRender = true;
-        bgRenderThread = std::thread([&]() {
-          // Accumulate indefinitely — no spp cap. Convergence continues until
-          // bgRenderStop is set (window close) or render_sample_batch fails.
-          for (uint32_t s = 0; !bgRenderStop.load(std::memory_order_relaxed); ++s) {
-            bool ok = previewTracer->render_sample_batch(0, previewSettings.height, s, 0);
-            if (!ok) break;
-            auto ldr = previewTracer->resolve_ldr();
-            {
-              std::lock_guard<std::mutex> lock(bgFrameMutex);
-              bgFrame.rgba8  = std::move(ldr.rgba8);
-              bgFrame.width  = ldr.width;
-              bgFrame.height = ldr.height;
-              bgFrame.sample = s + 1;
-              bgFrame.fresh  = true;
-            }
-          }
-        });
+        vkpt::render::RenderCoordinatorConfig coordinatorConfig{};
+        coordinatorConfig.publish_hz = 60u;
+        coordinatorConfig.immediate_publish_count = 4u;
+        bgRenderCoordinator = std::make_unique<vkpt::render::RenderCoordinator>(
+            std::move(previewTracer),
+            previewSettings,
+            previewScene,
+            coordinatorConfig);
+        if (!bgRenderCoordinator->start()) {
+          useBgRender = false;
+          previewTracerReady = false;
+          previewError = "window preview background coordinator failed";
+        }
         logger.log(vkpt::log::Severity::Info, "traceprobe",
-                   "background render thread launched for TiledCpuPathTracer");
+                   "background render coordinator launched for TiledCpuPathTracer");
       }
     }
 
@@ -9887,7 +9814,9 @@ int main(int argc, char** argv) {
       const auto frameStart = std::chrono::steady_clock::now();
 
       // ---- Camera orbit update -------------------------------------------
-      if (previewTracerReady && previewTracer && kOrbitRadius > 1e-4f) {
+      if (previewTracerReady &&
+          ((useBgRender && bgRenderCoordinator) || previewTracer) &&
+          kOrbitRadius > 1e-4f) {
         const float elapsedSec = std::chrono::duration<float>(
             frameStart - orbitStartTime).count();
         const float rawAngleDeg = orbitInitialAngleDeg + elapsedSec * kOrbitDegPerSec;
@@ -9900,18 +9829,26 @@ int main(int argc, char** argv) {
           previewScene.camera_position.z = orbitCenter.z + kOrbitRadius * std::cos(rad);
           // Camera always looks at the orbit center.
           previewScene.camera_target = orbitCenter;
-          // Use lightweight camera update so geometry upload state is preserved.
-          // Fall back to full load_scene_snapshot only if update_camera is unsupported.
-          const bool camOk = previewTracer->update_camera(
-              previewScene.camera_position,
-              previewScene.camera_target,
-              previewScene.camera_up,
-              previewScene.camera_fov_deg);
-          if (!camOk) {
-            previewTracer->load_scene_snapshot(previewScene);
-            previewTracer->build_or_update_acceleration();
+          if (useBgRender && bgRenderCoordinator) {
+            bgRenderCoordinator->post_camera(vkpt::render::RenderCameraCommand{
+                previewScene.camera_position,
+                previewScene.camera_target,
+                previewScene.camera_up,
+                previewScene.camera_fov_deg});
+          } else {
+            // Use lightweight camera update so geometry upload state is preserved.
+            // Fall back to full load_scene_snapshot only if update_camera is unsupported.
+            const bool camOk = previewTracer->update_camera(
+                previewScene.camera_position,
+                previewScene.camera_target,
+                previewScene.camera_up,
+                previewScene.camera_fov_deg);
+            if (!camOk) {
+              previewTracer->load_scene_snapshot(previewScene);
+              previewTracer->build_or_update_acceleration();
+            }
+            previewTracer->reset_accumulation();
           }
-          previewTracer->reset_accumulation();
           previewSampleIndex = 0u;
           orbitLastAngleDeg = angleDeg;
           std::cout << "[orbit] angle=" << angleDeg
@@ -9923,44 +9860,39 @@ int main(int argc, char** argv) {
       }
 
       // ---- Render dispatch -----------------------------------------------
-      // TiledCpuPathTracer runs on a background thread (bgRenderThread) to
-      // keep the Win32 message pump unblocked.  The main loop just picks up
-      // the latest resolved frame whenever the bg thread posts one.
+      // TiledCpuPathTracer runs behind RenderCoordinator to keep the Win32
+      // message pump unblocked. The main loop only consumes latest-wins frames.
       // ScalarCpuPathTracer keeps the original incremental pixel-batch path.
-      if (windowFrameLimit == 0u && useBgRender) {
-        bool fresh = false;
-        std::vector<uint8_t> rgbaCopy;
-        uint32_t bfw = 0, bfh = 0, bfSample = 0;
-        {
-          std::lock_guard<std::mutex> lock(bgFrameMutex);
-          if (bgFrame.fresh) {
-            rgbaCopy  = bgFrame.rgba8;
-            bfw       = bgFrame.width;
-            bfh       = bgFrame.height;
-            bfSample  = bgFrame.sample;
-            bgFrame.fresh = false;
-            fresh = true;
-          }
+      if (useBgRender && bgRenderCoordinator) {
+        const auto coordinatorStats = bgRenderCoordinator->stats();
+        if (coordinatorStats.failed) {
+          previewTracerReady = false;
+          previewError = coordinatorStats.error.empty()
+              ? "window preview background render failed"
+              : coordinatorStats.error;
+          logger.log(vkpt::log::Severity::Error,
+                     "traceprobe",
+                     previewError);
         }
-        if (fresh) {
-          desktopWindow->set_framebuffer_rgba(rgbaCopy, bfw, bfh);
+        if (auto bgFrame = bgRenderCoordinator->acquire_latest_frame()) {
+          desktopWindow->set_framebuffer_rgba(bgFrame->rgba8, bgFrame->width, bgFrame->height);
           previewRendered  = true;
           previewNonBlack  = false;
-          for (std::size_t i = 0; i + 3u < rgbaCopy.size(); i += 4u) {
-            if (rgbaCopy[i] || rgbaCopy[i + 1u] || rgbaCopy[i + 2u]) {
+          for (std::size_t i = 0; i + 3u < bgFrame->rgba8.size(); i += 4u) {
+            if (bgFrame->rgba8[i] || bgFrame->rgba8[i + 1u] || bgFrame->rgba8[i + 2u]) {
               previewNonBlack = true;
               break;
             }
           }
-          previewSampleIndex = bfSample;
+          previewSampleIndex = bgFrame->sample_count;
           // Log every 16 samples to show convergence progress
-          if (bfSample == 1u || (bfSample % 16u) == 0u) {
-            std::cout << "[ui] preview accumulate: samples=" << bfSample
+          if (previewSampleIndex == 1u || (previewSampleIndex % 16u) == 0u) {
+            std::cout << "[ui] preview accumulate: samples=" << previewSampleIndex
                       << " non_black=" << (previewNonBlack ? "yes" : "no") << "\n";
             logger.log(vkpt::log::Severity::Info, "traceprobe",
                        "window preview accumulate",
                        {
-                         {"samples",   std::to_string(bfSample)},
+                         {"samples",   std::to_string(previewSampleIndex)},
                          {"rendered",  previewRendered ? "yes" : "no"},
                          {"non_black", previewNonBlack ? "yes" : "no"}
                        },
@@ -10395,10 +10327,9 @@ int main(int argc, char** argv) {
       }
     }
 
-    // Stop background render thread before tearing down the tracer.
-    bgRenderStop.store(true, std::memory_order_relaxed);
-    if (bgRenderThread.joinable()) {
-      bgRenderThread.join();
+    // Stop the background coordinator before tearing down platform resources.
+    if (bgRenderCoordinator) {
+      bgRenderCoordinator->stop();
     }
 
     platform.shutdown();
