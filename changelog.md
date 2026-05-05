@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-05-05 (session 20)
+
+### Physics, multi-accelerator planning, tessellation, and SDF editor support
+
+- Added dynamic physics scene metadata, transform publication, D3D12 dynamic instance update support, and a dynamic physics performance gate for checking transform-only updates without full scene rebuilds.
+- Enabled Jolt for the Windows D3D12 and Qt D3D12 presets, pinned the local LLVM clang-cl and Qt prefix for fresh configure runs, and verified the Qt/D3D12 Cornell scene now reports the Jolt backend at runtime.
+- Fixed Jolt dynamic-body scene sync so edited/moved bodies are activated, have their sleep timer reset, and no longer require toggling collision detection before simulation resumes.
+- Added D3D12 accelerator capability planning with `auto` and `high-performance` preset semantics: `auto` selects one real accelerator by discrete GPU, integrated GPU, then CPU priority, while high-performance enables every eligible real accelerator and keeps WARP opt-in.
+- Extended `run.ps1` with `-MaxDepth`, D3D12 throughput knobs, and an in-file reference of current project flags, environment variables, and accelerator preset notes.
+- Added optimization graph example packs for CPU path tracing and D3D12/DXR investigation, plus an HDRI sky asset and Lisa studio scene updates for importer/rendering smoke coverage.
+- Added cached tessellation request metadata, a compute tessellation shader scaffold, a tessellation sphere-level scene, and CPU analytic sphere SDF intersection to avoid expensive sphere ray marching.
+- Wired SDF sphere primitives into the D3D12 compute path with an SDF SRV, `num_sdfs` root constant, analytic sphere hit testing, and SDF shadow occlusion.
+- Added D3D12 compute direct-light specular preview terms so mirror, metal, glass, and clearcoat material families remain inspectable under point lights even with a black environment.
+- Threaded configurable D3D12 BVH build settings through static and dynamic-instance builders and logged leaf/bucket/split settings for tuning.
+- Added `ptbench` diagnostics for the D3D12 shader path and BVH leaf/bucket/split settings, with `PT_D3D12_HLSL_PATH` override support for experiments.
+- Fixed the DXR closest-hit path to resolve dynamic instance triangle/material offsets and transform hit normals into world space.
+- Expanded the Qt inspector with editable dropdowns/sliders/reset controls for materials, mesh IDs, SDF primitives, physics, lights, cameras, and render/device statistics.
+- Kept Qt dock panels stable while refreshing live property values in place, avoiding full widget rebuilds for changing inspector/render/device fields.
+- Made SDF primitives selectable like meshes in the Qt viewport and scene graph, including editable inspector controls for entity SDF components and standalone SDF definitions.
+- Added small imported OBJ scene assets and loader support for model-backed scenes used by the asset/import smoke path.
+
 ## 2026-05-05 (session 19)
 
 ### Qt shell panels, viewport gizmos, and camera controls
