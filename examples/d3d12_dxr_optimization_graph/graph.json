@@ -1,0 +1,21 @@
+{
+  "schema": "ptopt_d3d12_dxr_graph.v1",
+  "scope": "D3D12 compute, DXR dispatch, and CPU scaffolding",
+  "edges": [
+    { "id": "edge_backend_cpu_to_d3d12_compute", "from": "backend.cpu_scalar", "to": "backend.d3d12_compute" },
+    { "id": "edge_backend_d3d12_compute_to_dxr", "from": "backend.d3d12_compute", "to": "backend.d3d12_dxr" },
+    { "id": "edge_compute_rpp_1_to_2", "from": "d3d12.compute.rpp1", "to": "d3d12.compute.rpp2" },
+    { "id": "edge_compute_rpp_1_to_4", "from": "d3d12.compute.rpp1", "to": "d3d12.compute.rpp4" },
+    { "id": "edge_compute_rpp_1_to_8", "from": "d3d12.compute.rpp1", "to": "d3d12.compute.rpp8" },
+    { "id": "edge_compute_readback_final_to_every", "from": "d3d12.compute.readback_final", "to": "d3d12.compute.readback_every_sample" },
+    { "id": "edge_compute_dynamic_instances_on_to_off", "from": "d3d12.compute.dynamic_instances_on", "to": "d3d12.compute.dynamic_instances_off" },
+    { "id": "edge_dxr_fast_trace_to_fast_build", "from": "dxr.as.fast_trace", "to": "dxr.as.fast_build" },
+    { "id": "edge_dxr_fast_trace_to_none", "from": "dxr.as.fast_trace", "to": "dxr.as.none" },
+    { "id": "edge_dxr_dynamic_instances_on_to_off", "from": "dxr.dynamic_instances_on", "to": "dxr.dynamic_instances_off" },
+    { "id": "edge_shader_compute_main_compile", "from": "shader.compute.main_source", "to": "shader.compute.main_dxil" },
+    { "id": "edge_shader_compute_tonemap_compile", "from": "shader.compute.tonemap_source", "to": "shader.compute.tonemap_dxil" },
+    { "id": "edge_shader_dxr_library_compile", "from": "shader.dxr.library_source", "to": "shader.dxr.library_dxil" },
+    { "id": "edge_shader_small_int_pow_scan", "from": "shader.pow_builtin_small_int", "to": "shader.pow_mul_small_int" }
+  ]
+}
+

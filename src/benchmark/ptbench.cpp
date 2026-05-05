@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -34,11 +35,28 @@
 #include "cpu/SimdKernelAvx512.h"
 #include "cpu/TiledCpuPathTracer.h"
 #include "jobs/JobSystem.h"
+#include "materials/MaterialDescriptors.h"
 #include "pathtracer/PathTracer.h"
 #include "render/backends/BackendFactory.h"
 #include "render/backends/VulkanBackend.h"
 #include "render/interface/RenderContracts.h"
 #include "scene/Scene.h"
+
+#if defined(PT_ENABLE_VULKAN)
+#include "gpu/VulkanGpuPathTracer.h"
+#endif
+
+#if defined(PT_ENABLE_D3D12)
+#include "gpu/D3D12GpuPathTracer.h"
+#endif
+
+#if !defined(PT_SHADER_SPV_PATH)
+#define PT_SHADER_SPV_PATH ""
+#endif
+
+#if !defined(PT_SHADER_HLSL_PATH)
+#define PT_SHADER_HLSL_PATH ""
+#endif
 
 namespace {
 
@@ -317,6 +335,9 @@ std::string NormalizeBackend(std::string_view backend) {
   if (normalized == "cuda" || normalized == "gpu") {
     return "vulkan";
   }
+  if (normalized == "dxr") {
+    return "d3d12-dxr";
+  }
   return normalized.empty() ? "cpu" : normalized;
 }
 
@@ -324,6 +345,12 @@ std::vector<std::string> AvailableRendererPaths(std::string_view backend) {
   const auto normalized = NormalizeBackend(backend);
   if (normalized == "vulkan" || normalized == "vulkan-compute") {
     return {"gpu-compute"};
+  }
+  if (normalized == "d3d12") {
+    return {"d3d12-compute", "dxr"};
+  }
+  if (normalized == "d3d12-dxr") {
+    return {"dxr", "d3d12-dxr"};
   }
   if (normalized == "auto" || normalized == "null" || normalized == "cpu") {
     return {"cpu-scalar", "cpu-tiled"};
@@ -768,6 +795,7 @@ void PrintHelp() {
   std::cout << "  run-experiments\n";
   std::cout << "  backend-experiments\n";
   std::cout << "  gpu-mem-pressure\n";
+  std::cout << "  material-coverage\n";
   std::cout << "  shader-matrix\n";
   std::cout << "  release-check\n";
   std::cout << "  thread-sweep\n";
@@ -777,8 +805,8 @@ void PrintHelp() {
   std::cout << "  --desc <benchmark-run.json>\n";
   std::cout << "  --echo-desc              (parse and echo resolved descriptor, no render)\n";
   std::cout << "  --scene <path>\n";
-  std::cout << "  --backend <cpu|vulkan|auto>\n";
-  std::cout << "  --renderer-path <cpu-scalar|cpu-tiled|gpu-compute>\n";
+  std::cout << "  --backend <cpu|vulkan|d3d12|d3d12-dxr|auto>\n";
+  std::cout << "  --renderer-path <cpu-scalar|cpu-tiled|gpu-compute|d3d12-compute|dxr>\n";
   std::cout << "  --resolution <WxH>\n";
   std::cout << "  --spp <samples>\n";
   std::cout << "  --seed <value>\n";
@@ -828,6 +856,10 @@ void PrintHelp() {
   std::cout << "  [--max-mb <n>]          (default 512)\n";
   std::cout << "  [--step-mb <n>]         (default 64)\n";
   std::cout << "  [--output <path>]       (default artifacts/experiments)\n\n";
+
+  std::cout << "material-coverage:\n";
+  std::cout << "  [--output <path>]       (default artifacts/experiments/material_coverage.json)\n";
+  std::cout << "  [--json]\n\n";
 
   std::cout << "shader-matrix:\n";
   std::cout << "  [--output <path>]       (default artifacts/experiments)\n\n";
@@ -1246,7 +1278,13 @@ int RunCommand(const std::vector<std::string_view>& args) {
     return 1;
   }
   const std::string normalizedBackend = NormalizeBackend(opts.backend);
-  const bool isVulkanPath = (std::string(ToLower(opts.rendererPath)) == "gpu-compute");
+  const std::string normalizedRenderer = std::string(ToLower(opts.rendererPath));
+  const bool isVulkanPath = (normalizedBackend == "vulkan" && normalizedRenderer == "gpu-compute");
+  const bool isD3D12ComputePath =
+      (normalizedBackend == "d3d12" && normalizedRenderer == "d3d12-compute");
+  const bool isD3D12DxrPath =
+      ((normalizedBackend == "d3d12" || normalizedBackend == "d3d12-dxr") &&
+       (normalizedRenderer == "dxr" || normalizedRenderer == "d3d12-dxr"));
   const bool isTiledPath = (std::string(ToLower(opts.rendererPath)) == "cpu-tiled");
   std::unique_ptr<vkpt::render::IRenderBackend> backend;
   if (isVulkanPath) {
@@ -1373,7 +1411,50 @@ int RunCommand(const std::vector<std::string_view>& args) {
   renderSettings.enable_mis = true;
 
   std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer;
-  if (isTiledPath) {
+  if (isVulkanPath) {
+#if defined(PT_ENABLE_VULKAN)
+    auto gpuTracer = std::make_unique<vkpt::gpu::VulkanGpuPathTracer>(PT_SHADER_SPV_PATH);
+    if (!gpuTracer->is_valid()) {
+      std::cerr << "vulkan path tracer init failed: " << gpuTracer->last_error() << "\n";
+      return 2;
+    }
+    result.cpu_simd_mode = "vulkan-compute";
+    result.device_info.gpu_name = gpuTracer->gpu_name();
+    result.diagnostics.push_back("renderer=gpu-vulkan-compute");
+    result.diagnostics.push_back("gpu_name=" + gpuTracer->gpu_name());
+    result.diagnostics.push_back("gpu_type=" + gpuTracer->gpu_type());
+    result.diagnostics.push_back("gpu_vram_mb=" + std::to_string(gpuTracer->vram_mb()));
+    tracer = std::move(gpuTracer);
+#else
+    result.diagnostics.push_back("renderer=gpu-compute-simulated");
+    tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+#endif
+  } else if (isD3D12ComputePath || isD3D12DxrPath) {
+#if defined(PT_ENABLE_D3D12)
+    auto gpuTracer = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(PT_SHADER_HLSL_PATH);
+    if (!gpuTracer->is_valid()) {
+      std::cerr << "d3d12 path tracer init failed: " << gpuTracer->last_error() << "\n";
+      return 2;
+    }
+    if (isD3D12DxrPath) {
+      gpuTracer->set_prefer_dxr(true);
+      result.cpu_simd_mode = "d3d12-dxr-requested";
+      result.diagnostics.push_back("renderer=d3d12-dxr");
+    } else {
+      result.cpu_simd_mode = "d3d12-compute";
+      result.diagnostics.push_back("renderer=d3d12-compute");
+    }
+    result.device_info.gpu_name = gpuTracer->gpu_name();
+    result.diagnostics.push_back("gpu_name=" + gpuTracer->gpu_name());
+    result.diagnostics.push_back("gpu_vram_mb=" + std::to_string(gpuTracer->vram_mb()));
+    result.diagnostics.push_back("dxr_supported=" + std::string(gpuTracer->dxr_supported() ? "true" : "false"));
+    result.diagnostics.push_back("dxr_tier=" + gpuTracer->dxr_tier_string());
+    tracer = std::move(gpuTracer);
+#else
+    std::cerr << "D3D12 support is not enabled in this build\n";
+    return 2;
+#endif
+  } else if (isTiledPath) {
     vkpt::cpu::TiledRenderConfig tiledConfig;
     tiledConfig.tile_height = opts.tileHeight;
     tiledConfig.worker_count = opts.workers;
@@ -1509,6 +1590,29 @@ int RunCommand(const std::vector<std::string_view>& args) {
       result.diagnostics.push_back("speedup_estimate_vs_scalar=" + std::to_string(speedup_estimate));
     }
   }
+
+#if defined(PT_ENABLE_D3D12)
+  if (isD3D12ComputePath || isD3D12DxrPath) {
+    const auto* d3d12 = dynamic_cast<vkpt::gpu::D3D12GpuPathTracer*>(tracer.get());
+    if (d3d12) {
+      if (isD3D12DxrPath) {
+        result.cpu_simd_mode = d3d12->using_dxr_dispatch() ? "d3d12-dxr" : "d3d12-compute-fallback";
+      } else {
+        result.cpu_simd_mode = "d3d12-compute";
+      }
+      result.diagnostics.push_back("prefer_dxr=" + std::string(d3d12->prefer_dxr() ? "true" : "false"));
+      result.diagnostics.push_back("using_dxr_dispatch=" + std::string(d3d12->using_dxr_dispatch() ? "true" : "false"));
+      result.diagnostics.push_back("rays_per_pixel_per_dispatch=" +
+                                   std::to_string(d3d12->rays_per_pixel_per_dispatch()));
+      result.diagnostics.push_back("readback_interval=" + std::to_string(d3d12->readback_interval()));
+      result.diagnostics.push_back("force_readback_every_sample=" +
+                                   std::string(d3d12->force_readback_every_sample() ? "true" : "false"));
+      result.diagnostics.push_back("dynamic_instance_transforms=" +
+                                   std::string(d3d12->dynamic_instance_transforms_allowed() ? "true" : "false"));
+      result.diagnostics.push_back("dxr_build_mode=" + d3d12->dxr_build_mode());
+    }
+  }
+#endif
 
   {
     std::ofstream traceFile(result.profiler_trace_json);
@@ -1909,6 +2013,297 @@ int ValidateSceneCommand(const std::vector<std::string_view>& args) {
       std::cout << " - " << issue << "\n";
     }
     std::cout << "backend compatibility: " << (validBackend ? "ok" : "failed") << "\n";
+  }
+  return ok ? 0 : 2;
+}
+
+int MaterialCoverageCommand(const std::vector<std::string_view>& args) {
+  bool json = false;
+  std::string output = "artifacts/experiments/material_coverage.json";
+  for (std::size_t i = 2; i < args.size(); ++i) {
+    if (args[i] == "--json") {
+      json = true;
+    } else if (args[i] == "--output") {
+      if (i + 1 >= args.size()) {
+        std::cerr << "missing --output value\n";
+        return 1;
+      }
+      output = std::string(args[++i]);
+    } else {
+      std::cerr << "unknown option: " << args[i] << "\n";
+      return 1;
+    }
+  }
+
+  const auto& descriptors = vkpt::materials::GetMaterialRegistry();
+  vkpt::scene::SceneDocument doc;
+  doc.metadata.schema = "1.0";
+  doc.metadata.scene_name = "material_coverage";
+  doc.benchmark.enabled = true;
+  doc.benchmark.frame_target = 1;
+  doc.benchmark.warmup_frames = 0;
+
+  auto is_one_of = [](std::string_view id, std::initializer_list<std::string_view> values) {
+    for (const auto value : values) {
+      if (id == value) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (std::size_t i = 0; i < descriptors.size(); ++i) {
+    const auto& descriptor = descriptors[i];
+    const auto materialId = static_cast<vkpt::core::StableId>(1000u + i);
+
+    vkpt::scene::SceneMaterialDefinition material;
+    material.id = materialId;
+    material.name = descriptor.display_name;
+    material.family = descriptor.id;
+    doc.materials.push_back(std::move(material));
+
+    vkpt::scene::SceneGeometryDefinition geometry;
+    geometry.id = static_cast<vkpt::core::StableId>(2000u + i);
+    geometry.primitive = "triangle";
+    geometry.material_id = materialId;
+    const float x = static_cast<float>(i % 12u);
+    const float y = static_cast<float>(i / 12u);
+    geometry.vertices = {{x, y, 0.0f}, {x + 0.8f, y, 0.0f}, {x + 0.4f, y + 0.75f, 0.0f}};
+    geometry.indices = {0u, 1u, 2u};
+    doc.geometry.push_back(std::move(geometry));
+
+    vkpt::scene::SceneEntityDefinition entity;
+    entity.id = static_cast<vkpt::core::StableId>(3000u + i);
+    entity.name = descriptor.id;
+    entity.has_mesh = true;
+    entity.mesh.mesh_id = static_cast<vkpt::core::StableId>(2000u + i);
+    entity.mesh.material_id = materialId;
+    doc.entities.push_back(std::move(entity));
+  }
+
+  vkpt::scene::SceneEntityDefinition camera;
+  camera.id = 4000u;
+  camera.name = "coverage_camera";
+  camera.has_camera = true;
+  camera.camera.fov = 45.0f;
+  doc.entities.push_back(std::move(camera));
+
+  vkpt::scene::SceneEntityDefinition light;
+  light.id = 4001u;
+  light.name = "coverage_light";
+  light.has_light = true;
+  light.light.type = "point";
+  light.light.color = {1.0f, 1.0f, 1.0f};
+  light.light.intensity = 4.0f;
+  doc.entities.push_back(std::move(light));
+
+  std::vector<std::string> issues;
+  auto rtResult = vkpt::pathtracer::BuildSceneDataFromDocument(doc);
+  if (!rtResult) {
+    issues.push_back("rt_scene_build_failed");
+  }
+
+  struct Row {
+    std::string id;
+    std::string status;
+    uint32_t model = 0;
+    uint32_t effect = 0;
+    float roughness = 0.0f;
+    float metallic = 0.0f;
+    float transmission = 0.0f;
+    float clearcoat = 0.0f;
+    float alpha = 1.0f;
+    bool emissive = false;
+    std::string issue;
+  };
+  std::vector<Row> rows;
+  std::array<std::uint32_t, 16> modelCounts{};
+  std::array<std::uint32_t, 32> effectCounts{};
+
+  if (rtResult) {
+    const auto& rtScene = rtResult.value();
+    if (rtScene.materials.size() != descriptors.size()) {
+      issues.push_back("material_count_mismatch:" + std::to_string(rtScene.materials.size()) +
+                       "!=" + std::to_string(descriptors.size()));
+    }
+    const std::size_t count = std::min(rtScene.materials.size(), descriptors.size());
+    for (std::size_t i = 0; i < count; ++i) {
+      const auto& descriptor = descriptors[i];
+      const auto& material = rtScene.materials[i];
+      const std::string id = descriptor.id;
+      Row row;
+      row.id = id;
+      row.status = vkpt::materials::ToString(descriptor.status);
+      row.model = material.material_model;
+      row.effect = material.material_effect;
+      row.roughness = material.roughness;
+      row.metallic = material.metallic;
+      row.transmission = material.transmission;
+      row.clearcoat = material.clearcoat;
+      row.alpha = material.alpha;
+      row.emissive = material.is_emissive();
+
+      if (row.model < modelCounts.size()) {
+        ++modelCounts[row.model];
+      }
+      if (row.effect < effectCounts.size()) {
+        ++effectCounts[row.effect];
+      }
+
+      auto fail = [&](std::string message) {
+        if (!row.issue.empty()) {
+          row.issue += ";";
+        }
+        row.issue += std::move(message);
+      };
+
+      if (descriptor.status != vkpt::materials::ImplementationStatus::Implemented) {
+        fail("descriptor_not_implemented");
+      }
+      if (!std::isfinite(row.roughness) || !std::isfinite(row.metallic) ||
+          !std::isfinite(row.transmission) || !std::isfinite(row.clearcoat) ||
+          !std::isfinite(row.alpha)) {
+        fail("non_finite_material_value");
+      }
+      if (row.roughness < 0.0f || row.roughness > 1.0f ||
+          row.metallic < 0.0f || row.metallic > 1.0f ||
+          row.transmission < 0.0f || row.transmission > 1.0f ||
+          row.clearcoat < 0.0f || row.clearcoat > 1.0f ||
+          row.alpha < 0.0f || row.alpha > 1.0f) {
+        fail("material_value_out_of_range");
+      }
+
+      const bool emissive = is_one_of(id, {"emissive", "environment_emissive", "blackbody_emission",
+                                           "fire_plasma", "fire_sparkle_emission",
+                                           "light_emitting_textile", "bokeh_motion_blur_stress"});
+      const bool metal = is_one_of(id, {"ggx_rough_conductor", "metallic_pbr", "anisotropic_ggx",
+                                        "brushed_metal", "ground_metal"});
+      const bool glass = is_one_of(id, {"ggx_rough_dielectric", "dielectric_glass",
+                                        "spectral_glass_approx", "frosted_glass", "dirty_glass",
+                                        "water_fluid_surface", "ice_crystal", "resin", "epoxy",
+                                        "gemstone", "frosted_acrylic", "translucent_polymer"});
+      const bool coated = is_one_of(id, {"clearcoat", "paint", "car_paint", "porcelain_ceramic",
+                                         "wet_surface", "energy_conserving_layered",
+                                         "thin_film_iridescent", "diffraction_grating",
+                                         "holographic_coating", "retroreflector",
+                                         "caustics_inspired_response"});
+      const bool sheen = is_one_of(id, {"velvet", "fabric_cloth", "hair_fur_lobes", "pearl_lustre"});
+      const bool toon = is_one_of(id, {"toon_surface", "stylized_diffuse", "xray"});
+      const bool volume = is_one_of(id, {"volumetric_medium", "volumetric_shafts", "smoke", "chromatic_dust"});
+
+      if (id == "diffuse" && row.model != 0u) {
+        fail("diffuse_model");
+      }
+      if (emissive && (row.model != 1u || !row.emissive)) {
+        fail("emissive_runtime");
+      }
+      if (id == "mirror" && (row.model != 2u || row.roughness > 0.01f || row.metallic < 0.99f)) {
+        fail("mirror_runtime");
+      }
+      if (is_one_of(id, {"specular", "glossy", "normal_mapped_pbr", "plastic", "rubber"}) &&
+          row.model != 3u) {
+        fail("specular_runtime");
+      }
+      if (metal && (row.model != 4u || row.metallic < 0.9f)) {
+        fail("metal_runtime");
+      }
+      if (glass && (row.model != 5u || row.transmission <= 0.05f)) {
+        fail("glass_runtime");
+      }
+      if (coated && (row.model != 7u || row.clearcoat <= 0.05f)) {
+        fail("clearcoat_runtime");
+      }
+      if (sheen && (row.model != 6u || (row.effect == 0u && row.clearcoat <= 0.05f))) {
+        fail("sheen_runtime");
+      }
+      if (toon && row.model != 8u) {
+        fail("toon_runtime");
+      }
+      const bool validVolumeEffect = row.effect == 15u || (id == "chromatic_dust" && row.effect == 6u);
+      if (volume && (row.model != 9u || !validVolumeEffect || row.alpha >= 0.99f)) {
+        fail("volume_runtime");
+      }
+      if (id == "rubber" && (row.transmission > 0.05f || row.model == 5u)) {
+        fail("rubber_not_glass");
+      }
+      if (id != "diffuse" && !emissive && row.model == 0u && row.effect == 0u) {
+        fail("unclassified_diffuse_fallback");
+      }
+
+      if (!row.issue.empty()) {
+        issues.push_back(id + ":" + row.issue);
+      }
+      rows.push_back(std::move(row));
+    }
+  }
+
+  const bool ok = issues.empty();
+  EnsureDirectory(Path(output).parent_path());
+  std::ofstream out{Path(output)};
+  if (out.is_open()) {
+    out << "{\n";
+    out << "  \"ok\": " << (ok ? "true" : "false") << ",\n";
+    out << "  \"material_count\": " << descriptors.size() << ",\n";
+    out << "  \"model_counts\": [";
+    for (std::size_t i = 0; i < modelCounts.size(); ++i) {
+      if (i) out << ",";
+      out << modelCounts[i];
+    }
+    out << "],\n";
+    out << "  \"effect_counts\": [";
+    for (std::size_t i = 0; i < effectCounts.size(); ++i) {
+      if (i) out << ",";
+      out << effectCounts[i];
+    }
+    out << "],\n";
+    out << "  \"issues\": [";
+    for (std::size_t i = 0; i < issues.size(); ++i) {
+      if (i) out << ",";
+      out << "\"" << EscapeJson(issues[i]) << "\"";
+    }
+    out << "],\n";
+    out << "  \"rows\": [\n";
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const auto& row = rows[i];
+      out << "    {\"id\":\"" << EscapeJson(row.id) << "\","
+          << "\"status\":\"" << EscapeJson(row.status) << "\","
+          << "\"model\":" << row.model << ","
+          << "\"effect\":" << row.effect << ","
+          << "\"roughness\":" << row.roughness << ","
+          << "\"metallic\":" << row.metallic << ","
+          << "\"transmission\":" << row.transmission << ","
+          << "\"clearcoat\":" << row.clearcoat << ","
+          << "\"alpha\":" << row.alpha << ","
+          << "\"emissive\":" << (row.emissive ? "true" : "false") << ","
+          << "\"issue\":\"" << EscapeJson(row.issue) << "\"}";
+      if (i + 1 < rows.size()) out << ",";
+      out << "\n";
+    }
+    out << "  ]\n";
+    out << "}\n";
+  }
+
+  if (json) {
+    std::cout << "{\"ok\":" << (ok ? "true" : "false")
+              << ",\"material_count\":" << descriptors.size()
+              << ",\"issue_count\":" << issues.size()
+              << ",\"artifact\":\"" << EscapeJson(output) << "\"";
+    if (!issues.empty()) {
+      std::cout << ",\"issues\":[";
+      for (std::size_t i = 0; i < issues.size(); ++i) {
+        if (i) std::cout << ",";
+        std::cout << "\"" << EscapeJson(issues[i]) << "\"";
+      }
+      std::cout << "]";
+    }
+    std::cout << "}\n";
+  } else {
+    std::cout << "material coverage: " << (ok ? "ok" : "failed") << "\n";
+    std::cout << "materials: " << descriptors.size() << "\n";
+    std::cout << "artifact: " << output << "\n";
+    for (const auto& issue : issues) {
+      std::cout << " - " << issue << "\n";
+    }
   }
   return ok ? 0 : 2;
 }
@@ -2755,7 +3150,23 @@ int ShaderMatrixCommand(const std::vector<std::string_view>& args) {
 
   for (const auto& target : targets) {
     if (target.cpu_validation) {
-      rows.push_back({target.backend, target.shader_family, target.variant, "ok", "CPU material descriptors validated by scene/material schemas", ""});
+      const std::string coverageArtifact = (Path(output) / "material_coverage.json").string();
+      std::vector<std::string> coverageArgs = {"ptbench", "material-coverage", "--output", coverageArtifact};
+      std::vector<std::string_view> coverageViews;
+      for (const auto& item : coverageArgs) {
+        coverageViews.emplace_back(item);
+      }
+      const int coverageRc = MaterialCoverageCommand(coverageViews);
+      if (coverageRc != 0) {
+        failed = true;
+      }
+      rows.push_back({target.backend,
+                      target.shader_family,
+                      target.variant,
+                      coverageRc == 0 ? "ok" : "failed",
+                      coverageRc == 0 ? "all material families have runtime model/effect coverage"
+                                      : "material coverage command failed",
+                      coverageArtifact});
       continue;
     }
     if (!BackendRegistered(target.backend)) {
@@ -3051,6 +3462,9 @@ int main(int argc, char** argv) {
   }
   if (command == "gpu-mem-pressure") {
     return GpuMemPressureCommand(args);
+  }
+  if (command == "material-coverage") {
+    return MaterialCoverageCommand(args);
   }
   if (command == "shader-matrix") {
     return ShaderMatrixCommand(args);
