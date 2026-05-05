@@ -32,6 +32,13 @@ struct Vec3 {
   }
 };
 
+struct Quat4 {
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float w = 1.0f;
+};
+
 struct Ray {
   Vec3 origin{};
   Vec3 direction{};
@@ -167,13 +174,60 @@ struct RTMaterial {
   }
 };
 
+inline constexpr uint32_t kInvalidRTInstanceIndex = 0xFFFFFFFFu;
+
+enum RTInstanceFlags : uint32_t {
+  kRTInstanceFlagNone = 0u,
+  kRTInstanceFlagDynamicTransform = 1u << 0u,
+  kRTInstanceFlagPhysicsControlled = 1u << 1u,
+  kRTInstanceFlagTransformDirty = 1u << 2u,
+};
+
 struct RTInstance {
+  vkpt::core::StableId entity_id = 0;
   uint32_t geometry_id = 0;
   uint32_t first_triangle = 0;
   uint32_t triangle_count = 0;
   uint32_t material_index = 0;
+  uint32_t flags = kRTInstanceFlagNone;
+  uint32_t transform_revision = 0;
+  uint32_t local_first_vertex = 0;
+  uint32_t local_vertex_count = 0;
+  uint32_t local_first_index = 0;
+  uint32_t local_index_count = 0;
   Vec3 translation{};
+  Quat4 rotation{};
   Vec3 scale{1.0f, 1.0f, 1.0f};
+
+  bool has_flag(uint32_t flag) const {
+    return (flags & flag) != 0u;
+  }
+};
+
+struct RTInstanceTransformUpdate {
+  vkpt::core::StableId entity_id = 0;
+  uint32_t instance_index = kInvalidRTInstanceIndex;
+  uint32_t flags = kRTInstanceFlagNone;
+  uint32_t transform_revision = 0;
+  Vec3 translation{};
+  Quat4 rotation{};
+  Vec3 scale{1.0f, 1.0f, 1.0f};
+};
+
+struct RTTessellationRequest {
+  uint32_t geometry_id = 0;
+  uint32_t first_triangle = 0;
+  uint32_t source_triangle_count = 0;
+  uint32_t factor = 1;
+  uint32_t generated_vertex_count = 0;
+  uint32_t generated_index_count = 0;
+  uint64_t cache_key = 0;
+  Vec3 projection_center{};
+  float projection_radius = 0.0f;
+  uint32_t projection_mode = 0;
+  bool gpu_preferred = true;
+  bool cache_generated_geometry = true;
+  bool displacement = false;
 };
 
 struct RTTriangle {
@@ -203,7 +257,13 @@ struct RTHitLight {
 struct RTSceneData {
   std::vector<Vec3> vertices;
   std::vector<uint32_t> indices;  // triangle index stream in triples
+  // Local mesh data for dynamic instances. Compatibility renderers can keep
+  // using baked vertices/indices; dynamic-aware backends use these ranges plus
+  // RTInstance transforms to avoid changing vertex/index buffers per physics step.
+  std::vector<Vec3> local_vertices;
+  std::vector<uint32_t> local_indices;
   std::vector<RTInstance> instances;
+  std::vector<RTTessellationRequest> tessellation_requests;
   std::vector<RTSdfPrimitive> sdf_primitives;
   std::vector<RTMaterial> materials;
   std::vector<std::string> textures;
@@ -344,6 +404,10 @@ class IPathTracer {
   // not supported (caller should fall back to load_scene_snapshot).
   virtual bool update_camera(const Vec3& /*pos*/, const Vec3& /*target*/,
                              const Vec3& /*up*/, float /*fov_deg*/) { return false; }
+  // Update only dynamic instance transforms. Returns false if the backend still
+  // needs a full scene snapshot/acceleration rebuild for moving objects.
+  virtual bool update_instance_transforms(
+      const std::vector<RTInstanceTransformUpdate>& /*updates*/) { return false; }
   virtual bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) = 0;
   virtual FilmLdr resolve_ldr() const = 0;
   virtual FilmHdr resolve_hdr() const = 0;

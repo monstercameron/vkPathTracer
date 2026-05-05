@@ -26,7 +26,7 @@ static constexpr UINT kD3D12FrameCount = 2;
 struct PathTraceConstants {
     float  camera_pos_x;  float camera_pos_y;  float camera_pos_z;  float fov_tan_half;
     float  cam_fwd_x;     float cam_fwd_y;     float cam_fwd_z;     float aspect;
-    float  cam_right_x;   float cam_right_y;   float cam_right_z;   float pad0;
+    float  cam_right_x;   float cam_right_y;   float cam_right_z;   uint32_t num_sdfs;
     float  cam_up_x;      float cam_up_y;      float cam_up_z;      uint32_t sample_index;
     uint32_t num_insts;   uint32_t num_mats;    uint32_t num_lights; uint32_t width;
     uint32_t height;      uint32_t base_seed;   float    env_r;      float env_g;
@@ -50,6 +50,8 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
                      const vkpt::pathtracer::Vec3& target,
                      const vkpt::pathtracer::Vec3& up,
                      float fov_deg) override;
+  bool update_instance_transforms(
+      const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) override;
   bool render_sample_batch(uint32_t sy, uint32_t ey,
                            uint32_t sample_idx, uint32_t frame_idx) override;
   vkpt::pathtracer::FilmLdr resolve_ldr() const override;
@@ -77,6 +79,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool ensure_compute_srv_uav_heap();
   bool should_readback_sample(uint32_t sample_idx) const;
   bool upload_scene_buffers();
+  bool upload_instance_buffer();
   void destroy_scene_buffers();
   void destroy_film_buffer();
   bool wait_for_gpu();
@@ -85,6 +88,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool create_dxr_global_root_sig();
   bool create_dxr_pipeline();
   bool build_dxr_acceleration_structures();
+  bool update_dxr_instance_buffer_and_tlas();
   bool create_dxr_desc_heap();
   bool dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_idx, bool doReadback);
   bool wait_for_dxr_gpu();
@@ -120,6 +124,9 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   Microsoft::WRL::ComPtr<ID3D12Resource> m_ltBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_bvhBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_triMatBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_dynamicBvhBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_localBvhBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_sdfBuf;
 
   Microsoft::WRL::ComPtr<ID3D12Resource> m_filmBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_filmReadbackBuf;
@@ -153,6 +160,9 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   // DXR resources
   Microsoft::WRL::ComPtr<ID3D12Resource>              m_blasBuffer;
   Microsoft::WRL::ComPtr<ID3D12Resource>              m_blasScratch;
+  std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>  m_dxrBlasBuffers;
+  std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>  m_dxrBlasScratch;
+  std::vector<D3D12_RAYTRACING_INSTANCE_DESC>          m_dxrInstanceDescs;
   Microsoft::WRL::ComPtr<ID3D12Resource>              m_blasVertUpload;
   Microsoft::WRL::ComPtr<ID3D12Resource>              m_blasIdxUpload;
   Microsoft::WRL::ComPtr<ID3D12Resource>              m_tlasBuffer;
@@ -180,6 +190,12 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::vector<float>    m_gpuLights;
   std::vector<float>    m_gpuBvh;
   std::vector<uint32_t> m_gpuTriMat;
+  std::vector<float>    m_gpuDynamicBvh;
+  std::vector<float>    m_gpuLocalBvh;
+  std::vector<float>    m_gpuSdfs;
+  bool m_dynamicInstanceTransformsEnabled = false;
+  uint32_t m_staticTriangleCount = 0;
+  uint32_t m_dynamicInstanceCount = 0;
   mutable uint32_t m_lastSampleIdx = 0;
   mutable vkpt::pathtracer::FilmLdr m_ldrResolve; // latest GPU-tonemapped frame
 };
