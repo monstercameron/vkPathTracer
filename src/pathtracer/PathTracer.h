@@ -230,6 +230,10 @@ class IPathTracer {
   virtual bool load_scene_snapshot(const RTSceneData& scene) = 0;
   virtual bool build_or_update_acceleration() = 0;
   virtual bool reset_accumulation() = 0;
+  // Update only camera pose without re-uploading geometry. Returns false if
+  // not supported (caller should fall back to load_scene_snapshot).
+  virtual bool update_camera(const Vec3& /*pos*/, const Vec3& /*target*/,
+                             const Vec3& /*up*/, float /*fov_deg*/) { return false; }
   virtual bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) = 0;
   virtual FilmLdr resolve_ldr() const = 0;
   virtual FilmHdr resolve_hdr() const = 0;

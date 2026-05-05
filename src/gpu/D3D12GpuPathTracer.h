@@ -46,6 +46,10 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool load_scene_snapshot(const vkpt::pathtracer::RTSceneData& scene) override;
   bool build_or_update_acceleration() override;
   bool reset_accumulation() override;
+  bool update_camera(const vkpt::pathtracer::Vec3& pos,
+                     const vkpt::pathtracer::Vec3& target,
+                     const vkpt::pathtracer::Vec3& up,
+                     float fov_deg) override;
   bool render_sample_batch(uint32_t sy, uint32_t ey,
                            uint32_t sample_idx, uint32_t frame_idx) override;
   vkpt::pathtracer::FilmLdr resolve_ldr() const override;

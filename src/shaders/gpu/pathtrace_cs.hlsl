@@ -116,7 +116,8 @@ bool IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, inout float b
     float3 e2 = v2 - v0;
     float3 h  = cross(rd, e2);
     float a   = dot(e1, h);
-    if (abs(a) < 1e-5) return false;
+    // Backface culling: skip triangles whose front face points away from the ray.
+    if (a < 1e-5) return false;
     float f = 1.0 / a;
     float3 s = ro - v0;
     float u = f * dot(s, h);
