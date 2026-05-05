@@ -102,6 +102,8 @@ constexpr int kQtDockLayoutStateVersion = 2;
 constexpr int kQtDockMinimumWidth = 168;
 constexpr int kQtDockMinimumHeight = 96;
 constexpr int kQtDockMaximumInitialWidth = 1400;
+constexpr int kQtSliderEditDebounceMs = 120;
+constexpr const char* kQtPendingSliderEditProperty = "vkpt.pending_slider_edit";
 
 int ClampToQtInt(std::size_t value) {
   constexpr auto kMax = static_cast<std::size_t>(std::numeric_limits<int>::max());
@@ -1158,10 +1160,17 @@ class QtMainWindow final : public QMainWindow {
     QSignalBlocker tableBlocker(table);
     for (int row = 0; row < rowCount; ++row) {
       const auto& property = panel.properties[static_cast<std::size_t>(row)];
+      QWidget* cell = table->cellWidget(row, valueColumn);
+      const bool sliderEditPending =
+          isSliderProperty(property) &&
+          cell != nullptr &&
+          cell->property(kQtPendingSliderEditProperty).toBool();
       if (auto* valueItem = table->item(row, valueColumn)) {
-        valueItem->setText(ToQString(property.value));
+        if (!sliderEditPending) {
+          valueItem->setText(ToQString(property.value));
+          valueItem->setToolTip(ToQString(property.value));
+        }
         valueItem->setData(Qt::UserRole, ToQString(property.id));
-        valueItem->setToolTip(ToQString(property.value));
       }
       if (auto* nameItem = table->item(row, propertyColumn)) {
         nameItem->setText(ToQString(property.name));
@@ -1174,7 +1183,6 @@ class QtMainWindow final : public QMainWindow {
         }
       }
 
-      QWidget* cell = table->cellWidget(row, valueColumn);
       if (isDropdownProperty(property)) {
         auto* combo = qobject_cast<QComboBox*>(cell);
         if (combo != nullptr) {
@@ -1203,7 +1211,10 @@ class QtMainWindow final : public QMainWindow {
             clampSliderValue(parseNumericPropertyValue(property), minimum, maximum);
         if (slider != nullptr) {
           QSignalBlocker sliderBlocker(slider);
-          slider->setValue(sliderPositionFromValue(value, minimum, maximum));
+          if (!sliderEditPending) {
+            slider->setValue(sliderPositionFromValue(value, minimum, maximum));
+          }
+          slider->setEnabled(property.enabled);
           slider->setToolTip(ToQString(property.name));
         }
         if (spin != nullptr) {
@@ -1211,7 +1222,10 @@ class QtMainWindow final : public QMainWindow {
           spin->setRange(minimum, maximum);
           spin->setSingleStep(property.step > 0.0 ? property.step : 0.01);
           spin->setDecimals(decimalsForStep(property.step));
-          spin->setValue(value);
+          if (!sliderEditPending) {
+            spin->setValue(value);
+          }
+          spin->setEnabled(property.enabled);
           spin->setToolTip(ToQString(property.name));
         }
       } else if (isButtonProperty(property)) {
@@ -1476,6 +1490,7 @@ class QtMainWindow final : public QMainWindow {
               maximum);
 
           auto* editor = new QWidget(table);
+          editor->setProperty(kQtPendingSliderEditProperty, false);
           auto* editorLayout = new QHBoxLayout(editor);
           editorLayout->setContentsMargins(0, 0, 0, 0);
           editorLayout->setSpacing(4);
@@ -1506,49 +1521,111 @@ class QtMainWindow final : public QMainWindow {
           editorLayout->addWidget(spin, 0);
           editorLayout->addWidget(reset, 0);
 
-          auto emitValue = [owner = m_owner,
-                            panelId = panel.id,
-                            propertyId = property.id,
-                            decimals,
-                            valueItem](double value) {
-            const QString text = formatSliderValue(value, decimals);
+          auto* debounceTimer = new QTimer(editor);
+          debounceTimer->setSingleShot(true);
+          auto pendingText = std::make_shared<QString>(formatSliderValue(initialValue, decimals));
+          auto pendingEdit = std::make_shared<bool>(false);
+
+          auto updateVisibleValue = [valueItem](const QString& text) {
             if (valueItem != nullptr) {
               valueItem->setText(text);
+              valueItem->setToolTip(text);
+            }
+          };
+
+          auto commitValue = [owner = m_owner,
+                              editor,
+                              panelId = panel.id,
+                              propertyId = property.id,
+                              pendingText,
+                              pendingEdit]() {
+            if (!*pendingEdit) {
+              return;
+            }
+            *pendingEdit = false;
+            if (editor != nullptr) {
+              editor->setProperty(kQtPendingSliderEditProperty, false);
             }
             if (owner != nullptr && !propertyId.empty()) {
               owner->emit_dock_property_edit(panelId,
                                              propertyId,
-                                             ToUtf8String(text));
+                                             ToUtf8String(*pendingText));
             }
+          };
+          QObject::connect(debounceTimer, &QTimer::timeout, debounceTimer, commitValue);
+
+          auto scheduleValue = [debounceTimer,
+                                pendingText,
+                                pendingEdit,
+                                editor,
+                                updateVisibleValue,
+                                decimals](double value) {
+            const QString text = formatSliderValue(value, decimals);
+            *pendingText = text;
+            *pendingEdit = true;
+            if (editor != nullptr) {
+              editor->setProperty(kQtPendingSliderEditProperty, true);
+            }
+            updateVisibleValue(text);
+            debounceTimer->start(kQtSliderEditDebounceMs);
+          };
+
+          auto commitNow = [debounceTimer, commitValue]() {
+            if (debounceTimer->isActive()) {
+              debounceTimer->stop();
+            }
+            commitValue();
           };
 
           QObject::connect(slider,
                            &QSlider::valueChanged,
                            slider,
-                           [spin, emitValue, minimum, maximum](int position) {
+                           [spin, scheduleValue, minimum, maximum](int position) {
                              const double value = valueFromSliderPosition(position, minimum, maximum);
                              {
                                QSignalBlocker blocker(spin);
                                spin->setValue(value);
                              }
-                             emitValue(value);
+                             scheduleValue(value);
                            });
+          QObject::connect(slider,
+                           &QSlider::sliderReleased,
+                           slider,
+                           commitNow);
           QObject::connect(spin,
                            QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                            spin,
-                           [slider, emitValue, minimum, maximum](double value) {
+                           [slider, scheduleValue, minimum, maximum](double value) {
                              {
                                QSignalBlocker blocker(slider);
                                slider->setValue(sliderPositionFromValue(value, minimum, maximum));
                              }
-                             emitValue(value);
+                             scheduleValue(value);
                            });
-          QObject::connect(reset, &QPushButton::clicked, reset, [slider, spin, resetValue, minimum, maximum]() {
+          QObject::connect(spin,
+                           &QDoubleSpinBox::editingFinished,
+                           spin,
+                           commitNow);
+          QObject::connect(reset,
+                           &QPushButton::clicked,
+                           reset,
+                           [slider,
+                            spin,
+                            scheduleValue,
+                            commitNow,
+                            resetValue,
+                            minimum,
+                            maximum]() {
             {
               QSignalBlocker blocker(slider);
               slider->setValue(sliderPositionFromValue(resetValue, minimum, maximum));
             }
-            spin->setValue(resetValue);
+            {
+              QSignalBlocker blocker(spin);
+              spin->setValue(resetValue);
+            }
+            scheduleValue(resetValue);
+            commitNow();
           });
 
           table->setCellWidget(row, valueColumn, editor);
