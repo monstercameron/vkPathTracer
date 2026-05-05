@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-05 (session 25)
+
+### Textured asset imports, D3D12 texture pipeline, and docs relocation
+
+- Moved project planning docs, TODOs, and the changelog under `docs/`, and updated README, smoke, todo audit, and prototype links to the new paths.
+- Expanded OBJ/MTL scene import support for UVs, texture paths, richer material fields, emissive values, double-sided flags, and spot light direction/cone serialization.
+- Added D3D12 texture loading for WIC/TGA assets, texture metadata buffers, base-color and normal texture sampling, and GPU guide, denoise, and temporal accumulation passes.
+- Added DXR/runtime tuning for deferred DXR object creation, optional hardware shadow rays, quieter verbose logging, and more representative ray counter estimates.
+- Added complete sedan, toy car, and Crytek Sponza scene/model assets, refreshed Sponza material/texture references, and updated showcase scene lighting/collider setup.
+- Added Qt dock slider debounce so live slider edits stay responsive without fighting dock value refreshes.
+
 ## 2026-05-05 (session 24)
 
 ### Qt startup splash progress polish

@@ -74,9 +74,9 @@ A cleanly structured, benchmarkable, interactive path-tracing platform that stil
 ## Where things are
 
 ```
-plan.md       full architecture spec
+README.md     project overview and quickstart
+docs/         architecture spec, changelog, todos, implementation notes, Qt shell migration docs
 experiments/  throwaway spikes and feel-tests
-docs/         implementation notes, CI smoke plan, Qt shell migration docs
 ```
 
 ---
@@ -445,4 +445,4 @@ Transform authority is explicit per entity — Physics, Animation, Script, Edito
 
 Early prototyping phase. See [`experiments/protopt/`](experiments/protopt/) for the current working spike: a single-file D3D12 Cornell box path tracer with NEE, diffuse/glossy/mirror materials, and a rotating camera — used to validate the D3D12 rendering loop before building the module structure above.
 
-Full architecture is specified in [`plan.md`](plan.md).
+Full architecture is specified in [`docs/plan.md`](docs/plan.md).

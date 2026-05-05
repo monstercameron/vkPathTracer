@@ -1120,7 +1120,7 @@ Do this in this exact order:
 
 The most important rule: **Qt owns widgets, layout, menus, docks, dialogs, and GUI event delivery. The engine owns lifecycle, modes, scene state, commands, rendering contracts, benchmarks, and diagnostics.**
 
-[1]: https://github.com/monstercameron/vkPathTracer/blob/main/plan.md "vkPathTracer/plan.md at main · monstercameron/vkPathTracer · GitHub"
+[1]: https://github.com/monstercameron/vkPathTracer/blob/main/docs/plan.md "vkPathTracer/docs/plan.md at main · monstercameron/vkPathTracer · GitHub"
 [2]: https://github.com/monstercameron/vkPathTracer/tree/main/experiments/protopt "vkPathTracer/experiments/protopt at main · monstercameron/vkPathTracer · GitHub"
 [3]: https://doc.qt.io/qt-6/cmake-get-started.html "Getting started with CMake | Build with CMake | Qt 6.11.0"
 [4]: https://doc.qt.io/qt-6/qrhiwidget.html "QRhiWidget Class | Qt Widgets | Qt 6.11.0"

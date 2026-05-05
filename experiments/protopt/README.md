@@ -70,7 +70,7 @@ Common failure: shader compile error `X3511` means fxc tried to unroll a loop an
 
 ## Architecture notes
 
-This is **not** the scalable engine. It's a single-file spike to validate the D3D12 rendering loop before building the real module structure described in `plan.md`.
+This is **not** the scalable engine. It's a single-file spike to validate the D3D12 rendering loop before building the real module structure described in `docs/plan.md`.
 
 Intentionally absent:
 - ECS / scene graph
@@ -80,4 +80,4 @@ Intentionally absent:
 - Accumulation buffer / temporal reprojection
 - Hardware ray tracing
 
-The path from here to the full project is described in [plan.md](../../plan.md).
+The path from here to the full project is described in [docs/plan.md](../../docs/plan.md).
