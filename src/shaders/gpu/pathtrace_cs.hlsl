@@ -3,6 +3,10 @@
 // Root constants carry all per-dispatch state (camera, scene counts, sample index).
 // Layout mirrors RTSceneData on the CPU side and pathtrace.comp (GLSL).
 
+#ifndef PT_D3D12_STATIC_TRAVERSAL_MODE
+#define PT_D3D12_STATIC_TRAVERSAL_MODE 0
+#endif
+
 cbuffer PCBuf {
     float  camera_pos_x;  float camera_pos_y;  float camera_pos_z;  float fov_tan_half;
     float  cam_fwd_x;     float cam_fwd_y;     float cam_fwd_z;     float aspect;
@@ -328,6 +332,15 @@ bool IntersectWorldBounds(float3 bmin, float3 bmax, float3 ro, float3 inv_rd, fl
     return texit >= 1e-4f && tenter <= texit && tenter <= max_t;
 }
 
+bool IntersectWorldBoundsT(float3 bmin, float3 bmax, float3 ro, float3 inv_rd, float max_t, out float enter_t) {
+    float3 t0 = (bmin - ro) * inv_rd;
+    float3 t1 = (bmax - ro) * inv_rd;
+    float tenter = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
+    float texit  = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
+    enter_t = tenter;
+    return texit >= 1e-4f && tenter <= texit && tenter <= max_t;
+}
+
 void IntersectDynamicInstance(uint instance_index, float3 ro, float3 rd, inout Hit h) {
     uint ib = instance_index * kInstStride;
     uint flags = InstBuf[ib + 3u];
@@ -533,7 +546,7 @@ Hit IntersectScene(float3 ro, float3 rd) {
 
     float3 inv_rd = float3(1.0f / rd.x, 1.0f / rd.y, 1.0f / rd.z);
 
-    uint stack[32];
+    uint stack[64];
     uint sp = 0u;
     stack[sp++] = 0u; // root node index
 
@@ -545,12 +558,16 @@ Hit IntersectScene(float3 ro, float3 rd) {
         float3 bmin = float3(BvhBuf[nb+0u], BvhBuf[nb+1u], BvhBuf[nb+2u]);
         float3 bmax = float3(BvhBuf[nb+3u], BvhBuf[nb+4u], BvhBuf[nb+5u]);
 
+#if PT_D3D12_STATIC_TRAVERSAL_MODE == 1 || PT_D3D12_STATIC_TRAVERSAL_MODE == 2
+        if (!IntersectWorldBounds(bmin, bmax, ro, inv_rd, h.t)) continue;
+#else
         // Slab AABB intersection test
         float3 t0 = (bmin - ro) * inv_rd;
         float3 t1 = (bmax - ro) * inv_rd;
         float tenter = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
         float texit  = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
         if (texit < 1e-4f || tenter > texit || tenter > h.t) continue;
+#endif
 
         uint lf = asuint(BvhBuf[nb+6u]);
         uint rc = asuint(BvhBuf[nb+7u]);
@@ -582,9 +599,37 @@ Hit IntersectScene(float3 ro, float3 rd) {
                 }
             }
         } else {
+#if PT_D3D12_STATIC_TRAVERSAL_MODE == 2
+            uint lb = lf * 8u;
+            uint rb = rc * 8u;
+            float left_t = 1e30f;
+            float right_t = 1e30f;
+            bool left_hit = IntersectWorldBoundsT(
+                float3(BvhBuf[lb+0u], BvhBuf[lb+1u], BvhBuf[lb+2u]),
+                float3(BvhBuf[lb+3u], BvhBuf[lb+4u], BvhBuf[lb+5u]),
+                ro, inv_rd, h.t, left_t);
+            bool right_hit = IntersectWorldBoundsT(
+                float3(BvhBuf[rb+0u], BvhBuf[rb+1u], BvhBuf[rb+2u]),
+                float3(BvhBuf[rb+3u], BvhBuf[rb+4u], BvhBuf[rb+5u]),
+                ro, inv_rd, h.t, right_t);
+            if (left_hit && right_hit) {
+                if (left_t <= right_t) {
+                    stack[sp++] = rc;
+                    stack[sp++] = lf;
+                } else {
+                    stack[sp++] = lf;
+                    stack[sp++] = rc;
+                }
+            } else if (left_hit) {
+                stack[sp++] = lf;
+            } else if (right_hit) {
+                stack[sp++] = rc;
+            }
+#else
             // Push right child first so left is processed first (DFS)
             stack[sp++] = rc;
             stack[sp++] = lf;
+#endif
         }
     }
 
@@ -621,7 +666,7 @@ bool OccludedScene(float3 ro, float3 rd, float max_t) {
     if (max_t <= 1e-4f) return false;
 
     float3 inv_rd = float3(1.0f / rd.x, 1.0f / rd.y, 1.0f / rd.z);
-    uint stack[32];
+    uint stack[64];
     uint sp = 0u;
     stack[sp++] = 0u;
 
@@ -632,11 +677,15 @@ bool OccludedScene(float3 ro, float3 rd, float max_t) {
 
         float3 bmin = float3(BvhBuf[nb+0u], BvhBuf[nb+1u], BvhBuf[nb+2u]);
         float3 bmax = float3(BvhBuf[nb+3u], BvhBuf[nb+4u], BvhBuf[nb+5u]);
+#if PT_D3D12_STATIC_TRAVERSAL_MODE == 1 || PT_D3D12_STATIC_TRAVERSAL_MODE == 2
+        if (!IntersectWorldBounds(bmin, bmax, ro, inv_rd, max_t)) continue;
+#else
         float3 t0 = (bmin - ro) * inv_rd;
         float3 t1 = (bmax - ro) * inv_rd;
         float tenter = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
         float texit  = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
         if (texit < 1e-4f || tenter > texit || tenter > max_t) continue;
+#endif
 
         uint lf = asuint(BvhBuf[nb+6u]);
         uint rc = asuint(BvhBuf[nb+7u]);
@@ -653,8 +702,36 @@ bool OccludedScene(float3 ro, float3 rd, float max_t) {
                 }
             }
         } else {
+#if PT_D3D12_STATIC_TRAVERSAL_MODE == 2
+            uint lb = lf * 8u;
+            uint rb = rc * 8u;
+            float left_t = 1e30f;
+            float right_t = 1e30f;
+            bool left_hit = IntersectWorldBoundsT(
+                float3(BvhBuf[lb+0u], BvhBuf[lb+1u], BvhBuf[lb+2u]),
+                float3(BvhBuf[lb+3u], BvhBuf[lb+4u], BvhBuf[lb+5u]),
+                ro, inv_rd, max_t, left_t);
+            bool right_hit = IntersectWorldBoundsT(
+                float3(BvhBuf[rb+0u], BvhBuf[rb+1u], BvhBuf[rb+2u]),
+                float3(BvhBuf[rb+3u], BvhBuf[rb+4u], BvhBuf[rb+5u]),
+                ro, inv_rd, max_t, right_t);
+            if (left_hit && right_hit) {
+                if (left_t <= right_t) {
+                    stack[sp++] = rc;
+                    stack[sp++] = lf;
+                } else {
+                    stack[sp++] = lf;
+                    stack[sp++] = rc;
+                }
+            } else if (left_hit) {
+                stack[sp++] = lf;
+            } else if (right_hit) {
+                stack[sp++] = rc;
+            }
+#else
             stack[sp++] = rc;
             stack[sp++] = lf;
+#endif
         }
     }
 

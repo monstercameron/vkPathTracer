@@ -77,6 +77,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   uint32_t    bvh_leaf_size() const { return m_bvhLeafSize; }
   uint32_t    bvh_bucket_count() const { return m_bvhBucketCount; }
   std::string bvh_split_mode() const { return m_bvhSplitMode; }
+  std::string shader_traversal_mode() const { return m_shaderTraversalMode; }
 
  private:
   bool init_device();
@@ -196,6 +197,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   uint32_t m_bvhLeafSize = 4;
   uint32_t m_bvhBucketCount = 8;
   std::string m_bvhSplitMode = "sah";
+  std::string m_shaderTraversalMode = "baseline";
 
   std::vector<float>    m_gpuVerts;
   std::vector<uint32_t> m_gpuIdx;

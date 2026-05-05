@@ -1636,6 +1636,7 @@ int RunCommand(const std::vector<std::string_view>& args) {
       result.diagnostics.push_back("bvh_leaf_size=" + std::to_string(d3d12->bvh_leaf_size()));
       result.diagnostics.push_back("bvh_bucket_count=" + std::to_string(d3d12->bvh_bucket_count()));
       result.diagnostics.push_back("bvh_split_mode=" + d3d12->bvh_split_mode());
+      result.diagnostics.push_back("shader_traversal_mode=" + d3d12->shader_traversal_mode());
     }
   }
 #endif
