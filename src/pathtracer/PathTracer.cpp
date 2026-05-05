@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <optional>
@@ -41,6 +42,61 @@ uint64_t splitmix64(uint64_t x) {
   x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
   x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
   return x ^ (x >> 31);
+}
+
+uint64_t mix_cache_key(uint64_t key, uint64_t value) {
+  return splitmix64(key ^ (value + 0x9e3779b97f4a7c15ULL + (key << 6u) + (key >> 2u)));
+}
+
+uint32_t float_bits(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+uint32_t saturating_u32(uint64_t value) {
+  return value > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())
+             ? std::numeric_limits<uint32_t>::max()
+             : static_cast<uint32_t>(value);
+}
+
+uint64_t build_tessellation_cache_key(
+    const vkpt::scene::SceneGeometryDefinition& geometry,
+    const vkpt::scene::TransformComponent& transform,
+    vkpt::core::StableId material_id) {
+  uint64_t key = 0xd2f74407b1ce6e93ULL;
+  key = mix_cache_key(key, static_cast<uint64_t>(geometry.id));
+  key = mix_cache_key(key, static_cast<uint64_t>(material_id));
+  key = mix_cache_key(key, geometry.tessellation.enabled ? 1u : 0u);
+  key = mix_cache_key(key, static_cast<uint64_t>(geometry.tessellation.factor));
+  key = mix_cache_key(key, geometry.tessellation.gpu_preferred ? 1u : 0u);
+  key = mix_cache_key(key, geometry.tessellation.cache_generated_geometry ? 1u : 0u);
+  key = mix_cache_key(key, geometry.tessellation.displacement ? 1u : 0u);
+  for (const char ch : geometry.tessellation.mode) {
+    key = mix_cache_key(key, static_cast<unsigned char>(ch));
+  }
+  for (const char ch : geometry.tessellation.projection) {
+    key = mix_cache_key(key, static_cast<unsigned char>(ch));
+  }
+  for (const auto& vertex : geometry.vertices) {
+    key = mix_cache_key(key, float_bits(vertex.x));
+    key = mix_cache_key(key, float_bits(vertex.y));
+    key = mix_cache_key(key, float_bits(vertex.z));
+  }
+  for (const auto index : geometry.indices) {
+    key = mix_cache_key(key, index);
+  }
+  key = mix_cache_key(key, float_bits(transform.translation.x));
+  key = mix_cache_key(key, float_bits(transform.translation.y));
+  key = mix_cache_key(key, float_bits(transform.translation.z));
+  key = mix_cache_key(key, float_bits(transform.rotation.x));
+  key = mix_cache_key(key, float_bits(transform.rotation.y));
+  key = mix_cache_key(key, float_bits(transform.rotation.z));
+  key = mix_cache_key(key, float_bits(transform.rotation.w));
+  key = mix_cache_key(key, float_bits(transform.scale.x));
+  key = mix_cache_key(key, float_bits(transform.scale.y));
+  key = mix_cache_key(key, float_bits(transform.scale.z));
+  return key == 0u ? 1u : key;
 }
 
 uint32_t crc32_for_byte(uint32_t r) {
@@ -205,11 +261,24 @@ vkpt::pathtracer::Vec3 rotate_euler_inv(const vkpt::pathtracer::Vec3& value, con
   return rotate_z(rotate_y(rotate_x(value, -rotation.x), -rotation.y), -rotation.z);
 }
 
+vkpt::pathtracer::Vec3 rotate_euler(const vkpt::pathtracer::Vec3& value, const vkpt::pathtracer::Vec3& rotation) {
+  return rotate_x(rotate_y(rotate_z(value, rotation.z), rotation.y), rotation.x);
+}
+
+vkpt::pathtracer::Vec3 rotate_quat(const vkpt::pathtracer::Vec3& value,
+                                   const vkpt::scene::Quat& rotation);
+
 vkpt::pathtracer::Vec3 transform_point(const vkpt::pathtracer::Vec3& point,
                                        const vkpt::pathtracer::Vec3& translation,
                                        const vkpt::scene::Quat& rotation,
                                        const vkpt::pathtracer::Vec3& scale) {
   const vkpt::pathtracer::Vec3 scaled{point.x * scale.x, point.y * scale.y, point.z * scale.z};
+  const auto rotated = rotate_quat(scaled, rotation);
+  return {rotated.x + translation.x, rotated.y + translation.y, rotated.z + translation.z};
+}
+
+vkpt::pathtracer::Vec3 rotate_quat(const vkpt::pathtracer::Vec3& value,
+                                   const vkpt::scene::Quat& rotation) {
   float x = rotation.x;
   float y = rotation.y;
   float z = rotation.z;
@@ -228,9 +297,8 @@ vkpt::pathtracer::Vec3 transform_point(const vkpt::pathtracer::Vec3& point,
     w = 1.0f;
   }
   const vkpt::pathtracer::Vec3 qv{x, y, z};
-  const auto t = cross(qv, scaled) * 2.0f;
-  const auto rotated = scaled + t * w + cross(qv, t);
-  return {rotated.x + translation.x, rotated.y + translation.y, rotated.z + translation.z};
+  const auto t = cross(qv, value) * 2.0f;
+  return value + t * w + cross(qv, t);
 }
 
 vkpt::pathtracer::Vec3 divide_by_scale(const vkpt::pathtracer::Vec3& value, const vkpt::pathtracer::Vec3& scale) {
@@ -267,6 +335,17 @@ float clamp01(float v) {
     return 0.0f;
   }
   return std::min(1.0f, std::max(0.0f, v));
+}
+
+bool is_texture_asset_uri(std::string_view uri) {
+  const auto dot = uri.find_last_of('.');
+  if (dot == std::string_view::npos) {
+    return false;
+  }
+  std::string ext(uri.substr(dot));
+  std::transform(ext.begin(), ext.end(), ext.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".exr";
 }
 
 std::string normalize_material_id(std::string_view name) {
@@ -1132,7 +1211,47 @@ bool ScalarCpuPathTracer::intersect_sphere(const RTSdfPrimitive& primitive,
                                           const Ray& ray,
                                           float& t,
                                           Vec3& normal) const {
-  return intersect_box(primitive, ray, t, normal);
+  atomic_add_u64(m_counters.sdf_tests);
+
+  const float radius = std::max(0.01f, primitive.radius);
+  const Vec3 localOrigin =
+      divide_by_scale(rotate_euler_inv(ray.origin - primitive.position, primitive.rotation), primitive.scale);
+  const Vec3 localDirection = divide_by_scale(rotate_euler_inv(ray.direction, primitive.rotation), primitive.scale);
+  const float a = dot(localDirection, localDirection);
+  if (a <= kEpsilon * kEpsilon) {
+    atomic_add_u64(m_counters.sdf_steps);
+    atomic_add_u64(m_counters.sdf_misses);
+    return false;
+  }
+
+  const float halfB = dot(localOrigin, localDirection);
+  const float c = dot(localOrigin, localOrigin) - radius * radius;
+  const float discriminant = halfB * halfB - a * c;
+  if (discriminant < 0.0f) {
+    atomic_add_u64(m_counters.sdf_steps);
+    atomic_add_u64(m_counters.sdf_misses);
+    return false;
+  }
+
+  const float root = std::sqrt(discriminant);
+  float candidate = (-halfB - root) / a;
+  if (candidate <= kEpsilon) {
+    candidate = (-halfB + root) / a;
+  }
+  if (candidate <= kEpsilon || !std::isfinite(candidate)) {
+    atomic_add_u64(m_counters.sdf_steps);
+    atomic_add_u64(m_counters.sdf_misses);
+    return false;
+  }
+
+  t = candidate;
+  const Vec3 localHit = localOrigin + localDirection * t;
+  const Vec3 localNormal = normalize(localHit);
+  const Vec3 normalLocalInvScale = divide_by_scale(localNormal, primitive.scale);
+  normal = normalize(rotate_euler(normalLocalInvScale, primitive.rotation));
+  atomic_add_u64(m_counters.sdf_steps);
+  atomic_add_u64(m_counters.sdf_hits);
+  return true;
 }
 
 bool ScalarCpuPathTracer::intersect_box(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const {
@@ -1766,7 +1885,9 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   scene.environment_color = {0.0f, 0.0f, 0.0f};
 
   for (const auto& asset : doc.assets) {
-    if (!asset.uri.empty()) {
+    const auto assetType = normalize_material_id(asset.type);
+    if (!asset.uri.empty() &&
+        (assetType == "texture" || assetType == "image" || is_texture_asset_uri(asset.uri))) {
       scene.textures.push_back(asset.uri);
     }
   }
@@ -1877,13 +1998,60 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       scene.indices.push_back(firstVertex + index);
     }
     RTInstance instance;
+    instance.entity_id = entity.id;
     instance.geometry_id = static_cast<uint32_t>(entity.mesh.mesh_id);
     instance.first_triangle = firstTriangle;
     instance.triangle_count = static_cast<uint32_t>(geometry->indices.size() / 3u);
     instance.material_index = materialIndex;
+    if (entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic) {
+      instance.flags |= kRTInstanceFlagDynamicTransform | kRTInstanceFlagPhysicsControlled;
+      instance.local_first_vertex = static_cast<uint32_t>(scene.local_vertices.size());
+      instance.local_vertex_count = static_cast<uint32_t>(geometry->vertices.size());
+      for (const auto& vertex : geometry->vertices) {
+        scene.local_vertices.push_back(Vec3{vertex.x, vertex.y, vertex.z});
+      }
+      instance.local_first_index = static_cast<uint32_t>(scene.local_indices.size());
+      instance.local_index_count = static_cast<uint32_t>(geometry->indices.size());
+      for (const auto index : geometry->indices) {
+        scene.local_indices.push_back(index);
+      }
+    }
+    if (entity.has_transform && entity.transform.dirty) {
+      instance.flags |= kRTInstanceFlagTransformDirty;
+    }
+    instance.transform_revision = static_cast<uint32_t>(scene.instances.size() + 1u);
     instance.translation = Vec3{translation.x, translation.y, translation.z};
+    instance.rotation = Quat4{rotation.x, rotation.y, rotation.z, rotation.w};
     instance.scale = Vec3{scale.x, scale.y, scale.z};
     scene.instances.push_back(instance);
+
+    const auto& tessellation = geometry->tessellation;
+    if (tessellation.enabled && tessellation.mode == "uniform" && tessellation.factor > 1u) {
+      const uint64_t factor = tessellation.factor;
+      const uint64_t sourceTriangles = geometry->indices.size() / 3u;
+      const uint64_t verticesPerTriangle = ((factor + 1u) * (factor + 2u)) / 2u;
+      const uint64_t generatedVertices = sourceTriangles * verticesPerTriangle;
+      const uint64_t generatedIndices = sourceTriangles * factor * factor * 3u;
+      RTTessellationRequest request{};
+      request.geometry_id = static_cast<uint32_t>(entity.mesh.mesh_id);
+      request.first_triangle = firstTriangle;
+      request.source_triangle_count = static_cast<uint32_t>(sourceTriangles);
+      request.factor = tessellation.factor;
+      request.generated_vertex_count = saturating_u32(generatedVertices);
+      request.generated_index_count = saturating_u32(generatedIndices);
+      request.cache_key = build_tessellation_cache_key(*geometry, transform, materialId);
+      if (tessellation.projection == "sphere") {
+        request.projection_mode = 1u;
+        request.projection_center = Vec3{translation.x, translation.y, translation.z};
+        request.projection_radius = std::max(
+            std::max(std::fabs(scale.x), std::fabs(scale.y)),
+            std::max(std::fabs(scale.z), 0.001f));
+      }
+      request.gpu_preferred = tessellation.gpu_preferred;
+      request.cache_generated_geometry = tessellation.cache_generated_geometry;
+      request.displacement = tessellation.displacement;
+      scene.tessellation_requests.push_back(request);
+    }
   }
 
   std::unordered_set<vkpt::core::StableId> ecsSdfIds;
@@ -1981,7 +2149,12 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     scene.camera_fov_deg = camera.fov;
     if (cameraTransform) {
       scene.camera_position = {transform.translation.x, transform.translation.y, transform.translation.z};
-      scene.camera_target = scene.camera_position + Vec3{0.0f, 0.0f, -1.0f};
+      const auto forward = normalize(rotate_quat(Vec3{0.0f, 0.0f, -1.0f}, transform.rotation));
+      const auto up = normalize(rotate_quat(Vec3{0.0f, 1.0f, 0.0f}, transform.rotation));
+      scene.camera_target = scene.camera_position + forward;
+      if (length_sq(up) > kEpsilon * kEpsilon) {
+        scene.camera_up = up;
+      }
     }
     if (has_transform) {
       *has_transform = cameraTransform;
@@ -2049,8 +2222,14 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
         1, 5, 6, 1, 6, 2,  // near wall
         4, 0, 3, 4, 3, 7,  // far wall
     };
-    scene.instances.push_back({0, 0, static_cast<uint32_t>(scene.indices.size() / 3u), 0u, {0.0f, 0.0f, 0.0f},
-                              {1.0f, 1.0f, 1.0f}});
+    RTInstance fallbackInstance{};
+    fallbackInstance.geometry_id = 0u;
+    fallbackInstance.first_triangle = 0u;
+    fallbackInstance.triangle_count = static_cast<uint32_t>(scene.indices.size() / 3u);
+    fallbackInstance.material_index = 0u;
+    fallbackInstance.translation = {0.0f, 0.0f, 0.0f};
+    fallbackInstance.scale = {1.0f, 1.0f, 1.0f};
+    scene.instances.push_back(fallbackInstance);
     scene.sdf_primitives.push_back(
         RTSdfPrimitive{SdfShape::Sphere, {0.0f, 1.8f, 0.0f}, {0.35f, 0.35f, 0.35f}, {0.0f, 0.0f, 0.0f}, 3u, 0.35f, 0.0f, 0.0f});
     scene.lights.push_back(RTHitLight{{0.0f, 1.8f, 0.0f}, {6.0f, 6.0f, 6.0f}, 10.0f, 0.2f});
@@ -2063,6 +2242,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
                                       {"vertices", std::to_string(scene.vertices.size())},
                                       {"indices", std::to_string(scene.indices.size())},
                                       {"instances", std::to_string(scene.instances.size())},
+                                      {"tessellation_requests", std::to_string(scene.tessellation_requests.size())},
                                       {"sdf_primitives", std::to_string(scene.sdf_primitives.size())},
                                       {"materials", std::to_string(scene.materials.size())},
                                       {"lights", std::to_string(scene.lights.size())},
@@ -2204,7 +2384,10 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "materials", sizeof(RTMaterial), scene.materials.size(), alignof(RTMaterial));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "vertices", sizeof(Vec3), scene.vertices.size(), alignof(Vec3));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "indices", sizeof(std::uint32_t), scene.indices.size(), alignof(std::uint32_t));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "local_vertices", sizeof(Vec3), scene.local_vertices.size(), alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "local_indices", sizeof(std::uint32_t), scene.local_indices.size(), alignof(std::uint32_t));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "instances", sizeof(RTInstance), scene.instances.size(), alignof(RTInstance));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "tessellation_requests", sizeof(RTTessellationRequest), scene.tessellation_requests.size(), alignof(RTTessellationRequest));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "sdf_primitives", sizeof(RTSdfPrimitive), scene.sdf_primitives.size(), alignof(RTSdfPrimitive));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "lights", sizeof(RTHitLight), scene.lights.size(), alignof(RTHitLight));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "textures_count", sizeof(std::uint64_t), 1u, alignof(std::uint64_t));

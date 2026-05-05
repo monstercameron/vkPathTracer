@@ -6,7 +6,7 @@
 cbuffer PCBuf {
     float  camera_pos_x;  float camera_pos_y;  float camera_pos_z;  float fov_tan_half;
     float  cam_fwd_x;     float cam_fwd_y;     float cam_fwd_z;     float aspect;
-    float  cam_right_x;   float cam_right_y;   float cam_right_z;   float pad0;
+    float  cam_right_x;   float cam_right_y;   float cam_right_z;   uint  num_sdfs;
     float  cam_up_x;      float cam_up_y;      float cam_up_z;      uint  sample_index;
     uint   num_insts;     uint   num_mats;      uint   num_lights;   uint  width;
     uint   height;        uint   base_seed;     float  env_r;        float env_g;
@@ -20,8 +20,16 @@ Buffer<uint>     InstBuf  : register(t3);
 Buffer<float>    LightBuf : register(t4);
 Buffer<float>    BvhBuf    : register(t5);
 Buffer<uint>     TriMatBuf : register(t6);
+Buffer<float>    DynamicBvhBuf : register(t7);
+Buffer<float>    LocalBvhBuf : register(t8);
+Buffer<float>    SdfBuf : register(t9);
 RWByteAddressBuffer FilmBuf : register(u0);
 RWBuffer<uint>   LdrBuf   : register(u1); // tonemapped RGBA8 output (R|G<<8|B<<16|0xFF<<24)
+
+static const uint kInstStride = 24u;
+static const uint kInstFlagDynamicTransform = 1u;
+static const uint kSdfStride = 16u;
+static const uint kSdfShapeSphere = 0u;
 
 // ---- Forward declarations (fxc requires them) -------------------------------
 float Halton2(uint idx);
@@ -32,6 +40,8 @@ float RandF(inout uint rng);
 bool  IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool double_sided, inout float best_t);
 bool  IntersectTriAny(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool double_sided, float max_t);
 bool  MatDoubleSided(uint idx);
+bool  IntersectSdfSphere(uint sdf_index, float3 ro, float3 rd, inout Hit h);
+bool  OccludedSdfSphere(uint sdf_index, float3 ro, float3 rd, float max_t);
 Hit   IntersectScene(float3 ro, float3 rd);
 bool  OccludedScene(float3 ro, float3 rd, float max_t);
 float3 SampleHemisphere(float3 n, inout uint rng);
@@ -199,6 +209,303 @@ bool IntersectTriAny(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool doubl
     return t > 1e-4 && t < max_t;
 }
 
+float3 SafeInstanceScale(uint ib) {
+    float3 s = float3(asfloat(InstBuf[ib + 12u]), asfloat(InstBuf[ib + 13u]), asfloat(InstBuf[ib + 14u]));
+    s.x = (abs(s.x) < 1e-6f) ? 1.0f : s.x;
+    s.y = (abs(s.y) < 1e-6f) ? 1.0f : s.y;
+    s.z = (abs(s.z) < 1e-6f) ? 1.0f : s.z;
+    return s;
+}
+
+float4 InstanceRotation(uint ib) {
+    float4 q = float4(asfloat(InstBuf[ib + 8u]), asfloat(InstBuf[ib + 9u]),
+                      asfloat(InstBuf[ib + 10u]), asfloat(InstBuf[ib + 11u]));
+    float len2 = max(1e-12f, dot(q, q));
+    return q * rsqrt(len2);
+}
+
+float3 RotateQuat(float3 v, float4 q) {
+    float3 t = 2.0f * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
+float3 RotateInvQuat(float3 v, float4 q) {
+    return RotateQuat(v, float4(-q.xyz, q.w));
+}
+
+float3 InstanceWorldToLocalPoint(uint ib, float3 p) {
+    float3 t = float3(asfloat(InstBuf[ib + 4u]), asfloat(InstBuf[ib + 5u]), asfloat(InstBuf[ib + 6u]));
+    return RotateInvQuat(p - t, InstanceRotation(ib)) / SafeInstanceScale(ib);
+}
+
+float3 InstanceWorldToLocalVector(uint ib, float3 v) {
+    return RotateInvQuat(v, InstanceRotation(ib)) / SafeInstanceScale(ib);
+}
+
+float3 InstanceLocalToWorldPoint(uint ib, float3 p) {
+    float3 t = float3(asfloat(InstBuf[ib + 4u]), asfloat(InstBuf[ib + 5u]), asfloat(InstBuf[ib + 6u]));
+    return RotateQuat(p * SafeInstanceScale(ib), InstanceRotation(ib)) + t;
+}
+
+float3 InstanceLocalNormalToWorld(uint ib, float3 n) {
+    return normalize(RotateQuat(n / SafeInstanceScale(ib), InstanceRotation(ib)));
+}
+
+bool IntersectLocalInstanceBounds(uint ib, float3 ro_local, float3 rd_local, float max_t) {
+    float3 bmin = float3(asfloat(InstBuf[ib + 16u]), asfloat(InstBuf[ib + 17u]), asfloat(InstBuf[ib + 18u]));
+    float3 bmax = float3(asfloat(InstBuf[ib + 20u]), asfloat(InstBuf[ib + 21u]), asfloat(InstBuf[ib + 22u]));
+    float3 inv_rd = float3(
+        abs(rd_local.x) > 1e-8f ? 1.0f / rd_local.x : 1.0e30f,
+        abs(rd_local.y) > 1e-8f ? 1.0f / rd_local.y : 1.0e30f,
+        abs(rd_local.z) > 1e-8f ? 1.0f / rd_local.z : 1.0e30f);
+    float3 t0 = (bmin - ro_local) * inv_rd;
+    float3 t1 = (bmax - ro_local) * inv_rd;
+    float tenter = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
+    float texit  = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
+    return texit >= 1e-4f && tenter <= texit && tenter <= max_t;
+}
+
+bool IntersectDynamicTri(uint ib, float3 ro_world, float3 rd_world,
+                         float3 ro_local, float3 rd_local,
+                         uint i0, uint i1, uint i2, bool double_sided,
+                         inout float best_t, out float3 out_pos, out float3 out_n) {
+    float3 v0 = float3(VertBuf[i0*3u],    VertBuf[i0*3u+1u],  VertBuf[i0*3u+2u]);
+    float3 v1 = float3(VertBuf[i1*3u],    VertBuf[i1*3u+1u],  VertBuf[i1*3u+2u]);
+    float3 v2 = float3(VertBuf[i2*3u],    VertBuf[i2*3u+1u],  VertBuf[i2*3u+2u]);
+    float3 e1 = v1 - v0;
+    float3 e2 = v2 - v0;
+    float3 h  = cross(rd_local, e2);
+    float a   = dot(e1, h);
+    if (double_sided) {
+        if (abs(a) < 1e-5) return false;
+    } else if (a < 1e-5) {
+        return false;
+    }
+    float f = 1.0 / a;
+    float3 s = ro_local - v0;
+    float u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) return false;
+    float3 q = cross(s, e1);
+    float v = f * dot(rd_local, q);
+    if (v < 0.0 || u + v > 1.0) return false;
+    float t = f * dot(e2, q);
+    if (t <= 1e-4f || t >= best_t) return false;
+
+    float3 local_pos = ro_local + rd_local * t;
+    float3 world_pos = InstanceLocalToWorldPoint(ib, local_pos);
+    float world_t = dot(world_pos - ro_world, rd_world);
+    if (world_t <= 1e-4f || world_t >= best_t) return false;
+
+    float3 world_n = InstanceLocalNormalToWorld(ib, normalize(cross(e1, e2)));
+    if (double_sided && dot(world_n, rd_world) > 0.0f) {
+        world_n = -world_n;
+    }
+    best_t = world_t;
+    out_pos = world_pos;
+    out_n = world_n;
+    return true;
+}
+
+bool IntersectWorldBounds(float3 bmin, float3 bmax, float3 ro, float3 inv_rd, float max_t) {
+    float3 t0 = (bmin - ro) * inv_rd;
+    float3 t1 = (bmax - ro) * inv_rd;
+    float tenter = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
+    float texit  = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
+    return texit >= 1e-4f && tenter <= texit && tenter <= max_t;
+}
+
+void IntersectDynamicInstance(uint instance_index, float3 ro, float3 rd, inout Hit h) {
+    uint ib = instance_index * kInstStride;
+    uint flags = InstBuf[ib + 3u];
+    if ((flags & kInstFlagDynamicTransform) == 0u) return;
+    uint ftri = InstBuf[ib + 0u];
+    uint ntri = InstBuf[ib + 1u];
+    uint mat_index = InstBuf[ib + 2u];
+    uint local_bvh_first = InstBuf[ib + 7u];
+    uint local_bvh_count = InstBuf[ib + 15u];
+    bool double_sided = MatDoubleSided(mat_index);
+    float3 ro_local = InstanceWorldToLocalPoint(ib, ro);
+    float3 rd_local = InstanceWorldToLocalVector(ib, rd);
+    if (!IntersectLocalInstanceBounds(ib, ro_local, rd_local, 1e30f)) return;
+    if (local_bvh_count > 0u) {
+        float3 inv_local_rd = float3(
+            abs(rd_local.x) > 1e-8f ? 1.0f / rd_local.x : 1.0e30f,
+            abs(rd_local.y) > 1e-8f ? 1.0f / rd_local.y : 1.0e30f,
+            abs(rd_local.z) > 1e-8f ? 1.0f / rd_local.z : 1.0e30f);
+        uint stack[64];
+        uint sp = 0u;
+        stack[sp++] = local_bvh_first;
+        uint local_bvh_end = local_bvh_first + local_bvh_count;
+        [loop]
+        while (sp > 0u) {
+            uint ni = stack[--sp];
+            if (ni < local_bvh_first || ni >= local_bvh_end) continue;
+            uint nb = ni * 8u;
+            float3 bmin = float3(LocalBvhBuf[nb+0u], LocalBvhBuf[nb+1u], LocalBvhBuf[nb+2u]);
+            float3 bmax = float3(LocalBvhBuf[nb+3u], LocalBvhBuf[nb+4u], LocalBvhBuf[nb+5u]);
+            if (!IntersectWorldBounds(bmin, bmax, ro_local, inv_local_rd, 1e30f)) continue;
+            uint lf = asuint(LocalBvhBuf[nb+6u]);
+            uint rc = asuint(LocalBvhBuf[nb+7u]);
+            bool is_leaf = (lf & 0x80000000u) != 0u;
+            if (is_leaf) {
+                uint first_tri = lf & 0x7FFFFFFFu;
+                for (uint ti = 0u; ti < rc; ++ti) {
+                    uint tb = (first_tri + ti) * 3u;
+                    float3 pos;
+                    float3 normal;
+                    if (IntersectDynamicTri(ib, ro, rd, ro_local, rd_local,
+                                            IndexBuf[tb], IndexBuf[tb + 1u], IndexBuf[tb + 2u],
+                                            double_sided, h.t, pos, normal)) {
+                        h.ok = true;
+                        h.pos = pos;
+                        h.n = normal;
+                        h.mat = mat_index;
+                    }
+                }
+            } else if (sp + 2u <= 64u) {
+                stack[sp++] = rc;
+                stack[sp++] = lf;
+            }
+        }
+        return;
+    }
+    for (uint ti = 0u; ti < ntri; ++ti) {
+        uint tb = (ftri + ti) * 3u;
+        float3 pos;
+        float3 normal;
+        if (IntersectDynamicTri(ib, ro, rd, ro_local, rd_local,
+                                IndexBuf[tb], IndexBuf[tb + 1u], IndexBuf[tb + 2u],
+                                double_sided, h.t, pos, normal)) {
+            h.ok = true;
+            h.pos = pos;
+            h.n = normal;
+            h.mat = mat_index;
+        }
+    }
+}
+
+bool OccludedDynamicInstance(uint instance_index, float3 ro, float3 rd, float max_t) {
+    uint ib = instance_index * kInstStride;
+    uint flags = InstBuf[ib + 3u];
+    if ((flags & kInstFlagDynamicTransform) == 0u) return false;
+    uint ftri = InstBuf[ib + 0u];
+    uint ntri = InstBuf[ib + 1u];
+    uint mat_index = InstBuf[ib + 2u];
+    uint local_bvh_first = InstBuf[ib + 7u];
+    uint local_bvh_count = InstBuf[ib + 15u];
+    bool double_sided = MatDoubleSided(mat_index);
+    float3 ro_local = InstanceWorldToLocalPoint(ib, ro);
+    float3 rd_local = InstanceWorldToLocalVector(ib, rd);
+    if (!IntersectLocalInstanceBounds(ib, ro_local, rd_local, 1e30f)) return false;
+    if (local_bvh_count > 0u) {
+        float3 inv_local_rd = float3(
+            abs(rd_local.x) > 1e-8f ? 1.0f / rd_local.x : 1.0e30f,
+            abs(rd_local.y) > 1e-8f ? 1.0f / rd_local.y : 1.0e30f,
+            abs(rd_local.z) > 1e-8f ? 1.0f / rd_local.z : 1.0e30f);
+        uint stack[64];
+        uint sp = 0u;
+        stack[sp++] = local_bvh_first;
+        uint local_bvh_end = local_bvh_first + local_bvh_count;
+        float best = max_t;
+        [loop]
+        while (sp > 0u) {
+            uint ni = stack[--sp];
+            if (ni < local_bvh_first || ni >= local_bvh_end) continue;
+            uint nb = ni * 8u;
+            float3 bmin = float3(LocalBvhBuf[nb+0u], LocalBvhBuf[nb+1u], LocalBvhBuf[nb+2u]);
+            float3 bmax = float3(LocalBvhBuf[nb+3u], LocalBvhBuf[nb+4u], LocalBvhBuf[nb+5u]);
+            if (!IntersectWorldBounds(bmin, bmax, ro_local, inv_local_rd, 1e30f)) continue;
+            uint lf = asuint(LocalBvhBuf[nb+6u]);
+            uint rc = asuint(LocalBvhBuf[nb+7u]);
+            bool is_leaf = (lf & 0x80000000u) != 0u;
+            if (is_leaf) {
+                uint first_tri = lf & 0x7FFFFFFFu;
+                for (uint ti = 0u; ti < rc; ++ti) {
+                    uint tb = (first_tri + ti) * 3u;
+                    float3 pos;
+                    float3 normal;
+                    if (IntersectDynamicTri(ib, ro, rd, ro_local, rd_local,
+                                            IndexBuf[tb], IndexBuf[tb + 1u], IndexBuf[tb + 2u],
+                                            double_sided, best, pos, normal)) {
+                        return true;
+                    }
+                }
+            } else if (sp + 2u <= 64u) {
+                stack[sp++] = rc;
+                stack[sp++] = lf;
+            }
+        }
+        return false;
+    }
+    float best = max_t;
+    for (uint ti = 0u; ti < ntri; ++ti) {
+        uint tb = (ftri + ti) * 3u;
+        float3 pos;
+        float3 normal;
+        if (IntersectDynamicTri(ib, ro, rd, ro_local, rd_local,
+                                IndexBuf[tb], IndexBuf[tb + 1u], IndexBuf[tb + 2u],
+                                double_sided, best, pos, normal)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IntersectSdfSphere(uint sdf_index, float3 ro, float3 rd, inout Hit h) {
+    uint base = sdf_index * kSdfStride;
+    uint shape = uint(SdfBuf[base + 0u] + 0.5f);
+    if (shape != kSdfShapeSphere) return false;
+
+    float3 center = float3(SdfBuf[base + 4u], SdfBuf[base + 5u], SdfBuf[base + 6u]);
+    float3 scale = abs(float3(SdfBuf[base + 8u], SdfBuf[base + 9u], SdfBuf[base + 10u]));
+    float scale_max = max(scale.x, max(scale.y, scale.z));
+    float radius = max(0.001f, SdfBuf[base + 2u] * max(scale_max, 0.001f));
+
+    float3 oc = ro - center;
+    float half_b = dot(oc, rd);
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = half_b * half_b - c;
+    if (discriminant < 0.0f) return false;
+
+    float root = sqrt(discriminant);
+    float t = -half_b - root;
+    if (t <= 1e-4f) {
+        t = -half_b + root;
+    }
+    if (t <= 1e-4f || t >= h.t) return false;
+
+    h.ok = true;
+    h.t = t;
+    h.pos = ro + rd * t;
+    h.n = normalize(h.pos - center);
+    h.mat = uint(SdfBuf[base + 1u] + 0.5f);
+    return true;
+}
+
+bool OccludedSdfSphere(uint sdf_index, float3 ro, float3 rd, float max_t) {
+    uint base = sdf_index * kSdfStride;
+    uint shape = uint(SdfBuf[base + 0u] + 0.5f);
+    if (shape != kSdfShapeSphere) return false;
+
+    float3 center = float3(SdfBuf[base + 4u], SdfBuf[base + 5u], SdfBuf[base + 6u]);
+    float3 scale = abs(float3(SdfBuf[base + 8u], SdfBuf[base + 9u], SdfBuf[base + 10u]));
+    float scale_max = max(scale.x, max(scale.y, scale.z));
+    float radius = max(0.001f, SdfBuf[base + 2u] * max(scale_max, 0.001f));
+
+    float3 oc = ro - center;
+    float half_b = dot(oc, rd);
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = half_b * half_b - c;
+    if (discriminant < 0.0f) return false;
+
+    float root = sqrt(discriminant);
+    float t = -half_b - root;
+    if (t <= 1e-4f) {
+        t = -half_b + root;
+    }
+    return t > 1e-4f && t < max_t;
+}
+
 // ============================================================================
 // Scene hit
 // ============================================================================
@@ -266,6 +573,33 @@ Hit IntersectScene(float3 ro, float3 rd) {
             stack[sp++] = lf;
         }
     }
+
+    sp = 0u;
+    stack[sp++] = 0u;
+    [loop]
+    while (sp > 0u) {
+        uint ni = stack[--sp];
+        uint nb = ni * 8u;
+        float3 bmin = float3(DynamicBvhBuf[nb+0u], DynamicBvhBuf[nb+1u], DynamicBvhBuf[nb+2u]);
+        float3 bmax = float3(DynamicBvhBuf[nb+3u], DynamicBvhBuf[nb+4u], DynamicBvhBuf[nb+5u]);
+        if (!IntersectWorldBounds(bmin, bmax, ro, inv_rd, h.t)) continue;
+        uint lf = asuint(DynamicBvhBuf[nb+6u]);
+        uint rc = asuint(DynamicBvhBuf[nb+7u]);
+        bool is_leaf = (lf & 0x80000000u) != 0u;
+        if (is_leaf) {
+            if (rc == 0u) continue;
+            uint instance_index = lf & 0x7FFFFFFFu;
+            IntersectDynamicInstance(instance_index, ro, rd, h);
+        } else {
+            stack[sp++] = rc;
+            stack[sp++] = lf;
+        }
+    }
+
+    [loop]
+    for (uint si = 0u; si < num_sdfs; ++si) {
+        IntersectSdfSphere(si, ro, rd, h);
+    }
     return h;
 }
 
@@ -307,6 +641,36 @@ bool OccludedScene(float3 ro, float3 rd, float max_t) {
         } else {
             stack[sp++] = rc;
             stack[sp++] = lf;
+        }
+    }
+
+    sp = 0u;
+    stack[sp++] = 0u;
+    [loop]
+    while (sp > 0u) {
+        uint ni = stack[--sp];
+        uint nb = ni * 8u;
+        float3 bmin = float3(DynamicBvhBuf[nb+0u], DynamicBvhBuf[nb+1u], DynamicBvhBuf[nb+2u]);
+        float3 bmax = float3(DynamicBvhBuf[nb+3u], DynamicBvhBuf[nb+4u], DynamicBvhBuf[nb+5u]);
+        if (!IntersectWorldBounds(bmin, bmax, ro, inv_rd, max_t)) continue;
+        uint lf = asuint(DynamicBvhBuf[nb+6u]);
+        uint rc = asuint(DynamicBvhBuf[nb+7u]);
+        bool is_leaf = (lf & 0x80000000u) != 0u;
+        if (is_leaf) {
+            if (rc == 0u) continue;
+            uint instance_index = lf & 0x7FFFFFFFu;
+            if (OccludedDynamicInstance(instance_index, ro, rd, max_t)) {
+                return true;
+            }
+        } else {
+            stack[sp++] = rc;
+            stack[sp++] = lf;
+        }
+    }
+    [loop]
+    for (uint si = 0u; si < num_sdfs; ++si) {
+        if (OccludedSdfSphere(si, ro, rd, max_t)) {
+            return true;
         }
     }
     return false;
