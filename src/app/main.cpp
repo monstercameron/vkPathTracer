@@ -1466,6 +1466,11 @@ struct QtDockFrameStats {
   std::string render_mode;
   std::string publish_cap;
   std::string camera_mode;
+  bool fps_player_grounded = false;
+  bool fps_player_crouching = false;
+  bool fps_player_running = false;
+  float fps_player_speed = 0.0f;
+  float fps_player_eye_height = 0.0f;
 };
 
 struct QtDockRayDeviceMetric {
@@ -3190,6 +3195,20 @@ QtDockPanelContent BuildQtCameraDock(const vkpt::scene::SceneDocument& document,
   QtDockAddProperty(panel, "Mode", frame_stats.camera_mode.empty() ? "authored" : frame_stats.camera_mode);
   QtDockAddProperty(panel, "Runtime focus", QtDockNumber(scene.camera_focus_distance, 2));
   QtDockAddButtonGroupedProperty(panel,
+                                 "camera.mode.fps_toggle",
+                                 "",
+                                 frame_stats.camera_mode == "fps" ? "Exit FPS" : "Enter FPS",
+                                 frame_stats.camera_mode == "fps" ? "Exit FPS" : "Enter FPS");
+  if (frame_stats.camera_mode == "fps") {
+    QtDockAddProperty(panel,
+                      "FPS body",
+                      frame_stats.fps_player_grounded ? "grounded" : "airborne");
+    QtDockAddProperty(panel, "FPS speed", QtDockNumber(frame_stats.fps_player_speed, 2));
+    QtDockAddProperty(panel, "FPS eye height", QtDockNumber(frame_stats.fps_player_eye_height, 2));
+    QtDockAddProperty(panel, "Run", QtDockBool(frame_stats.fps_player_running));
+    QtDockAddProperty(panel, "Crouch", QtDockBool(frame_stats.fps_player_crouching));
+  }
+  QtDockAddButtonGroupedProperty(panel,
                                  "camera.focus.pick",
                                  "",
                                  "Focus under cursor",
@@ -3865,6 +3884,25 @@ struct ViewportPickResult {
   vkpt::editor::Bounds bounds{};
   std::string label;
   float distance = 0.0f;
+};
+
+struct FpsPlayerState {
+  bool initialized = false;
+  vkpt::pathtracer::Vec3 feet_position{};
+  vkpt::pathtracer::Vec3 velocity{};
+  bool grounded = false;
+  bool crouching = false;
+  bool running = false;
+  bool jump_queued = false;
+  float eye_height = 1.62f;
+  float current_speed = 0.0f;
+};
+
+struct FpsCollisionHit {
+  bool hit = false;
+  float distance = 0.0f;
+  vkpt::pathtracer::Vec3 position{};
+  vkpt::pathtracer::Vec3 normal{0.0f, 1.0f, 0.0f};
 };
 
 vkpt::pathtracer::Vec3 PtAdd(const vkpt::pathtracer::Vec3& a,
@@ -4745,6 +4783,116 @@ bool IntersectFrontFacingTriangle(const ViewportRay& ray,
   }
   t_out = t;
   return true;
+}
+
+bool IntersectTriangleDoubleSided(const ViewportRay& ray,
+                                  const ViewportPickable::Triangle& triangle,
+                                  float maxDistance,
+                                  float& t_out,
+                                  vkpt::pathtracer::Vec3& normal_out) {
+  constexpr float kEpsilon = 1.0e-6f;
+  const auto edge1 = PtSub(triangle.v1, triangle.v0);
+  const auto edge2 = PtSub(triangle.v2, triangle.v0);
+  const auto pvec = PtCross(ray.direction, edge2);
+  const float det = PtDot(edge1, pvec);
+  if (std::fabs(det) <= kEpsilon) {
+    return false;
+  }
+
+  const float invDet = 1.0f / det;
+  const auto tvec = PtSub(ray.origin, triangle.v0);
+  const float u = PtDot(tvec, pvec) * invDet;
+  if (u < 0.0f || u > 1.0f) {
+    return false;
+  }
+
+  const auto qvec = PtCross(tvec, edge1);
+  const float v = PtDot(ray.direction, qvec) * invDet;
+  if (v < 0.0f || u + v > 1.0f) {
+    return false;
+  }
+
+  const float t = PtDot(edge2, qvec) * invDet;
+  if (t <= kEpsilon || t >= maxDistance) {
+    return false;
+  }
+
+  auto normal = PtNormalize(PtCross(edge1, edge2), {0.0f, 1.0f, 0.0f});
+  if (PtDot(normal, ray.direction) > 0.0f) {
+    normal = PtMul(normal, -1.0f);
+  }
+  t_out = t;
+  normal_out = normal;
+  return true;
+}
+
+FpsCollisionHit TraceFpsGround(const std::vector<ViewportPickable>& pickables,
+                               const vkpt::pathtracer::Vec3& origin,
+                               float maxDistance,
+                               float minWalkableNormalY) {
+  FpsCollisionHit best{};
+  float bestDistance = maxDistance;
+  const ViewportRay ray{origin, {0.0f, -1.0f, 0.0f}};
+  for (const auto& pickable : pickables) {
+    if (pickable.triangles.empty()) {
+      continue;
+    }
+    float boundsDistance = 0.0f;
+    if (pickable.bounds.valid && !IntersectBounds(ray, pickable.bounds, boundsDistance)) {
+      continue;
+    }
+    for (const auto& triangle : pickable.triangles) {
+      float distance = 0.0f;
+      vkpt::pathtracer::Vec3 normal{};
+      if (!IntersectTriangleDoubleSided(ray, triangle, bestDistance, distance, normal)) {
+        continue;
+      }
+      if (std::fabs(normal.y) < minWalkableNormalY) {
+        continue;
+      }
+      best.hit = true;
+      best.distance = distance;
+      best.position = PtAdd(origin, PtMul(ray.direction, distance));
+      best.normal = normal;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+FpsCollisionHit TraceFpsWall(const std::vector<ViewportPickable>& pickables,
+                             const vkpt::pathtracer::Vec3& origin,
+                             const vkpt::pathtracer::Vec3& direction,
+                             float maxDistance,
+                             float maxWalkableNormalY) {
+  FpsCollisionHit best{};
+  float bestDistance = maxDistance;
+  const ViewportRay ray{origin, PtNormalize(direction, {1.0f, 0.0f, 0.0f})};
+  for (const auto& pickable : pickables) {
+    if (pickable.triangles.empty()) {
+      continue;
+    }
+    float boundsDistance = 0.0f;
+    if (pickable.bounds.valid && !IntersectBounds(ray, pickable.bounds, boundsDistance)) {
+      continue;
+    }
+    for (const auto& triangle : pickable.triangles) {
+      float distance = 0.0f;
+      vkpt::pathtracer::Vec3 normal{};
+      if (!IntersectTriangleDoubleSided(ray, triangle, bestDistance, distance, normal)) {
+        continue;
+      }
+      if (std::fabs(normal.y) > maxWalkableNormalY) {
+        continue;
+      }
+      best.hit = true;
+      best.distance = distance;
+      best.position = PtAdd(origin, PtMul(ray.direction, distance));
+      best.normal = normal;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 bool IntersectPickableForSelection(const ViewportRay& ray,
@@ -8145,6 +8293,7 @@ int main(int argc, char** argv) {
       };
       syncQtFpsAnglesFromPose();
       bool qtFpsMode = false;
+      FpsPlayerState qtFpsPlayer{};
       bool qtLeftMouseDown = false;
       bool qtRightMouseDown = false;
       bool qtMiddleMouseDown = false;
@@ -8182,6 +8331,7 @@ int main(int argc, char** argv) {
       constexpr int kQtKeyUp = 0x01000013;
       constexpr int kQtKeyRight = 0x01000014;
       constexpr int kQtKeyDown = 0x01000015;
+      constexpr int kQtKeySpace = 0x20;
       auto qtKeyActive = [&](int key) {
         return qtKeysDown.find(key) != qtKeysDown.end() ||
                qtKeysDown.find(qtNormalizeKey(key)) != qtKeysDown.end();
@@ -8411,6 +8561,7 @@ int main(int argc, char** argv) {
       };
       std::function<bool(vkpt::core::FrameIndex)> qtDockAutoFocus;
       std::function<bool(vkpt::core::FrameIndex)> qtDockFocusSelected;
+      std::function<void(bool, vkpt::core::FrameIndex, std::string_view)> qtSetFpsMode;
       auto qtApplyDockPropertyEdit = [&](const vkpt::platform::QtDockPropertyEdit& edit,
                                          vkpt::core::FrameIndex frameIndex) {
         const auto parts = QtSplitPropertyPath(edit.property_id);
@@ -8434,7 +8585,13 @@ int main(int argc, char** argv) {
         };
 
         if (parts.size() >= 2u && parts[0] == "camera") {
-          if (parts.size() == 3u && parts[1] == "shot" && parts[2] == "slot") {
+          if (parts.size() == 3u && parts[1] == "mode" && parts[2] == "fps_toggle") {
+            if (qtSetFpsMode) {
+              qtSetFpsMode(!qtFpsMode, frameIndex, "dock");
+            } else {
+              qtFpsMode = !qtFpsMode;
+            }
+          } else if (parts.size() == 3u && parts[1] == "shot" && parts[2] == "slot") {
             float value = 0.0f;
             if (!QtParseFloat(edit.value, value)) {
               return failEdit("expected numeric camera shot slot");
