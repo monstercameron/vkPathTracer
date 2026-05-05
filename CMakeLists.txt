@@ -323,6 +323,8 @@ set(PT_CPU_SOURCES
   src/shaders/ShaderFamilyManifest.cpp
   src/shaders/SdfShaderInventory.cpp
   src/render/DebugViews.cpp
+  src/render/FrameHandoff.cpp
+  src/render/RenderCoordinator.cpp
   src/render/interface/RenderContracts.cpp
   src/render/backends/BackendFactory.cpp
   src/render/backends/FrameGraph.cpp
