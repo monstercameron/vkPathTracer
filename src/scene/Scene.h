@@ -319,6 +319,18 @@ struct SceneGeometryDefinition {
   std::vector<Vec3> vertices;
   std::vector<std::uint32_t> indices;
   vkpt::core::StableId material_id = 0;
+
+  struct TessellationSettings {
+    bool enabled = false;
+    std::string mode = "off";
+    std::uint32_t factor = 1;
+    bool gpu_preferred = true;
+    bool cache_generated_geometry = true;
+    bool displacement = false;
+    std::string projection = "none";
+  };
+
+  TessellationSettings tessellation;
 };
 
 struct SceneSdfPrimitiveDefinition {

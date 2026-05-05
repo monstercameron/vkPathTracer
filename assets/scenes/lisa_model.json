@@ -1,25 +1,25 @@
 {
   "metadata": {
     "schema": "1.0",
-    "scene_name": "Sponza Lite / Textured Atrium",
+    "scene_name": "Lisa Suzanne Monkey Model",
     "author": "vkPathTracer"
   },
   "assets": [
     {
-      "id": 200,
+      "id": 100,
       "type": "model/obj",
-      "uri": "../models/sponza/sponza.obj"
+      "uri": "../models/lisa/lisa.obj"
     }
   ],
   "entities": [
     {
-      "id": 300,
+      "id": 110,
       "name": "Camera",
       "transform": {
         "translation": [
           0.0,
-          2.2,
-          10.5
+          1.22,
+          4.0
         ],
         "rotation": [
           0.0,
@@ -34,19 +34,19 @@
         ]
       },
       "camera": {
-        "fov": 58.0,
+        "fov": 38.0,
         "near_plane": 0.05,
-        "far_plane": 300.0
+        "far_plane": 100.0
       }
     },
     {
-      "id": 301,
-      "name": "Atrium key light",
+      "id": 111,
+      "name": "Soft portrait key",
       "transform": {
         "translation": [
-          0.0,
-          4.35,
-          0.0
+          -1.0,
+          2.2,
+          2.0
         ],
         "rotation": [
           0.0,
@@ -64,21 +64,21 @@
         "type": "point",
         "color": [
           1.0,
-          0.96,
-          0.88
+          0.88,
+          0.72
         ],
-        "intensity": 24.0,
-        "radius": 0.35
+        "intensity": 9.5,
+        "radius": 0.22
       }
     },
     {
-      "id": 302,
-      "name": "North skylight",
+      "id": 112,
+      "name": "Cool rim",
       "transform": {
         "translation": [
-          0.0,
-          4.2,
-          -5.7
+          1.2,
+          1.8,
+          1.1
         ],
         "rotation": [
           0.0,
@@ -95,18 +95,18 @@
       "light": {
         "type": "point",
         "color": [
-          0.72,
-          0.82,
+          0.55,
+          0.68,
           1.0
         ],
-        "intensity": 10.0,
-        "radius": 0.8
+        "intensity": 3.0,
+        "radius": 0.12
       }
     }
   ],
   "benchmark": {
     "enabled": true,
-    "frame_target": 128,
-    "warmup_frames": 10
+    "frame_target": 80,
+    "warmup_frames": 6
   }
 }

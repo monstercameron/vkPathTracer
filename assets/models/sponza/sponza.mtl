@@ -1,0 +1,31 @@
+newmtl sponza_stone
+Kd 0.64 0.61 0.55
+Pr 0.88
+map_Kd textures/sponza_stone.png
+map_Bump textures/sponza_stone_normal.png
+
+newmtl sponza_plaster
+Kd 0.78 0.72 0.62
+Pr 0.92
+map_Kd textures/sponza_plaster.png
+
+newmtl sponza_marble
+Kd 0.72 0.70 0.66
+Pr 0.62
+map_Kd textures/sponza_marble.png
+
+newmtl sponza_curtain_red
+Kd 0.62 0.10 0.08
+Pr 0.96
+map_Kd textures/sponza_curtain_red.png
+
+newmtl sponza_curtain_blue
+Kd 0.10 0.18 0.46
+Pr 0.94
+map_Kd textures/sponza_curtain_blue.png
+
+newmtl sponza_metal
+Kd 0.48 0.45 0.40
+Pm 0.8
+Pr 0.28
+map_Kd textures/sponza_metal.png

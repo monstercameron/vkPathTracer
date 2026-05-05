@@ -1,10 +1,13 @@
 #include "scene/Scene.h"
 
+#include "assets/SceneAssetLoader.h"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -2043,6 +2046,19 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       read_u64(item, "material_id", geometry.material_id);
       read_vec3_list(item, "vertices", geometry.vertices);
       read_u32_list(item, "indices", geometry.indices);
+      if (const auto tessNode = item.object.find("tessellation");
+          tessNode != item.object.end() && tessNode->second.kind == JsonValue::Kind::Object) {
+        read_bool(tessNode->second, "enabled", geometry.tessellation.enabled);
+        read_string(tessNode->second, "mode", geometry.tessellation.mode);
+        read_u32(tessNode->second, "factor", geometry.tessellation.factor);
+        read_bool(tessNode->second, "gpu", geometry.tessellation.gpu_preferred);
+        read_bool(tessNode->second, "cache", geometry.tessellation.cache_generated_geometry);
+        read_bool(tessNode->second, "displacement", geometry.tessellation.displacement);
+        read_string(tessNode->second, "projection", geometry.tessellation.projection);
+        if (geometry.tessellation.enabled && geometry.tessellation.mode == "off") {
+          geometry.tessellation.mode = "uniform";
+        }
+      }
       const auto tags = item.object.find("tags");
       if (tags != item.object.end() && tags->second.kind == JsonValue::Kind::Array) {
         for (const auto& t : tags->second.array) {
@@ -2223,7 +2239,38 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_file(std::string_view
   }
   std::ostringstream buffer;
   buffer << file.rdbuf();
-  return load_from_text(buffer.str());
+  auto loaded = load_from_text(buffer.str());
+  if (!loaded) {
+    return vkpt::core::Result<SceneDocument>::error(loaded.error());
+  }
+  auto document = std::move(loaded.value());
+  std::vector<std::string> asset_diagnostics;
+  vkpt::assets::SceneAssetExpansionStats expansion_stats{};
+  if (!vkpt::assets::ExpandSceneAssetReferences(document,
+                                                std::filesystem::path(std::string(path)),
+                                                &expansion_stats,
+                                                &asset_diagnostics)) {
+    for (const auto& diagnostic : asset_diagnostics) {
+      vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "asset_import", diagnostic);
+    }
+    return vkpt::core::Result<SceneDocument>::error(vkpt::core::ErrorCode::InvalidArgument);
+  }
+  if (expansion_stats.imported_models > 0u) {
+    vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,
+                                      "asset_import",
+                                      "scene assets expanded",
+                                      {
+                                          {"models", std::to_string(expansion_stats.imported_models)},
+                                          {"textures", std::to_string(expansion_stats.imported_textures)},
+                                          {"materials", std::to_string(expansion_stats.imported_materials)},
+                                          {"geometry", std::to_string(expansion_stats.imported_geometry)},
+                                          {"entities", std::to_string(expansion_stats.imported_entities)},
+                                      });
+  }
+  if (!document.validate(nullptr)) {
+    return vkpt::core::Result<SceneDocument>::error(vkpt::core::ErrorCode::InvalidArgument);
+  }
+  return vkpt::core::Result<SceneDocument>::ok(std::move(document));
 }
 
 bool SceneDocument::validate(std::vector<std::string>* issues) const {
@@ -2335,6 +2382,21 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
       if (!finite_vec3(vertex)) {
         report("geometry contains non-finite vertex " + std::to_string(geometry_entry.id));
         break;
+      }
+    }
+    if (geometry_entry.tessellation.enabled) {
+      if (geometry_entry.tessellation.mode != "uniform") {
+        report("geometry tessellation mode is unsupported " + std::to_string(geometry_entry.id));
+      }
+      if (geometry_entry.tessellation.projection != "none" &&
+          geometry_entry.tessellation.projection != "sphere") {
+        report("geometry tessellation projection is unsupported " + std::to_string(geometry_entry.id));
+      }
+      if (geometry_entry.tessellation.factor < 1u || geometry_entry.tessellation.factor > 64u) {
+        report("geometry tessellation factor out of range " + std::to_string(geometry_entry.id));
+      }
+      if (geometry_entry.indices.empty() || geometry_entry.indices.size() % 3u != 0u) {
+        report("geometry tessellation requires triangle indices " + std::to_string(geometry_entry.id));
       }
     }
   }
@@ -2664,6 +2726,19 @@ std::string SceneDocument::to_json(bool pretty) const {
     item.object["id"] = number_value(static_cast<double>(geometry_entry.id));
     item.object["primitive"] = string_value(geometry_entry.primitive);
     item.object["material_id"] = number_value(static_cast<double>(geometry_entry.material_id));
+    if (geometry_entry.tessellation.enabled ||
+        geometry_entry.tessellation.factor > 1u ||
+        geometry_entry.tessellation.mode != "off") {
+      JsonValue tessNode = object_value();
+      tessNode.object["enabled"] = bool_value(geometry_entry.tessellation.enabled);
+      tessNode.object["mode"] = string_value(geometry_entry.tessellation.mode);
+      tessNode.object["factor"] = number_value(static_cast<double>(geometry_entry.tessellation.factor));
+      tessNode.object["gpu"] = bool_value(geometry_entry.tessellation.gpu_preferred);
+      tessNode.object["cache"] = bool_value(geometry_entry.tessellation.cache_generated_geometry);
+      tessNode.object["displacement"] = bool_value(geometry_entry.tessellation.displacement);
+      tessNode.object["projection"] = string_value(geometry_entry.tessellation.projection);
+      item.object["tessellation"] = std::move(tessNode);
+    }
     JsonValue tagsNode = array_value();
     for (const auto& tag : geometry_entry.tags) {
       tagsNode.array.push_back(string_value(tag));
@@ -2900,7 +2975,14 @@ SceneSnapshot SceneDocument::snapshot() const {
     blob += "g" + std::to_string(geometry_entry.id) + ":" + geometry_entry.primitive + ":" +
             std::to_string(geometry_entry.material_id) + ":" +
             std::to_string(geometry_entry.vertices.size()) + ":" +
-            std::to_string(geometry_entry.indices.size()) + ";";
+            std::to_string(geometry_entry.indices.size()) + ":" +
+            (geometry_entry.tessellation.enabled ? "tess1" : "tess0") + ":" +
+            geometry_entry.tessellation.mode + ":" +
+            std::to_string(geometry_entry.tessellation.factor) + ":" +
+            (geometry_entry.tessellation.gpu_preferred ? "gpu" : "cpu") + ":" +
+            (geometry_entry.tessellation.cache_generated_geometry ? "cache" : "nocache") + ":" +
+            (geometry_entry.tessellation.displacement ? "disp" : "nodisp") + ":" +
+            geometry_entry.tessellation.projection + ";";
   }
   for (const auto& transform : transforms) {
     blob += "x" + std::to_string(transform.id) + ":" + std::to_string(transform.parent) + ":" +
