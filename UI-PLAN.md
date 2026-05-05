@@ -830,14 +830,23 @@ The goal for this pass is a clear ownership model: Qt owns widgets and presentat
 * [ ] Add material editor later.
 * [ ] Add light editor later.
 * [ ] Add camera editor later.
+* [x] Add first-pass lens and film camera fields to the Qt camera and inspector docks.
+* [x] Make authored camera aperture/focus/exposure/white-balance fields editable through dock property edits.
+* [x] Make authored iris blades, iris roundness, iris rotation, and anamorphic squeeze affect CPU camera ray sampling.
+* [x] Add GPU camera ray support for authored aperture, focus distance, iris, and anamorphic controls.
+* [x] Add pick-to-focus and focus-plane overlay.
+* [x] Add saved camera shot controls.
 * [x] Add render settings panel.
 * [ ] Add samples-per-pixel control.
-* [ ] Add max-depth control.
-* [ ] Add NEE toggle.
-* [ ] Add MIS toggle.
+* [x] Add max-depth control.
+* [x] Add NEE toggle.
+* [x] Add MIS toggle.
 * [ ] Add accumulation reset button.
-* [ ] Add tone mapper dropdown.
-* [ ] Add exposure slider.
+* [x] Add tone mapper dropdown.
+* [x] Add exposure slider.
+* [x] Add gamma and clamp-output controls.
+* [x] Add output transform dropdown.
+* [x] Wire D3D12/Vulkan film resolve settings to match CPU resolve.
 * [ ] Add debug view selector.
 * [ ] Add command preview diagnostics.
 * [ ] Add undo stack after command layer is stable.

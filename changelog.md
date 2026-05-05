@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-05-05 (session 22)
+
+### Physical camera controls, GPU traversal experiments, and profiling docs
+
+- Added scene-level camera lens and film fields for focal length, sensor size, aperture/focus, physical exposure, white balance, iris shape, and anamorphic squeeze.
+- Wired the physical camera controls through CPU, Vulkan, D3D12 compute, and DXR camera ray generation and film resolve paths.
+- Expanded the Qt camera/render docks with lens, focus, tone-map, exposure, output transform, and saved-shot controls, plus a startup splash path.
+- Added D3D12 packed-triangle traversal experiments, PIX autorun/profiling hooks in `ptbench`, and a D3D12/DXR algorithm graph example scaffold.
+- Updated the UI plan, TODOs, threading plan, and optimization guide with the new camera, render-threading, and profiling work.
+
 ## 2026-05-05 (session 21)
 
 ### Render threading coordinator and CPU scheduling stability
