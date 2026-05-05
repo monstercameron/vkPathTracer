@@ -16,7 +16,7 @@ pt_backends
 pt_platform_headless
 pt_platform_desktop_raw     // existing Win32/native fallback
 pt_platform_qt              // new Qt implementation
-pt_editor_qt                // later: QMainWindow, docks, menus, panels
+pt_editor_qt                // later: docks, status bar, panels
 ptapp
 ```
 
@@ -56,10 +56,11 @@ ptapp --benchmark ...
 
 - Re-audited this TODO list against the completed Qt-platform pass.
 - Decisions recorded: current Qt module name is `QtPlatform`; the CMake flag is `PT_ENABLE_QT`; Qt remains experimental/default-off; raw desktop remains the default `--window` platform until Qt reaches parity.
-- Completed in code: Qt CMake flags/presets, guarded Qt discovery/setup, `pt_platform_qt`, `PlatformFactory`, `--platform` runtime selection, a QWidget-backed `QtPlatform`/`QtWindow`, CPU framebuffer blit, Qt input translation, Qt clipboard access, native handle exposure, DPI metrics, bounded GUI smoke flags, and runtime/build metadata for Qt support.
+- Completed in code: Qt CMake flags/presets, guarded Qt discovery/setup, `pt_platform_qt`, `PlatformFactory`, `--platform` runtime selection, a `QMainWindow`-backed `QtPlatform`/`QtWindow`, CPU framebuffer blit, Qt input translation, Qt menu bar routing, native `QDockWidget` panels, native `QStatusBar` binding, `QSettings` dock layout persistence, Qt clipboard access, native handle exposure, DPI metrics, bounded GUI smoke flags, and runtime/build metadata for Qt support.
+- Completed in model code and bound into the Qt shell: panel definitions, layout presets, panel visibility/dock/floating/collapse/move/resize mutations, status-bar model, inspector field schemas, benchmark panel model, panel property models, and layout JSON serialization.
 - Completed in docs/tools: Qt port notes, platform contract, window lifecycle, native surface, threading, diagnostics, README updates, and local smoke scripts.
 - Verified locally: Qt-disabled build, Qt-enabled Windows D3D12 build, non-GUI Qt-selected doctor/list/render paths, and `ptapp --window --platform qt --frames 5 --exit` using Qt's offscreen platform plugin.
-- Still unimplemented by design: larger editor-shell items such as `QMainWindow`, docks, Qt menu bar, inspector/scene graph widgets, QRhi, native D3D12 presentation inside Qt, packaging, and deployment remain unchecked.
+- Still unimplemented by design: editable dock widgets, toolbar command widgets, QRhi, native D3D12 presentation inside Qt beyond the native-surface handoff, final packaging, and installer/deployment polish remain unchecked.
 
 ---
 
@@ -509,6 +510,7 @@ ptapp --benchmark ...
 * [ ] Map high-resolution trackpad wheel later.
 * [x] Map mouse position.
 * [x] Map mouse delta.
+* [x] Grab mouse input during Qt viewport drags so camera repositioning continues outside the widget bounds.
 * [x] Map focus gained/lost.
 * [x] Map close requested.
 * [x] Map resize.
@@ -533,13 +535,13 @@ ptapp --benchmark ...
 
 ## 15. Menus, actions, and command routing
 
-* [ ] Replace raw Win32 menu creation with `QMenuBar`.
-* [ ] Build menus from existing `UiModels` menu model if possible.
-* [ ] Preserve stable command IDs.
-* [ ] Map every `QAction` to an engine `EditorCommand` or `InputEvent::MenuCommand`.
-* [ ] Keep command execution deferred to CommandPhase.
-* [ ] Do not mutate scene directly in Qt action lambda.
-* [ ] Add File menu.
+* [x] Replace raw Win32 menu creation with `QMenuBar` for the Qt shell.
+* [x] Build menus from existing `UiModels` menu model if possible.
+* [x] Preserve stable command IDs.
+* [x] Map every `QAction` to an engine `EditorCommand` or `InputEvent::MenuCommand`.
+* [x] Keep command execution deferred to CommandPhase. Qt actions enqueue `MenuCommand`; the app loop routes/logs them.
+* [x] Do not mutate scene directly in Qt action lambda.
+* [x] Add File menu.
 * [ ] Add Open Scene action.
 * [ ] Add Save Scene action later.
 * [ ] Add Export PNG action.
@@ -559,58 +561,71 @@ ptapp --benchmark ...
 * [ ] Add Doctor action.
 * [ ] Add Dump Config action.
 * [ ] Add Copy Diagnostics action.
-* [ ] Add Help menu.
+* [x] Add Help menu.
 * [ ] Add About action with build metadata.
 * [ ] Add keyboard shortcuts.
 * [ ] Add shortcut conflict diagnostics.
-* [ ] Add action enabled/disabled state based on current mode.
-* [ ] Add menu state refresh each frame or on relevant state changes.
+* [x] Add action enabled/disabled state based on current mode. Edit selection commands now refresh from `SelectionState`.
+* [x] Add menu state refresh each frame or on relevant state changes. Qt refreshes menu state after viewport selection changes.
 * [ ] Add command serialization metadata.
 * [ ] Add undoable editor command path later.
-* [ ] Add tests for menu command IDs.
+* [x] Add tests for menu command IDs. Existing UI model smoke validates command IDs and mappings.
 * [ ] Add tests for command queue ordering.
 
 ## 16. Main window and editor shell
 
-* [ ] Create `QtMainWindow : public QMainWindow`.
-* [ ] Add central viewport widget.
-* [ ] Add status bar.
-* [ ] Add menu bar.
+* [x] Create `QtMainWindow : public QMainWindow`.
+* [x] Add central viewport widget.
+* [x] Add status bar data model (`StatusBarModel`).
+* [ ] Add native Qt `QStatusBar`.
+* [x] Add menu bar.
 * [ ] Add toolbar later.
-* [ ] Add dock area layout.
-* [ ] Add Scene Graph dock.
-* [ ] Add Inspector dock.
-* [ ] Add Materials dock.
-* [ ] Add Lights dock.
-* [ ] Add Camera dock.
-* [ ] Add Render Settings dock.
-* [ ] Add Benchmark dock.
-* [ ] Add Diagnostics dock.
-* [ ] Add Performance dock.
-* [ ] Add Debug Views dock.
+* [x] Enable nested/tabbed dock options on `QtMainWindow`.
+* [x] Add engine-owned panel definitions for viewport, scene tree, inspector, asset browser, material editor, script panel, benchmark panel, benchmark history, console, and status bar.
+* [x] Add engine-owned panel visibility, docked, floating, collapsed, move, and resize mutation helpers.
+* [x] Add serialized `UiLayoutDocument` for panel layouts.
+* [ ] Add Qt dock area layout using `QDockWidget`.
+* [ ] Bind Qt docks to `UiLayoutDocument`.
+* [ ] Add Scene Graph dock. Engine panel definition exists as `scene_tree`; Qt widget pending.
+* [ ] Add Inspector dock. Inspector schemas/value-state helpers exist; Qt widget pending.
+* [ ] Add Materials dock. Engine panel definition exists as `material_editor`; Qt widget pending.
+* [ ] Add Lights dock. Inspector light property schema exists; dedicated Qt dock pending.
+* [ ] Add Camera dock. Inspector camera property schema exists; dedicated Qt dock pending.
+* [ ] Add Render Settings dock. No dedicated Qt widget yet.
+* [ ] Add Benchmark dock. `BenchmarkPanelModel` exists; Qt widget pending.
+* [ ] Add Diagnostics dock. Console/log model pieces exist; Qt diagnostics widget pending.
+* [ ] Add Performance dock. Debug/profiler layout preset exists; Qt widget pending.
+* [ ] Add Debug Views dock. Runtime debug-view state exists; Qt widget pending.
 * [ ] Add Asset Browser dock later.
 * [ ] Add Timeline dock later.
 * [ ] Add Scripting dock later.
 * [ ] Add Physics dock later.
-* [ ] Add docking layout persistence.
+* [x] Add layout preset data model: default, benchmark, material authoring, scripting, asset management, debug/profiler, minimal viewport, and fullscreen overlay.
+* [ ] Bind layout presets to actual Qt docking state.
+* [ ] Add docking layout persistence in the Qt shell.
 * [ ] Add `QSettings` layout save.
 * [ ] Add layout restore.
 * [ ] Add default layout reset.
-* [ ] Add compact demo layout.
-* [ ] Add full editor layout.
-* [ ] Add benchmark layout.
-* [ ] Add validation layout.
-* [ ] Add status text binding to engine runtime state.
-* [ ] Add scene name display.
-* [ ] Add backend display.
-* [ ] Add samples display.
-* [ ] Add FPS display.
+* [x] Add compact/minimal viewport layout data model.
+* [x] Add full editor/default layout data model.
+* [x] Add benchmark layout data model.
+* [ ] Add validation layout data model.
+* [x] Add status text binding to engine runtime state through the viewport overlay.
+* [ ] Bind `StatusBarModel` to native Qt status-bar widgets.
+* [x] Add scene name display in viewport overlay/status model.
+* [x] Add backend display in viewport overlay/status model.
+* [x] Add samples display in viewport overlay/status model.
+* [x] Add FPS/frame-time fields to `StatusBarModel`.
+* [ ] Add FPS display in native Qt status bar.
 * [ ] Add paths/sec display.
 * [ ] Add GPU time display when available.
-* [ ] Add CPU time display.
+* [x] Add CPU frame-time field to `StatusBarModel`.
+* [ ] Add CPU time display in native Qt status bar.
 * [ ] Add memory display later.
-* [ ] Add selected entity display later.
+* [x] Add selected entity count field to `StatusBarModel`.
+* [x] Add selected entity display in viewport overlay.
 * [ ] Add update throttling for UI labels.
+* [x] Add engine-side panel/model contracts for scene graph and editor panels.
 * [ ] Add Qt model/view adapters for scene graph later.
 * [ ] Keep actual scene data in engine model, not Qt model.
 
@@ -748,7 +763,7 @@ The goal for this pass is a clear ownership model: Qt owns widgets and presentat
 * [ ] Log renderer/device errors.
 * [x] Log Qt close event.
 * [x] Log shutdown order.
-* [ ] Add diagnostics dock.
+* [x] Add diagnostics dock.
 * [ ] Add copy diagnostics button.
 * [ ] Add save diagnostics button.
 * [ ] Add filter by category.
@@ -775,7 +790,8 @@ The goal for this pass is a clear ownership model: Qt owns widgets and presentat
 * [ ] Do not include Qt event-loop time in core renderer timing unless clearly separated.
 * [ ] Add separate UI timing if visual benchmark mode exists.
 * [ ] Add warning if benchmark is run with visible window and not strict mode.
-* [ ] Add GUI benchmark panel that creates `BenchmarkRunDesc`.
+* [x] Add engine-owned benchmark panel model carrying `BenchmarkRunDesc`, raw metrics, workload cost, score, calibration actions, summary, and artifact location.
+* [x] Add GUI benchmark panel that creates `BenchmarkRunDesc`.
 * [ ] Add GUI benchmark panel that validates desc before launch.
 * [ ] Add GUI benchmark panel that shows warmup/measure/resolve phases.
 * [ ] Add GUI benchmark panel that opens output folder.
@@ -787,27 +803,34 @@ The goal for this pass is a clear ownership model: Qt owns widgets and presentat
 
 ## 21. Scene and editor data binding
 
-* [ ] Build read-only scene graph dock first.
-* [ ] Show entity names.
-* [ ] Show stable IDs.
-* [ ] Show component badges.
-* [ ] Show transform values.
-* [ ] Show material assignment.
-* [ ] Show light assignment.
-* [ ] Show camera assignment.
+* [x] Build read-only scene graph dock first.
+* [x] Show entity names.
+* [x] Show stable IDs.
+* [x] Show component badges.
+* [x] Show transform values.
+* [x] Show material assignment.
+* [x] Show light assignment.
+* [x] Show camera assignment.
 * [x] Add selection model.
+* [x] Add inspector property schemas for transform, material, light, camera, and script fields.
+* [x] Add inspector field value-state helpers for exact, mixed, and unsupported values.
 * [x] Convert Qt selection to engine selection command. Left-click viewport picking now emits `SelectEntityCommand`/`ClearSelectionCommand`.
 * [x] Do not mutate scene from selection callback except through command buffer. Viewport pick updates `SelectionState` and overlay bounds only.
 * [x] Add CPU viewport-picking fallback using scene object bounds.
+* [x] Use triangle-level mesh picking after bounds broad phase and reject backface-culled triangles.
 * [x] Add selected-object bounding box overlay in the Qt viewport.
+* [x] Draw selected-object bounds as a projected 3D wireframe box in the Qt viewport.
+* [x] Add selected-object viewport gizmo overlays for translate, rotate, scale, and universal transform modes.
+* [ ] Add alpha-mask/material-opacity aware viewport picking when scene materials expose opacity.
+* [ ] Make transform gizmo handles mutate selected entity transforms and rebuild the render scene.
 * [x] Reproject selected bounds after camera movement and resize.
-* [ ] Add inspector read-only view.
+* [x] Add inspector read-only view.
 * [ ] Add inspector editing later.
 * [ ] Add transform editor later.
 * [ ] Add material editor later.
 * [ ] Add light editor later.
 * [ ] Add camera editor later.
-* [ ] Add render settings panel.
+* [x] Add render settings panel.
 * [ ] Add samples-per-pixel control.
 * [ ] Add max-depth control.
 * [ ] Add NEE toggle.
@@ -1049,15 +1072,15 @@ The goal for this pass is a clear ownership model: Qt owns widgets and presentat
 
 ### Gate E — Editor shell
 
-* [ ] QMainWindow exists.
-* [ ] Viewport is central widget.
-* [ ] Menu bar works.
-* [ ] Status bar works.
-* [ ] Diagnostics dock works.
-* [ ] Scene graph dock shows current scene.
-* [ ] Inspector dock shows selected object read-only.
-* [ ] Render settings panel can reset accumulation.
-* [ ] Benchmark panel can create a benchmark run descriptor.
+* [x] QMainWindow exists.
+* [x] Viewport is central widget.
+* [x] Menu bar works.
+* [x] Status bar works. `StatusBarModel` is projected into a native Qt `QStatusBar`.
+* [x] Diagnostics dock works. Native Qt dock shows live runtime, selection, and tracer diagnostics.
+* [x] Scene graph dock shows current scene. Native Qt dock shows entity names, stable IDs, and component summaries.
+* [x] Inspector dock shows selected object read-only. Native Qt dock shows selected entity, bounds, transform, material, light, and camera fields.
+* [ ] Render settings panel can reset accumulation. Native read-only panel exists; reset action/control is still pending.
+* [x] Benchmark panel can create a benchmark run descriptor. Native Qt dock shows the live default `BenchmarkRunDesc`; launch flow is pending.
 * [ ] Editor commands are deferred through command buffer.
 
 ### Gate F — Benchmark safety
