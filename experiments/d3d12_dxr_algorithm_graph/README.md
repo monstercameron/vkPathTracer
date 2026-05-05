@@ -10,7 +10,7 @@ This example benchmarks code-level D3D12 compute path tracing decisions:
 Run:
 
 ```powershell
-.\examples\d3d12_dxr_algorithm_graph\run_graph.ps1 -Ptbench build\d3d12-optimization\bin\ptbench.exe
+.\experiments\d3d12_dxr_algorithm_graph\run_graph.ps1 -Ptbench build\d3d12-optimization\bin\ptbench.exe
 ```
 
 The notebook-style scratch data goes in `NOTES.md`. Raw run artifacts and generated graph summaries go in `results/`.

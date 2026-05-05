@@ -9,13 +9,13 @@ The graph runner explores a finite set of CPU math, CPU render scaffolding, and 
 From the repository root:
 
 ```powershell
-.\examples\pathtracer_optimization_graph\run_graph.ps1
+.\experiments\pathtracer_optimization_graph\run_graph.ps1
 ```
 
 Optional parameters:
 
 ```powershell
-.\examples\pathtracer_optimization_graph\run_graph.ps1 `
+.\experiments\pathtracer_optimization_graph\run_graph.ps1 `
   -Ptbench .\build\default\bin\ptbench.exe `
   -Scene assets\scenes\cornell_native.json `
   -Resolution 96x96 `
@@ -29,4 +29,3 @@ Optional parameters:
 - GPU shader/backend scaffolding: GLSL workgroup variants, small-power shader variants, SPIR-V static instruction counts, shader matrix, backend availability, and memory pressure probe.
 
 The GPU timing edge is only conclusive when `ptbench` is built with the real GPU path. If the active binary uses the simulated Vulkan backend, the graph still explores the edge but marks the runtime result as simulated.
-

@@ -40,20 +40,20 @@ GPU/scaffolding edges:
 - Created this example folder.
 - Added `math_microbench.cpp` for CPU math edge timing.
 - Added `run_graph.ps1` to build/run all declared edges and write graph artifacts.
-- Results are written to `examples/pathtracer_optimization_graph/results/`.
+- Results are written to `experiments/pathtracer_optimization_graph/results/`.
 
 ## Completed Edge Sweep: Existing Debug ptbench
 
 Command:
 
 ```powershell
-.\examples\pathtracer_optimization_graph\run_graph.ps1
+.\experiments\pathtracer_optimization_graph\run_graph.ps1
 ```
 
 Summary artifact:
 
-- `examples/pathtracer_optimization_graph/results/graph_summary.json`
-- `examples/pathtracer_optimization_graph/results/graph.dot`
+- `experiments/pathtracer_optimization_graph/results/graph_summary.json`
+- `experiments/pathtracer_optimization_graph/results/graph.dot`
 
 Outcome:
 
@@ -78,13 +78,13 @@ cmake --build build\optimization-graph-vulkan --target ptbench --config Release
 Run:
 
 ```powershell
-.\examples\pathtracer_optimization_graph\run_graph.ps1 -Ptbench build\optimization-graph-vulkan\bin\ptbench.exe -OutDir examples\pathtracer_optimization_graph\results_vulkan
+.\experiments\pathtracer_optimization_graph\run_graph.ps1 -Ptbench build\optimization-graph-vulkan\bin\ptbench.exe -OutDir experiments\pathtracer_optimization_graph\results_vulkan
 ```
 
 Summary artifact:
 
-- `examples/pathtracer_optimization_graph/results_vulkan/graph_summary.json`
-- `examples/pathtracer_optimization_graph/results_vulkan/graph.dot`
+- `experiments/pathtracer_optimization_graph/results_vulkan/graph_summary.json`
+- `experiments/pathtracer_optimization_graph/results_vulkan/graph.dot`
 
 Outcome:
 
@@ -117,13 +117,13 @@ Outcome:
 Run:
 
 ```powershell
-.\examples\pathtracer_optimization_graph\run_graph.ps1 -Ptbench build\optimization-graph-vulkan\bin\ptbench.exe -OutDir examples\pathtracer_optimization_graph\results_vulkan_after
+.\experiments\pathtracer_optimization_graph\run_graph.ps1 -Ptbench build\optimization-graph-vulkan\bin\ptbench.exe -OutDir experiments\pathtracer_optimization_graph\results_vulkan_after
 ```
 
 Summary artifact:
 
-- `examples/pathtracer_optimization_graph/results_vulkan_after/graph_summary.json`
-- `examples/pathtracer_optimization_graph/results_vulkan_after/graph.dot`
+- `experiments/pathtracer_optimization_graph/results_vulkan_after/graph_summary.json`
+- `experiments/pathtracer_optimization_graph/results_vulkan_after/graph.dot`
 
 Outcome:
 
@@ -151,13 +151,13 @@ cmake --build build\optimization-graph-vulkan --target ptbench --config Release
 & 'C:\VulkanSDK\1.4.341.1\Bin\dxc.exe' -T cs_6_0 -E main src\shaders\gpu\pathtrace_cs.hlsl -Fo $env:TEMP\pathtrace_cs_main.dxil
 & 'C:\VulkanSDK\1.4.341.1\Bin\dxc.exe' -T cs_6_0 -E tonemap_main src\shaders\gpu\pathtrace_cs.hlsl -Fo $env:TEMP\pathtrace_cs_tonemap.dxil
 & 'C:\VulkanSDK\1.4.341.1\Bin\dxc.exe' -T lib_6_3 src\shaders\gpu\pathtrace_rt.hlsl -Fo $env:TEMP\pathtrace_rt.dxil
-.\examples\pathtracer_optimization_graph\run_graph.ps1 -Ptbench build\optimization-graph-vulkan\bin\ptbench.exe -OutDir examples\pathtracer_optimization_graph\results_vulkan_shader_after
+.\experiments\pathtracer_optimization_graph\run_graph.ps1 -Ptbench build\optimization-graph-vulkan\bin\ptbench.exe -OutDir experiments\pathtracer_optimization_graph\results_vulkan_shader_after
 ```
 
 Summary artifact:
 
-- `examples/pathtracer_optimization_graph/results_vulkan_shader_after/graph_summary.json`
-- `examples/pathtracer_optimization_graph/results_vulkan_shader_after/graph.dot`
+- `experiments/pathtracer_optimization_graph/results_vulkan_shader_after/graph_summary.json`
+- `experiments/pathtracer_optimization_graph/results_vulkan_shader_after/graph.dot`
 
 Outcome:
 
