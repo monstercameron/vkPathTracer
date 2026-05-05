@@ -6,7 +6,7 @@
 cbuffer PCBuf : register(b0) {
     float  camera_pos_x;  float camera_pos_y;  float camera_pos_z;  float fov_tan_half;
     float  cam_fwd_x;     float cam_fwd_y;     float cam_fwd_z;     float aspect;
-    float  cam_right_x;   float cam_right_y;   float cam_right_z;   float pad0;
+    float  cam_right_x;   float cam_right_y;   float cam_right_z;   uint  num_sdfs;
     float  cam_up_x;      float cam_up_y;      float cam_up_z;      uint  sample_index;
     uint   num_insts;     uint  num_mats;       uint  num_lights;    uint  width;
     uint   height;        uint  base_seed;      float env_r;         float env_g;
@@ -36,6 +36,8 @@ struct PathPayload {
 };
 
 static const uint kMatStride = 16u;
+static const uint kInstStride = 24u;
+static const uint kStaticInstanceId = 0x00FFFFFFu;
 float3 MatAlbedo(uint idx)   { uint b=idx*kMatStride; return float3(MatBuf[b], MatBuf[b+1u], MatBuf[b+2u]); }
 float3 MatEmissive(uint idx) { uint b=idx*kMatStride; return float3(MatBuf[b+3u], MatBuf[b+4u], MatBuf[b+5u]); }
 float  MatRoughness(uint idx){ return MatBuf[idx*kMatStride + 6u]; }
@@ -177,15 +179,27 @@ void Miss(inout PathPayload payload) {
 // ---- ClosestHit ------------------------------------------------------------
 [shader("closesthit")]
 void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttributes attr) {
+    uint instanceId = InstanceID();
     uint triIdx = PrimitiveIndex();
-    uint matIdx = TriMatBuf[triIdx];
+    uint matIdx = 0u;
+    if (instanceId == kStaticInstanceId) {
+        matIdx = TriMatBuf[triIdx];
+    } else {
+        uint ib = instanceId * kInstStride;
+        triIdx += InstBuf[ib + 0u];
+        matIdx = InstBuf[ib + 2u];
+    }
     uint i0 = IndexBuf[triIdx * 3u + 0u];
     uint i1 = IndexBuf[triIdx * 3u + 1u];
     uint i2 = IndexBuf[triIdx * 3u + 2u];
     float3 v0 = float3(VertBuf[i0 * 3u], VertBuf[i0 * 3u + 1u], VertBuf[i0 * 3u + 2u]);
     float3 v1 = float3(VertBuf[i1 * 3u], VertBuf[i1 * 3u + 1u], VertBuf[i1 * 3u + 2u]);
     float3 v2 = float3(VertBuf[i2 * 3u], VertBuf[i2 * 3u + 1u], VertBuf[i2 * 3u + 2u]);
-    float3 n = normalize(cross(v1 - v0, v2 - v0));
+    float3x4 o2w = ObjectToWorld3x4();
+    float3 w0 = float3(dot(o2w[0], float4(v0, 1.0)), dot(o2w[1], float4(v0, 1.0)), dot(o2w[2], float4(v0, 1.0)));
+    float3 w1 = float3(dot(o2w[0], float4(v1, 1.0)), dot(o2w[1], float4(v1, 1.0)), dot(o2w[2], float4(v1, 1.0)));
+    float3 w2 = float3(dot(o2w[0], float4(v2, 1.0)), dot(o2w[1], float4(v2, 1.0)), dot(o2w[2], float4(v2, 1.0)));
+    float3 n = normalize(cross(w1 - w0, w2 - w0));
     if (dot(n, WorldRayDirection()) > 0.0f) n = -n;
     float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
     float3 albedo   = MatSurfaceAlbedo(matIdx, hitPos, n, WorldRayDirection());
