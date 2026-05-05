@@ -215,7 +215,7 @@ try {
         if (-not ($out -match '"backend"')) { throw "dump-config output missing 'backend'" }
     }
 
-    # ---- 10. todos.md audit ------------------------------------------------
+    # ---- 10. docs/todos.md audit ------------------------------------------
     Step "todo-audit" {
         if (-not (Test-Path $TodoAudit)) { throw "todo audit tool not found: $TodoAudit" }
         $out = & $TodoAudit -Output $TodoAuditReport 2>&1

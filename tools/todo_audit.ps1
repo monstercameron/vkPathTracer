@@ -1,10 +1,10 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Audits todos.md checkbox state and writes an agent-readable report.
+    Audits docs/todos.md checkbox state and writes an agent-readable report.
 
 .PARAMETER TodosPath
-    Path to the todo document. Defaults to repo-root todos.md.
+    Path to the todo document. Defaults to docs/todos.md.
 
 .PARAMETER Output
     JSON report path. Defaults to artifacts/status/todo_audit.json.
@@ -24,7 +24,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($TodosPath)) {
-    $TodosPath = Join-Path $RepoRoot "todos.md"
+    $TodosPath = Join-Path (Join-Path $RepoRoot "docs") "todos.md"
 }
 if ([string]::IsNullOrWhiteSpace($Output)) {
     $Output = Join-Path (Join-Path (Join-Path $RepoRoot "artifacts") "status") "todo_audit.json"
