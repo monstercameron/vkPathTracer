@@ -127,6 +127,7 @@ struct RTHitLight {
   Vec3 position{};
   Vec3 color{1.0f, 1.0f, 1.0f};
   float intensity = 0.0f;
+  float radius = 0.0f;
 };
 
 struct RTSceneData {

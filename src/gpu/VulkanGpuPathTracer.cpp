@@ -128,7 +128,7 @@ bool VulkanGpuPathTracer::build_or_update_acceleration() {
     m_gpuLights.push_back(lt.position.z);
     m_gpuLights.push_back(lt.color.x);    m_gpuLights.push_back(lt.color.y);
     m_gpuLights.push_back(lt.color.z);
-    m_gpuLights.push_back(lt.intensity);  m_gpuLights.push_back(0.0f);
+    m_gpuLights.push_back(lt.intensity);  m_gpuLights.push_back(std::max(0.0f, lt.radius));
   }
   if (m_gpuLights.empty()) m_gpuLights.assign(8, 0.0f);
 
