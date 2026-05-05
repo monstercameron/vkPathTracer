@@ -24,6 +24,7 @@ struct PhysicsStepConfig {
   float fixed_dt = 1.0f / 60.0f;
   int collision_steps = 1;
   bool deterministic = false;
+  bool collision_detection_enabled = true;
 };
 
 struct PhysicsSyncSummary {

@@ -87,6 +87,66 @@ PhysicsSyncSummary BuildSyncSummary(const std::vector<PhysicsBodySync>& bodies, 
   return summary;
 }
 
+float FallbackAbsScale(float value) {
+  return std::max(std::abs(value), 0.001f);
+}
+
+float FallbackBodyRadius(const PhysicsBodySync& sync) {
+  const auto& scale = sync.transform.scale;
+  if (sync.body.shape == "sphere") {
+    return std::max({FallbackAbsScale(scale.x), FallbackAbsScale(scale.y), FallbackAbsScale(scale.z)});
+  }
+  return std::max({FallbackAbsScale(scale.x), FallbackAbsScale(scale.y), FallbackAbsScale(scale.z)}) * 0.5f;
+}
+
+float FallbackBodyHalfHeight(const PhysicsBodySync& sync) {
+  if (sync.body.shape == "sphere") {
+    return FallbackBodyRadius(sync);
+  }
+  return FallbackAbsScale(sync.transform.scale.y) * 0.5f;
+}
+
+bool FallbackNearlyEqual(float lhs, float rhs, float epsilon = 0.0001f) {
+  return std::abs(lhs - rhs) <= epsilon;
+}
+
+bool FallbackNearlyEqual(const vkpt::scene::Vec3& lhs,
+                         const vkpt::scene::Vec3& rhs,
+                         float epsilon = 0.0001f) {
+  return FallbackNearlyEqual(lhs.x, rhs.x, epsilon) &&
+         FallbackNearlyEqual(lhs.y, rhs.y, epsilon) &&
+         FallbackNearlyEqual(lhs.z, rhs.z, epsilon);
+}
+
+vkpt::scene::Vec3 FallbackAdd(const vkpt::scene::Vec3& lhs, const vkpt::scene::Vec3& rhs) {
+  return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
+}
+
+vkpt::scene::Vec3 FallbackSub(const vkpt::scene::Vec3& lhs, const vkpt::scene::Vec3& rhs) {
+  return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
+}
+
+vkpt::scene::Vec3 FallbackMul(const vkpt::scene::Vec3& value, float scalar) {
+  return {value.x * scalar, value.y * scalar, value.z * scalar};
+}
+
+float FallbackDot(const vkpt::scene::Vec3& lhs, const vkpt::scene::Vec3& rhs) {
+  return lhs.x * rhs.x + lhs.y * rhs.y + lhs.z * rhs.z;
+}
+
+float FallbackLength(const vkpt::scene::Vec3& value) {
+  return std::sqrt(std::max(0.0f, FallbackDot(value, value)));
+}
+
+vkpt::scene::Vec3 FallbackNormalize(const vkpt::scene::Vec3& value,
+                                    const vkpt::scene::Vec3& fallback = {0.0f, 1.0f, 0.0f}) {
+  const float len = FallbackLength(value);
+  if (len <= 0.000001f) {
+    return fallback;
+  }
+  return FallbackMul(value, 1.0f / len);
+}
+
 class NullPhysicsWorld final : public IPhysicsWorld {
  public:
   PhysicsEngineInfo engine_info() const override {
@@ -99,6 +159,46 @@ class NullPhysicsWorld final : public IPhysicsWorld {
 
   PhysicsSyncSummary sync_from_bodies(std::vector<PhysicsBodySync> bodies, std::size_t ecs_entities) override {
     m_summary = BuildSyncSummary(bodies, ecs_entities);
+    std::unordered_set<vkpt::core::StableEntityId> seen;
+    seen.reserve(bodies.size());
+
+    for (auto& sync : bodies) {
+      seen.insert(sync.entity);
+      if (!sync.body.enabled) {
+        m_bodies.erase(sync.entity);
+        continue;
+      }
+
+      auto existing = m_bodies.find(sync.entity);
+      if (existing == m_bodies.end()) {
+        BodyRecord record;
+        record.sync = std::move(sync);
+        record.last_published_transform = record.sync.transform;
+        const auto entity_id = record.sync.entity;
+        m_bodies.emplace(entity_id, std::move(record));
+        continue;
+      }
+
+      if (!FallbackNearlyEqual(existing->second.sync.transform.translation,
+                               sync.transform.translation,
+                               0.01f)) {
+        existing->second.velocity = {};
+        existing->second.asleep = false;
+      }
+      existing->second.sync = std::move(sync);
+    }
+
+    std::vector<vkpt::core::StableEntityId> stale;
+    for (const auto& [entity_id, _] : m_bodies) {
+      if (!seen.contains(entity_id)) {
+        stale.push_back(entity_id);
+      }
+    }
+    for (const auto entity_id : stale) {
+      m_bodies.erase(entity_id);
+    }
+
+    m_summary.backend_bodies = m_bodies.size();
     return m_summary;
   }
 
@@ -106,15 +206,194 @@ class NullPhysicsWorld final : public IPhysicsWorld {
     if (!std::isfinite(config.fixed_dt) || config.fixed_dt <= 0.0f || config.collision_steps <= 0) {
       return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::InvalidArgument);
     }
+    m_writes.clear();
+
+    std::vector<vkpt::core::StableEntityId> ids;
+    ids.reserve(m_bodies.size());
+    for (const auto& [entity_id, record] : m_bodies) {
+      if (record.sync.body.enabled) {
+        ids.push_back(entity_id);
+      }
+    }
+    std::sort(ids.begin(), ids.end());
+
+    const int substeps = std::max(1, config.collision_steps);
+    const float dt = config.fixed_dt / static_cast<float>(substeps);
+    for (int step = 0; step < substeps; ++step) {
+      integrate_dynamic_bodies(ids, dt);
+      if (config.collision_detection_enabled) {
+        solve_ground_contacts(ids);
+        solve_sphere_contacts(ids);
+      }
+    }
+
+    for (auto& [entity_id, record] : m_bodies) {
+      if (!record.sync.body.dynamic || !record.sync.body.enabled) {
+        continue;
+      }
+      if (FallbackNearlyEqual(record.last_published_transform.translation,
+                              record.sync.transform.translation,
+                              0.0005f) &&
+          FallbackNearlyEqual(record.last_published_transform.scale,
+                              record.sync.transform.scale,
+                              0.0005f)) {
+        continue;
+      }
+      record.sync.transform.dirty = true;
+      record.last_published_transform = record.sync.transform;
+      m_writes.push_back({entity_id, record.sync.transform});
+    }
     return vkpt::core::Result<void>::ok();
   }
 
   std::vector<PhysicsTransformWrite> extract_transform_writes() const override {
-    return {};
+    return m_writes;
   }
 
  private:
+  struct BodyRecord {
+    PhysicsBodySync sync;
+    vkpt::scene::Vec3 velocity{};
+    vkpt::scene::TransformComponent last_published_transform;
+    bool asleep = false;
+  };
+
+  float ground_plane_y() const {
+    bool found = false;
+    float ground_y = 0.0f;
+    for (const auto& [_, record] : m_bodies) {
+      const auto& body = record.sync.body;
+      if (!body.enabled || body.dynamic || body.trigger) {
+        continue;
+      }
+      if (record.sync.transform.translation.y >= ground_y || !found) {
+        ground_y = record.sync.transform.translation.y;
+        found = true;
+      }
+    }
+    return found ? ground_y : 0.0f;
+  }
+
+  void integrate_dynamic_bodies(const std::vector<vkpt::core::StableEntityId>& ids, float dt) {
+    for (const auto entity_id : ids) {
+      auto it = m_bodies.find(entity_id);
+      if (it == m_bodies.end()) {
+        continue;
+      }
+      auto& record = it->second;
+      const auto& body = record.sync.body;
+      if (!body.dynamic || body.trigger) {
+        continue;
+      }
+      if (record.asleep && body.allow_sleeping) {
+        continue;
+      }
+      record.velocity.y -= 9.81f * body.gravity_scale * dt;
+      record.sync.transform.translation =
+          FallbackAdd(record.sync.transform.translation, FallbackMul(record.velocity, dt));
+      record.sync.transform.dirty = true;
+    }
+  }
+
+  void solve_ground_contacts(const std::vector<vkpt::core::StableEntityId>& ids) {
+    const float ground_y = ground_plane_y();
+    for (const auto entity_id : ids) {
+      auto it = m_bodies.find(entity_id);
+      if (it == m_bodies.end()) {
+        continue;
+      }
+      auto& record = it->second;
+      const auto& body = record.sync.body;
+      if (!body.dynamic || body.trigger) {
+        continue;
+      }
+      const float half_height = FallbackBodyHalfHeight(record.sync);
+      const float min_center_y = ground_y + half_height;
+      if (record.sync.transform.translation.y >= min_center_y) {
+        record.asleep = false;
+        continue;
+      }
+
+      record.sync.transform.translation.y = min_center_y;
+      if (record.velocity.y < 0.0f) {
+        record.velocity.y = -record.velocity.y * std::max(0.0f, body.restitution);
+      }
+      const float ground_friction = std::max(0.0f, body.friction);
+      const float lateral_damp = std::max(0.0f, 1.0f - ground_friction * 0.18f);
+      record.velocity.x *= lateral_damp;
+      record.velocity.z *= lateral_damp;
+      if (std::abs(record.velocity.y) < 0.04f) {
+        record.velocity.y = 0.0f;
+      }
+      if (body.allow_sleeping && FallbackLength(record.velocity) < 0.05f) {
+        record.velocity = {};
+        record.asleep = true;
+      }
+      record.sync.transform.dirty = true;
+    }
+  }
+
+  void solve_sphere_contacts(const std::vector<vkpt::core::StableEntityId>& ids) {
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      auto lhs_it = m_bodies.find(ids[i]);
+      if (lhs_it == m_bodies.end()) {
+        continue;
+      }
+      auto& lhs = lhs_it->second;
+      if (!lhs.sync.body.dynamic || lhs.sync.body.trigger || lhs.sync.body.shape != "sphere") {
+        continue;
+      }
+      for (std::size_t j = i + 1; j < ids.size(); ++j) {
+        auto rhs_it = m_bodies.find(ids[j]);
+        if (rhs_it == m_bodies.end()) {
+          continue;
+        }
+        auto& rhs = rhs_it->second;
+        if (!rhs.sync.body.dynamic || rhs.sync.body.trigger || rhs.sync.body.shape != "sphere") {
+          continue;
+        }
+
+        const float lhs_radius = FallbackBodyRadius(lhs.sync);
+        const float rhs_radius = FallbackBodyRadius(rhs.sync);
+        const float min_dist = lhs_radius + rhs_radius;
+        const auto delta = FallbackSub(rhs.sync.transform.translation, lhs.sync.transform.translation);
+        const float dist = FallbackLength(delta);
+        if (dist >= min_dist || dist <= 0.000001f) {
+          continue;
+        }
+
+        const auto normal = FallbackNormalize(delta, {1.0f, 0.0f, 0.0f});
+        const float penetration = min_dist - dist;
+        const float lhs_inv_mass = 1.0f / std::max(0.001f, lhs.sync.body.mass);
+        const float rhs_inv_mass = 1.0f / std::max(0.001f, rhs.sync.body.mass);
+        const float inv_sum = std::max(0.001f, lhs_inv_mass + rhs_inv_mass);
+        lhs.sync.transform.translation =
+            FallbackAdd(lhs.sync.transform.translation,
+                        FallbackMul(normal, -penetration * (lhs_inv_mass / inv_sum)));
+        rhs.sync.transform.translation =
+            FallbackAdd(rhs.sync.transform.translation,
+                        FallbackMul(normal, penetration * (rhs_inv_mass / inv_sum)));
+
+        const auto relative_velocity = FallbackSub(rhs.velocity, lhs.velocity);
+        const float normal_speed = FallbackDot(relative_velocity, normal);
+        if (normal_speed < 0.0f) {
+          const float restitution = std::min(lhs.sync.body.restitution, rhs.sync.body.restitution);
+          const float impulse = -(1.0f + restitution) * normal_speed / inv_sum;
+          lhs.velocity = FallbackAdd(lhs.velocity, FallbackMul(normal, -impulse * lhs_inv_mass));
+          rhs.velocity = FallbackAdd(rhs.velocity, FallbackMul(normal, impulse * rhs_inv_mass));
+        }
+
+        lhs.asleep = false;
+        rhs.asleep = false;
+        lhs.sync.transform.dirty = true;
+        rhs.sync.transform.dirty = true;
+      }
+    }
+  }
+
   PhysicsSyncSummary m_summary;
+  std::unordered_map<vkpt::core::StableEntityId, BodyRecord> m_bodies;
+  std::vector<PhysicsTransformWrite> m_writes;
 };
 
 class ThreadedPhysicsWorld final : public IPhysicsWorld {
@@ -397,7 +676,7 @@ std::optional<JPH::ShapeRefC> CreateJoltShape(const BodyRuntimeKey& key) {
   const auto sz = PositiveScale(key.scale.z);
 
   if (key.shape == "sphere") {
-    JPH::SphereShapeSettings settings(std::max({sx, sy, sz}) * 0.5f);
+    JPH::SphereShapeSettings settings(std::max({sx, sy, sz}));
     const auto result = settings.Create();
     if (!result.HasError()) {
       return result.Get();
@@ -542,6 +821,10 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
     if (!std::isfinite(config.fixed_dt) || config.fixed_dt <= 0.0f || config.collision_steps <= 0) {
       return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::InvalidArgument);
     }
+    if (!config.collision_detection_enabled) {
+      step_without_collision_detection(config.fixed_dt);
+      return vkpt::core::Result<void>::ok();
+    }
     const auto error = m_system.Update(config.fixed_dt, config.collision_steps, m_temp_allocator.get(), m_job_system.get());
     if (error != JPH::EPhysicsUpdateError::None) {
       return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Internal);
@@ -578,7 +861,41 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
   struct BodyRecord {
     JPH::BodyID body_id;
     BodyRuntimeKey key;
+    vkpt::scene::Vec3 velocity{};
   };
+
+  void step_without_collision_detection(float dt) {
+    auto& body_interface = m_system.GetBodyInterface();
+    const auto& lock_interface = m_system.GetBodyLockInterface();
+    for (auto& [_, record] : m_bodies) {
+      if (!record.key.dynamic) {
+        continue;
+      }
+
+      JPH::RVec3 position;
+      JPH::Quat rotation;
+      {
+        JPH::BodyLockRead lock(lock_interface, record.body_id);
+        if (!lock.Succeeded()) {
+          continue;
+        }
+        const auto& body = lock.GetBody();
+        position = body.GetPosition();
+        rotation = body.GetRotation();
+      }
+
+      record.velocity.y -= 9.81f * record.key.gravity_scale * dt;
+      const JPH::RVec3 next_position(
+          position.GetX() + record.velocity.x * dt,
+          position.GetY() + record.velocity.y * dt,
+          position.GetZ() + record.velocity.z * dt);
+      body_interface.SetPositionAndRotation(
+          record.body_id,
+          next_position,
+          rotation,
+          JPH::EActivation::Activate);
+    }
+  }
 
   void destroy_body(vkpt::core::StableEntityId entity_id) {
     const auto it = m_bodies.find(entity_id);
@@ -623,7 +940,7 @@ PhysicsEngineInfo GetCompiledPhysicsEngineInfo() {
 #ifdef PT_ENABLE_JOLT
   return PhysicsEngineInfo{true, true, false, 0u, "Jolt Physics", PT_JOLT_GIT_TAG_STRING, "caller"};
 #else
-  return PhysicsEngineInfo{false, false, false, 0u, "none", "disabled", "caller"};
+  return PhysicsEngineInfo{true, false, false, 0u, "Basic Physics", "internal", "caller"};
 #endif
 }
 
