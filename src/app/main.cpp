@@ -11,6 +11,7 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -419,21 +420,6 @@ std::optional<std::uint64_t> ReadQtWindowDroppedFrames(Window* window) {
   } else {
     return std::nullopt;
   }
-}
-
-bool QueueQtWindowFramebuffer(vkpt::platform::QtWindow* window,
-                              std::shared_ptr<std::atomic<bool>> alive,
-                              std::vector<std::uint8_t> rgba,
-                              std::size_t width,
-                              std::size_t height) {
-  if (window == nullptr || !alive || rgba.empty() || width == 0u || height == 0u) {
-    return false;
-  }
-  if (!alive->load(std::memory_order_acquire)) {
-    return false;
-  }
-  window->set_framebuffer_rgba(rgba, width, height);
-  return true;
 }
 
 void DrainQtQueuedWork(int maxMilliseconds = 16) {
@@ -1660,6 +1646,22 @@ void QtDockAddDropdownGroupedProperty(QtDockPanelContent& panel,
   panel.properties.push_back(std::move(property));
 }
 
+void QtDockAddButtonGroupedProperty(QtDockPanelContent& panel,
+                                    std::string id,
+                                    std::string_view group,
+                                    std::string_view label,
+                                    std::string value) {
+  QtDockProperty property;
+  property.id = std::move(id);
+  property.group = std::string(group);
+  property.label = std::string(label);
+  property.value = std::move(value);
+  property.editor = "button";
+  property.editable = true;
+  property.enabled = true;
+  panel.properties.push_back(std::move(property));
+}
+
 void QtDockAddSliderGroupedProperty(QtDockPanelContent& panel,
                                     std::string id,
                                     std::string_view group,
@@ -1767,6 +1769,90 @@ std::vector<std::string> QtBoolOptions() {
   return {"false", "true"};
 }
 
+std::vector<std::string> QtToneMapOptions() {
+  return {"linear", "reinhard", "filmic_approx", "aces_approx"};
+}
+
+std::vector<std::string> QtOutputTransformOptions() {
+  return {"gamma", "linear"};
+}
+
+std::string QtToneMapName(vkpt::pathtracer::ToneMapMode mode) {
+  switch (mode) {
+    case vkpt::pathtracer::ToneMapMode::Reinhard:
+      return "reinhard";
+    case vkpt::pathtracer::ToneMapMode::FilmicApprox:
+      return "filmic_approx";
+    case vkpt::pathtracer::ToneMapMode::AcesApprox:
+      return "aces_approx";
+    case vkpt::pathtracer::ToneMapMode::Linear:
+    default:
+      return "linear";
+  }
+}
+
+std::string QtOutputTransformName(vkpt::pathtracer::OutputTransformMode mode) {
+  switch (mode) {
+    case vkpt::pathtracer::OutputTransformMode::Linear:
+      return "linear";
+    case vkpt::pathtracer::OutputTransformMode::Gamma:
+    default:
+      return "gamma";
+  }
+}
+
+bool QtParseToneMapMode(std::string_view text, vkpt::pathtracer::ToneMapMode& out) {
+  const auto begin = std::find_if_not(text.begin(), text.end(), [](unsigned char c) {
+    return std::isspace(c) != 0;
+  });
+  const auto end = std::find_if_not(text.rbegin(), text.rend(), [](unsigned char c) {
+    return std::isspace(c) != 0;
+  }).base();
+  std::string value = begin < end ? std::string(begin, end) : std::string{};
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (value == "linear") {
+    out = vkpt::pathtracer::ToneMapMode::Linear;
+    return true;
+  }
+  if (value == "reinhard") {
+    out = vkpt::pathtracer::ToneMapMode::Reinhard;
+    return true;
+  }
+  if (value == "filmic" || value == "filmic_approx") {
+    out = vkpt::pathtracer::ToneMapMode::FilmicApprox;
+    return true;
+  }
+  if (value == "aces" || value == "aces_approx") {
+    out = vkpt::pathtracer::ToneMapMode::AcesApprox;
+    return true;
+  }
+  return false;
+}
+
+bool QtParseOutputTransformMode(std::string_view text, vkpt::pathtracer::OutputTransformMode& out) {
+  const auto begin = std::find_if_not(text.begin(), text.end(), [](unsigned char c) {
+    return std::isspace(c) != 0;
+  });
+  const auto end = std::find_if_not(text.rbegin(), text.rend(), [](unsigned char c) {
+    return std::isspace(c) != 0;
+  }).base();
+  std::string value = begin < end ? std::string(begin, end) : std::string{};
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (value == "linear") {
+    out = vkpt::pathtracer::OutputTransformMode::Linear;
+    return true;
+  }
+  if (value == "gamma" || value == "srgb" || value == "display") {
+    out = vkpt::pathtracer::OutputTransformMode::Gamma;
+    return true;
+  }
+  return false;
+}
+
 vkpt::scene::PhysicsBodyComponent QtDefaultDynamicPhysicsBody() {
   vkpt::scene::PhysicsBodyComponent body;
   body.enabled = true;
@@ -1818,6 +1904,47 @@ void QtDockAddQuatSliders(QtDockPanelContent& panel,
                                  value.z, -1.0, 1.0, 0.01, defaults.z);
   QtDockAddSliderGroupedProperty(panel, base + ".w", group, labelBase + " w",
                                  value.w, -1.0, 1.0, 0.01, defaults.w);
+}
+
+void QtDockAddCameraControls(QtDockPanelContent& panel,
+                             std::string_view prefix,
+                             const vkpt::scene::CameraComponent& camera,
+                             std::string_view group = "Camera") {
+  const std::string base(prefix);
+  QtDockAddSliderGroupedProperty(panel, base + "fov", group, "fov",
+                                 camera.fov, 1.0, 179.0, 0.1, 60.0, "deg");
+  QtDockAddSliderGroupedProperty(panel, base + "near_plane", group, "near",
+                                 camera.near_plane, 0.001, 10.0, 0.001, 0.1);
+  QtDockAddSliderGroupedProperty(panel, base + "far_plane", group, "far",
+                                 camera.far_plane, 1.0, 10000.0, 1.0, 1000.0);
+  QtDockAddSliderGroupedProperty(panel, base + "focal_length_mm", group, "focal length",
+                                 camera.focal_length_mm, 8.0, 300.0, 0.1, 35.0, "mm");
+  QtDockAddSliderGroupedProperty(panel, base + "sensor_width_mm", group, "sensor width",
+                                 camera.sensor_width_mm, 4.0, 70.0, 0.1, 36.0, "mm");
+  QtDockAddSliderGroupedProperty(panel, base + "sensor_height_mm", group, "sensor height",
+                                 camera.sensor_height_mm, 4.0, 70.0, 0.1, 24.0, "mm");
+  QtDockAddSliderGroupedProperty(panel, base + "aperture_radius", group, "aperture radius",
+                                 camera.aperture_radius, 0.0, 1.0, 0.001, 0.0);
+  QtDockAddSliderGroupedProperty(panel, base + "focus_distance", group, "focus distance",
+                                 camera.focus_distance, 0.0, 100.0, 0.01, 0.0);
+  QtDockAddSliderGroupedProperty(panel, base + "f_stop", group, "f-stop",
+                                 camera.f_stop, 0.0, 32.0, 0.1, 0.0);
+  QtDockAddSliderGroupedProperty(panel, base + "shutter_seconds", group, "shutter",
+                                 camera.shutter_seconds, 0.000125, 1.0, 0.000125, 0.0166666675, "s");
+  QtDockAddSliderGroupedProperty(panel, base + "iso", group, "iso",
+                                 camera.iso, 25.0, 12800.0, 1.0, 100.0);
+  QtDockAddSliderGroupedProperty(panel, base + "exposure_compensation", group, "exposure compensation",
+                                 camera.exposure_compensation, -8.0, 8.0, 0.1, 0.0, "EV");
+  QtDockAddSliderGroupedProperty(panel, base + "white_balance_kelvin", group, "white balance",
+                                 camera.white_balance_kelvin, 1000.0, 40000.0, 50.0, 6500.0, "K");
+  QtDockAddSliderGroupedProperty(panel, base + "iris_blade_count", group, "iris blades",
+                                 static_cast<double>(camera.iris_blade_count), 0.0, 16.0, 1.0, 0.0);
+  QtDockAddSliderGroupedProperty(panel, base + "iris_rotation_degrees", group, "iris rotation",
+                                 camera.iris_rotation_degrees, -180.0, 180.0, 1.0, 0.0, "deg");
+  QtDockAddSliderGroupedProperty(panel, base + "iris_roundness", group, "iris roundness",
+                                 camera.iris_roundness, 0.0, 1.0, 0.01, 1.0);
+  QtDockAddSliderGroupedProperty(panel, base + "anamorphic_squeeze", group, "anamorphic squeeze",
+                                 camera.anamorphic_squeeze, 0.25, 4.0, 0.01, 1.0);
 }
 
 void QtDockAddRow(QtDockPanelContent& panel, std::string row) {
@@ -2521,34 +2648,7 @@ QtDockPanelContent BuildQtInspectorDock(const vkpt::scene::SceneDocument& docume
   }
   if (entity->has_camera) {
     QtDockAddRow(panel, "Camera");
-    QtDockAddSliderGroupedProperty(panel,
-                                   entityPrefix + "camera.fov",
-                                   "Camera",
-                                   "fov",
-                                   entity->camera.fov,
-                                   1.0,
-                                   179.0,
-                                   0.1,
-                                   60.0,
-                                   "deg");
-    QtDockAddSliderGroupedProperty(panel,
-                                   entityPrefix + "camera.near_plane",
-                                   "Camera",
-                                   "near",
-                                   entity->camera.near_plane,
-                                   0.001,
-                                   10.0,
-                                   0.001,
-                                   0.1);
-    QtDockAddSliderGroupedProperty(panel,
-                                   entityPrefix + "camera.far_plane",
-                                   "Camera",
-                                   "far",
-                                   entity->camera.far_plane,
-                                   1.0,
-                                   10000.0,
-                                   1.0,
-                                   1000.0);
+    QtDockAddCameraControls(panel, entityPrefix + "camera.", entity->camera);
   }
   QtDockAddRow(panel, "Physics");
   QtDockAddDropdownGroupedProperty(panel,
@@ -2701,7 +2801,9 @@ QtDockPanelContent BuildQtCameraDock(const vkpt::scene::SceneDocument& document,
                                      const vkpt::pathtracer::RTSceneData& scene,
                                      const vkpt::editor::UiRuntimeState& runtime,
                                      const vkpt::editor::UiLayoutDocument& layout,
-                                     const QtDockFrameStats& frame_stats) {
+                                     const QtDockFrameStats& frame_stats,
+                                     int active_shot_slot,
+                                     const std::array<bool, 4>& saved_shot_slots) {
   auto panel = MakeQtDockPanel(layout, "camera", "Camera", true, 360.0f, 320.0f);
   QtDockAddProperty(panel, "active camera", runtime.active_camera.empty() ? "runtime camera" : runtime.active_camera);
   QtDockAddProperty(panel, "mode", frame_stats.camera_mode.empty() ? "authored" : frame_stats.camera_mode);
@@ -2709,6 +2811,52 @@ QtDockPanelContent BuildQtCameraDock(const vkpt::scene::SceneDocument& document,
   QtDockAddProperty(panel, "target", QtDockVec3(scene.camera_target));
   QtDockAddProperty(panel, "up", QtDockVec3(scene.camera_up));
   QtDockAddProperty(panel, "fov", QtDockNumber(scene.camera_fov_deg, 2));
+  QtDockAddGroupedProperty(panel, "Runtime Lens", "focal length", QtDockNumber(scene.camera_focal_length_mm, 1) + " mm");
+  QtDockAddGroupedProperty(panel, "Runtime Lens", "sensor", QtDockNumber(scene.camera_sensor_width_mm, 1) +
+                           " x " + QtDockNumber(scene.camera_sensor_height_mm, 1) + " mm");
+  QtDockAddGroupedProperty(panel, "Runtime Lens", "aperture radius", QtDockNumber(scene.camera_aperture_radius, 3));
+  QtDockAddGroupedProperty(panel, "Runtime Lens", "focus distance", QtDockNumber(scene.camera_focus_distance, 3));
+  QtDockAddButtonGroupedProperty(panel,
+                                 "camera.focus.pick",
+                                 "Focus Tools",
+                                 "auto focus",
+                                 "Focus Under Cursor");
+  QtDockAddButtonGroupedProperty(panel,
+                                 "camera.focus.selected",
+                                 "Focus Tools",
+                                 "selected focus",
+                                 "Focus Selected");
+  QtDockAddGroupedProperty(panel, "Runtime Film", "exposure compensation",
+                           QtDockNumber(scene.camera_exposure_compensation, 2) + " EV");
+  QtDockAddGroupedProperty(panel, "Runtime Film", "physical exposure",
+                           scene.camera_f_stop > 0.0f ? "active" : "off");
+  QtDockAddGroupedProperty(panel, "Runtime Film", "white balance",
+                           QtDockNumber(scene.camera_white_balance_kelvin, 0) + " K");
+  const int clampedShotSlot = std::clamp(active_shot_slot, 0, 3);
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "camera.shot.slot",
+                                   "Camera Shots",
+                                   "active slot",
+                                   std::to_string(clampedShotSlot + 1),
+                                   {"1", "2", "3", "4"});
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "camera.shot.save",
+                                   "Camera Shots",
+                                   "save",
+                                   "false",
+                                   QtBoolOptions());
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "camera.shot.recall",
+                                   "Camera Shots",
+                                   "recall",
+                                   "false",
+                                   QtBoolOptions());
+  for (std::size_t i = 0; i < saved_shot_slots.size(); ++i) {
+    QtDockAddGroupedProperty(panel,
+                             "Camera Shots",
+                             "slot " + std::to_string(i + 1u),
+                             saved_shot_slots[i] ? "saved" : "empty");
+  }
   QtDockAddProperty(panel, "viewport tool", vkpt::editor::ToString(runtime.active_viewport_tool));
   for (const auto& entity : document.entities) {
     if (entity.has_camera) {
@@ -2718,12 +2866,17 @@ QtDockPanelContent BuildQtCameraDock(const vkpt::scene::SceneDocument& document,
           << " near=" << QtDockNumber(entity.camera.near_plane, 3)
           << " far=" << QtDockNumber(entity.camera.far_plane, 1);
       QtDockAddRow(panel, row.str());
+      QtDockAddCameraControls(panel,
+                              "entity." + std::to_string(entity.id) + ".camera.",
+                              entity.camera,
+                              "Camera #" + std::to_string(entity.id));
     }
   }
   return panel;
 }
 
 QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::RTSceneData& scene,
+                                             const vkpt::pathtracer::RenderSettings& settings,
                                              const vkpt::editor::UiRuntimeState& runtime,
                                              const vkpt::editor::UiLayoutDocument& layout,
                                              const QtDockFrameStats& frame_stats) {
@@ -2745,7 +2898,64 @@ QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::RTSceneData
   QtDockAddProperty(panel, "instances", std::to_string(scene.instances.size()));
   QtDockAddProperty(panel, "sdf primitives", std::to_string(scene.sdf_primitives.size()));
   QtDockAddProperty(panel, "textures", std::to_string(scene.textures.size()));
-  QtDockAddRow(panel, "Reset accumulation is triggered by camera and future scene edits");
+  QtDockAddSliderGroupedProperty(panel,
+                                 "render.max_depth",
+                                 "Integrator",
+                                 "max depth",
+                                 settings.max_depth,
+                                 1.0,
+                                 64.0,
+                                 1.0,
+                                 6.0);
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.nee",
+                                   "Integrator",
+                                   "next event estimation",
+                                   QtDockBool(settings.enable_nee),
+                                   QtBoolOptions());
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.mis",
+                                   "Integrator",
+                                   "MIS",
+                                   QtDockBool(settings.enable_mis),
+                                   QtBoolOptions());
+  QtDockAddSliderGroupedProperty(panel,
+                                 "render.film.exposure",
+                                 "Color",
+                                 "exposure",
+                                 settings.film_resolve.exposure,
+                                 0.0,
+                                 8.0,
+                                 0.01,
+                                 1.0);
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.film.tone_map",
+                                   "Color",
+                                   "tone mapper",
+                                   QtToneMapName(settings.film_resolve.tone_map),
+                                   QtToneMapOptions());
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.film.output_transform",
+                                   "Color",
+                                   "output transform",
+                                   QtOutputTransformName(settings.film_resolve.output_transform),
+                                   QtOutputTransformOptions());
+  QtDockAddSliderGroupedProperty(panel,
+                                 "render.film.gamma",
+                                 "Color",
+                                 "gamma",
+                                 settings.film_resolve.gamma,
+                                 0.1,
+                                 4.0,
+                                 0.01,
+                                 2.2);
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.film.clamp_output",
+                                   "Color",
+                                   "clamp output",
+                                   QtDockBool(settings.film_resolve.clamp_output),
+                                   QtBoolOptions());
+  QtDockAddRow(panel, "Reset accumulation is triggered by camera, film, integrator, and future scene edits");
   return panel;
 }
 
@@ -3002,20 +3212,29 @@ QtDockPanelContent BuildQtPhysicsDock(const vkpt::scene::SceneDocument& document
 std::vector<QtDockPanelContent> BuildQtDockPanels(
     const vkpt::scene::SceneDocument& document,
     const vkpt::pathtracer::RTSceneData& scene,
+    const vkpt::pathtracer::RenderSettings& settings,
     const vkpt::editor::UiRuntimeState& runtime,
     const vkpt::editor::SelectionState& selection,
     const vkpt::editor::UiLayoutDocument& layout,
     const vkpt::editor::BenchmarkPanelModel& benchmark,
     const QtDockFrameStats& frame_stats,
-    const QtDockDeviceStats& device_stats) {
+    const QtDockDeviceStats& device_stats,
+    int active_camera_shot_slot,
+    const std::array<bool, 4>& saved_camera_shot_slots) {
   std::vector<QtDockPanelContent> panels;
   panels.reserve(15u);
   panels.push_back(BuildQtSceneTreeDock(document, selection, layout));
   panels.push_back(BuildQtInspectorDock(document, selection, runtime, layout));
   panels.push_back(BuildQtMaterialsDock(document, scene, layout));
   panels.push_back(BuildQtLightsDock(document, scene, layout));
-  panels.push_back(BuildQtCameraDock(document, scene, runtime, layout, frame_stats));
-  panels.push_back(BuildQtRenderSettingsDock(scene, runtime, layout, frame_stats));
+  panels.push_back(BuildQtCameraDock(document,
+                                     scene,
+                                     runtime,
+                                     layout,
+                                     frame_stats,
+                                     active_camera_shot_slot,
+                                     saved_camera_shot_slots));
+  panels.push_back(BuildQtRenderSettingsDock(scene, settings, runtime, layout, frame_stats));
   panels.push_back(BuildQtBenchmarkDock(benchmark, layout));
   panels.push_back(BuildQtDiagnosticsDock(runtime, selection, layout, frame_stats));
   panels.push_back(BuildQtPerformanceDock(runtime, layout, frame_stats));
@@ -5539,9 +5758,112 @@ bool RunUiModelSmokeTests() {
                                 shortcut.key_code == key_code &&
                                 shortcut.ctrl == ctrl &&
                                 shortcut.shift == shift &&
-                                shortcut.alt == alt;
+                               shortcut.alt == alt;
                        });
   };
+
+  vkpt::scene::SceneDocument cameraDoc;
+  cameraDoc.metadata.schema = "1.0";
+  vkpt::scene::SceneEntityDefinition cameraEntity;
+  cameraEntity.id = 77;
+  cameraEntity.name = "Camera";
+  cameraEntity.has_camera = true;
+  cameraEntity.camera.fov = 47.0f;
+  cameraEntity.camera.aperture_radius = 0.08f;
+  cameraEntity.camera.focus_distance = 4.25f;
+  cameraEntity.camera.f_stop = 2.8f;
+  cameraEntity.camera.shutter_seconds = 1.0f / 125.0f;
+  cameraEntity.camera.iso = 400.0f;
+  cameraEntity.camera.exposure_compensation = 1.0f;
+  cameraEntity.camera.white_balance_kelvin = 5200.0f;
+  cameraEntity.camera.iris_blade_count = 7u;
+  cameraEntity.camera.iris_rotation_degrees = 15.0f;
+  cameraEntity.camera.iris_roundness = 0.35f;
+  cameraEntity.camera.anamorphic_squeeze = 1.6f;
+  cameraDoc.entities.push_back(cameraEntity);
+  const auto cameraRoundTrip = vkpt::scene::SceneDocument::load_from_text(cameraDoc.to_json(false));
+  check_true("camera json roundtrip parses", cameraRoundTrip.has_value());
+  if (cameraRoundTrip && !cameraRoundTrip.value().entities.empty()) {
+    const auto& camera = cameraRoundTrip.value().entities.front().camera;
+    check_true("camera json roundtrip iris", camera.iris_blade_count == 7u);
+    check_true("camera json roundtrip anamorphic", std::abs(camera.anamorphic_squeeze - 1.6f) < 0.001f);
+    check_true("camera json roundtrip exposure", std::abs(camera.exposure_compensation - 1.0f) < 0.001f);
+  }
+
+  vkpt::pathtracer::RTSceneData physicalScene;
+  physicalScene.camera_f_stop = 2.8f;
+  physicalScene.camera_shutter_seconds = 1.0f / 30.0f;
+  physicalScene.camera_iso = 200.0f;
+  physicalScene.camera_exposure_compensation = 1.0f;
+  physicalScene.camera_white_balance_kelvin = 5200.0f;
+  vkpt::pathtracer::FilmResolveSettings resolveSettings;
+  resolveSettings.exposure = 1.0f;
+  resolveSettings.tone_map = vkpt::pathtracer::ToneMapMode::Reinhard;
+  resolveSettings.output_transform = vkpt::pathtracer::OutputTransformMode::Linear;
+  const auto adjustedResolve =
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(resolveSettings, physicalScene);
+  check_true("physical camera exposure affects resolve", adjustedResolve.exposure > 1.0f);
+  check_true("camera white balance affects resolve",
+             std::abs(adjustedResolve.white_balance_kelvin - 5200.0f) < 0.001f);
+  vkpt::pathtracer::FilmHdr hdr;
+  hdr.width = 1u;
+  hdr.height = 1u;
+  hdr.rgbf = {0.5f, 0.5f, 0.5f};
+  const auto ldrLinear = vkpt::pathtracer::ApplyFilmResolve(hdr, adjustedResolve);
+  resolveSettings.output_transform = vkpt::pathtracer::OutputTransformMode::Gamma;
+  const auto ldrGamma = vkpt::pathtracer::ApplyFilmResolve(hdr, resolveSettings);
+  check_true("output transform changes film resolve",
+             !ldrLinear.rgba8.empty() && !ldrGamma.rgba8.empty() &&
+             ldrLinear.rgba8[0] != ldrGamma.rgba8[0]);
+  const auto layoutManifest = vkpt::pathtracer::BuildRTSceneDataLayoutManifest();
+  check_true("camera gpu layout manifest builds", layoutManifest.has_value());
+  if (layoutManifest) {
+    auto has_layout_field = [&](std::string_view field_name) {
+      const auto& fields = layoutManifest.value().fields;
+      return std::any_of(fields.begin(), fields.end(), [field_name](const auto& field) {
+        return field.field == field_name;
+      });
+    };
+    check_true("camera gpu layout has aperture", has_layout_field("camera_aperture_radius"));
+    check_true("camera gpu layout has iris", has_layout_field("camera_iris_blade_count"));
+    check_true("camera gpu layout has anamorphic", has_layout_field("camera_anamorphic_squeeze"));
+  }
+#ifdef PT_ENABLE_QT
+  const auto cameraDockScene = vkpt::pathtracer::BuildSceneDataFromDocument(cameraDoc);
+  check_true("camera dock scene builds", cameraDockScene.has_value());
+  if (cameraDockScene) {
+    const auto cameraDockPanels = BuildQtDockPanels(cameraDoc,
+                                                   cameraDockScene.value(),
+                                                   vkpt::pathtracer::RenderSettings{},
+                                                   UiRuntimeState{},
+                                                   SelectionState{},
+                                                   CreateDefaultLayout(),
+                                                   BenchmarkPanelModel{},
+                                                   QtDockFrameStats{},
+                                                   QtDockDeviceStats{},
+                                                   0,
+                                                   std::array<bool, 4>{});
+    const auto cameraPanel = std::find_if(cameraDockPanels.begin(),
+                                          cameraDockPanels.end(),
+                                          [](const QtDockPanelContent& panel) {
+                                            return panel.id == "camera";
+                                          });
+    check_true("camera dock has focus buttons",
+               cameraPanel != cameraDockPanels.end() &&
+               std::any_of(cameraPanel->properties.begin(),
+                           cameraPanel->properties.end(),
+                           [](const QtDockProperty& property) {
+                             return property.id == "camera.focus.pick" &&
+                                    property.editor == "button";
+                           }) &&
+               std::any_of(cameraPanel->properties.begin(),
+                           cameraPanel->properties.end(),
+                           [](const QtDockProperty& property) {
+                             return property.id == "camera.focus.selected" &&
+                                    property.editor == "button";
+                           }));
+  }
+#endif
 
   const auto menu = BuildDefaultMenuBar();
   const std::initializer_list<std::string_view> requiredTopLevels = {
@@ -6659,6 +6981,10 @@ int main(int argc, char** argv) {
         return 1;
       }
 
+      std::function<void(std::string_view)> qtStartupStep = [&](std::string_view phase) {
+        BootStep(phase);
+      };
+
 #ifdef PT_ENABLE_QT
       auto* qtWindow = dynamic_cast<vkpt::platform::QtWindow*>(window);
       std::unordered_map<NativeMenuId, std::string> qtMenuCommandLookup;
@@ -6669,9 +6995,34 @@ int main(int argc, char** argv) {
         const auto uiMenu = vkpt::editor::BuildDefaultMenuBar(ui_selection_state);
         qtWindow->set_menu_bar(BuildQtMenuBarFromModel(uiMenu, qtMenuCommandLookup));
       };
+      qtStartupStep = [&](std::string_view phase) {
+        BootStep(phase);
+        if (qtWindow == nullptr) {
+          return;
+        }
+        std::ostringstream overlay;
+        overlay << "vkPathTracer\n"
+                << "Starting: " << phase << "\n"
+                << "Scene: " << (config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value) << "\n"
+                << "Backend: " << config.backend.value << "\n"
+                << "Logs: artifacts/logs/ptapp.log";
+        qtWindow->set_overlay_text(overlay.str());
+        qtWindow->set_startup_splash_text(phase);
+        vkpt::platform::QtStatusBarText status;
+        status.message = "Starting: " + std::string(phase);
+        status.fields.push_back(vkpt::platform::QtStatusBarField{
+            "startup.backend", "Backend: " + config.backend.value, 0});
+        status.fields.push_back(vkpt::platform::QtStatusBarField{
+            "startup.scene",
+            config.scene_path.value.empty() ? std::string("Scene: builtin") : "Scene: " + config.scene_path.value,
+            0});
+        qtWindow->set_status_bar_text(status);
+        DrainQtQueuedWork(4);
+      };
       if (qtWindow) {
         qtWindow->resize(std::max<uint32_t>(1u, windowWidth),
                          std::max<uint32_t>(1u, windowHeight));
+        qtStartupStep("preparing Qt shell");
         rebuildQtMenuBar();
         logger.log(vkpt::log::Severity::Info,
                    "app",
@@ -6690,13 +7041,13 @@ int main(int argc, char** argv) {
       if (windowFrameLimit != 0u) {
         std::cout << "[ui] gui smoke frame limit: " << windowFrameLimit << "\n";
       }
-      BootStep("qt window opened");
+      qtStartupStep("qt window opened");
 
       // ---- Path tracer setup ----
       std::unique_ptr<vkpt::pathtracer::IPathTracer> qtTracer;
 #ifdef PT_ENABLE_D3D12
       if (config.backend.value == "d3d12" || config.backend.value == "d3d12-dxr") {
-  BootStep("initializing d3d12 tracer");
+        qtStartupStep("initializing d3d12 tracer");
         const bool requestDxr = (config.backend.value == "d3d12-dxr");
         const std::string hlslPath =
 #ifdef PT_SHADER_HLSL_PATH
@@ -6720,7 +7071,7 @@ int main(int argc, char** argv) {
       }
 #endif
       if (!qtTracer) {
-  BootStep("falling back to cpu tiled tracer");
+        qtStartupStep("falling back to cpu tiled tracer");
         vkpt::cpu::TiledRenderConfig tiledConfig{};
         tiledConfig.worker_count = 0;
         qtTracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
@@ -6730,7 +7081,7 @@ int main(int argc, char** argv) {
       // ---- Scene loading ----
       vkpt::pathtracer::RTSceneData qtScene;
       vkpt::scene::SceneDocument qtSceneDocument;
-      BootStep("loading scene snapshot");
+      qtStartupStep("loading scene snapshot");
       {
         bool sceneOk = false;
         if (!config.scene_path.value.empty()) {
@@ -6767,7 +7118,7 @@ int main(int argc, char** argv) {
           qtScene.environment_color = {0.35f, 0.4f, 0.5f};
         }
       }
-      BootStep("scene loaded");
+      qtStartupStep("scene loaded");
 
       // ---- Tracer configure ----
       vkpt::pathtracer::RenderSettings qtSettings{};
@@ -6779,20 +7130,23 @@ int main(int argc, char** argv) {
       qtSettings.enable_nee = true;
       qtSettings.enable_mis = true;
 
+      qtStartupStep("configuring renderer and acceleration");
       bool qtTracerReady = (qtTracer->configure(qtSettings) &&
                             qtTracer->load_scene_snapshot(qtScene) &&
                             qtTracer->build_or_update_acceleration() &&
                             qtTracer->reset_accumulation());
       if (!qtTracerReady) {
         std::cerr << "qt window: tracer init failed\n";
-        BootStep("tracer init failed");
+        qtStartupStep("tracer init failed");
+#ifdef PT_ENABLE_QT
+        if (qtWindow != nullptr) {
+          qtWindow->finish_startup_splash();
+        }
+#endif
       } else {
-        BootStep("tracer initialized");
+        qtStartupStep("tracer initialized");
       }
 
-      // Latest geometry snapshot for background reload fallbacks.
-      std::mutex qtSceneBaseMutex;
-      vkpt::pathtracer::RTSceneData qtSceneBase = qtScene;
 #ifdef PT_ENABLE_QT
       std::vector<ViewportPickable> qtPickables =
           BuildViewportPickables(qtSceneDocument, qtScene);
@@ -6838,8 +7192,8 @@ int main(int argc, char** argv) {
                 << " static=" << qtPhysicsSummary.static_bodies
                 << " worker=" << (qtPhysicsInfo.runs_on_worker_thread ? "yes" : "no") << "\n";
 
-      // ---- Background render thread (TiledCpuPathTracer blocks; run off main thread) ----
-      // Camera updates are a small command channel; display frames use QtWindow's queued handoff.
+      // ---- Background render coordinator (TiledCpuPathTracer blocks; run off main thread) ----
+      // Qt posts coalesced commands and consumes latest-wins display frames.
       const uint32_t qtPreviewPublishHz = std::max<uint32_t>(1u, config.ui_present_hz.value);
       constexpr uint32_t kQtPreviewImmediatePublishes = 4u;
       std::atomic<uint32_t> qtPublishedSample{0u};
@@ -6884,7 +7238,7 @@ int main(int argc, char** argv) {
       }
 #endif
       if (qtTracerReady && qtUseBg) {
-        BootStep("starting background cpu render coordinator");
+        qtStartupStep("starting background cpu render coordinator");
         vkpt::render::RenderCoordinatorConfig coordinatorConfig{};
         coordinatorConfig.publish_hz = qtPreviewPublishHz;
         coordinatorConfig.immediate_publish_count = kQtPreviewImmediatePublishes;
@@ -6895,7 +7249,7 @@ int main(int argc, char** argv) {
             coordinatorConfig);
         if (!qtRenderCoordinator->start()) {
           qtTracerReady = false;
-          BootStep("background cpu render coordinator start failed");
+          qtStartupStep("background cpu render coordinator start failed");
         }
       }
 
@@ -6945,7 +7299,7 @@ int main(int argc, char** argv) {
       }
 
       // ---- Main Qt event loop with rendering ----
-      BootStep("entering qt render loop");
+      qtStartupStep("entering qt render loop");
       uint32_t qtFrameCount = 0u;
       bool qtUserCameraActive = false;
       constexpr auto kQtInteractiveFrameTarget = std::chrono::milliseconds(16);
@@ -7015,6 +7369,16 @@ int main(int argc, char** argv) {
             std::max(1u, qtPublishedHeight.load(std::memory_order_relaxed)));
         return renderWidth / renderHeight;
       };
+      vkpt::pathtracer::Vec3 qtCameraFocusPoint = qtCameraPose.target;
+      float qtCameraFocusDistance =
+          std::max(0.25f, PtLength(PtSub(qtCameraPose.target, qtCameraPose.position)));
+      struct QtSavedCameraShot {
+        bool valid = false;
+        ViewportCameraPose pose{};
+        float focus_distance = 1.0f;
+      };
+      std::array<QtSavedCameraShot, 4> qtSavedCameraShots{};
+      int qtActiveCameraShotSlot = 0;
       struct QtViewportImageRect {
         float x = 0.0f;
         float y = 0.0f;
@@ -7085,6 +7449,46 @@ int main(int argc, char** argv) {
             qtRenderAspect(),
             ui_runtime_state.active_gizmo_mode,
             qtHoveredGizmoHit);
+        if (qtCameraFocusDistance > 0.0f &&
+            (qtScene.camera_focus_distance > 0.0f || qtScene.camera_aperture_radius > 0.0f)) {
+          vkpt::platform::QtSelectionOverlayBox focusBox{};
+          focusBox.label = "focus";
+          focusBox.primary = false;
+          const auto forward = PtNormalize(PtSub(qtCameraPose.target, qtCameraPose.position));
+          const auto right = PtNormalize(PtCross(forward, qtCameraPose.up), {1.0f, 0.0f, 0.0f});
+          const auto up = PtNormalize(PtCross(right, forward), {0.0f, 1.0f, 0.0f});
+          const float half = std::max(0.05f, qtCameraFocusDistance * 0.08f);
+          constexpr OverlayColor kFocus{80u, 220u, 255u, 170u};
+          AddWorldOverlayLine(focusBox,
+                              qtCameraPose,
+                              frameRect.width,
+                              frameRect.height,
+                              qtRenderAspect(),
+                              PtSub(qtCameraFocusPoint, PtMul(right, half)),
+                              PtAdd(qtCameraFocusPoint, PtMul(right, half)),
+                              kFocus,
+                              1.5f);
+          AddWorldOverlayLine(focusBox,
+                              qtCameraPose,
+                              frameRect.width,
+                              frameRect.height,
+                              qtRenderAspect(),
+                              PtSub(qtCameraFocusPoint, PtMul(up, half)),
+                              PtAdd(qtCameraFocusPoint, PtMul(up, half)),
+                              kFocus,
+                              1.5f);
+          AddWorldOverlayPoint(focusBox,
+                               qtCameraPose,
+                               frameRect.width,
+                               frameRect.height,
+                               qtRenderAspect(),
+                               qtCameraFocusPoint,
+                               kFocus,
+                               3.0f);
+          if (!focusBox.lines.empty() || !focusBox.points.empty()) {
+            boxes.push_back(std::move(focusBox));
+          }
+        }
         qtWindow->set_selection_overlay_boxes(qtOffsetOverlayBoxes(std::move(boxes), frameRect));
       };
       syncQtFpsAnglesFromPose();
@@ -7096,6 +7500,8 @@ int main(int argc, char** argv) {
       float qtClickX = 0.0f;
       float qtClickY = 0.0f;
       float qtClickDragPixels = 0.0f;
+      float qtLastMouseX = 0.0f;
+      float qtLastMouseY = 0.0f;
       bool qtDockPanelsDirty = true;
       struct QtGizmoDragEntityStart {
         vkpt::core::StableId entity_id = 0;
@@ -7254,10 +7660,6 @@ int main(int argc, char** argv) {
         qtScene.camera_fov_deg = qtCameraPose.fov_deg;
         qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
         RebuildSelectionBounds(ui_selection_state, qtPickables);
-        {
-          std::lock_guard<std::mutex> lock(qtSceneBaseMutex);
-          qtSceneBase = qtScene;
-        }
         qtPublishedSample.store(0u, std::memory_order_relaxed);
         if (qtUseBg && qtRenderCoordinator) {
           qtRenderCoordinator->post_scene(qtScene);
@@ -7275,11 +7677,94 @@ int main(int argc, char** argv) {
         updateQtSelectionOverlay();
         return qtTracerReady;
       };
+      auto qtReloadRenderSettings = [&](std::string_view reason) {
+        qtPublishedSample.store(0u, std::memory_order_relaxed);
+        qtPublishedRays.store(0u, std::memory_order_relaxed);
+        qtPublishedWidth.store(qtSettings.width, std::memory_order_relaxed);
+        qtPublishedHeight.store(qtSettings.height, std::memory_order_relaxed);
+        if (qtUseBg && qtRenderCoordinator) {
+          qtRenderCoordinator->post_settings(qtSettings, qtScene);
+        } else if (!qtUseBg && qtTracerReady) {
+          qtTracerReady = qtTracer->configure(qtSettings) &&
+                          qtTracer->load_scene_snapshot(qtScene) &&
+                          qtTracer->build_or_update_acceleration() &&
+                          qtTracer->reset_accumulation();
+          qtSampleIndex = 0u;
+        }
+        qtDockPanelsDirty = true;
+        qtPreviewStatus = qtTracerReady ? std::string(reason) : "render settings reload failed";
+        return qtTracerReady;
+      };
+      auto qtSetAuthoredCameraFocusDistance = [&](float distance, std::string_view reason) {
+        const float focusDistance = ClampFloat(distance, 0.0f, 100000.0f);
+        bool wroteAuthoredCamera = false;
+        for (auto& entity : qtSceneDocument.entities) {
+          if (entity.has_camera) {
+            entity.camera.focus_distance = focusDistance;
+            wroteAuthoredCamera = true;
+            break;
+          }
+        }
+        for (auto& camera : qtSceneDocument.cameras) {
+          camera.camera.focus_distance = focusDistance;
+          wroteAuthoredCamera = true;
+          break;
+        }
+        qtCameraFocusDistance = std::max(0.25f, focusDistance);
+        qtCameraFocusPoint = PtAdd(qtCameraPose.position, PtMul(qtCameraForward(), qtCameraFocusDistance));
+        if (wroteAuthoredCamera) {
+          return qtReloadEditedScene(reason);
+        }
+
+        qtScene.camera_focus_distance = focusDistance;
+        qtPublishedSample.store(0u, std::memory_order_relaxed);
+        qtPublishedRays.store(0u, std::memory_order_relaxed);
+        if (qtUseBg && qtRenderCoordinator) {
+          qtRenderCoordinator->post_scene(qtScene);
+        } else if (!qtUseBg && qtTracerReady) {
+          qtTracerReady = qtTracer->load_scene_snapshot(qtScene) &&
+                          qtTracer->build_or_update_acceleration() &&
+                          qtTracer->reset_accumulation();
+          qtSampleIndex = 0u;
+        }
+        qtDockPanelsDirty = true;
+        updateQtSelectionOverlay();
+        return qtTracerReady;
+      };
+      auto qtSaveCameraShot = [&](int slot) {
+        const int clampedSlot = std::clamp(slot, 0, 3);
+        qtSavedCameraShots[static_cast<std::size_t>(clampedSlot)] =
+            QtSavedCameraShot{true, qtCameraPose, qtCameraFocusDistance};
+        qtActiveCameraShotSlot = clampedSlot;
+        qtDockPanelsDirty = true;
+        ui_runtime_state.status_message = "camera shot saved";
+      };
+      auto qtRecallCameraShot = [&](int slot) {
+        const int clampedSlot = std::clamp(slot, 0, 3);
+        const auto& shot = qtSavedCameraShots[static_cast<std::size_t>(clampedSlot)];
+        if (!shot.valid) {
+          ui_runtime_state.status_message = "camera shot empty";
+          qtDockPanelsDirty = true;
+          return false;
+        }
+        qtActiveCameraShotSlot = clampedSlot;
+        qtCameraPose = shot.pose;
+        qtCameraFocusDistance = std::max(0.25f, shot.focus_distance);
+        qtCameraFocusPoint = PtAdd(qtCameraPose.position, PtMul(qtCameraForward(), qtCameraFocusDistance));
+        syncQtFpsAnglesFromPose();
+        applyQtCameraPose("shot recall");
+        qtSetAuthoredCameraFocusDistance(qtCameraFocusDistance, "shot recall");
+        qtDockPanelsDirty = true;
+        return true;
+      };
+      std::function<bool(vkpt::core::FrameIndex)> qtDockAutoFocus;
+      std::function<bool(vkpt::core::FrameIndex)> qtDockFocusSelected;
       auto qtApplyDockPropertyEdit = [&](const vkpt::platform::QtDockPropertyEdit& edit,
                                          vkpt::core::FrameIndex frameIndex) {
         const auto parts = QtSplitPropertyPath(edit.property_id);
         bool changed = false;
         bool renderAffecting = false;
+        bool settingsAffecting = false;
 
         auto failEdit = [&](std::string message) {
           ui_runtime_state.status_message = "property edit rejected: " + std::move(message);
@@ -7296,7 +7781,97 @@ int main(int argc, char** argv) {
           return false;
         };
 
-        if (parts.size() >= 3u && parts[0] == "entity") {
+        if (parts.size() >= 2u && parts[0] == "camera") {
+          if (parts.size() == 3u && parts[1] == "shot" && parts[2] == "slot") {
+            float value = 0.0f;
+            if (!QtParseFloat(edit.value, value)) {
+              return failEdit("expected numeric camera shot slot");
+            }
+            qtActiveCameraShotSlot = static_cast<int>(ClampFloat(std::round(value), 1.0f, 4.0f)) - 1;
+          } else if (parts.size() == 3u && parts[1] == "shot" && parts[2] == "save") {
+            bool value = false;
+            if (!QtParseBool(edit.value, value)) {
+              return failEdit("expected true or false");
+            }
+            if (value) {
+              qtSaveCameraShot(qtActiveCameraShotSlot);
+            }
+          } else if (parts.size() == 3u && parts[1] == "shot" && parts[2] == "recall") {
+            bool value = false;
+            if (!QtParseBool(edit.value, value)) {
+              return failEdit("expected true or false");
+            }
+            if (value && !qtRecallCameraShot(qtActiveCameraShotSlot)) {
+              return failEdit("camera shot slot is empty");
+            }
+          } else if (parts.size() == 3u && parts[1] == "focus" && parts[2] == "pick") {
+            if (!qtDockAutoFocus || !qtDockAutoFocus(frameIndex)) {
+              return failEdit("auto focus missed");
+            }
+          } else if (parts.size() == 3u && parts[1] == "focus" && parts[2] == "selected") {
+            if (!qtDockFocusSelected || !qtDockFocusSelected(frameIndex)) {
+              return failEdit("no active selection to focus");
+            }
+          } else {
+            return failEdit("unknown camera command property");
+          }
+          changed = true;
+        } else if (parts.size() >= 2u && parts[0] == "render") {
+          if (parts.size() == 2u && parts[1] == "max_depth") {
+            float value = 0.0f;
+            if (!QtParseFloat(edit.value, value)) {
+              return failEdit("expected numeric max depth");
+            }
+            qtSettings.max_depth =
+                static_cast<uint32_t>(ClampFloat(std::round(value), 1.0f, 256.0f));
+          } else if (parts.size() == 2u && parts[1] == "nee") {
+            bool value = false;
+            if (!QtParseBool(edit.value, value)) {
+              return failEdit("expected true or false");
+            }
+            qtSettings.enable_nee = value;
+          } else if (parts.size() == 2u && parts[1] == "mis") {
+            bool value = false;
+            if (!QtParseBool(edit.value, value)) {
+              return failEdit("expected true or false");
+            }
+            qtSettings.enable_mis = value;
+          } else if (parts.size() == 3u && parts[1] == "film" && parts[2] == "exposure") {
+            float value = 0.0f;
+            if (!QtParseFloat(edit.value, value)) {
+              return failEdit("expected numeric exposure");
+            }
+            qtSettings.film_resolve.exposure = ClampFloat(value, 0.0f, 64.0f);
+          } else if (parts.size() == 3u && parts[1] == "film" && parts[2] == "tone_map") {
+            vkpt::pathtracer::ToneMapMode mode{};
+            if (!QtParseToneMapMode(edit.value, mode)) {
+              return failEdit("unknown tone mapper");
+            }
+            qtSettings.film_resolve.tone_map = mode;
+          } else if (parts.size() == 3u && parts[1] == "film" && parts[2] == "output_transform") {
+            vkpt::pathtracer::OutputTransformMode mode{};
+            if (!QtParseOutputTransformMode(edit.value, mode)) {
+              return failEdit("unknown output transform");
+            }
+            qtSettings.film_resolve.output_transform = mode;
+          } else if (parts.size() == 3u && parts[1] == "film" && parts[2] == "gamma") {
+            float value = 0.0f;
+            if (!QtParseFloat(edit.value, value)) {
+              return failEdit("expected numeric gamma");
+            }
+            qtSettings.film_resolve.gamma = ClampFloat(value, 0.01f, 8.0f);
+          } else if (parts.size() == 3u && parts[1] == "film" && parts[2] == "clamp_output") {
+            bool value = false;
+            if (!QtParseBool(edit.value, value)) {
+              return failEdit("expected true or false");
+            }
+            qtSettings.film_resolve.clamp_output = value;
+          } else {
+            return failEdit("unknown render settings property");
+          }
+          changed = true;
+          settingsAffecting = true;
+        } else if (parts.size() >= 3u && parts[0] == "entity") {
           vkpt::core::StableId entityId = 0u;
           if (!QtParseStableId(parts[1], entityId)) {
             return failEdit("invalid entity id");
@@ -7410,7 +7985,7 @@ int main(int argc, char** argv) {
               entity->transform.scale = value;
               changed = true;
               renderAffecting = true;
-            } else {
+            } else if (!qtUseBg) {
               return failEdit("unknown transform field");
             }
             entity->transform.dirty = true;
@@ -7542,15 +8117,45 @@ int main(int argc, char** argv) {
             if (!QtParseFloat(edit.value, value)) {
               return failEdit("expected numeric camera value");
             }
-            if (parts[3] == "fov") {
+            const auto& field = parts[3];
+            if (field == "fov") {
               entity->camera.fov = ClampFloat(value, 1.0f, 179.0f);
-            } else if (parts[3] == "near_plane") {
+            } else if (field == "near_plane") {
               entity->camera.near_plane = std::max(0.001f, value);
               if (entity->camera.far_plane <= entity->camera.near_plane) {
                 entity->camera.far_plane = entity->camera.near_plane + 1.0f;
               }
-            } else if (parts[3] == "far_plane") {
+            } else if (field == "far_plane") {
               entity->camera.far_plane = std::max(value, entity->camera.near_plane + 0.001f);
+            } else if (field == "focal_length_mm") {
+              entity->camera.focal_length_mm = ClampFloat(value, 1.0f, 1000.0f);
+            } else if (field == "sensor_width_mm") {
+              entity->camera.sensor_width_mm = ClampFloat(value, 1.0f, 200.0f);
+            } else if (field == "sensor_height_mm") {
+              entity->camera.sensor_height_mm = ClampFloat(value, 1.0f, 200.0f);
+            } else if (field == "aperture_radius") {
+              entity->camera.aperture_radius = ClampFloat(value, 0.0f, 100.0f);
+            } else if (field == "focus_distance") {
+              entity->camera.focus_distance = ClampFloat(value, 0.0f, 100000.0f);
+            } else if (field == "f_stop") {
+              entity->camera.f_stop = ClampFloat(value, 0.0f, 256.0f);
+            } else if (field == "shutter_seconds") {
+              entity->camera.shutter_seconds = ClampFloat(value, 0.000001f, 60.0f);
+            } else if (field == "iso") {
+              entity->camera.iso = ClampFloat(value, 1.0f, 1048576.0f);
+            } else if (field == "exposure_compensation") {
+              entity->camera.exposure_compensation = ClampFloat(value, -32.0f, 32.0f);
+            } else if (field == "white_balance_kelvin") {
+              entity->camera.white_balance_kelvin = ClampFloat(value, 1000.0f, 40000.0f);
+            } else if (field == "iris_blade_count") {
+              entity->camera.iris_blade_count =
+                  static_cast<std::uint32_t>(ClampFloat(std::round(value), 0.0f, 64.0f));
+            } else if (field == "iris_rotation_degrees") {
+              entity->camera.iris_rotation_degrees = ClampFloat(value, -360.0f, 360.0f);
+            } else if (field == "iris_roundness") {
+              entity->camera.iris_roundness = ClampFloat(value, 0.0f, 1.0f);
+            } else if (field == "anamorphic_squeeze") {
+              entity->camera.anamorphic_squeeze = ClampFloat(value, 0.01f, 100.0f);
             } else {
               return failEdit("unknown camera property");
             }
@@ -7861,7 +8466,9 @@ int main(int argc, char** argv) {
         }
 
         bool reloadOk = true;
-        if (renderAffecting) {
+        if (settingsAffecting) {
+          reloadOk = qtReloadRenderSettings("render settings edited");
+        } else if (renderAffecting) {
           reloadOk = qtReloadEditedScene("property edit");
         }
         qtDockPanelsDirty = true;
@@ -7904,8 +8511,6 @@ int main(int argc, char** argv) {
         return std::max(1.0f, PtLength(extent) * 0.25f);
       };
       const float qtCameraMoveUnitsPerSecond = qtSceneScale();
-      vkpt::pathtracer::Vec3 qtCameraFocusPoint = qtCameraPose.target;
-      float qtCameraFocusDistance = std::max(0.25f, PtLength(PtSub(qtCameraPose.target, qtCameraPose.position)));
       auto qtRefreshCameraFocusFromPose = [&]() {
         const auto forward = qtCameraForward();
         const float targetDistance = PtLength(PtSub(qtCameraPose.target, qtCameraPose.position));
@@ -8271,6 +8876,99 @@ int main(int argc, char** argv) {
           {"selection_count", std::to_string(ui_selection_state.selected_entity_ids.size())}
         });
       };
+      auto qtFocusSelected = [&](vkpt::core::FrameIndex frameIndex, std::string_view source) {
+        const auto bounds = qtActiveSelectionBounds();
+        if (!bounds) {
+          ui_runtime_state.status_message = "focus selected: no active selection";
+          qtDockPanelsDirty = true;
+          return false;
+        }
+        const auto center = PtMul(PtAdd(ToPtVec3(bounds->min), ToPtVec3(bounds->max)), 0.5f);
+        const auto extent = PtSub(ToPtVec3(bounds->max), ToPtVec3(bounds->min));
+        const float radius = std::max(0.05f, PtLength(extent) * 0.5f);
+        const auto forward = qtCameraForward();
+        const float tanHalfFov = std::tan(0.5f * DegToRad(std::max(1.0f, qtCameraPose.fov_deg)));
+        const float distance = std::max(0.25f, (radius / std::max(0.05f, tanHalfFov)) * 1.35f);
+        qtCameraFocusPoint = center;
+        qtCameraFocusDistance = distance;
+        qtCameraPose.target = center;
+        qtCameraPose.position = PtSub(center, PtMul(forward, distance));
+        syncQtFpsAnglesFromPose();
+        applyQtCameraPose("focus selected");
+        qtSetAuthoredCameraFocusDistance(distance, "focus selected");
+        PushUiEvent(ui_event_log,
+                    "viewport_focus_selected",
+                    "viewport",
+                    std::string(source),
+                    frameIndex,
+                    {},
+                    std::to_string(ui_selection_state.active_primary_entity),
+                    "focused selected entity");
+        return true;
+      };
+      auto qtPickFocusAt = [&](float x,
+                               float y,
+                               vkpt::core::FrameIndex frameIndex,
+                               std::string_view source,
+                               bool reportMiss) {
+        const auto frameRect = qtViewportImageRect();
+        const auto localPoint = qtViewportLocalPoint(x, y);
+        const auto picked = localPoint
+            ? PickViewportObject(qtPickables,
+                                 qtCameraPose,
+                                 localPoint->first,
+                                 localPoint->second,
+                                 frameRect.width,
+                                 frameRect.height,
+                                 qtRenderAspect())
+            : std::optional<ViewportPickResult>{};
+        if (!picked || picked->distance <= 0.0f) {
+          if (reportMiss) {
+            ui_runtime_state.status_message = "pick focus missed";
+            qtDockPanelsDirty = true;
+          }
+          return false;
+        }
+        const auto ray = BuildViewportRay(qtCameraPose,
+                                          localPoint->first,
+                                          localPoint->second,
+                                          frameRect.width,
+                                          frameRect.height,
+                                          qtRenderAspect());
+        qtCameraFocusDistance = std::max(0.25f, picked->distance);
+        qtCameraFocusPoint = PtAdd(ray.origin, PtMul(ray.direction, qtCameraFocusDistance));
+        qtSetAuthoredCameraFocusDistance(qtCameraFocusDistance, "pick focus");
+        PushUiEvent(ui_event_log,
+                    "viewport_pick_focus",
+                    "viewport",
+                    std::string(source),
+                    frameIndex,
+                    {},
+                    std::to_string(picked->entity_id),
+                    "picked camera focus");
+        return true;
+      };
+      qtDockFocusSelected = [&](vkpt::core::FrameIndex frameIndex) {
+        return qtFocusSelected(frameIndex, "dock");
+      };
+      qtDockAutoFocus = [&](vkpt::core::FrameIndex frameIndex) {
+        if (qtViewportLocalPoint(qtLastMouseX, qtLastMouseY) &&
+            qtPickFocusAt(qtLastMouseX, qtLastMouseY, frameIndex, "dock", false)) {
+          return true;
+        }
+        const auto frameRect = qtViewportImageRect();
+        const float centerX = frameRect.x + frameRect.width * 0.5f;
+        const float centerY = frameRect.y + frameRect.height * 0.5f;
+        if (qtPickFocusAt(centerX, centerY, frameIndex, "dock", false)) {
+          return true;
+        }
+        if (qtFocusSelected(frameIndex, "dock")) {
+          return true;
+        }
+        ui_runtime_state.status_message = "auto focus missed";
+        qtDockPanelsDirty = true;
+        return false;
+      };
       auto qtLogMenuCommand = [&](const std::string& actionId,
                                   const vkpt::editor::EditorCommand& menuCommand,
                                   const std::string& statusText,
@@ -8450,12 +9148,19 @@ int main(int argc, char** argv) {
         ApplyQtStatusBarToWindow(qtWindow, BuildQtStatusBarText(statusBar));
         qtLastDockPanels = BuildQtDockPanels(qtSceneDocument,
                                              qtScene,
+                                             qtSettings,
                                              ui_runtime_state,
                                              ui_selection_state,
                                              ui_layout_state,
                                              benchmarkPanel,
                                              frameStats,
-                                             qtDeviceStats);
+                                             qtDeviceStats,
+                                             qtActiveCameraShotSlot,
+                                             std::array<bool, 4>{
+                                                 qtSavedCameraShots[0].valid,
+                                                 qtSavedCameraShots[1].valid,
+                                                 qtSavedCameraShots[2].valid,
+                                                 qtSavedCameraShots[3].valid});
         ApplyQtDockPanelsToWindow(qtWindow, qtLastDockPanels);
         qtLastDockPanelSync = now;
         qtDockPanelsDirty = false;
@@ -8890,6 +9595,16 @@ int main(int argc, char** argv) {
                 break;
               }
 
+              if (actionId == "view.focus_selected") {
+                const bool focused = qtFocusSelected(qtFrameCount, "menu");
+                qtLogMenuCommand(actionId,
+                                 menuAction,
+                                 focused ? "menu action executed: view.focus_selected"
+                                         : "menu action failed: no active selection",
+                                 qtFrameCount);
+                break;
+              }
+
               if (menuAction.kind == vkpt::editor::EditorCommandKind::kClearSelection) {
                 ui_selection_state = vkpt::editor::ApplySelectionCommand(ui_selection_state, menuAction);
                 RebuildSelectionBounds(ui_selection_state, qtPickables);
@@ -8932,6 +9647,10 @@ int main(int argc, char** argv) {
                 qtKeysDown.insert(rawKey);
               }
               if (key == 'F' || rawKey == 'F') {
+                qtFocusSelected(qtFrameCount, "keyboard");
+              } else if (key == 'P' || rawKey == 'P') {
+                qtPickFocusAt(qtLastMouseX, qtLastMouseY, qtFrameCount, "keyboard", true);
+              } else if (key == 'V' || rawKey == 'V') {
                 qtFpsMode = !qtFpsMode;
                 qtUserCameraActive = true;
                 ui_runtime_state.active_viewport_tool = qtFpsMode
@@ -8991,6 +9710,8 @@ int main(int argc, char** argv) {
               break;
             }
             case vkpt::platform::InputEventType::MouseButtonDown:
+              qtLastMouseX = event.x;
+              qtLastMouseY = event.y;
               if (event.code == 0) {
                 qtUserCameraActive = true;
                 qtLeftMouseDown = true;
@@ -9065,6 +9786,8 @@ int main(int argc, char** argv) {
               }
               break;
             case vkpt::platform::InputEventType::MouseMove: {
+              qtLastMouseX = event.x;
+              qtLastMouseY = event.y;
               if (qtLeftMouseDown && qtGizmoDrag.active) {
                 qtApplyGizmoDrag(event.x, event.y, qtFrameCount);
                 qtClickDragPixels = std::max(qtClickDragPixels,
@@ -9564,7 +10287,7 @@ int main(int argc, char** argv) {
     const float previewScale = std::min(1.0f, 960.0f / static_cast<float>(windowPreviewWidth));
     previewSettings.width = std::max<uint32_t>(1u, static_cast<uint32_t>(static_cast<float>(windowPreviewWidth) * previewScale));
     previewSettings.height = std::max<uint32_t>(1u, static_cast<uint32_t>(static_cast<float>(windowPreviewHeight) * previewScale));
-    // Smoke runs only need a bounded event loop; skip render dispatch below.
+    // Smoke runs use a bounded sample cap so coordinator shutdown is exercised.
     previewSettings.spp = (windowFrameLimit != 0u)
         ? 1u
         : std::numeric_limits<uint32_t>::max();
@@ -9586,7 +10309,7 @@ int main(int argc, char** argv) {
     const auto previewTraceBudgetPerFrame = std::chrono::milliseconds(16);
     uint32_t previewChunkCounter = 0u;
 
-    // Background tiled CPU preview is owned by RenderCoordinator. The main
+    // Background tiled CPU preview is owned by RenderCoordinator.  The main
     // thread posts commands and consumes immutable frames; it never mutates the
     // active tiled tracer after the coordinator starts.
     std::unique_ptr<vkpt::render::RenderCoordinator> bgRenderCoordinator;

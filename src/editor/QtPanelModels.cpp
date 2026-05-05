@@ -173,6 +173,51 @@ void AddTransformProperties(std::vector<QtPanelProperty>& properties,
                                 "Transform", QtPanelPropertyKind::Toggle, false));
 }
 
+void AddCameraComponentProperties(std::vector<QtPanelProperty>& properties,
+                                  const vkpt::scene::CameraComponent& camera,
+                                  bool editable) {
+  properties.push_back(Property("camera.fov", "FOV", FloatText(camera.fov), "Camera",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.near", "Near", FloatText(camera.near_plane), "Camera",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.far", "Far", FloatText(camera.far_plane), "Camera",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.focal_length_mm", "Focal Length", FloatText(camera.focal_length_mm), "Lens",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.sensor_width_mm", "Sensor Width", FloatText(camera.sensor_width_mm), "Lens",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.sensor_height_mm", "Sensor Height", FloatText(camera.sensor_height_mm), "Lens",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.aperture_radius", "Aperture Radius", FloatText(camera.aperture_radius), "Lens",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.focus_distance", "Focus Distance", FloatText(camera.focus_distance), "Lens",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.f_stop", "F-stop", FloatText(camera.f_stop), "Lens",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.shutter_seconds", "Shutter", FloatText(camera.shutter_seconds), "Exposure",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.iso", "ISO", FloatText(camera.iso), "Exposure",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.exposure_compensation", "Exposure Compensation",
+                                FloatText(camera.exposure_compensation), "Exposure",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.white_balance_kelvin", "White Balance",
+                                FloatText(camera.white_balance_kelvin), "Color",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.iris_blade_count", "Iris Blades",
+                                std::to_string(camera.iris_blade_count), "Iris",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.iris_rotation_degrees", "Iris Rotation",
+                                FloatText(camera.iris_rotation_degrees), "Iris",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.iris_roundness", "Iris Roundness",
+                                FloatText(camera.iris_roundness), "Iris",
+                                QtPanelPropertyKind::Number, editable));
+  properties.push_back(Property("camera.anamorphic_squeeze", "Anamorphic Squeeze",
+                                FloatText(camera.anamorphic_squeeze), "Lens",
+                                QtPanelPropertyKind::Number, editable));
+}
+
 void AddEntityProperties(QtPanelRow& row, const vkpt::scene::SceneEntityDefinition& entity) {
   row.properties.push_back(Property("entity.id", "Stable ID", IdText(entity.id), "Entity", QtPanelPropertyKind::Entity));
   row.properties.push_back(Property("entity.name", "Name", EntityName(entity), "Entity", QtPanelPropertyKind::Text, true));
@@ -204,12 +249,7 @@ void AddEntityProperties(QtPanelRow& row, const vkpt::scene::SceneEntityDefiniti
                                       QtPanelPropertyKind::Number, true));
   }
   if (entity.has_camera) {
-    row.properties.push_back(Property("camera.fov", "FOV", FloatText(entity.camera.fov), "Camera",
-                                      QtPanelPropertyKind::Number, true));
-    row.properties.push_back(Property("camera.near", "Near", FloatText(entity.camera.near_plane), "Camera",
-                                      QtPanelPropertyKind::Number, true));
-    row.properties.push_back(Property("camera.far", "Far", FloatText(entity.camera.far_plane), "Camera",
-                                      QtPanelPropertyKind::Number, true));
+    AddCameraComponentProperties(row.properties, entity.camera, true);
   }
   if (!entity.script.script.empty()) {
     row.properties.push_back(Property("script.path", "Script", entity.script.script, "Script",
@@ -278,6 +318,8 @@ std::string_view ToString(QtPanelPropertyKind kind) {
       return "asset";
     case QtPanelPropertyKind::Entity:
       return "entity";
+    case QtPanelPropertyKind::Enum:
+      return "enum";
     case QtPanelPropertyKind::Command:
       return "command";
   }
@@ -583,12 +625,7 @@ QtPanelModel BuildCameraPanelModel(const QtPanelBuildContext& context) {
       auto row = Row("camera." + IdText(camera.id), "Camera " + IdText(camera.id),
                      "fov " + FloatText(camera.camera.fov), "camera");
       row.selected = IsSelected(context, camera.id);
-      row.properties.push_back(Property("camera.fov", "FOV", FloatText(camera.camera.fov), "Camera",
-                                        QtPanelPropertyKind::Number, true));
-      row.properties.push_back(Property("camera.near", "Near", FloatText(camera.camera.near_plane), "Camera",
-                                        QtPanelPropertyKind::Number, true));
-      row.properties.push_back(Property("camera.far", "Far", FloatText(camera.camera.far_plane), "Camera",
-                                        QtPanelPropertyKind::Number, true));
+      AddCameraComponentProperties(row.properties, camera.camera, true);
       model.rows.push_back(std::move(row));
     }
     for (const auto& entity : context.document->entities) {
@@ -599,12 +636,7 @@ QtPanelModel BuildCameraPanelModel(const QtPanelBuildContext& context) {
                      "fov " + FloatText(entity.camera.fov), "camera");
       row.selected = IsSelected(context, entity.id);
       row.properties.push_back(Property("entity.id", "Entity", IdText(entity.id), "Entity", QtPanelPropertyKind::Entity));
-      row.properties.push_back(Property("camera.fov", "FOV", FloatText(entity.camera.fov), "Camera",
-                                        QtPanelPropertyKind::Number, true));
-      row.properties.push_back(Property("camera.near", "Near", FloatText(entity.camera.near_plane), "Camera",
-                                        QtPanelPropertyKind::Number, true));
-      row.properties.push_back(Property("camera.far", "Far", FloatText(entity.camera.far_plane), "Camera",
-                                        QtPanelPropertyKind::Number, true));
+      AddCameraComponentProperties(row.properties, entity.camera, true);
       model.rows.push_back(std::move(row));
     }
   }
@@ -621,6 +653,18 @@ QtPanelModel BuildCameraPanelModel(const QtPanelBuildContext& context) {
                                       QtPanelPropertyKind::Number));
     row.properties.push_back(Property("camera.far", "Far", FloatText(camera.far_plane), "Camera",
                                       QtPanelPropertyKind::Number));
+    row.properties.push_back(Property("camera.focal_length_mm", "Focal Length", FloatText(camera.focal_length_mm), "Lens",
+                                      QtPanelPropertyKind::Number));
+    row.properties.push_back(Property("camera.aperture_radius", "Aperture Radius", FloatText(camera.aperture_radius), "Lens",
+                                      QtPanelPropertyKind::Number));
+    row.properties.push_back(Property("camera.focus_distance", "Focus Distance", FloatText(camera.focus_distance), "Lens",
+                                      QtPanelPropertyKind::Number));
+    row.properties.push_back(Property("camera.exposure_compensation", "Exposure Compensation",
+                                      FloatText(camera.exposure_compensation), "Exposure",
+                                      QtPanelPropertyKind::Number));
+    row.properties.push_back(Property("camera.white_balance_kelvin", "White Balance",
+                                      FloatText(camera.white_balance_kelvin), "Color",
+                                      QtPanelPropertyKind::Number));
     model.rows.push_back(std::move(row));
   }
   if (context.rt_scene != nullptr) {
@@ -633,6 +677,21 @@ QtPanelModel BuildCameraPanelModel(const QtPanelBuildContext& context) {
                                       "Transform", QtPanelPropertyKind::Vector3, true));
     row.properties.push_back(Property("camera.fov", "FOV", FloatText(context.rt_scene->camera_fov_deg), "Camera",
                                       QtPanelPropertyKind::Number, true));
+    row.properties.push_back(Property("camera.focal_length_mm", "Focal Length",
+                                      FloatText(context.rt_scene->camera_focal_length_mm), "Lens",
+                                      QtPanelPropertyKind::Number));
+    row.properties.push_back(Property("camera.aperture_radius", "Aperture Radius",
+                                      FloatText(context.rt_scene->camera_aperture_radius), "Lens",
+                                      QtPanelPropertyKind::Number));
+    row.properties.push_back(Property("camera.focus_distance", "Focus Distance",
+                                      FloatText(context.rt_scene->camera_focus_distance), "Lens",
+                                      QtPanelPropertyKind::Number));
+    row.properties.push_back(Property("camera.exposure_compensation", "Exposure Compensation",
+                                      FloatText(context.rt_scene->camera_exposure_compensation), "Exposure",
+                                      QtPanelPropertyKind::Number));
+    row.properties.push_back(Property("camera.white_balance_kelvin", "White Balance",
+                                      FloatText(context.rt_scene->camera_white_balance_kelvin), "Color",
+                                      QtPanelPropertyKind::Number));
     model.rows.push_back(std::move(row));
   }
   model.summary = model.rows.empty() ? "No camera data" : std::to_string(model.rows.size()) + " camera rows";
@@ -681,6 +740,21 @@ QtPanelModel BuildRenderSettingsPanelModel(const QtPanelBuildContext& context) {
               QtPanelPropertyKind::Number, true);
   AddProperty(model, "film.exposure", "Exposure", FloatText(settings.film_resolve.exposure), "Resolve",
               QtPanelPropertyKind::Number, true);
+  std::string toneMap = "linear";
+  switch (settings.film_resolve.tone_map) {
+    case vkpt::pathtracer::ToneMapMode::Reinhard: toneMap = "reinhard"; break;
+    case vkpt::pathtracer::ToneMapMode::FilmicApprox: toneMap = "filmic_approx"; break;
+    case vkpt::pathtracer::ToneMapMode::AcesApprox: toneMap = "aces_approx"; break;
+    case vkpt::pathtracer::ToneMapMode::Linear:
+    default: break;
+  }
+  AddProperty(model, "film.tone_map", "Tone Mapper", toneMap, "Resolve",
+              QtPanelPropertyKind::Enum, true);
+  AddProperty(model, "film.output_transform", "Output Transform",
+              settings.film_resolve.output_transform == vkpt::pathtracer::OutputTransformMode::Linear
+                  ? "linear"
+                  : "gamma",
+              "Resolve", QtPanelPropertyKind::Enum, true);
   AddProperty(model, "film.gamma", "Gamma", FloatText(settings.film_resolve.gamma), "Resolve",
               QtPanelPropertyKind::Number, true);
   AddProperty(model, "film.clamp", "Clamp Output", BoolText(settings.film_resolve.clamp_output), "Resolve",

@@ -1,0 +1,744 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Lisa Shallow DOF / Textured Wall",
+    "author": "vkPathTracer"
+  },
+  "assets": [
+    {
+      "id": 100,
+      "type": "model/obj",
+      "uri": "../models/lisa/lisa.obj"
+    },
+    {
+      "id": 101,
+      "type": "environment/hdri",
+      "uri": "../skies/kloppenheim_01_puresky_1k.hdr"
+    },
+    {
+      "id": 102,
+      "type": "texture",
+      "uri": "../models/sponza/textures/sponza_plaster.png"
+    }
+  ],
+  "materials": [
+    {
+      "id": 201,
+      "name": "portrait_ground_matte",
+      "family": "concrete",
+      "albedo": [
+        0.38,
+        0.35,
+        0.31
+      ],
+      "roughness": 0.86,
+      "metallic": 0.0,
+      "double_sided": true
+    },
+    {
+      "id": 202,
+      "name": "textured_plaster_wall",
+      "family": "plaster",
+      "albedo": [
+        0.55,
+        0.50,
+        0.44
+      ],
+      "roughness": 0.94,
+      "metallic": 0.0,
+      "double_sided": true
+    },
+    {
+      "id": 203,
+      "name": "warm_worn_wall_panel",
+      "family": "plaster",
+      "albedo": [
+        0.66,
+        0.48,
+        0.34
+      ],
+      "roughness": 0.9,
+      "metallic": 0.0,
+      "double_sided": true
+    },
+    {
+      "id": 204,
+      "name": "cool_worn_wall_panel",
+      "family": "plaster",
+      "albedo": [
+        0.36,
+        0.48,
+        0.55
+      ],
+      "roughness": 0.9,
+      "metallic": 0.0,
+      "double_sided": true
+    },
+    {
+      "id": 205,
+      "name": "dark_recessed_mortar",
+      "family": "charcoal",
+      "albedo": [
+        0.075,
+        0.07,
+        0.065
+      ],
+      "roughness": 0.96,
+      "metallic": 0.0,
+      "double_sided": true
+    },
+    {
+      "id": 206,
+      "name": "faded_ceramic_inlay",
+      "family": "porcelain_ceramic",
+      "albedo": [
+        0.72,
+        0.58,
+        0.38
+      ],
+      "roughness": 0.62,
+      "metallic": 0.0,
+      "clearcoat": 0.25,
+      "double_sided": true
+    }
+  ],
+  "geometry": [
+    {
+      "id": 201,
+      "primitive": "triangle",
+      "material_id": 201,
+      "tags": [
+        "ground",
+        "portrait"
+      ],
+      "vertices": [
+        [
+          -4.0,
+          0.49,
+          -2.5
+        ],
+        [
+          4.0,
+          0.49,
+          -2.5
+        ],
+        [
+          4.0,
+          0.49,
+          5.0
+        ],
+        [
+          -4.0,
+          0.49,
+          5.0
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    },
+    {
+      "id": 202,
+      "primitive": "triangle",
+      "material_id": 202,
+      "tags": [
+        "wall",
+        "textured_plaster"
+      ],
+      "vertices": [
+        [
+          -3.4,
+          0.48,
+          -1.7
+        ],
+        [
+          3.4,
+          0.48,
+          -1.7
+        ],
+        [
+          3.4,
+          3.15,
+          -1.7
+        ],
+        [
+          -3.4,
+          3.15,
+          -1.7
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    },
+    {
+      "id": 203,
+      "primitive": "triangle",
+      "material_id": 205,
+      "tags": [
+        "wall",
+        "mortar_vertical"
+      ],
+      "vertices": [
+        [
+          -1.62,
+          0.52,
+          -1.675
+        ],
+        [
+          -1.57,
+          0.52,
+          -1.675
+        ],
+        [
+          -1.57,
+          3.1,
+          -1.675
+        ],
+        [
+          -1.62,
+          3.1,
+          -1.675
+        ],
+        [
+          -0.02,
+          0.52,
+          -1.674
+        ],
+        [
+          0.03,
+          0.52,
+          -1.674
+        ],
+        [
+          0.03,
+          3.1,
+          -1.674
+        ],
+        [
+          -0.02,
+          3.1,
+          -1.674
+        ],
+        [
+          1.57,
+          0.52,
+          -1.675
+        ],
+        [
+          1.62,
+          0.52,
+          -1.675
+        ],
+        [
+          1.62,
+          3.1,
+          -1.675
+        ],
+        [
+          1.57,
+          3.1,
+          -1.675
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3,
+        4,
+        5,
+        6,
+        4,
+        6,
+        7,
+        8,
+        9,
+        10,
+        8,
+        10,
+        11
+      ]
+    },
+    {
+      "id": 204,
+      "primitive": "triangle",
+      "material_id": 205,
+      "tags": [
+        "wall",
+        "mortar_horizontal"
+      ],
+      "vertices": [
+        [
+          -3.3,
+          1.03,
+          -1.673
+        ],
+        [
+          3.3,
+          1.03,
+          -1.673
+        ],
+        [
+          3.3,
+          1.08,
+          -1.673
+        ],
+        [
+          -3.3,
+          1.08,
+          -1.673
+        ],
+        [
+          -3.3,
+          1.56,
+          -1.673
+        ],
+        [
+          3.3,
+          1.56,
+          -1.673
+        ],
+        [
+          3.3,
+          1.61,
+          -1.673
+        ],
+        [
+          -3.3,
+          1.61,
+          -1.673
+        ],
+        [
+          -3.3,
+          2.09,
+          -1.673
+        ],
+        [
+          3.3,
+          2.09,
+          -1.673
+        ],
+        [
+          3.3,
+          2.14,
+          -1.673
+        ],
+        [
+          -3.3,
+          2.14,
+          -1.673
+        ],
+        [
+          -3.3,
+          2.62,
+          -1.673
+        ],
+        [
+          3.3,
+          2.62,
+          -1.673
+        ],
+        [
+          3.3,
+          2.67,
+          -1.673
+        ],
+        [
+          -3.3,
+          2.67,
+          -1.673
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3,
+        4,
+        5,
+        6,
+        4,
+        6,
+        7,
+        8,
+        9,
+        10,
+        8,
+        10,
+        11,
+        12,
+        13,
+        14,
+        12,
+        14,
+        15
+      ]
+    },
+    {
+      "id": 205,
+      "primitive": "triangle",
+      "material_id": 203,
+      "tags": [
+        "wall",
+        "warm_panel"
+      ],
+      "vertices": [
+        [
+          -3.0,
+          1.1,
+          -1.672
+        ],
+        [
+          -1.75,
+          1.1,
+          -1.672
+        ],
+        [
+          -1.75,
+          1.52,
+          -1.672
+        ],
+        [
+          -3.0,
+          1.52,
+          -1.672
+        ],
+        [
+          0.18,
+          2.18,
+          -1.671
+        ],
+        [
+          1.48,
+          2.18,
+          -1.671
+        ],
+        [
+          1.48,
+          2.58,
+          -1.671
+        ],
+        [
+          0.18,
+          2.58,
+          -1.671
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3,
+        4,
+        5,
+        6,
+        4,
+        6,
+        7
+      ]
+    },
+    {
+      "id": 206,
+      "primitive": "triangle",
+      "material_id": 204,
+      "tags": [
+        "wall",
+        "cool_panel"
+      ],
+      "vertices": [
+        [
+          1.78,
+          1.64,
+          -1.672
+        ],
+        [
+          3.0,
+          1.64,
+          -1.672
+        ],
+        [
+          3.0,
+          2.04,
+          -1.672
+        ],
+        [
+          1.78,
+          2.04,
+          -1.672
+        ],
+        [
+          -1.42,
+          2.7,
+          -1.671
+        ],
+        [
+          -0.18,
+          2.7,
+          -1.671
+        ],
+        [
+          -0.18,
+          3.02,
+          -1.671
+        ],
+        [
+          -1.42,
+          3.02,
+          -1.671
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3,
+        4,
+        5,
+        6,
+        4,
+        6,
+        7
+      ]
+    },
+    {
+      "id": 207,
+      "primitive": "triangle",
+      "material_id": 206,
+      "tags": [
+        "wall",
+        "ceramic_inlay"
+      ],
+      "vertices": [
+        [
+          -0.72,
+          0.7,
+          -1.67
+        ],
+        [
+          0.72,
+          0.7,
+          -1.67
+        ],
+        [
+          0.72,
+          0.93,
+          -1.67
+        ],
+        [
+          -0.72,
+          0.93,
+          -1.67
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "id": 110,
+      "name": "Camera",
+      "transform": {
+        "translation": [
+          0.0,
+          1.2,
+          4.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "camera": {
+        "fov": 34.0,
+        "near_plane": 0.05,
+        "far_plane": 100.0,
+        "focal_length_mm": 85.0,
+        "sensor_width_mm": 36.0,
+        "sensor_height_mm": 24.0,
+        "aperture_radius": 0.085,
+        "focus_distance": 4.0,
+        "f_stop": 1.8,
+        "shutter_seconds": 0.008,
+        "iso": 100.0,
+        "exposure_compensation": -0.15,
+        "white_balance_kelvin": 5600.0,
+        "iris_blade_count": 7,
+        "iris_rotation_degrees": 12.0,
+        "iris_roundness": 0.42,
+        "anamorphic_squeeze": 1.15
+      }
+    },
+    {
+      "id": 111,
+      "name": "Soft portrait key",
+      "transform": {
+        "translation": [
+          -1.0,
+          2.45,
+          1.55
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "light": {
+        "type": "point",
+        "color": [
+          1.0,
+          0.9,
+          0.78
+        ],
+        "intensity": 12.0,
+        "radius": 0.35
+      }
+    },
+    {
+      "id": 112,
+      "name": "Cool wall rim",
+      "transform": {
+        "translation": [
+          1.4,
+          2.05,
+          -0.45
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "light": {
+        "type": "point",
+        "color": [
+          0.58,
+          0.68,
+          1.0
+        ],
+        "intensity": 3.5,
+        "radius": 0.18
+      }
+    },
+    {
+      "id": 113,
+      "name": "Studio ground",
+      "mesh": {
+        "mesh_id": 201,
+        "material_id": 201
+      }
+    },
+    {
+      "id": 115,
+      "name": "Textured plaster wall",
+      "mesh": {
+        "mesh_id": 202,
+        "material_id": 202
+      }
+    },
+    {
+      "id": 116,
+      "name": "Wall vertical mortar",
+      "mesh": {
+        "mesh_id": 203,
+        "material_id": 205
+      }
+    },
+    {
+      "id": 117,
+      "name": "Wall horizontal mortar",
+      "mesh": {
+        "mesh_id": 204,
+        "material_id": 205
+      }
+    },
+    {
+      "id": 118,
+      "name": "Warm wall panels",
+      "mesh": {
+        "mesh_id": 205,
+        "material_id": 203
+      }
+    },
+    {
+      "id": 119,
+      "name": "Cool wall panels",
+      "mesh": {
+        "mesh_id": 206,
+        "material_id": 204
+      }
+    },
+    {
+      "id": 120,
+      "name": "Ceramic wall inlay",
+      "mesh": {
+        "mesh_id": 207,
+        "material_id": 206
+      }
+    },
+    {
+      "id": 121,
+      "name": "Kloppenheim HDRI sky",
+      "light": {
+        "type": "environment hdri",
+        "color": [
+          0.42,
+          0.50,
+          0.68
+        ],
+        "intensity": 0.4,
+        "radius": 0.0
+      }
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 96,
+    "warmup_frames": 8
+  }
+}
