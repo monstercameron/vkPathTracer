@@ -4,6 +4,8 @@
 /artifacts
 bin
 *.log
+.env
+!.env.example
 protopt_log.txt
 /cpu_err.txt
 /cpu_out.txt
