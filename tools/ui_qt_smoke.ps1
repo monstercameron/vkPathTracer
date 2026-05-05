@@ -27,6 +27,17 @@
     UI present rate passed to Qt window smoke when the binary supports
     --ui-present-hz. Use 0 to disable this optional flag.
 
+.PARAMETER MinimumQtDockCount
+    Minimum dock widgets expected in the Qt shell readiness log emitted during
+    the bounded offscreen window smoke.
+
+.PARAMETER RequiredQtDockIds
+    Dock identifiers expected in the Qt shell readiness log. This verifies the
+    shell created the core editor/property panels without GUI interaction.
+
+.PARAMETER SkipQtShellProbe
+    Skip the Qt shell menu/status/dock readiness assertion.
+
 .EXAMPLE
     powershell -NoProfile -File tools/ui_qt_smoke.ps1
     powershell -NoProfile -File tools/ui_qt_smoke.ps1 -QtPreset windows-clangcl-d3d12-qt-debug
@@ -43,8 +54,20 @@ param(
     [uint32]$WindowSeconds = 8,
     [uint32]$WindowFrames = 5,
     [uint32]$UiPresentHz = 30,
+    [uint32]$MinimumQtDockCount = 8,
+    [string[]]$RequiredQtDockIds = @(
+        "scene_graph",
+        "inspector",
+        "materials",
+        "lights",
+        "camera",
+        "render_settings",
+        "diagnostics",
+        "performance"
+    ),
     [switch]$NoBuild,
     [switch]$SkipQt,
+    [switch]$SkipQtShellProbe,
     [string]$QtQpaPlatform = $env:VKPT_QT_QPA_PLATFORM
 )
 
@@ -265,6 +288,71 @@ function Test-UiPresentHzCoverage([string]$Exe) {
     }
     Skip-Step "qt-ui-present-hz-option" "binary help does not advertise --ui-present-hz"
     return $false
+}
+
+function Test-QtReadyField([string]$Text, [string[]]$Names) {
+    foreach ($name in $Names) {
+        $escaped = [regex]::Escape($name)
+        if ($Text -match "(?i)$escaped[^A-Za-z0-9]*(true|yes|present|ready|1)") {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Assert-QtShellSurfaceAvailabilityFromLogs {
+    $stdoutText = if (Test-Path $QtStdout) { Get-Content -LiteralPath $QtStdout -Raw -ErrorAction SilentlyContinue } else { "" }
+    $stderrText = if (Test-Path $QtStderr) { Get-Content -LiteralPath $QtStderr -Raw -ErrorAction SilentlyContinue } else { "" }
+    $combined = $stdoutText + [Environment]::NewLine + $stderrText
+    $probeLines = @($combined -split "(`r`n|`n|`r)" | Where-Object {
+        $_ -match '(?i)qt shell ready|qt_shell_ready|qt-shell-ready|qt shell surfaces'
+    })
+
+    if ($probeLines.Count -eq 0) {
+        throw ("Qt shell readiness marker missing. Expected a startup log like " +
+               "'qt shell ready menu_bar=true status_bar=true dock_count={0} docks={1}'.`nstdout:`n{2}`nstderr:`n{3}" -f
+               $MinimumQtDockCount,
+               ($RequiredQtDockIds -join ","),
+               (Get-OutputTail $stdoutText),
+               (Get-OutputTail $stderrText))
+    }
+
+    $probe = [string]$probeLines[-1]
+    if (-not (Test-QtReadyField $probe @("menu_bar", "menuBar"))) {
+        throw ("Qt shell readiness marker did not report menu_bar=true.`nmarker:`n{0}" -f $probe)
+    }
+    if (-not (Test-QtReadyField $probe @("status_bar", "statusBar"))) {
+        throw ("Qt shell readiness marker did not report status_bar=true.`nmarker:`n{0}" -f $probe)
+    }
+
+    if ($probe -notmatch '(?i)dock(?:_|-|\s)?count[^0-9]*(\d+)') {
+        throw ("Qt shell readiness marker did not report dock_count.`nmarker:`n{0}" -f $probe)
+    }
+    $dockCount = [uint32]$Matches[1]
+    if ($dockCount -lt $MinimumQtDockCount) {
+        throw ("Qt shell readiness marker reported dock_count={0}; expected at least {1}.`nmarker:`n{2}" -f
+               $dockCount, $MinimumQtDockCount, $probe)
+    }
+
+    foreach ($dockId in $RequiredQtDockIds) {
+        if ([string]::IsNullOrWhiteSpace($dockId)) { continue }
+        if ($probe -notmatch [regex]::Escape($dockId)) {
+            throw ("Qt shell readiness marker is missing required dock '{0}'.`nmarker:`n{1}" -f
+                   $dockId, $probe)
+        }
+    }
+
+    Write-Host ("    shell-surfaces: menu_bar=true status_bar=true dock_count={0}" -f $dockCount)
+}
+
+function Test-QtShellSurfaceAvailabilityFromLogs {
+    if ($SkipQtShellProbe) {
+        Skip-Step "qt-shell-surfaces" "-SkipQtShellProbe"
+        return
+    }
+    [void](Step "qt-shell-surfaces" {
+        Assert-QtShellSurfaceAvailabilityFromLogs
+    })
 }
 
 function Invoke-BoundedQtWindowSmoke([string]$Exe, [bool]$PassUiPresentHz) {
@@ -503,6 +591,7 @@ try {
         Skip-Step "qt-build" "-SkipQt"
         Skip-Step "qt-ui-present-hz-option" "-SkipQt"
         Skip-Step "qt-window-bounded" "-SkipQt"
+        Skip-Step "qt-shell-surfaces" "-SkipQt"
         Skip-Step "qt-render-headless" "-SkipQt"
         Skip-Step "qt-render-headless-output" "-SkipQt"
     } elseif ($NoBuild) {
@@ -510,9 +599,14 @@ try {
         Skip-Step "qt-build" "-NoBuild"
         if (Test-Path $QtPtapp) {
             $qtPassUiPresentHz = Test-UiPresentHzCoverage $QtPtapp
-            [void](Step "qt-window-bounded" {
+            $qtWindowOk = Step "qt-window-bounded" {
                 Invoke-BoundedQtWindowSmoke $QtPtapp $qtPassUiPresentHz
-            })
+            }
+            if ($qtWindowOk) {
+                Test-QtShellSurfaceAvailabilityFromLogs
+            } else {
+                Skip-Step "qt-shell-surfaces" "bounded Qt window smoke failed"
+            }
             $qtRenderOk = Step "qt-render-headless" {
                 Invoke-QtSelectedHeadlessRender $QtPtapp
             }
@@ -524,6 +618,7 @@ try {
         } else {
             Skip-Step "qt-ui-present-hz-option" "Qt binary not found at $QtPtapp"
             Skip-Step "qt-window-bounded" "Qt binary not found at $QtPtapp"
+            Skip-Step "qt-shell-surfaces" "Qt binary not found at $QtPtapp"
             Skip-Step "qt-render-headless" "Qt binary not found at $QtPtapp"
             Skip-Step "qt-render-headless-output" "Qt binary not found at $QtPtapp"
         }
@@ -557,9 +652,14 @@ try {
                 }
                 if ($qtBinaryReady) {
                     $qtPassUiPresentHz = Test-UiPresentHzCoverage $QtPtapp
-                    [void](Step "qt-window-bounded" {
+                    $qtWindowOk = Step "qt-window-bounded" {
                         Invoke-BoundedQtWindowSmoke $QtPtapp $qtPassUiPresentHz
-                    })
+                    }
+                    if ($qtWindowOk) {
+                        Test-QtShellSurfaceAvailabilityFromLogs
+                    } else {
+                        Skip-Step "qt-shell-surfaces" "bounded Qt window smoke failed"
+                    }
                     $qtRenderOk = Step "qt-render-headless" {
                         Invoke-QtSelectedHeadlessRender $QtPtapp
                     }
@@ -571,6 +671,7 @@ try {
                 } else {
                     Skip-Step "qt-ui-present-hz-option" "Qt binary not built"
                     Skip-Step "qt-window-bounded" "Qt binary not built"
+                    Skip-Step "qt-shell-surfaces" "Qt binary not built"
                     Skip-Step "qt-render-headless" "Qt binary not built"
                     Skip-Step "qt-render-headless-output" "Qt binary not built"
                 }
@@ -578,6 +679,7 @@ try {
                 Skip-Step "qt-binary" "Qt build failed"
                 Skip-Step "qt-ui-present-hz-option" "Qt build failed"
                 Skip-Step "qt-window-bounded" "Qt build failed"
+                Skip-Step "qt-shell-surfaces" "Qt build failed"
                 Skip-Step "qt-render-headless" "Qt build failed"
                 Skip-Step "qt-render-headless-output" "Qt build failed"
             }
@@ -585,6 +687,7 @@ try {
             Skip-Step "qt-build" "Qt configure did not complete"
             Skip-Step "qt-ui-present-hz-option" "Qt configure did not complete"
             Skip-Step "qt-window-bounded" "Qt configure did not complete"
+            Skip-Step "qt-shell-surfaces" "Qt configure did not complete"
             Skip-Step "qt-render-headless" "Qt configure did not complete"
             Skip-Step "qt-render-headless-output" "Qt configure did not complete"
         }

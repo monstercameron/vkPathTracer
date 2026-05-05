@@ -63,8 +63,10 @@
 #include "platform/qt/QtPlatform.h"
 #endif
 #include "platform/PlatformFactory.h"
+#include "physics/PhysicsWorld.h"
 #include "scene/Scene.h"
 #include "render/backends/BackendFactory.h"
+#include "render/backends/D3D12Backend.h"
 #include "render/backends/VulkanBackend.h"
 #include "render/interface/RenderContracts.h"
 #include "jobs/JobSystem.h"
@@ -134,6 +136,38 @@ HMENU BuildNativeMenuBarFromModel(const vkpt::editor::MenuBar& menuModel,
   }
   return menuBar;
 }
+
+#ifdef PT_ENABLE_QT
+void AppendQtMenuItemsFromModel(std::vector<vkpt::platform::QtMenuItem>& out,
+                                const std::vector<vkpt::editor::MenuItem>& items,
+                                NativeMenuId& commandId,
+                                std::unordered_map<NativeMenuId, std::string>& menuCommands) {
+  for (const auto& item : items) {
+    vkpt::platform::QtMenuItem menuItem{};
+    menuItem.label = item.label;
+    menuItem.enabled = item.enabled;
+    if (item.children.empty()) {
+      menuItem.command_id = static_cast<std::uint32_t>(commandId);
+      menuCommands.emplace(commandId, item.id);
+      ++commandId;
+    } else {
+      AppendQtMenuItemsFromModel(menuItem.children, item.children, commandId, menuCommands);
+    }
+    out.push_back(std::move(menuItem));
+  }
+}
+
+std::vector<vkpt::platform::QtMenuItem> BuildQtMenuBarFromModel(
+    const vkpt::editor::MenuBar& menuModel,
+    std::unordered_map<NativeMenuId, std::string>& menuCommands) {
+  menuCommands.clear();
+  NativeMenuId commandId = kFirstMenuCommandId;
+  std::vector<vkpt::platform::QtMenuItem> menus;
+  menus.reserve(menuModel.top_level_menus.size());
+  AppendQtMenuItemsFromModel(menus, menuModel.top_level_menus, commandId, menuCommands);
+  return menus;
+}
+#endif
 
 std::string QuoteShellArg(std::string_view arg) {
   if (arg.find_first_of(" \"\t\r\n") == std::string_view::npos) {
@@ -489,6 +523,7 @@ void PrintUsage() {
   std::cout << "  --dump-config         Print resolved runtime config as JSON\n";
   std::cout << "  --config <path>       Load a config file (key=value format)\n";
   std::cout << "  --list-backends       Print known render backends and capabilities\n";
+  std::cout << "  --list-accelerators   Print D3D12/CPU accelerator capability and ray budget plan\n";
   std::cout << "  --list-gpus           Enumerate Vulkan physical devices and select the best\n";
   std::cout << "  --headless            Initialize headless platform\n";
   std::cout << "  --window              Open desktop window and keep app running\n";
@@ -620,6 +655,17 @@ DoctorCheckResult CheckBackends() {
     detail << name << ":ok(compute=" << (caps.compute ? "y" : "n")
            << ",rt=" << (caps.ray_tracing ? "y" : "n") << ") ";
   }
+#ifdef PT_ENABLE_D3D12
+  const auto plan = vkpt::render::BuildD3D12RayBudgetPlan(vkpt::render::RayBudgetRequest{});
+  std::size_t activeAssignments = 0u;
+  for (const auto& assignment : plan.assignments) {
+    if (assignment.active) {
+      ++activeAssignments;
+    }
+  }
+  detail << "accelerator_plan=ok(active=" << activeAssignments
+         << ",target_rays=" << plan.total_target_rays << ") ";
+#endif
   r.detail = detail.str();
   return r;
 }
@@ -679,25 +725,77 @@ DoctorCheckResult CheckJobSystem() {
 DoctorCheckResult CheckSceneSchema() {
   DoctorCheckResult r;
   r.name = "scene_schema";
-  const std::filesystem::path scenePath = "assets/scenes/cornell_native.json";
-  if (!std::filesystem::exists(scenePath)) {
+  const std::filesystem::path sceneDir = "assets/scenes";
+  if (!std::filesystem::exists(sceneDir)) {
     r.passed = true;
-    r.detail = "skipped(cornell_native.json not found)";
+    r.detail = "skipped(assets/scenes not found)";
     return r;
   }
-  const auto result = vkpt::scene::SceneDocument::load_from_file(scenePath.string());
-  if (!result) {
-    r.passed = false;
-    r.detail = "load=FAIL";
+
+  std::vector<std::filesystem::path> scenePaths;
+  for (const auto& entry : std::filesystem::directory_iterator(sceneDir)) {
+    if (entry.is_regular_file() && entry.path().extension() == ".json") {
+      scenePaths.push_back(entry.path());
+    }
+  }
+  std::sort(scenePaths.begin(), scenePaths.end());
+  if (scenePaths.empty()) {
+    r.passed = true;
+    r.detail = "skipped(no scene json files)";
     return r;
   }
+
   std::vector<std::string> issues;
-  const bool valid = result.value().validate(&issues);
-  r.passed = valid;
+  std::size_t totalEntities = 0;
+  std::size_t totalMaterials = 0;
+  std::size_t totalInstances = 0;
+  std::size_t totalLights = 0;
+  std::size_t totalSdfPrimitives = 0;
+
+  for (const auto& scenePath : scenePaths) {
+    const auto sceneName = scenePath.filename().string();
+    auto result = vkpt::scene::SceneDocument::load_from_file(scenePath.string());
+    if (!result) {
+      issues.push_back(sceneName + ":load=" + std::to_string(static_cast<int>(result.error())));
+      continue;
+    }
+
+    const auto& document = result.value();
+    std::vector<std::string> sceneIssues;
+    if (!document.validate(&sceneIssues)) {
+      for (const auto& issue : sceneIssues) {
+        issues.push_back(sceneName + ":" + issue);
+      }
+    }
+
+    auto worldResult = document.to_world();
+    if (!worldResult) {
+      issues.push_back(sceneName + ":to_world=" + std::to_string(static_cast<int>(worldResult.error())));
+    }
+
+    auto rtSceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(document);
+    if (!rtSceneResult) {
+      issues.push_back(sceneName + ":rt_scene=" + std::to_string(static_cast<int>(rtSceneResult.error())));
+    } else {
+      const auto& rtScene = rtSceneResult.value();
+      totalInstances += rtScene.instances.size();
+      totalLights += rtScene.lights.size();
+      totalSdfPrimitives += rtScene.sdf_primitives.size();
+    }
+
+    totalEntities += document.entities.size();
+    totalMaterials += document.materials.size();
+  }
+
+  r.passed = issues.empty();
   std::ostringstream detail;
-  detail << "entities=" << result.value().snapshot().entity_ids.size()
-         << " materials=" << result.value().materials.size()
-         << " valid=" << (valid ? "yes" : "no");
+  detail << "scenes=" << scenePaths.size()
+         << " entities=" << totalEntities
+         << " materials=" << totalMaterials
+         << " rt_instances=" << totalInstances
+         << " rt_lights=" << totalLights
+         << " rt_sdf=" << totalSdfPrimitives
+         << " valid=" << (r.passed ? "yes" : "no");
   if (!issues.empty()) {
     detail << " issues=[";
     for (std::size_t i = 0; i < issues.size(); ++i) {
@@ -780,6 +878,35 @@ void PrintBackendDiagnostics() {
     std::cout << "rt layout:\n";
     std::cout << "  " << vkpt::pathtracer::SerializeRTSceneDataLayoutManifest(manifest.value()) << "\n";
   }
+}
+
+void PrintAcceleratorDiagnostics(uint32_t width, uint32_t height) {
+  std::cout << "accelerators:\n";
+  const auto accelerators = vkpt::render::EnumerateD3D12Accelerators(true, true);
+  if (accelerators.empty()) {
+    std::cout << "  (none)\n";
+  } else {
+    for (const auto& accelerator : accelerators) {
+      std::cout << "  " << vkpt::render::AcceleratorKindToString(accelerator.accelerator_kind)
+                << " -> " << accelerator.name << "\n";
+      std::cout << "    " << vkpt::render::SerializeAcceleratorCapabilities(accelerator) << "\n";
+    }
+  }
+
+  vkpt::render::RayBudgetRequest request;
+  request.width = width;
+  request.height = height;
+  request.polygon_frame_budget_ms = 16.6667;
+  request.reserved_polygon_ms = 5.0;
+  request.merge_budget_ms = 1.0;
+  request.include_cpu = true;
+  request.include_integrated_gpu = true;
+  request.include_warp = false;
+  request.require_ray_tracing = false;
+  const auto plan = vkpt::render::BuildD3D12RayBudgetPlan(request);
+  std::cout << "ray budget plan:\n";
+  std::cout << "  request=" << vkpt::render::SerializeRayBudgetRequest(request) << "\n";
+  std::cout << "  " << vkpt::render::SerializeRayBudgetPlan(plan) << "\n";
 }
 
 void PrintVersionText(vkpt::platform::RuntimePlatformKind platformShell) {
@@ -1119,6 +1246,752 @@ void ApplyWindowMetricsToLayout(vkpt::editor::UiLayoutDocument& layout_state,
 }
 
 #ifdef PT_ENABLE_QT
+struct QtDockProperty {
+  std::string label;
+  std::string value;
+};
+
+struct QtDockPanelContent {
+  std::string id;
+  std::string title;
+  bool visible = true;
+  bool docked = true;
+  bool floating = false;
+  bool collapsed = false;
+  float width = 320.0f;
+  float height = 240.0f;
+  std::vector<QtDockProperty> properties;
+  std::vector<std::string> rows;
+};
+
+struct QtDockFrameStats {
+  std::uint32_t sample_count = 0u;
+  std::uint32_t frame_width = 0u;
+  std::uint32_t frame_height = 0u;
+  std::uint32_t preview_publish_hz = 0u;
+  std::uint32_t gpu_batches_per_tick = 0u;
+  double gpu_batch_ms = 0.0;
+  double ui_frame_ms = 0.0;
+  std::uint64_t render_published = 0u;
+  std::uint64_t render_dropped = 0u;
+  std::uint64_t window_received = 0u;
+  std::uint64_t window_presented = 0u;
+  std::uint64_t window_dropped = 0u;
+  bool background_thread = false;
+  bool tracer_ready = false;
+  std::string preview_status;
+};
+
+std::string QtDockBool(bool value) {
+  return value ? "true" : "false";
+}
+
+std::string QtDockNumber(double value, int precision = 2) {
+  std::ostringstream out;
+  out << std::fixed << std::setprecision(precision) << value;
+  return out.str();
+}
+
+std::string QtDockVec3(float x, float y, float z) {
+  std::ostringstream out;
+  out << std::fixed << std::setprecision(3)
+      << x << ", " << y << ", " << z;
+  return out.str();
+}
+
+std::string QtDockVec3(const vkpt::scene::Vec3& v) {
+  return QtDockVec3(v.x, v.y, v.z);
+}
+
+std::string QtDockVec3(const vkpt::pathtracer::Vec3& v) {
+  return QtDockVec3(v.x, v.y, v.z);
+}
+
+std::string QtDockVec3(const vkpt::editor::Vec3& v) {
+  return QtDockVec3(v.x, v.y, v.z);
+}
+
+std::string QtDockQuat(const vkpt::scene::Quat& q) {
+  std::ostringstream out;
+  out << std::fixed << std::setprecision(3)
+      << q.x << ", " << q.y << ", " << q.z << ", " << q.w;
+  return out.str();
+}
+
+std::string QtDockBounds(const vkpt::editor::Bounds& bounds) {
+  if (!bounds.valid) {
+    return "invalid";
+  }
+  return "min(" + QtDockVec3(bounds.min) + ") max(" + QtDockVec3(bounds.max) + ")";
+}
+
+void QtDockAddProperty(QtDockPanelContent& panel,
+                       std::string_view label,
+                       std::string value) {
+  panel.properties.push_back(QtDockProperty{std::string(label), std::move(value)});
+}
+
+void QtDockAddRow(QtDockPanelContent& panel, std::string row) {
+  panel.rows.push_back(std::move(row));
+}
+
+const vkpt::editor::UiPanelState* FindQtLayoutPanel(
+    const vkpt::editor::UiLayoutDocument& layout,
+    std::string_view panel_id) {
+  const auto it = std::find_if(layout.panels.begin(),
+                               layout.panels.end(),
+                               [panel_id](const vkpt::editor::UiPanelState& panel) {
+                                 return panel.id == panel_id;
+                               });
+  return it == layout.panels.end() ? nullptr : &*it;
+}
+
+QtDockPanelContent MakeQtDockPanel(const vkpt::editor::UiLayoutDocument& layout,
+                                   std::string_view id,
+                                   std::string_view title,
+                                   bool default_visible,
+                                   float default_width = 320.0f,
+                                   float default_height = 240.0f) {
+  QtDockPanelContent panel;
+  panel.id = std::string(id);
+  panel.title = std::string(title);
+  panel.visible = default_visible;
+  panel.width = default_width;
+  panel.height = default_height;
+  const vkpt::editor::UiPanelState* state = FindQtLayoutPanel(layout, id);
+  if (state == nullptr && id == "scene_graph") {
+    state = FindQtLayoutPanel(layout, "scene_tree");
+  } else if (state == nullptr && id == "materials") {
+    state = FindQtLayoutPanel(layout, "material_editor");
+  } else if (state == nullptr && id == "diagnostics") {
+    state = FindQtLayoutPanel(layout, "console");
+  }
+  if (state != nullptr) {
+    panel.visible = state->visible;
+    panel.docked = state->docked;
+    panel.floating = state->floating;
+    panel.collapsed = state->collapsed;
+    panel.width = state->width;
+    panel.height = state->height;
+  }
+  return panel;
+}
+
+const vkpt::scene::SceneEntityDefinition* FindQtSceneEntity(
+    const vkpt::scene::SceneDocument& document,
+    vkpt::core::StableId id) {
+  const auto it = std::find_if(document.entities.begin(),
+                               document.entities.end(),
+                               [id](const vkpt::scene::SceneEntityDefinition& entity) {
+                                 return entity.id == id;
+                               });
+  return it == document.entities.end() ? nullptr : &*it;
+}
+
+const vkpt::scene::SceneMaterialDefinition* FindQtSceneMaterial(
+    const vkpt::scene::SceneDocument& document,
+    vkpt::core::StableId id) {
+  const auto it = std::find_if(document.materials.begin(),
+                               document.materials.end(),
+                               [id](const vkpt::scene::SceneMaterialDefinition& material) {
+                                 return material.id == id;
+                               });
+  return it == document.materials.end() ? nullptr : &*it;
+}
+
+std::string QtEntityComponentSummary(const vkpt::scene::SceneEntityDefinition& entity) {
+  std::vector<std::string_view> parts;
+  if (entity.has_transform) {
+    parts.push_back("Transform");
+  }
+  if (entity.has_mesh) {
+    parts.push_back("Mesh");
+  }
+  if (entity.has_sdf_primitive) {
+    parts.push_back("SDF");
+  }
+  if (entity.has_light) {
+    parts.push_back("Light");
+  }
+  if (entity.has_camera) {
+    parts.push_back("Camera");
+  }
+  if (!entity.script.script.empty()) {
+    parts.push_back("Script");
+  }
+  if (!entity.animation.clip.empty()) {
+    parts.push_back("Animation");
+  }
+  if (entity.has_physics_body) {
+    parts.push_back(entity.physics_body.enabled ? "Physics" : "Physics Off");
+  }
+  if (entity.has_benchmark_tag && entity.benchmark_tag.enabled) {
+    parts.push_back("Benchmark");
+  }
+  if (parts.empty()) {
+    return "Identity";
+  }
+  std::ostringstream out;
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    if (i > 0u) {
+      out << ", ";
+    }
+    out << parts[i];
+  }
+  return out.str();
+}
+
+std::string QtEntityDisplayName(const vkpt::scene::SceneEntityDefinition& entity) {
+  if (!entity.name.empty()) {
+    return entity.name;
+  }
+  return std::string("Entity ") + std::to_string(entity.id);
+}
+
+vkpt::core::StableId QtPrimarySelectionId(const vkpt::editor::SelectionState& selection) {
+  if (selection.active_primary_entity != 0u) {
+    return selection.active_primary_entity;
+  }
+  if (!selection.selected_entity_ids.empty()) {
+    return selection.selected_entity_ids.front();
+  }
+  return 0u;
+}
+
+const vkpt::editor::Bounds* FindQtSelectionBounds(
+    const vkpt::editor::SelectionState& selection,
+    vkpt::core::StableId entity_id) {
+  const auto it = std::find_if(selection.per_item_bounds.begin(),
+                               selection.per_item_bounds.end(),
+                               [entity_id](const vkpt::editor::SceneEntityBounds& item) {
+                                 return item.entity_id == entity_id;
+                               });
+  return it == selection.per_item_bounds.end() ? nullptr : &it->bounds;
+}
+
+void QtDockLimitRows(QtDockPanelContent& panel, std::size_t max_rows) {
+  if (panel.rows.size() <= max_rows) {
+    return;
+  }
+  const std::size_t hidden = panel.rows.size() - max_rows;
+  panel.rows.resize(max_rows);
+  panel.rows.push_back("... " + std::to_string(hidden) + " more");
+}
+
+QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& document,
+                                        const vkpt::editor::SelectionState& selection,
+                                        const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "scene_graph", "Scene Graph", true, 280.0f, 600.0f);
+  QtDockAddProperty(panel, "entities", std::to_string(document.entities.size()));
+  QtDockAddProperty(panel, "geometry", std::to_string(document.geometry.size()));
+  QtDockAddProperty(panel, "sdf primitives", std::to_string(document.sdf_primitives.size()));
+  const auto is_selected = [&](vkpt::core::StableId id) {
+    return std::find(selection.selected_entity_ids.begin(),
+                     selection.selected_entity_ids.end(),
+                     id) != selection.selected_entity_ids.end();
+  };
+  for (const auto& entity : document.entities) {
+    std::ostringstream row;
+    row << (is_selected(entity.id) ? "[x] " : "[ ] ")
+        << QtEntityDisplayName(entity)
+        << " #" << entity.id
+        << " (" << QtEntityComponentSummary(entity) << ")";
+    if (entity.hierarchy.parent != 0u) {
+      row << " parent=" << entity.hierarchy.parent;
+    }
+    QtDockAddRow(panel, row.str());
+  }
+  if (document.entities.empty()) {
+    QtDockAddRow(panel, "No authored entities in document");
+  }
+  QtDockLimitRows(panel, 128u);
+  return panel;
+}
+
+QtDockPanelContent BuildQtInspectorDock(const vkpt::scene::SceneDocument& document,
+                                        const vkpt::editor::SelectionState& selection,
+                                        const vkpt::editor::UiRuntimeState& runtime,
+                                        const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "inspector", "Inspector", true, 360.0f, 600.0f);
+  const auto primaryId = QtPrimarySelectionId(selection);
+  QtDockAddProperty(panel, "selected count", std::to_string(selection.selected_entity_ids.size()));
+  QtDockAddProperty(panel, "primary", primaryId == 0u ? std::string("none") : std::to_string(primaryId));
+  QtDockAddProperty(panel, "source", vkpt::editor::ToString(selection.selection_source));
+  QtDockAddProperty(panel, "tool", vkpt::editor::ToString(runtime.active_viewport_tool));
+  QtDockAddProperty(panel, "gizmo", vkpt::editor::ToString(runtime.active_gizmo_mode));
+  QtDockAddProperty(panel, "aggregate bounds", QtDockBounds(selection.aggregate_bounds));
+
+  if (primaryId == 0u) {
+    QtDockAddRow(panel, "Select an object to inspect transform, material, light, and camera properties");
+    return panel;
+  }
+
+  const auto* entity = FindQtSceneEntity(document, primaryId);
+  if (entity == nullptr) {
+    QtDockAddRow(panel, "Selected entity is not present in the loaded document");
+    return panel;
+  }
+
+  QtDockAddProperty(panel, "name", QtEntityDisplayName(*entity));
+  QtDockAddProperty(panel, "components", QtEntityComponentSummary(*entity));
+  if (const auto* bounds = FindQtSelectionBounds(selection, primaryId)) {
+    QtDockAddProperty(panel, "bounds", QtDockBounds(*bounds));
+  }
+
+  if (entity->has_transform) {
+    QtDockAddRow(panel, "Transform");
+    QtDockAddProperty(panel, "position", QtDockVec3(entity->transform.translation));
+    QtDockAddProperty(panel, "rotation", QtDockQuat(entity->transform.rotation));
+    QtDockAddProperty(panel, "scale", QtDockVec3(entity->transform.scale));
+  }
+  if (entity->has_mesh) {
+    QtDockAddRow(panel, "Mesh Renderer");
+    QtDockAddProperty(panel, "mesh id", std::to_string(entity->mesh.mesh_id));
+    QtDockAddProperty(panel, "material id", std::to_string(entity->mesh.material_id));
+    if (const auto* material = FindQtSceneMaterial(document, entity->mesh.material_id)) {
+      QtDockAddProperty(panel, "material name", material->name.empty()
+          ? std::string("material ") + std::to_string(material->id)
+          : material->name);
+      QtDockAddProperty(panel, "base color", QtDockVec3(material->albedo));
+      QtDockAddProperty(panel, "roughness", QtDockNumber(material->roughness, 3));
+      QtDockAddProperty(panel, "emission", QtDockVec3(material->emission));
+      QtDockAddProperty(panel, "emission intensity", QtDockNumber(material->emission_intensity, 3));
+    }
+  }
+  if (entity->has_sdf_primitive) {
+    QtDockAddRow(panel, "SDF Primitive");
+    QtDockAddProperty(panel, "shape", entity->sdf_primitive.shape);
+    QtDockAddProperty(panel, "radius", QtDockNumber(entity->sdf_primitive.radius, 3));
+    QtDockAddProperty(panel, "param a", QtDockNumber(entity->sdf_primitive.param_a, 3));
+    QtDockAddProperty(panel, "param b", QtDockNumber(entity->sdf_primitive.param_b, 3));
+  }
+  if (entity->has_light) {
+    QtDockAddRow(panel, "Light");
+    QtDockAddProperty(panel, "type", entity->light.type);
+    QtDockAddProperty(panel, "color", QtDockVec3(entity->light.color));
+    QtDockAddProperty(panel, "intensity", QtDockNumber(entity->light.intensity, 3));
+    QtDockAddProperty(panel, "radius", QtDockNumber(entity->light.radius, 3));
+  }
+  if (entity->has_camera) {
+    QtDockAddRow(panel, "Camera");
+    QtDockAddProperty(panel, "fov", QtDockNumber(entity->camera.fov, 2));
+    QtDockAddProperty(panel, "near", QtDockNumber(entity->camera.near_plane, 3));
+    QtDockAddProperty(panel, "far", QtDockNumber(entity->camera.far_plane, 1));
+  }
+  QtDockAddRow(panel, "Physics");
+  QtDockAddProperty(panel, "physics enabled",
+                    QtDockBool(entity->has_physics_body && entity->physics_body.enabled));
+  if (entity->has_physics_body) {
+    QtDockAddProperty(panel, "physics body type",
+                      entity->physics_body.dynamic ? std::string("dynamic") : entity->physics_body.body_type);
+    QtDockAddProperty(panel, "physics shape", entity->physics_body.shape);
+    QtDockAddProperty(panel, "physics mass", QtDockNumber(entity->physics_body.mass, 3));
+    QtDockAddProperty(panel, "physics trigger", QtDockBool(entity->physics_body.trigger));
+  }
+  if (!entity->script.script.empty()) {
+    QtDockAddRow(panel, "Script: " + entity->script.script);
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtMaterialsDock(const vkpt::scene::SceneDocument& document,
+                                        const vkpt::pathtracer::RTSceneData& scene,
+                                        const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "materials", "Materials", true, 520.0f, 420.0f);
+  QtDockAddProperty(panel, "authored materials", std::to_string(document.materials.size()));
+  QtDockAddProperty(panel, "runtime materials", std::to_string(scene.materials.size()));
+  for (const auto& material : document.materials) {
+    std::ostringstream row;
+    row << "#" << material.id << " "
+        << (material.name.empty() ? "material" : material.name)
+        << " albedo=(" << QtDockVec3(material.albedo) << ")"
+        << " roughness=" << QtDockNumber(material.roughness, 2);
+    if (material.emission_intensity > 0.0f) {
+      row << " emissive=" << QtDockNumber(material.emission_intensity, 2);
+    }
+    QtDockAddRow(panel, row.str());
+  }
+  if (document.materials.empty()) {
+    for (std::size_t i = 0; i < scene.materials.size(); ++i) {
+      const auto& material = scene.materials[i];
+      std::ostringstream row;
+      row << "runtime[" << i << "] albedo=(" << QtDockVec3(material.albedo)
+          << ") roughness=" << QtDockNumber(material.roughness, 2)
+          << " emissive=" << QtDockBool(material.is_emissive());
+      QtDockAddRow(panel, row.str());
+    }
+  }
+  QtDockLimitRows(panel, 96u);
+  return panel;
+}
+
+QtDockPanelContent BuildQtLightsDock(const vkpt::scene::SceneDocument& document,
+                                     const vkpt::pathtracer::RTSceneData& scene,
+                                     const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "lights", "Lights", true, 360.0f, 360.0f);
+  QtDockAddProperty(panel, "authored lights", std::to_string(document.lights.size()));
+  QtDockAddProperty(panel, "runtime lights", std::to_string(scene.lights.size()));
+  for (const auto& entity : document.entities) {
+    if (!entity.has_light) {
+      continue;
+    }
+    std::ostringstream row;
+    row << QtEntityDisplayName(entity) << " #" << entity.id
+        << " " << entity.light.type
+        << " intensity=" << QtDockNumber(entity.light.intensity, 2)
+        << " color=(" << QtDockVec3(entity.light.color) << ")";
+    QtDockAddRow(panel, row.str());
+  }
+  for (std::size_t i = 0; i < scene.lights.size(); ++i) {
+    const auto& light = scene.lights[i];
+    std::ostringstream row;
+    row << "runtime[" << i << "] pos=(" << QtDockVec3(light.position)
+        << ") intensity=" << QtDockNumber(light.intensity, 2)
+        << " radius=" << QtDockNumber(light.radius, 2);
+    QtDockAddRow(panel, row.str());
+  }
+  if (panel.rows.empty()) {
+    QtDockAddRow(panel, "No lights in the loaded document or render scene");
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtCameraDock(const vkpt::scene::SceneDocument& document,
+                                     const vkpt::pathtracer::RTSceneData& scene,
+                                     const vkpt::editor::UiRuntimeState& runtime,
+                                     const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "camera", "Camera", true, 360.0f, 320.0f);
+  QtDockAddProperty(panel, "active camera", runtime.active_camera.empty() ? "runtime camera" : runtime.active_camera);
+  QtDockAddProperty(panel, "position", QtDockVec3(scene.camera_position));
+  QtDockAddProperty(panel, "target", QtDockVec3(scene.camera_target));
+  QtDockAddProperty(panel, "up", QtDockVec3(scene.camera_up));
+  QtDockAddProperty(panel, "fov", QtDockNumber(scene.camera_fov_deg, 2));
+  QtDockAddProperty(panel, "viewport tool", vkpt::editor::ToString(runtime.active_viewport_tool));
+  for (const auto& entity : document.entities) {
+    if (entity.has_camera) {
+      std::ostringstream row;
+      row << QtEntityDisplayName(entity) << " #" << entity.id
+          << " fov=" << QtDockNumber(entity.camera.fov, 2)
+          << " near=" << QtDockNumber(entity.camera.near_plane, 3)
+          << " far=" << QtDockNumber(entity.camera.far_plane, 1);
+      QtDockAddRow(panel, row.str());
+    }
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::RTSceneData& scene,
+                                             const vkpt::editor::UiRuntimeState& runtime,
+                                             const vkpt::editor::UiLayoutDocument& layout,
+                                             const QtDockFrameStats& frame_stats) {
+  auto panel = MakeQtDockPanel(layout, "render_settings", "Render Settings", true, 360.0f, 360.0f);
+  QtDockAddProperty(panel, "backend", runtime.active_renderer_backend);
+  QtDockAddProperty(panel, "renderer path", runtime.active_renderer_path);
+  QtDockAddProperty(panel, "frame", std::to_string(frame_stats.frame_width) + "x" + std::to_string(frame_stats.frame_height));
+  QtDockAddProperty(panel, "samples accumulated", std::to_string(frame_stats.sample_count));
+  QtDockAddProperty(panel, "preview publish hz", std::to_string(frame_stats.preview_publish_hz));
+  QtDockAddProperty(panel, "threading", frame_stats.background_thread ? "background render thread" : "event loop renderer");
+  QtDockAddProperty(panel, "environment", QtDockVec3(scene.environment_color));
+  QtDockAddProperty(panel, "triangles", std::to_string(scene.indices.size() / 3u));
+  QtDockAddProperty(panel, "instances", std::to_string(scene.instances.size()));
+  QtDockAddProperty(panel, "sdf primitives", std::to_string(scene.sdf_primitives.size()));
+  QtDockAddProperty(panel, "textures", std::to_string(scene.textures.size()));
+  QtDockAddRow(panel, "Reset accumulation is triggered by camera and future scene edits");
+  return panel;
+}
+
+QtDockPanelContent BuildQtBenchmarkDock(const vkpt::editor::BenchmarkPanelModel& benchmark,
+                                        const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "benchmark_panel", "Benchmark", false, 560.0f, 480.0f);
+  QtDockAddProperty(panel, "scene", benchmark.run_desc.scene_path);
+  QtDockAddProperty(panel, "backend", benchmark.run_desc.backend);
+  QtDockAddProperty(panel, "renderer", benchmark.run_desc.renderer_path);
+  QtDockAddProperty(panel, "resolution", std::to_string(benchmark.run_desc.resolution.width) +
+      "x" + std::to_string(benchmark.run_desc.resolution.height));
+  QtDockAddProperty(panel, "spp", std::to_string(benchmark.run_desc.samples_per_pixel));
+  QtDockAddProperty(panel, "max depth", std::to_string(benchmark.run_desc.max_depth));
+  QtDockAddProperty(panel, "can run", QtDockBool(benchmark.can_run));
+  QtDockAddProperty(panel, "summary", benchmark.result_summary);
+  QtDockAddProperty(panel, "score", QtDockNumber(benchmark.score.normalized_score, 3));
+  QtDockAddProperty(panel, "confidence", benchmark.score.confidence);
+  for (const auto& action : benchmark.calibration_actions) {
+    QtDockAddRow(panel, action.label + " [" + (action.supported ? "available" : action.unavailable_reason) + "]");
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtDiagnosticsDock(const vkpt::editor::UiRuntimeState& runtime,
+                                          const vkpt::editor::SelectionState& selection,
+                                          const vkpt::editor::UiLayoutDocument& layout,
+                                          const QtDockFrameStats& frame_stats) {
+  auto panel = MakeQtDockPanel(layout, "diagnostics", "Diagnostics", true, 720.0f, 260.0f);
+  QtDockAddProperty(panel, "status", runtime.status_message);
+  QtDockAddProperty(panel, "last warning/error", runtime.last_warning_or_error);
+  QtDockAddProperty(panel, "last menu action", runtime.last_menu_action);
+  QtDockAddProperty(panel, "last clicked entity", std::to_string(runtime.last_clicked_entity));
+  QtDockAddProperty(panel, "focused panel", runtime.focused_panel);
+  QtDockAddProperty(panel, "active modal", runtime.active_modal.empty() ? "none" : runtime.active_modal);
+  QtDockAddProperty(panel, "tracer ready", QtDockBool(frame_stats.tracer_ready));
+  QtDockAddProperty(panel, "preview status", frame_stats.preview_status);
+  QtDockAddProperty(panel, "selection source", vkpt::editor::ToString(selection.selection_source));
+  return panel;
+}
+
+QtDockPanelContent BuildQtPerformanceDock(const vkpt::editor::UiRuntimeState& runtime,
+                                          const vkpt::editor::UiLayoutDocument& layout,
+                                          const QtDockFrameStats& frame_stats) {
+  auto panel = MakeQtDockPanel(layout, "performance", "Performance", true, 360.0f, 320.0f);
+  QtDockAddProperty(panel, "ui fps", QtDockNumber(runtime.fps, 1));
+  QtDockAddProperty(panel, "ui frame ms", QtDockNumber(runtime.frame_ms, 2));
+  QtDockAddProperty(panel, "samples", std::to_string(frame_stats.sample_count));
+  QtDockAddProperty(panel, "published", std::to_string(frame_stats.render_published));
+  QtDockAddProperty(panel, "render dropped", std::to_string(frame_stats.render_dropped));
+  QtDockAddProperty(panel, "window received", std::to_string(frame_stats.window_received));
+  QtDockAddProperty(panel, "window presented", std::to_string(frame_stats.window_presented));
+  QtDockAddProperty(panel, "window dropped", std::to_string(frame_stats.window_dropped));
+  QtDockAddProperty(panel, "gpu batches/tick", frame_stats.background_thread
+      ? std::string("background")
+      : std::to_string(frame_stats.gpu_batches_per_tick));
+  QtDockAddProperty(panel, "gpu batch ms", QtDockNumber(frame_stats.gpu_batch_ms, 3));
+  QtDockAddProperty(panel, "background jobs", std::to_string(runtime.background_job_count));
+  return panel;
+}
+
+QtDockPanelContent BuildQtDebugViewsDock(const vkpt::editor::UiRuntimeState& runtime,
+                                         const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "debug_views", "Debug Views", false, 320.0f, 300.0f);
+  QtDockAddProperty(panel, "selected view", runtime.selected_debug_view.empty() ? "beauty" : runtime.selected_debug_view);
+  QtDockAddProperty(panel, "active channel", runtime.active_debug_channel.empty() ? "rgb" : runtime.active_debug_channel);
+  QtDockAddRow(panel, "beauty");
+  QtDockAddRow(panel, "albedo");
+  QtDockAddRow(panel, "normal");
+  QtDockAddRow(panel, "depth");
+  QtDockAddRow(panel, "sample_count");
+  QtDockAddRow(panel, "selection_id");
+  return panel;
+}
+
+QtDockPanelContent BuildQtAssetBrowserDock(const vkpt::scene::SceneDocument& document,
+                                           const vkpt::pathtracer::RTSceneData& scene,
+                                           const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "asset_browser", "Asset Browser", true, 720.0f, 260.0f);
+  QtDockAddProperty(panel, "assets", std::to_string(document.assets.size()));
+  QtDockAddProperty(panel, "geometry", std::to_string(document.geometry.size()));
+  QtDockAddProperty(panel, "textures", std::to_string(scene.textures.size()));
+  for (const auto& asset : document.assets) {
+    QtDockAddRow(panel, "#" + std::to_string(asset.id) + " " + asset.type + " " + asset.uri);
+  }
+  for (const auto& geometry : document.geometry) {
+    QtDockAddRow(panel, "#" + std::to_string(geometry.id) + " geometry " +
+        (geometry.primitive.empty() ? "mesh" : geometry.primitive) +
+        " vertices=" + std::to_string(geometry.vertices.size()) +
+        " indices=" + std::to_string(geometry.indices.size()));
+  }
+  for (const auto& texture : scene.textures) {
+    QtDockAddRow(panel, "texture " + texture);
+  }
+  if (panel.rows.empty()) {
+    QtDockAddRow(panel, "No external assets referenced by this scene");
+  }
+  QtDockLimitRows(panel, 128u);
+  return panel;
+}
+
+QtDockPanelContent BuildQtTimelineDock(const vkpt::scene::SceneDocument& document,
+                                       const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "timeline", "Timeline", false, 560.0f, 220.0f);
+  std::size_t animated = 0u;
+  for (const auto& entity : document.entities) {
+    if (!entity.animation.clip.empty()) {
+      ++animated;
+      QtDockAddRow(panel, QtEntityDisplayName(entity) + " clip=" + entity.animation.clip +
+          (entity.animation.looping ? " loop" : " once"));
+    }
+  }
+  QtDockAddProperty(panel, "animated entities", std::to_string(animated));
+  if (animated == 0u) {
+    QtDockAddRow(panel, "No animation clips in the loaded document");
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
+                                     const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "script_panel", "Scripts", false, 520.0f, 420.0f);
+  std::size_t scripted = 0u;
+  for (const auto& entity : document.entities) {
+    if (!entity.script.script.empty()) {
+      ++scripted;
+      QtDockAddRow(panel, QtEntityDisplayName(entity) + " script=" + entity.script.script);
+    }
+  }
+  QtDockAddProperty(panel, "scripted entities", std::to_string(scripted));
+  if (scripted == 0u) {
+    QtDockAddRow(panel, "No scripts attached");
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtPhysicsDock(const vkpt::scene::SceneDocument& document,
+                                      const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "physics", "Physics", false, 420.0f, 320.0f);
+  const auto engine = vkpt::physics::GetCompiledPhysicsEngineInfo();
+  std::size_t authored = 0u;
+  std::size_t enabled = 0u;
+  QtDockAddProperty(panel, "entities", std::to_string(document.entities.size()));
+  QtDockAddProperty(panel, "engine", engine.available ? engine.engine_name : std::string("disabled"));
+  for (const auto& entity : document.entities) {
+    if (entity.has_physics_body) {
+      ++authored;
+      if (entity.physics_body.enabled) {
+        ++enabled;
+      }
+    }
+    std::ostringstream row;
+    row << QtEntityDisplayName(entity) << " #" << entity.id
+        << " physics=" << QtDockBool(entity.has_physics_body && entity.physics_body.enabled);
+    if (entity.has_physics_body) {
+      row << " type=" << (entity.physics_body.dynamic ? "dynamic" : entity.physics_body.body_type)
+          << " shape=" << entity.physics_body.shape
+          << " mass=" << QtDockNumber(entity.physics_body.mass, 2);
+      if (entity.physics_body.trigger) {
+        row << " trigger";
+      }
+    }
+    QtDockAddRow(panel, row.str());
+  }
+  QtDockAddProperty(panel, "authored bodies", std::to_string(authored));
+  QtDockAddProperty(panel, "enabled bodies", std::to_string(enabled));
+  if (document.entities.empty()) {
+    QtDockAddRow(panel, "No entities in the loaded document");
+  }
+  QtDockLimitRows(panel, 128u);
+  return panel;
+}
+
+std::vector<QtDockPanelContent> BuildQtDockPanels(
+    const vkpt::scene::SceneDocument& document,
+    const vkpt::pathtracer::RTSceneData& scene,
+    const vkpt::editor::UiRuntimeState& runtime,
+    const vkpt::editor::SelectionState& selection,
+    const vkpt::editor::UiLayoutDocument& layout,
+    const vkpt::editor::BenchmarkPanelModel& benchmark,
+    const QtDockFrameStats& frame_stats) {
+  std::vector<QtDockPanelContent> panels;
+  panels.reserve(14u);
+  panels.push_back(BuildQtSceneTreeDock(document, selection, layout));
+  panels.push_back(BuildQtInspectorDock(document, selection, runtime, layout));
+  panels.push_back(BuildQtMaterialsDock(document, scene, layout));
+  panels.push_back(BuildQtLightsDock(document, scene, layout));
+  panels.push_back(BuildQtCameraDock(document, scene, runtime, layout));
+  panels.push_back(BuildQtRenderSettingsDock(scene, runtime, layout, frame_stats));
+  panels.push_back(BuildQtBenchmarkDock(benchmark, layout));
+  panels.push_back(BuildQtDiagnosticsDock(runtime, selection, layout, frame_stats));
+  panels.push_back(BuildQtPerformanceDock(runtime, layout, frame_stats));
+  panels.push_back(BuildQtDebugViewsDock(runtime, layout));
+  panels.push_back(BuildQtAssetBrowserDock(document, scene, layout));
+  panels.push_back(BuildQtTimelineDock(document, layout));
+  panels.push_back(BuildQtScriptDock(document, layout));
+  panels.push_back(BuildQtPhysicsDock(document, layout));
+  return panels;
+}
+
+vkpt::platform::QtDockArea QtDockAreaForPanel(std::string_view panel_id) {
+  if (panel_id == "scene_graph" || panel_id == "asset_browser") {
+    return vkpt::platform::QtDockArea::Left;
+  }
+  if (panel_id == "diagnostics" ||
+      panel_id == "performance" ||
+      panel_id == "debug_views" ||
+      panel_id == "benchmark_panel" ||
+      panel_id == "timeline") {
+    return vkpt::platform::QtDockArea::Bottom;
+  }
+  return vkpt::platform::QtDockArea::Right;
+}
+
+std::vector<vkpt::platform::QtDockPanel> ToQtPlatformDockPanels(
+    const std::vector<QtDockPanelContent>& panels) {
+  std::vector<vkpt::platform::QtDockPanel> out;
+  out.reserve(panels.size());
+  for (const auto& panel : panels) {
+    vkpt::platform::QtDockPanel dock;
+    dock.id = panel.id;
+    dock.title = panel.title;
+    dock.area = QtDockAreaForPanel(panel.id);
+    dock.content = panel.properties.empty()
+        ? vkpt::platform::QtDockPanelContent::Tree
+        : vkpt::platform::QtDockPanelContent::Properties;
+    dock.visible = panel.visible && !panel.collapsed;
+    dock.enabled = true;
+    dock.closable = true;
+    dock.movable = panel.docked;
+    dock.floatable = true;
+    dock.rows = panel.rows;
+    dock.properties.reserve(panel.properties.size());
+    for (const auto& property : panel.properties) {
+      vkpt::platform::QtDockProperty dockProperty;
+      dockProperty.group = panel.title;
+      dockProperty.name = property.label;
+      dockProperty.value = property.value;
+      dockProperty.editable = false;
+      dockProperty.enabled = true;
+      dock.properties.push_back(std::move(dockProperty));
+    }
+    out.push_back(std::move(dock));
+  }
+  return out;
+}
+
+std::string BuildQtStatusBarText(const vkpt::editor::StatusBarModel& status) {
+  std::ostringstream out;
+  out << "Scene: " << (status.active_scene.empty() ? "none" : status.active_scene)
+      << " | Backend: " << status.backend
+      << " | Renderer: " << status.renderer_path
+      << " | SPP: " << status.spp
+      << " | FPS: " << QtDockNumber(status.fps, 1)
+      << " | Frame: " << QtDockNumber(status.frame_ms, 2) << " ms"
+      << " | Selected: " << status.selected_entity_count
+      << " | Tool: " << status.active_tool;
+  if (!status.last_warning_or_error.empty()) {
+    out << " | " << status.last_warning_or_error;
+  }
+  return out.str();
+}
+
+void ApplyQtDockPanelsToWindow(vkpt::platform::QtWindow* window,
+                               const std::vector<QtDockPanelContent>& panels) {
+  if (window == nullptr) {
+    return;
+  }
+  window->set_dock_panels(ToQtPlatformDockPanels(panels));
+}
+
+template <typename WindowT>
+void ApplyQtStatusBarToWindowTyped(WindowT* window, std::string_view status_text) {
+  if (window == nullptr) {
+    return;
+  }
+  if constexpr (requires(WindowT& w, std::string_view text) {
+                  w.set_status_bar_text(text);
+                }) {
+    window->set_status_bar_text(status_text);
+  } else if constexpr (requires(WindowT& w, const std::string& text) {
+                         w.set_status_bar_text(text);
+                       }) {
+    const std::string text(status_text);
+    window->set_status_bar_text(text);
+  } else {
+    // App-side adapter only: current QtPlatform.h has no status-bar sink yet.
+    (void)status_text;
+  }
+}
+
+void ApplyQtStatusBarToWindow(vkpt::platform::QtWindow* window,
+                              std::string_view status_text) {
+  ApplyQtStatusBarToWindowTyped(window, status_text);
+}
+
 struct ViewportCameraPose {
   vkpt::pathtracer::Vec3 position{};
   vkpt::pathtracer::Vec3 target{};
@@ -1127,9 +2000,17 @@ struct ViewportCameraPose {
 };
 
 struct ViewportPickable {
+  struct Triangle {
+    vkpt::pathtracer::Vec3 v0{};
+    vkpt::pathtracer::Vec3 v1{};
+    vkpt::pathtracer::Vec3 v2{};
+  };
+
   vkpt::core::StableId entity_id = 0;
   vkpt::editor::Bounds bounds{};
   std::string label;
+  std::vector<Triangle> triangles;
+  bool require_triangle_hit = false;
 };
 
 struct ViewportRay {
@@ -1184,6 +2065,75 @@ vkpt::pathtracer::Vec3 PtNormalize(const vkpt::pathtracer::Vec3& v,
   return PtMul(v, 1.0f / len);
 }
 
+vkpt::scene::Quat NormalizeQuat(vkpt::scene::Quat q) {
+  const float len = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+  if (len <= 1.0e-6f) {
+    return {};
+  }
+  const float inv = 1.0f / len;
+  q.x *= inv;
+  q.y *= inv;
+  q.z *= inv;
+  q.w *= inv;
+  return q;
+}
+
+vkpt::scene::Quat QuatMultiply(const vkpt::scene::Quat& a, const vkpt::scene::Quat& b) {
+  return NormalizeQuat({
+      a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+      a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+      a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+      a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+  });
+}
+
+vkpt::scene::Quat QuatFromAxisAngle(const vkpt::pathtracer::Vec3& axis, float radians) {
+  const auto normalized = PtNormalize(axis, {0.0f, 1.0f, 0.0f});
+  const float half = radians * 0.5f;
+  const float s = std::sin(half);
+  return NormalizeQuat({normalized.x * s, normalized.y * s, normalized.z * s, std::cos(half)});
+}
+
+vkpt::pathtracer::Vec3 RotatePointByQuat(const vkpt::pathtracer::Vec3& point,
+                                         const vkpt::scene::Quat& rotation) {
+  const auto q = NormalizeQuat(rotation);
+  const vkpt::pathtracer::Vec3 qv{q.x, q.y, q.z};
+  const auto t = PtMul(PtCross(qv, point), 2.0f);
+  return PtAdd(PtAdd(point, PtMul(t, q.w)), PtCross(qv, t));
+}
+
+vkpt::pathtracer::Vec3 InverseRotatePointByQuat(const vkpt::pathtracer::Vec3& point,
+                                                const vkpt::scene::Quat& rotation) {
+  auto q = NormalizeQuat(rotation);
+  q.x = -q.x;
+  q.y = -q.y;
+  q.z = -q.z;
+  return RotatePointByQuat(point, q);
+}
+
+vkpt::pathtracer::Vec3 ApplySceneTransformToPoint(const vkpt::pathtracer::Vec3& point,
+                                                  const vkpt::scene::TransformComponent& transform) {
+  const auto scaled = vkpt::pathtracer::Vec3{
+      point.x * transform.scale.x,
+      point.y * transform.scale.y,
+      point.z * transform.scale.z};
+  const auto rotated = RotatePointByQuat(scaled, transform.rotation);
+  return PtAdd(rotated, {transform.translation.x, transform.translation.y, transform.translation.z});
+}
+
+vkpt::pathtracer::Vec3 InverseSceneTransformPoint(const vkpt::pathtracer::Vec3& point,
+                                                  const vkpt::scene::TransformComponent& transform) {
+  const auto translated = PtSub(point, {transform.translation.x, transform.translation.y, transform.translation.z});
+  const auto unrotated = InverseRotatePointByQuat(translated, transform.rotation);
+  const auto safeScale = [](float value) {
+    return std::fabs(value) <= 1.0e-6f ? 1.0f : value;
+  };
+  return {
+      unrotated.x / safeScale(transform.scale.x),
+      unrotated.y / safeScale(transform.scale.y),
+      unrotated.z / safeScale(transform.scale.z)};
+}
+
 float ClampFloat(float value, float min_value, float max_value) {
   return std::min(max_value, std::max(min_value, value));
 }
@@ -1221,11 +2171,7 @@ void ExpandBounds(vkpt::editor::Bounds& bounds, const vkpt::pathtracer::Vec3& po
 
 vkpt::pathtracer::Vec3 TransformPointForPreview(const vkpt::scene::Vec3& point,
                                                 const vkpt::scene::TransformComponent& transform) {
-  return {
-      point.x * transform.scale.x + transform.translation.x,
-      point.y * transform.scale.y + transform.translation.y,
-      point.z * transform.scale.z + transform.translation.z,
-  };
+  return ApplySceneTransformToPoint({point.x, point.y, point.z}, transform);
 }
 
 std::string PickableLabel(std::string_view name, vkpt::core::StableId id) {
@@ -1275,7 +2221,11 @@ void AddSdfPickable(std::vector<ViewportPickable>& pickables,
   ExpandBounds(bounds, PtSub(center, extent));
   ExpandBounds(bounds, PtAdd(center, extent));
   if (bounds.valid) {
-    pickables.push_back({primitive.id, bounds, "sdf " + std::to_string(primitive.id)});
+    ViewportPickable pickable{};
+    pickable.entity_id = primitive.id;
+    pickable.bounds = bounds;
+    pickable.label = "sdf " + std::to_string(primitive.id);
+    pickables.push_back(std::move(pickable));
   }
 }
 
@@ -1285,6 +2235,79 @@ std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDoc
   std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneGeometryDefinition*> geometryById;
   for (const auto& geometry : document.geometry) {
     geometryById[geometry.id] = &geometry;
+  }
+
+  struct MeshPickableRef {
+    vkpt::core::StableId entity_id = 0;
+    std::string label;
+  };
+  std::vector<MeshPickableRef> meshRefs;
+  meshRefs.reserve(document.entities.size());
+  for (const auto& entity : document.entities) {
+    if (!entity.has_mesh) {
+      continue;
+    }
+    const auto geometryIt = geometryById.find(entity.mesh.mesh_id);
+    if (geometryIt == geometryById.end()) {
+      continue;
+    }
+    const auto* geometry = geometryIt->second;
+    if (geometry == nullptr || geometry->vertices.empty() || geometry->indices.empty()) {
+      continue;
+    }
+    meshRefs.push_back({entity.id, PickableLabel(entity.name, entity.id)});
+  }
+
+  if (!meshRefs.empty() && !scene.instances.empty()) {
+    const std::size_t count = std::min(meshRefs.size(), scene.instances.size());
+    for (std::size_t instanceIndex = 0; instanceIndex < count; ++instanceIndex) {
+      const auto& instance = scene.instances[instanceIndex];
+      vkpt::editor::Bounds bounds{};
+      for (uint32_t triangle = 0; triangle < instance.triangle_count; ++triangle) {
+        const uint32_t base = (instance.first_triangle + triangle) * 3u;
+        if (base + 2u >= scene.indices.size()) {
+          continue;
+        }
+        for (uint32_t corner = 0u; corner < 3u; ++corner) {
+          const uint32_t vertexIndex = scene.indices[base + corner];
+          if (vertexIndex < scene.vertices.size()) {
+            ExpandBounds(bounds, scene.vertices[vertexIndex]);
+          }
+        }
+      }
+      if (!bounds.valid) {
+        continue;
+      }
+
+      ViewportPickable pickable{};
+      pickable.entity_id = meshRefs[instanceIndex].entity_id;
+      pickable.bounds = bounds;
+      pickable.label = meshRefs[instanceIndex].label;
+      pickable.require_triangle_hit = true;
+      for (uint32_t triangle = 0; triangle < instance.triangle_count; ++triangle) {
+        const uint32_t base = (instance.first_triangle + triangle) * 3u;
+        if (base + 2u >= scene.indices.size()) {
+          continue;
+        }
+        const uint32_t i0 = scene.indices[base + 0u];
+        const uint32_t i1 = scene.indices[base + 1u];
+        const uint32_t i2 = scene.indices[base + 2u];
+        if (i0 >= scene.vertices.size() || i1 >= scene.vertices.size() || i2 >= scene.vertices.size()) {
+          continue;
+        }
+        pickable.triangles.push_back({scene.vertices[i0], scene.vertices[i1], scene.vertices[i2]});
+      }
+      if (!pickable.triangles.empty()) {
+        pickables.push_back(std::move(pickable));
+      }
+    }
+
+    for (const auto& primitive : document.sdf_primitives) {
+      AddSdfPickable(pickables, primitive);
+    }
+    if (!pickables.empty()) {
+      return pickables;
+    }
   }
 
   for (const auto& entity : document.entities) {
@@ -1305,7 +2328,29 @@ std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDoc
       ExpandBounds(bounds, TransformPointForPreview(vertex, transform));
     }
     if (bounds.valid) {
-      pickables.push_back({entity.id, bounds, PickableLabel(entity.name, entity.id)});
+      ViewportPickable pickable{};
+      pickable.entity_id = entity.id;
+      pickable.bounds = bounds;
+      pickable.label = PickableLabel(entity.name, entity.id);
+      pickable.require_triangle_hit = true;
+      for (std::size_t index = 0; index + 2u < geometry->indices.size(); index += 3u) {
+        const auto i0 = geometry->indices[index + 0u];
+        const auto i1 = geometry->indices[index + 1u];
+        const auto i2 = geometry->indices[index + 2u];
+        if (i0 >= geometry->vertices.size() ||
+            i1 >= geometry->vertices.size() ||
+            i2 >= geometry->vertices.size()) {
+          continue;
+        }
+        pickable.triangles.push_back({
+            TransformPointForPreview(geometry->vertices[i0], transform),
+            TransformPointForPreview(geometry->vertices[i1], transform),
+            TransformPointForPreview(geometry->vertices[i2], transform)});
+      }
+      if (pickable.triangles.empty()) {
+        continue;
+      }
+      pickables.push_back(std::move(pickable));
     }
   }
 
@@ -1334,7 +2379,28 @@ std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDoc
     }
     if (bounds.valid) {
       const auto id = static_cast<vkpt::core::StableId>(instanceIndex + 1u);
-      pickables.push_back({id, bounds, "instance " + std::to_string(id)});
+      ViewportPickable pickable{};
+      pickable.entity_id = id;
+      pickable.bounds = bounds;
+      pickable.label = "instance " + std::to_string(id);
+      pickable.require_triangle_hit = true;
+      for (uint32_t triangle = 0; triangle < instance.triangle_count; ++triangle) {
+        const uint32_t base = (instance.first_triangle + triangle) * 3u;
+        if (base + 2u >= scene.indices.size()) {
+          continue;
+        }
+        const uint32_t i0 = scene.indices[base + 0u];
+        const uint32_t i1 = scene.indices[base + 1u];
+        const uint32_t i2 = scene.indices[base + 2u];
+        if (i0 >= scene.vertices.size() || i1 >= scene.vertices.size() || i2 >= scene.vertices.size()) {
+          continue;
+        }
+        pickable.triangles.push_back({scene.vertices[i0], scene.vertices[i1], scene.vertices[i2]});
+      }
+      if (pickable.triangles.empty()) {
+        continue;
+      }
+      pickables.push_back(std::move(pickable));
     }
   }
 
@@ -1351,7 +2417,11 @@ std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDoc
     ExpandBounds(bounds, PtAdd(primitive.position, extent));
     if (bounds.valid) {
       const auto id = static_cast<vkpt::core::StableId>(pickables.size() + 1u);
-      pickables.push_back({id, bounds, "sdf " + std::to_string(id)});
+      ViewportPickable pickable{};
+      pickable.entity_id = id;
+      pickable.bounds = bounds;
+      pickable.label = "sdf " + std::to_string(id);
+      pickables.push_back(std::move(pickable));
     }
   }
 
@@ -1362,15 +2432,16 @@ ViewportRay BuildViewportRay(const ViewportCameraPose& camera,
                              float x,
                              float y,
                              float width,
-                             float height) {
+                             float height,
+                             float renderAspect) {
   const float safeWidth = std::max(1.0f, width);
   const float safeHeight = std::max(1.0f, height);
+  const float safeAspect = std::max(0.01f, renderAspect);
   const auto forward = PtNormalize(PtSub(camera.target, camera.position));
   const auto right = PtNormalize(PtCross(forward, camera.up), {1.0f, 0.0f, 0.0f});
   const auto up = PtNormalize(PtCross(right, forward), {0.0f, 1.0f, 0.0f});
-  const float aspect = safeWidth / safeHeight;
   const float tanHalfFov = std::tan(0.5f * DegToRad(std::max(1.0f, camera.fov_deg)));
-  const float nx = ((x + 0.5f) / safeWidth * 2.0f - 1.0f) * aspect * tanHalfFov;
+  const float nx = ((x + 0.5f) / safeWidth * 2.0f - 1.0f) * safeAspect * tanHalfFov;
   const float ny = (1.0f - (y + 0.5f) / safeHeight * 2.0f) * tanHalfFov;
   return {camera.position, PtNormalize(PtAdd(PtAdd(forward, PtMul(right, nx)), PtMul(up, ny)))};
 }
@@ -1408,21 +2479,91 @@ bool IntersectBounds(const ViewportRay& ray, const vkpt::editor::Bounds& bounds,
   return true;
 }
 
+bool IntersectFrontFacingTriangle(const ViewportRay& ray,
+                                  const ViewportPickable::Triangle& triangle,
+                                  float maxDistance,
+                                  float& t_out) {
+  constexpr float kEpsilon = 1.0e-6f;
+  const auto edge1 = PtSub(triangle.v1, triangle.v0);
+  const auto edge2 = PtSub(triangle.v2, triangle.v0);
+  const auto pvec = PtCross(ray.direction, edge2);
+  const float det = PtDot(edge1, pvec);
+  if (det <= kEpsilon) {
+    return false;
+  }
+
+  const float invDet = 1.0f / det;
+  const auto tvec = PtSub(ray.origin, triangle.v0);
+  const float u = PtDot(tvec, pvec) * invDet;
+  if (u < 0.0f || u > 1.0f) {
+    return false;
+  }
+
+  const auto qvec = PtCross(tvec, edge1);
+  const float v = PtDot(ray.direction, qvec) * invDet;
+  if (v < 0.0f || u + v > 1.0f) {
+    return false;
+  }
+
+  const float t = PtDot(edge2, qvec) * invDet;
+  if (t <= kEpsilon || t >= maxDistance) {
+    return false;
+  }
+  t_out = t;
+  return true;
+}
+
+bool IntersectPickableForSelection(const ViewportRay& ray,
+                                   const ViewportPickable& pickable,
+                                   float maxDistance,
+                                   float& t_out) {
+  float boundsDistance = 0.0f;
+  if (!IntersectBounds(ray, pickable.bounds, boundsDistance) || boundsDistance >= maxDistance) {
+    return false;
+  }
+
+  if (pickable.triangles.empty()) {
+    if (pickable.require_triangle_hit) {
+      return false;
+    }
+    t_out = boundsDistance;
+    return true;
+  }
+
+  bool hit = false;
+  float bestTriangleDistance = maxDistance;
+  for (const auto& triangle : pickable.triangles) {
+    float triangleDistance = 0.0f;
+    if (!IntersectFrontFacingTriangle(ray, triangle, bestTriangleDistance, triangleDistance)) {
+      continue;
+    }
+    bestTriangleDistance = triangleDistance;
+    hit = true;
+  }
+  if (!hit) {
+    return false;
+  }
+  t_out = bestTriangleDistance;
+  return true;
+}
+
 std::optional<ViewportPickResult> PickViewportObject(const std::vector<ViewportPickable>& pickables,
                                                      const ViewportCameraPose& camera,
                                                      float x,
                                                      float y,
                                                      float width,
-                                                     float height) {
-  const auto ray = BuildViewportRay(camera, x, y, width, height);
+                                                     float height,
+                                                     float renderAspect) {
+  const auto ray = BuildViewportRay(camera, x, y, width, height, renderAspect);
   std::optional<ViewportPickResult> best;
   for (const auto& pickable : pickables) {
-    float t = 0.0f;
-    if (!IntersectBounds(ray, pickable.bounds, t)) {
+    const float maxDistance = best ? best->distance : std::numeric_limits<float>::infinity();
+    float distance = 0.0f;
+    if (!IntersectPickableForSelection(ray, pickable, maxDistance, distance)) {
       continue;
     }
-    if (!best || t < best->distance) {
-      best = ViewportPickResult{pickable.entity_id, pickable.bounds, pickable.label, t};
+    if (!best || distance < best->distance) {
+      best = ViewportPickResult{pickable.entity_id, pickable.bounds, pickable.label, distance};
     }
   }
   return best;
@@ -1441,48 +2582,705 @@ std::vector<vkpt::pathtracer::Vec3> BoundsCorners(const vkpt::editor::Bounds& bo
   };
 }
 
-std::optional<vkpt::platform::QtSelectionOverlayBox> ProjectBoundsToOverlay(
-    const vkpt::editor::Bounds& bounds,
+constexpr std::array<std::pair<int, int>, 12> kViewportBoundsEdges{{
+    {0, 1}, {1, 3}, {3, 2}, {2, 0},
+    {4, 5}, {5, 7}, {7, 6}, {6, 4},
+    {0, 4}, {1, 5}, {2, 6}, {3, 7},
+}};
+
+struct ProjectedViewportPoint {
+  float x = 0.0f;
+  float y = 0.0f;
+  float depth = 0.0f;
+};
+
+struct OverlayColor {
+  std::uint8_t r = 255u;
+  std::uint8_t g = 255u;
+  std::uint8_t b = 255u;
+  std::uint8_t a = 255u;
+};
+
+std::optional<ProjectedViewportPoint> ProjectWorldPointToOverlay(
+    const vkpt::pathtracer::Vec3& point,
     const ViewportCameraPose& camera,
     float width,
     float height,
-    std::string label,
-    bool primary) {
-  if (!bounds.valid || width <= 1.0f || height <= 1.0f) {
+    float renderAspect) {
+  if (width <= 1.0f || height <= 1.0f) {
     return std::nullopt;
   }
   const auto forward = PtNormalize(PtSub(camera.target, camera.position));
   const auto right = PtNormalize(PtCross(forward, camera.up), {1.0f, 0.0f, 0.0f});
   const auto up = PtNormalize(PtCross(right, forward), {0.0f, 1.0f, 0.0f});
-  const float aspect = width / std::max(1.0f, height);
+  const float aspect = std::max(0.01f, renderAspect);
   const float tanHalfFov = std::tan(0.5f * DegToRad(std::max(1.0f, camera.fov_deg)));
 
+  const auto rel = PtSub(point, camera.position);
+  const float depth = PtDot(rel, forward);
+  if (depth <= 1.0e-4f) {
+    return std::nullopt;
+  }
+  const float cameraX = PtDot(rel, right);
+  const float cameraY = PtDot(rel, up);
+  const float ndcX = cameraX / (depth * tanHalfFov * aspect);
+  const float ndcY = cameraY / (depth * tanHalfFov);
+  return ProjectedViewportPoint{
+      (ndcX + 1.0f) * 0.5f * width,
+      (1.0f - ndcY) * 0.5f * height,
+      depth};
+}
+
+void AddProjectedOverlayLine(vkpt::platform::QtSelectionOverlayBox& box,
+                             const ProjectedViewportPoint& a,
+                             const ProjectedViewportPoint& b,
+                             OverlayColor color,
+                             float lineWidth) {
+  box.lines.push_back(vkpt::platform::QtSelectionOverlayBox::Line{
+      a.x, a.y, b.x, b.y, color.r, color.g, color.b, color.a, lineWidth});
+}
+
+void AddWorldOverlayLine(vkpt::platform::QtSelectionOverlayBox& box,
+                         const ViewportCameraPose& camera,
+                         float width,
+                         float height,
+                         float renderAspect,
+                         const vkpt::pathtracer::Vec3& a,
+                         const vkpt::pathtracer::Vec3& b,
+                         OverlayColor color,
+                         float lineWidth) {
+  const auto projectedA = ProjectWorldPointToOverlay(a, camera, width, height, renderAspect);
+  const auto projectedB = ProjectWorldPointToOverlay(b, camera, width, height, renderAspect);
+  if (!projectedA || !projectedB) {
+    return;
+  }
+  AddProjectedOverlayLine(box, *projectedA, *projectedB, color, lineWidth);
+}
+
+void AddWorldOverlayPoint(vkpt::platform::QtSelectionOverlayBox& box,
+                          const ViewportCameraPose& camera,
+                          float width,
+                          float height,
+                          float renderAspect,
+                          const vkpt::pathtracer::Vec3& point,
+                          OverlayColor color,
+                          float radius,
+                          std::string label = {}) {
+  const auto projected = ProjectWorldPointToOverlay(point, camera, width, height, renderAspect);
+  if (!projected) {
+    return;
+  }
+  box.points.push_back(vkpt::platform::QtSelectionOverlayBox::Point{
+      projected->x, projected->y, radius, color.r, color.g, color.b, color.a, std::move(label)});
+}
+
+void AddGizmoCornerArc(vkpt::platform::QtSelectionOverlayBox& box,
+                       const ViewportCameraPose& camera,
+                       float width,
+                       float height,
+                       float renderAspect,
+                       const vkpt::pathtracer::Vec3& corner,
+                       const vkpt::pathtracer::Vec3& axisA,
+                       const vkpt::pathtracer::Vec3& axisB,
+                       float radius,
+                       OverlayColor color,
+                       float lineWidth = 1.0f) {
+  if (radius <= 1.0e-4f) {
+    return;
+  }
+  constexpr int kArcSegments = 14;
+  constexpr float kHalfPi = 1.57079632679489661923f;
+  auto previous = ProjectedViewportPoint{};
+  bool previousValid = false;
+  for (int segment = 0; segment <= kArcSegments; ++segment) {
+    const float t = (static_cast<float>(segment) / static_cast<float>(kArcSegments)) * kHalfPi;
+    const auto world = PtAdd(corner,
+                             PtAdd(PtMul(axisA, std::cos(t) * radius),
+                                   PtMul(axisB, std::sin(t) * radius)));
+    const auto projected = ProjectWorldPointToOverlay(world, camera, width, height, renderAspect);
+    if (projected && previousValid) {
+      AddProjectedOverlayLine(box, previous, *projected, color, lineWidth);
+    }
+    if (projected) {
+      previous = *projected;
+      previousValid = true;
+    } else {
+      previousValid = false;
+    }
+  }
+}
+
+enum class ViewportGizmoDragKind {
+  None,
+  Translate,
+  FreeformTranslate,
+  Rotate,
+  ScaleAxis,
+};
+
+struct ViewportGizmoHit {
+  ViewportGizmoDragKind kind = ViewportGizmoDragKind::None;
+  vkpt::pathtracer::Vec3 axis{};
+  vkpt::pathtracer::Vec3 pivot{};
+  float screen_axis_x = 1.0f;
+  float screen_axis_y = 0.0f;
+  float pixels_per_unit = 1.0f;
+  float axis_world_length = 1.0f;
+  int axis_index = -1;
+};
+
+vkpt::platform::QtViewportCursor CursorForGizmoHit(const ViewportGizmoHit& hit) {
+  switch (hit.kind) {
+    case ViewportGizmoDragKind::Translate:
+    case ViewportGizmoDragKind::FreeformTranslate:
+      return vkpt::platform::QtViewportCursor::Translate;
+    case ViewportGizmoDragKind::Rotate:
+      return vkpt::platform::QtViewportCursor::Rotate;
+    case ViewportGizmoDragKind::ScaleAxis:
+      return vkpt::platform::QtViewportCursor::Scale;
+    case ViewportGizmoDragKind::None:
+    default:
+      return vkpt::platform::QtViewportCursor::Default;
+  }
+}
+
+float ScreenDistance(float ax, float ay, float bx, float by) {
+  const float dx = ax - bx;
+  const float dy = ay - by;
+  return std::sqrt(dx * dx + dy * dy);
+}
+
+float ScreenDistanceToSegment(float px,
+                              float py,
+                              const ProjectedViewportPoint& a,
+                              const ProjectedViewportPoint& b,
+                              float* tangentX = nullptr,
+                              float* tangentY = nullptr) {
+  const float vx = b.x - a.x;
+  const float vy = b.y - a.y;
+  const float lenSq = vx * vx + vy * vy;
+  if (lenSq <= 1.0e-6f) {
+    if (tangentX != nullptr) {
+      *tangentX = 1.0f;
+    }
+    if (tangentY != nullptr) {
+      *tangentY = 0.0f;
+    }
+    return ScreenDistance(px, py, a.x, a.y);
+  }
+  const float t = ClampFloat(((px - a.x) * vx + (py - a.y) * vy) / lenSq, 0.0f, 1.0f);
+  const float closestX = a.x + vx * t;
+  const float closestY = a.y + vy * t;
+  const float len = std::sqrt(lenSq);
+  if (tangentX != nullptr) {
+    *tangentX = vx / len;
+  }
+  if (tangentY != nullptr) {
+    *tangentY = vy / len;
+  }
+  return ScreenDistance(px, py, closestX, closestY);
+}
+
+bool SameGizmoHandle(const std::optional<ViewportGizmoHit>& a,
+                     const std::optional<ViewportGizmoHit>& b) {
+  if (a.has_value() != b.has_value()) {
+    return false;
+  }
+  if (!a) {
+    return true;
+  }
+  return a->kind == b->kind && a->axis_index == b->axis_index;
+}
+
+bool IsHoveredGizmoHandle(const std::optional<ViewportGizmoHit>& hover,
+                          ViewportGizmoDragKind kind,
+                          int axisIndex) {
+  return hover && hover->kind == kind && hover->axis_index == axisIndex;
+}
+
+std::optional<vkpt::pathtracer::Vec3> ScreenPointOnCameraPlane(
+    const ViewportCameraPose& camera,
+    float x,
+    float y,
+    float width,
+    float height,
+    float renderAspect,
+    const vkpt::pathtracer::Vec3& planePoint) {
+  const auto ray = BuildViewportRay(camera, x, y, width, height, renderAspect);
+  const auto forward = PtNormalize(PtSub(camera.target, camera.position));
+  const float denom = PtDot(ray.direction, forward);
+  if (std::fabs(denom) <= 1.0e-5f) {
+    return std::nullopt;
+  }
+  const float t = PtDot(PtSub(planePoint, ray.origin), forward) / denom;
+  if (t <= 1.0e-5f) {
+    return std::nullopt;
+  }
+  return PtAdd(ray.origin, PtMul(ray.direction, t));
+}
+
+std::optional<ViewportGizmoHit> PickSelectionGizmoHandle(const vkpt::editor::Bounds& bounds,
+                                                         const ViewportCameraPose& camera,
+                                                         float width,
+                                                         float height,
+                                                         float renderAspect,
+                                                         vkpt::editor::GizmoMode mode,
+                                                         float mouseX,
+                                                         float mouseY) {
+  if (!bounds.valid || mode == vkpt::editor::GizmoMode::None) {
+    return std::nullopt;
+  }
+  const auto min = ToPtVec3(bounds.min);
+  const auto max = ToPtVec3(bounds.max);
+  const auto center = PtMul(PtAdd(min, max), 0.5f);
+  const float extentX = std::fabs(max.x - min.x);
+  const float extentY = std::fabs(max.y - min.y);
+  const float extentZ = std::fabs(max.z - min.z);
+  const float maxExtent = std::max({extentX, extentY, extentZ});
+  if (maxExtent <= 1.0e-5f) {
+    return std::nullopt;
+  }
+
+  const auto corners = BoundsCorners(bounds);
+  std::size_t anchorIndex = 0u;
+  float nearestDepth = std::numeric_limits<float>::infinity();
+  for (std::size_t i = 0; i < corners.size(); ++i) {
+    const auto projected = ProjectWorldPointToOverlay(corners[i], camera, width, height, renderAspect);
+    if (projected && projected->depth < nearestDepth) {
+      nearestDepth = projected->depth;
+      anchorIndex = i;
+    }
+  }
+  const auto anchor = corners[anchorIndex];
+  const auto projectedAnchor = ProjectWorldPointToOverlay(anchor, camera, width, height, renderAspect);
+  if (!projectedAnchor) {
+    return std::nullopt;
+  }
+
+  const bool anchorMinX = std::fabs(anchor.x - min.x) <= std::fabs(anchor.x - max.x);
+  const bool anchorMinY = std::fabs(anchor.y - min.y) <= std::fabs(anchor.y - max.y);
+  const bool anchorMinZ = std::fabs(anchor.z - min.z) <= std::fabs(anchor.z - max.z);
+  struct CornerAxis {
+    int axis_index = -1;
+    vkpt::pathtracer::Vec3 axis{};
+    vkpt::pathtracer::Vec3 endpoint{};
+    float length = 0.0f;
+  };
+  const std::array<CornerAxis, 3> axes{{
+      {0,
+       {anchorMinX ? 1.0f : -1.0f, 0.0f, 0.0f},
+       {anchorMinX ? max.x : min.x, anchor.y, anchor.z},
+       extentX},
+      {1,
+       {0.0f, anchorMinY ? 1.0f : -1.0f, 0.0f},
+       {anchor.x, anchorMinY ? max.y : min.y, anchor.z},
+       extentY},
+      {2,
+       {0.0f, 0.0f, anchorMinZ ? 1.0f : -1.0f},
+       {anchor.x, anchor.y, anchorMinZ ? max.z : min.z},
+       extentZ},
+  }};
+  const auto tickLength = [maxExtent](float axisExtent) {
+    if (axisExtent <= 1.0e-5f) {
+      return 0.0f;
+    }
+    return std::max(0.025f, std::min(axisExtent * 0.35f, maxExtent * 0.18f));
+  };
+  const float xLength = tickLength(extentX);
+  const float yLength = tickLength(extentY);
+  const float zLength = tickLength(extentZ);
+
+  std::optional<ViewportGizmoHit> best;
+  float bestDistance = std::numeric_limits<float>::infinity();
+  int bestPriority = -1;
+  constexpr float kTranslateHitRadius = 11.0f;
+  constexpr float kRotateHitRadius = 10.0f;
+  constexpr float kScaleHitRadius = 12.0f;
+  const auto accept_hit = [&](float distance, int priority, ViewportGizmoHit hit) {
+    constexpr float kTieBreakPixels = 0.75f;
+    if (distance + kTieBreakPixels < bestDistance ||
+        (std::fabs(distance - bestDistance) <= kTieBreakPixels && priority > bestPriority)) {
+      bestDistance = distance;
+      bestPriority = priority;
+      best = hit;
+    }
+  };
+
+  const bool drawTranslate = mode == vkpt::editor::GizmoMode::Translate ||
+                             mode == vkpt::editor::GizmoMode::Universal;
+  const bool drawRotate = mode == vkpt::editor::GizmoMode::Rotate ||
+                          mode == vkpt::editor::GizmoMode::Universal;
+  const bool drawScale = mode == vkpt::editor::GizmoMode::Scale ||
+                         mode == vkpt::editor::GizmoMode::Universal;
+
+  const auto consider_axis_line = [&](const CornerAxis& axis) {
+    if (!drawTranslate || axis.length <= 1.0e-5f) {
+      return;
+    }
+    const auto projectedEnd = ProjectWorldPointToOverlay(axis.endpoint, camera, width, height, renderAspect);
+    if (!projectedEnd) {
+      return;
+    }
+    float tangentX = 1.0f;
+    float tangentY = 0.0f;
+    const float distance = ScreenDistanceToSegment(mouseX,
+                                                   mouseY,
+                                                   *projectedAnchor,
+                                                   *projectedEnd,
+                                                   &tangentX,
+                                                   &tangentY);
+    if (distance > kTranslateHitRadius) {
+      return;
+    }
+    const float screenPixels = ScreenDistance(projectedAnchor->x,
+                                              projectedAnchor->y,
+                                              projectedEnd->x,
+                                              projectedEnd->y);
+    accept_hit(distance, 10, ViewportGizmoHit{
+        ViewportGizmoDragKind::Translate,
+        axis.axis,
+        center,
+        tangentX,
+        tangentY,
+        std::max(1.0f, screenPixels / std::max(axis.length, 1.0e-4f)),
+        axis.length,
+        axis.axis_index});
+  };
+
+  const auto consider_axis_endpoint = [&](const CornerAxis& axis) {
+    if (!drawScale || axis.length <= 1.0e-5f) {
+      return;
+    }
+    const auto projectedEnd = ProjectWorldPointToOverlay(axis.endpoint, camera, width, height, renderAspect);
+    if (!projectedEnd) {
+      return;
+    }
+    const float distance = ScreenDistance(mouseX, mouseY, projectedEnd->x, projectedEnd->y);
+    if (distance > kScaleHitRadius) {
+      return;
+    }
+    float sx = projectedEnd->x - projectedAnchor->x;
+    float sy = projectedEnd->y - projectedAnchor->y;
+    float pixels = std::sqrt(sx * sx + sy * sy);
+    if (pixels <= 1.0e-3f) {
+      sx = 1.0f;
+      sy = 0.0f;
+      pixels = 1.0f;
+    }
+    accept_hit(distance, 30, ViewportGizmoHit{
+        ViewportGizmoDragKind::ScaleAxis,
+        axis.axis,
+        anchor,
+        sx / pixels,
+        sy / pixels,
+        std::max(1.0f, pixels / std::max(axis.length, 1.0e-4f)),
+        axis.length,
+        axis.axis_index});
+  };
+
+  for (const auto& axis : axes) {
+    consider_axis_line(axis);
+    consider_axis_endpoint(axis);
+  }
+
+  const auto consider_arc = [&](const vkpt::pathtracer::Vec3& axis,
+                                int axisIndex,
+                                const vkpt::pathtracer::Vec3& axisA,
+                                const vkpt::pathtracer::Vec3& axisB,
+                                float radius) {
+    if (!drawRotate || radius <= 1.0e-4f) {
+      return;
+    }
+    constexpr int kArcSegments = 14;
+    constexpr float kHalfPi = 1.57079632679489661923f;
+    auto previous = ProjectedViewportPoint{};
+    bool previousValid = false;
+    for (int segment = 0; segment <= kArcSegments; ++segment) {
+      const float t = (static_cast<float>(segment) / static_cast<float>(kArcSegments)) * kHalfPi;
+      const auto world = PtAdd(anchor,
+                               PtAdd(PtMul(axisA, std::cos(t) * radius),
+                                     PtMul(axisB, std::sin(t) * radius)));
+      const auto projected = ProjectWorldPointToOverlay(world, camera, width, height, renderAspect);
+      if (projected && previousValid) {
+        float tangentX = 1.0f;
+        float tangentY = 0.0f;
+        const float distance = ScreenDistanceToSegment(mouseX, mouseY, previous, *projected, &tangentX, &tangentY);
+        if (distance <= kRotateHitRadius) {
+          accept_hit(distance, 20, ViewportGizmoHit{
+              ViewportGizmoDragKind::Rotate,
+              axis,
+              center,
+              tangentX,
+              tangentY,
+              1.0f,
+              std::max(radius, 1.0e-4f),
+              axisIndex});
+        }
+      }
+      if (projected) {
+        previous = *projected;
+        previousValid = true;
+      } else {
+        previousValid = false;
+      }
+    }
+  };
+
+  consider_arc(axes[0].axis, 0, axes[1].axis, axes[2].axis, std::min(yLength, zLength));
+  consider_arc(axes[1].axis, 1, axes[0].axis, axes[2].axis, std::min(xLength, zLength));
+  consider_arc(axes[2].axis, 2, axes[0].axis, axes[1].axis, std::min(xLength, yLength));
+  return best;
+}
+
+std::optional<ViewportGizmoHit> PickSelectionBoundsFreeform(const vkpt::editor::Bounds& bounds,
+                                                            const ViewportCameraPose& camera,
+                                                            float width,
+                                                            float height,
+                                                            float renderAspect,
+                                                            vkpt::editor::GizmoMode mode,
+                                                            float mouseX,
+                                                            float mouseY) {
+  if (!bounds.valid || mode == vkpt::editor::GizmoMode::None) {
+    return std::nullopt;
+  }
+  const auto corners = BoundsCorners(bounds);
+  std::array<std::optional<ProjectedViewportPoint>, 8> projected{};
+  for (std::size_t i = 0; i < corners.size(); ++i) {
+    projected[i] = ProjectWorldPointToOverlay(corners[i], camera, width, height, renderAspect);
+  }
+
+  float bestDistance = 10.0f;
+  for (const auto [a, b] : kViewportBoundsEdges) {
+    const auto& pa = projected[static_cast<std::size_t>(a)];
+    const auto& pb = projected[static_cast<std::size_t>(b)];
+    if (!pa || !pb) {
+      continue;
+    }
+    const float distance = ScreenDistanceToSegment(mouseX, mouseY, *pa, *pb);
+    bestDistance = std::min(bestDistance, distance);
+  }
+  if (bestDistance > 9.5f) {
+    return std::nullopt;
+  }
+
+  const auto min = ToPtVec3(bounds.min);
+  const auto max = ToPtVec3(bounds.max);
+  return ViewportGizmoHit{
+      ViewportGizmoDragKind::FreeformTranslate,
+      {},
+      PtMul(PtAdd(min, max), 0.5f),
+      1.0f,
+      0.0f,
+      1.0f,
+      1.0f,
+      -1};
+}
+
+void AddSelectionGizmo(vkpt::platform::QtSelectionOverlayBox& box,
+                       const vkpt::editor::Bounds& bounds,
+                       const ViewportCameraPose& camera,
+                       float width,
+                       float height,
+                       float renderAspect,
+                       vkpt::editor::GizmoMode mode,
+                       const std::optional<ViewportGizmoHit>& hover) {
+  if (mode == vkpt::editor::GizmoMode::None || !bounds.valid) {
+    return;
+  }
+  const auto min = ToPtVec3(bounds.min);
+  const auto max = ToPtVec3(bounds.max);
+  const float extentX = std::fabs(max.x - min.x);
+  const float extentY = std::fabs(max.y - min.y);
+  const float extentZ = std::fabs(max.z - min.z);
+  const float maxExtent = std::max({extentX, extentY, extentZ});
+  if (maxExtent <= 1.0e-5f) {
+    return;
+  }
+
+  const auto corners = BoundsCorners(bounds);
+  std::size_t anchorIndex = 0u;
+  float nearestDepth = std::numeric_limits<float>::infinity();
+  for (std::size_t i = 0; i < corners.size(); ++i) {
+    const auto projected = ProjectWorldPointToOverlay(corners[i], camera, width, height, renderAspect);
+    if (projected && projected->depth < nearestDepth) {
+      nearestDepth = projected->depth;
+      anchorIndex = i;
+    }
+  }
+  const auto anchor = corners[anchorIndex];
+  const bool anchorMinX = std::fabs(anchor.x - min.x) <= std::fabs(anchor.x - max.x);
+  const bool anchorMinY = std::fabs(anchor.y - min.y) <= std::fabs(anchor.y - max.y);
+  const bool anchorMinZ = std::fabs(anchor.z - min.z) <= std::fabs(anchor.z - max.z);
+  struct CornerAxis {
+    int axis_index = -1;
+    vkpt::pathtracer::Vec3 axis{};
+    vkpt::pathtracer::Vec3 endpoint{};
+    float length = 0.0f;
+    OverlayColor color{};
+  };
+  constexpr OverlayColor kX{245u, 76u, 76u, 170u};
+  constexpr OverlayColor kY{84u, 214u, 112u, 170u};
+  constexpr OverlayColor kZ{74u, 144u, 255u, 170u};
+  const std::array<CornerAxis, 3> axes{{
+      {0,
+       {anchorMinX ? 1.0f : -1.0f, 0.0f, 0.0f},
+       {anchorMinX ? max.x : min.x, anchor.y, anchor.z},
+       extentX,
+       kX},
+      {1,
+       {0.0f, anchorMinY ? 1.0f : -1.0f, 0.0f},
+       {anchor.x, anchorMinY ? max.y : min.y, anchor.z},
+       extentY,
+       kY},
+      {2,
+       {0.0f, 0.0f, anchorMinZ ? 1.0f : -1.0f},
+       {anchor.x, anchor.y, anchorMinZ ? max.z : min.z},
+       extentZ,
+       kZ},
+  }};
+  const auto tickLength = [maxExtent](float axisExtent) {
+    if (axisExtent <= 1.0e-5f) {
+      return 0.0f;
+    }
+    return std::max(0.025f, std::min(axisExtent * 0.35f, maxExtent * 0.18f));
+  };
+  const float xLength = tickLength(extentX);
+  const float yLength = tickLength(extentY);
+  const float zLength = tickLength(extentZ);
+
+  const bool drawTranslate = mode == vkpt::editor::GizmoMode::Translate ||
+                             mode == vkpt::editor::GizmoMode::Universal;
+  const bool drawRotate = mode == vkpt::editor::GizmoMode::Rotate ||
+                          mode == vkpt::editor::GizmoMode::Universal;
+  const bool drawScale = mode == vkpt::editor::GizmoMode::Scale ||
+                         mode == vkpt::editor::GizmoMode::Universal;
+
+  constexpr OverlayColor kCorner{255u, 255u, 255u, 170u};
+  const auto highlight_color = [](OverlayColor color) {
+    color.a = 255u;
+    color.r = static_cast<std::uint8_t>(std::min(255, static_cast<int>(color.r) + 22));
+    color.g = static_cast<std::uint8_t>(std::min(255, static_cast<int>(color.g) + 22));
+    color.b = static_cast<std::uint8_t>(std::min(255, static_cast<int>(color.b) + 22));
+    return color;
+  };
+
+  if (drawTranslate) {
+    for (const auto& axis : axes) {
+      if (axis.length <= 1.0e-5f) {
+        continue;
+      }
+      const bool hovered = IsHoveredGizmoHandle(hover, ViewportGizmoDragKind::Translate, axis.axis_index);
+      AddWorldOverlayLine(box,
+                          camera,
+                          width,
+                          height,
+                          renderAspect,
+                          anchor,
+                          axis.endpoint,
+                          hovered ? highlight_color(axis.color) : axis.color,
+                          hovered ? 2.4f : 1.35f);
+    }
+  }
+
+  if (drawScale) {
+    for (const auto& axis : axes) {
+      if (axis.length <= 1.0e-5f) {
+        continue;
+      }
+      const bool hovered = IsHoveredGizmoHandle(hover, ViewportGizmoDragKind::ScaleAxis, axis.axis_index);
+      AddWorldOverlayPoint(box,
+                           camera,
+                           width,
+                           height,
+                           renderAspect,
+                           axis.endpoint,
+                           hovered ? highlight_color(axis.color) : axis.color,
+                           hovered ? 4.5f : 3.1f);
+    }
+  }
+
+  if (drawRotate) {
+    const bool hoverX = IsHoveredGizmoHandle(hover, ViewportGizmoDragKind::Rotate, 0);
+    const bool hoverY = IsHoveredGizmoHandle(hover, ViewportGizmoDragKind::Rotate, 1);
+    const bool hoverZ = IsHoveredGizmoHandle(hover, ViewportGizmoDragKind::Rotate, 2);
+    AddGizmoCornerArc(box, camera, width, height, renderAspect, anchor, axes[1].axis, axes[2].axis,
+                      std::min(yLength, zLength), hoverX ? highlight_color(kX) : kX, hoverX ? 2.3f : 1.1f);
+    AddGizmoCornerArc(box, camera, width, height, renderAspect, anchor, axes[0].axis, axes[2].axis,
+                      std::min(xLength, zLength), hoverY ? highlight_color(kY) : kY, hoverY ? 2.3f : 1.1f);
+    AddGizmoCornerArc(box, camera, width, height, renderAspect, anchor, axes[0].axis, axes[1].axis,
+                      std::min(xLength, yLength), hoverZ ? highlight_color(kZ) : kZ, hoverZ ? 2.3f : 1.1f);
+  }
+
+  if (drawTranslate || drawRotate || drawScale) {
+    AddWorldOverlayPoint(box, camera, width, height, renderAspect, anchor, kCorner, 2.8f);
+  }
+}
+
+std::optional<vkpt::platform::QtSelectionOverlayBox> ProjectBoundsToOverlay(
+    const vkpt::editor::Bounds& bounds,
+    const ViewportCameraPose& camera,
+    float width,
+    float height,
+    float renderAspect,
+    std::string label,
+    bool primary,
+    vkpt::editor::GizmoMode gizmoMode,
+    const std::optional<ViewportGizmoHit>& hover) {
+  if (!bounds.valid || width <= 1.0f || height <= 1.0f) {
+    return std::nullopt;
+  }
+  constexpr std::array<std::pair<int, int>, 12> kBoundsEdges{{
+      {0, 1}, {1, 3}, {3, 2}, {2, 0},
+      {4, 5}, {5, 7}, {7, 6}, {6, 4},
+      {0, 4}, {1, 5}, {2, 6}, {3, 7},
+  }};
+  const auto corners = BoundsCorners(bounds);
+  std::array<std::optional<ProjectedViewportPoint>, 8> projectedCorners{};
   float minX = std::numeric_limits<float>::infinity();
   float minY = std::numeric_limits<float>::infinity();
   float maxX = -std::numeric_limits<float>::infinity();
   float maxY = -std::numeric_limits<float>::infinity();
   bool anyProjected = false;
-  for (const auto& corner : BoundsCorners(bounds)) {
-    const auto rel = PtSub(corner, camera.position);
-    const float depth = PtDot(rel, forward);
-    if (depth <= 1.0e-4f) {
+  for (std::size_t i = 0; i < corners.size(); ++i) {
+    projectedCorners[i] = ProjectWorldPointToOverlay(corners[i], camera, width, height, renderAspect);
+    if (!projectedCorners[i]) {
       continue;
     }
-    const float cameraX = PtDot(rel, right);
-    const float cameraY = PtDot(rel, up);
-    const float ndcX = cameraX / (depth * tanHalfFov * aspect);
-    const float ndcY = cameraY / (depth * tanHalfFov);
-    const float screenX = (ndcX + 1.0f) * 0.5f * width;
-    const float screenY = (1.0f - ndcY) * 0.5f * height;
-    minX = std::min(minX, screenX);
-    minY = std::min(minY, screenY);
-    maxX = std::max(maxX, screenX);
-    maxY = std::max(maxY, screenY);
+    minX = std::min(minX, projectedCorners[i]->x);
+    minY = std::min(minY, projectedCorners[i]->y);
+    maxX = std::max(maxX, projectedCorners[i]->x);
+    maxY = std::max(maxY, projectedCorners[i]->y);
     anyProjected = true;
   }
   if (!anyProjected) {
     return std::nullopt;
   }
+  constexpr OverlayColor kPrimaryBox{255u, 214u, 64u, 245u};
+  constexpr OverlayColor kSecondaryBox{102u, 204u, 255u, 230u};
+  vkpt::platform::QtSelectionOverlayBox box{};
+  box.label = std::move(label);
+  box.primary = primary;
+  auto boxColor = primary ? kPrimaryBox : kSecondaryBox;
+  if (primary && hover && hover->kind == ViewportGizmoDragKind::FreeformTranslate) {
+    boxColor = {255u, 244u, 164u, 255u};
+  }
+  for (const auto [a, b] : kBoundsEdges) {
+    if (!projectedCorners[static_cast<std::size_t>(a)] ||
+        !projectedCorners[static_cast<std::size_t>(b)]) {
+      continue;
+    }
+    AddProjectedOverlayLine(box,
+                            *projectedCorners[static_cast<std::size_t>(a)],
+                            *projectedCorners[static_cast<std::size_t>(b)],
+                            boxColor,
+                            primary
+                                ? (hover && hover->kind == ViewportGizmoDragKind::FreeformTranslate ? 2.8f : 2.0f)
+                                : 1.5f);
+  }
+  if (primary) {
+    AddSelectionGizmo(box, bounds, camera, width, height, renderAspect, gizmoMode, hover);
+  }
+
   const float margin = 4.0f;
   minX = ClampFloat(minX - margin, -width, width * 2.0f);
   minY = ClampFloat(minY - margin, -height, height * 2.0f);
@@ -1491,8 +3289,11 @@ std::optional<vkpt::platform::QtSelectionOverlayBox> ProjectBoundsToOverlay(
   if (maxX <= minX || maxY <= minY) {
     return std::nullopt;
   }
-  return vkpt::platform::QtSelectionOverlayBox{minX, minY, maxX - minX, maxY - minY,
-                                               std::move(label), primary};
+  box.x = minX;
+  box.y = minY;
+  box.width = maxX - minX;
+  box.height = maxY - minY;
+  return box;
 }
 
 std::vector<vkpt::platform::QtSelectionOverlayBox> BuildSelectionOverlayBoxes(
@@ -1500,7 +3301,10 @@ std::vector<vkpt::platform::QtSelectionOverlayBox> BuildSelectionOverlayBoxes(
     const std::vector<ViewportPickable>& pickables,
     const ViewportCameraPose& camera,
     float width,
-    float height) {
+    float height,
+    float renderAspect,
+    vkpt::editor::GizmoMode gizmoMode,
+    const std::optional<ViewportGizmoHit>& activeHover) {
   std::vector<vkpt::platform::QtSelectionOverlayBox> boxes;
   for (const auto selectedId : selection.selected_entity_ids) {
     auto bounds = std::optional<vkpt::editor::Bounds>{};
@@ -1527,8 +3331,15 @@ std::vector<vkpt::platform::QtSelectionOverlayBox> BuildSelectionOverlayBoxes(
                                             camera,
                                             width,
                                             height,
+                                            renderAspect,
                                             label,
-                                            selectedId == selection.active_primary_entity);
+                                            selectedId == selection.active_primary_entity,
+                                            selectedId == selection.active_primary_entity
+                                                ? gizmoMode
+                                                : vkpt::editor::GizmoMode::None,
+                                            selectedId == selection.active_primary_entity
+                                                ? activeHover
+                                                : std::optional<ViewportGizmoHit>{});
     if (projected) {
       boxes.push_back(std::move(*projected));
     }
@@ -1952,6 +3763,200 @@ bool HasMenuItem(const vkpt::editor::MenuBar& menu, std::string_view top_level_i
   return false;
 }
 
+std::vector<vkpt::editor::SceneTreeEntityModel> BuildSceneTreeEntitiesFromWorld(
+    const vkpt::scene::SceneWorld& world) {
+  std::vector<vkpt::editor::SceneTreeEntityModel> models;
+  models.reserve(world.all_entities().size());
+  for (const auto id : world.all_entities()) {
+    const auto* entity = world.get_entity(id);
+    if (!entity) {
+      continue;
+    }
+    vkpt::editor::SceneTreeEntityModel model;
+    model.entity_id = id;
+    model.parent_id = entity->hierarchy ? entity->hierarchy->parent : 0;
+    model.sibling_order = entity->hierarchy ? entity->hierarchy->sibling_order : 0;
+    model.name = entity->identity.name;
+    if (entity->transform.has_value()) {
+      model.component_badges.push_back("transform");
+    }
+    if (entity->mesh_renderer.has_value()) {
+      model.component_badges.push_back("mesh");
+    }
+    if (entity->sdf_primitive.has_value()) {
+      model.component_badges.push_back("sdf");
+    }
+    if (entity->material_override.has_value() ||
+        (entity->mesh_renderer.has_value() && entity->mesh_renderer->material_id != 0)) {
+      model.component_badges.push_back("material");
+    }
+    if (entity->camera.has_value()) {
+      model.component_badges.push_back("camera");
+    }
+    if (entity->light.has_value()) {
+      model.component_badges.push_back("light");
+    }
+    if (entity->script.has_value()) {
+      model.component_badges.push_back("script");
+    }
+    if (entity->physics_body.has_value()) {
+      model.component_badges.push_back("physics");
+    }
+    models.push_back(std::move(model));
+  }
+  return models;
+}
+
+bool CheckEcsSceneTreeContracts(std::string* detail = nullptr) {
+  auto fail = [&](std::string_view reason) {
+    if (detail) {
+      *detail = std::string(reason);
+    }
+    return false;
+  };
+  auto set_detail = [&](std::string_view text) {
+    if (detail) {
+      *detail = std::string(text);
+    }
+  };
+
+  vkpt::scene::SceneDocument doc;
+  doc.metadata.schema = "1.0";
+  doc.metadata.scene_name = "ecs-tree-smoke";
+  vkpt::scene::SceneEntityDefinition rootDef;
+  rootDef.id = 1;
+  rootDef.name = "Root";
+  rootDef.has_physics_body = true;
+  rootDef.physics_body.enabled = true;
+  rootDef.physics_body.dynamic = true;
+  rootDef.physics_body.body_type = "dynamic";
+  rootDef.physics_body.shape = "box";
+  rootDef.physics_body.mass = 2.0f;
+  vkpt::scene::SceneEntityDefinition firstChild;
+  firstChild.id = 2;
+  firstChild.name = "First";
+  firstChild.has_hierarchy = true;
+  firstChild.hierarchy.parent = 1;
+  firstChild.hierarchy.sibling_order = 1;
+  vkpt::scene::SceneEntityDefinition secondChild;
+  secondChild.id = 3;
+  secondChild.name = "Second";
+  secondChild.has_hierarchy = true;
+  secondChild.hierarchy.parent = 1;
+  secondChild.hierarchy.sibling_order = 0;
+  doc.entities = {rootDef, firstChild, secondChild};
+  const auto serialized = doc.to_json(true);
+  auto reloaded = vkpt::scene::SceneDocument::load_from_text(serialized);
+  if (!reloaded) {
+    return fail("SceneDocument hierarchy JSON roundtrip failed to parse");
+  }
+  auto loadedWorld = reloaded.value().to_world();
+  if (!loadedWorld) {
+    return fail("SceneDocument hierarchy JSON roundtrip failed to build ECS world");
+  }
+  const auto persistedChildren = loadedWorld.value().children_of(1);
+  if (persistedChildren != std::vector<vkpt::core::StableId>({3, 2})) {
+    return fail("sibling_order did not persist through save/load");
+  }
+  auto physics = vkpt::physics::CreatePhysicsWorld();
+  const auto physicsInfo = physics->engine_info();
+  if (!physicsInfo.runs_on_worker_thread || physicsInfo.threading_model != "dedicated_worker") {
+    return fail("physics world is not running through the dedicated worker thread");
+  }
+  const auto persistedPhysics = physics->sync_from_scene_world(loadedWorld.value());
+  if (persistedPhysics.physics_components != 1u || persistedPhysics.enabled_bodies != 1u ||
+      persistedPhysics.dynamic_bodies != 1u) {
+    return fail("physics body did not persist through JSON and ECS sync");
+  }
+
+  vkpt::scene::SceneWorld world;
+  const auto root = world.create_entity("Root", 10);
+  const auto childA = world.create_entity("Child A", 11);
+  const auto childB = world.create_entity("Child B", 12);
+  vkpt::scene::TransformComponent rootTransform;
+  rootTransform.translation = {10.0f, 0.0f, 0.0f};
+  vkpt::scene::TransformComponent childTransform;
+  childTransform.translation = {1.0f, 0.0f, 0.0f};
+  if (!world.set_transform(root, rootTransform) ||
+      !world.set_transform(childA, childTransform) ||
+      !world.set_hierarchy_parent(childA, root, 0) ||
+      !world.set_hierarchy_parent(childB, root, 1)) {
+    return fail("failed to build ECS hierarchy fixture");
+  }
+  vkpt::scene::MeshRendererComponent mesh;
+  mesh.mesh_id = 101;
+  mesh.material_id = 201;
+  world.set_component(childB, vkpt::scene::ComponentKind::MeshRenderer, mesh);
+  vkpt::scene::PhysicsBodyComponent body;
+  body.enabled = true;
+  body.dynamic = true;
+  body.body_type = "dynamic";
+  body.mass = 1.5f;
+  world.set_component(childA, vkpt::scene::ComponentKind::PhysicsBody, body);
+  const auto livePhysics = physics->sync_from_scene_world(world);
+  if (livePhysics.enabled_bodies != 1u || livePhysics.dynamic_bodies != 1u) {
+    return fail("physics world did not sync enabled ECS physics body");
+  }
+  vkpt::physics::PhysicsStepConfig physicsStep;
+  physicsStep.fixed_dt = 1.0f / 60.0f;
+  if (!physics->step_fixed(physicsStep)) {
+    return fail("physics fixed step rejected a valid timestep");
+  }
+  if (physicsInfo.available && physics->extract_transform_writes().empty()) {
+    return fail("Jolt physics backend did not publish transform writes");
+  }
+
+  world.recompute_world_transforms();
+  const auto* before = world.world_transform(childA);
+  if (!before || std::abs(before->translation.x - 11.0f) > 0.001f) {
+    return fail("hierarchy fixture world transform was invalid before reparent");
+  }
+
+  vkpt::scene::WorldCommandBuffer commands;
+  commands.add_reorder_sibling(childB, 0, childA);
+  commands.add_reparent_entity(childA, 0, true);
+  commands.add_create_entity("Camera Child", 13, root);
+  commands.add_set_component(13, vkpt::scene::ComponentKind::Camera, vkpt::scene::CameraComponent{});
+  if (!commands.replay(world)) {
+    return fail("WorldCommandBuffer failed to replay reparent/reorder/create-child commands");
+  }
+  world.recompute_world_transforms();
+  const auto rootChildren = world.children_of(root);
+  if (rootChildren != std::vector<vkpt::core::StableId>({childB, 13})) {
+    return fail("reorder/create-child commands produced nondeterministic child order");
+  }
+  const auto* after = world.world_transform(childA);
+  if (!after || std::abs(after->translation.x - 11.0f) > 0.001f) {
+    return fail("preserve-world reparent changed the child world transform");
+  }
+
+  vkpt::editor::SelectionState selection = vkpt::editor::CreateDefaultSelectionState();
+  selection.selected_entity_ids = {childA};
+  selection.hovered_entity = 13;
+  const auto treeRows = vkpt::editor::BuildSceneTreeRows(
+      BuildSceneTreeEntitiesFromWorld(world), selection, 13);
+  if (treeRows.size() != 4) {
+    return fail("scene tree row builder returned the wrong visible row count");
+  }
+  if (treeRows[0].entity_id != root || treeRows[0].depth != 0 || !treeRows[0].has_children) {
+    return fail("scene tree rows did not expose root hierarchy state");
+  }
+  if (treeRows[1].entity_id != childB || treeRows[1].depth != 1 ||
+      std::find(treeRows[1].component_badges.begin(), treeRows[1].component_badges.end(), "mesh") ==
+          treeRows[1].component_badges.end()) {
+    return fail("scene tree rows did not expose ordered child badges");
+  }
+  if (treeRows[2].entity_id != 13 || treeRows[2].depth != 1 || !treeRows[2].hovered ||
+      treeRows[2].icon != "camera") {
+    return fail("scene tree rows did not expose hover/camera state");
+  }
+  if (treeRows[3].entity_id != childA || !treeRows[3].selected || treeRows[3].depth != 0) {
+    return fail("scene tree rows did not reflect selection or reparent-to-root");
+  }
+  set_detail("ECS tree rows, worker-thread physics sync, hierarchy command replay, preserve-world reparent, and sibling_order JSON roundtrip pass");
+  return true;
+}
+
 bool RunUiModelSmokeTests() {
   using namespace vkpt::editor;
   bool ok = true;
@@ -2309,6 +4314,8 @@ bool RunUiModelSmokeTests() {
   check_true("tree reorder command source", tree_reorder.source_widget == "scene_tree");
   const std::string reorder_line = SerializeEditorCommand(tree_reorder);
   check_true("tree reorder serialized", reorder_line.find("\"moved_entity\":44") != std::string::npos);
+  std::string ecs_tree_detail;
+  check_true("ecs scene tree integration", CheckEcsSceneTreeContracts(&ecs_tree_detail));
 
   const auto valid_texture_drop = ValidateAssetDrop("C:/assets/brick.PNG", "texture_slot");
   check_true("valid texture drop extension support", valid_texture_drop.extension_supported);
@@ -2617,9 +4624,11 @@ std::vector<vkpt::editor::UiReleaseGateItem> BuildUiReleaseGateEvidence() {
   MarkReleaseGate(checklist, "window.opens", false,
                   "Native/Qt bounded window smoke is covered by tools/ui_qt_smoke when the platform is available",
                   "requires a GUI-capable platform run, not a headless model check");
-  MarkReleaseGate(checklist, "tree.hierarchy", false,
-                  "SceneTreeRow and hierarchy command contracts exist in UiModels",
-                  "requires ECS tree widget/runtime binding");
+  std::string treeEvidence;
+  const bool treeHierarchyOk = CheckEcsSceneTreeContracts(&treeEvidence);
+  MarkReleaseGate(checklist, "tree.hierarchy", treeHierarchyOk,
+                  treeHierarchyOk ? treeEvidence : "ECS scene tree model/runtime contract check failed",
+                  treeHierarchyOk ? std::string_view{} : std::string_view{treeEvidence});
   MarkReleaseGate(checklist, "viewport.selection", false,
                   "SelectionState and selection commands are covered by --ui-model-smoke",
                   "requires object-ID/CPU-ray picking integration in the viewport");
@@ -2631,7 +4640,7 @@ std::vector<vkpt::editor::UiReleaseGateItem> BuildUiReleaseGateEvidence() {
                   "requires bound inspector widgets applying ECS/component edits");
   MarkReleaseGate(checklist, "grouping", false,
                   "Group/Ungroup command payloads serialize through EditorCommand",
-                  "requires ECS hierarchy command application");
+                  "requires group/ungroup runtime metadata and undo integration");
   MarkReleaseGate(checklist, "merge.split", false,
                   "Merge command payload serializes; split is explicitly unsupported until merge metadata runtime exists",
                   "requires generated asset/merge metadata runtime");
@@ -2765,6 +4774,7 @@ int main(int argc, char** argv) {
   bool checkBenchmarkArtifact = false;
   bool dumpConfig    = false;
   bool listBackends  = false;
+  bool listAccelerators = false;
   bool doRender      = false;
   bool uiModelSmoke  = false;
   bool uiReleaseGate = false;
@@ -2802,6 +4812,7 @@ int main(int argc, char** argv) {
     else if (token == "--check-bench-write")  { checkBenchmarkArtifact = true; }
     else if (token == "--dump-config")    { dumpConfig    = true; }
     else if (token == "--list-backends")  { listBackends  = true; }
+    else if (token == "--list-accelerators") { listAccelerators = true; }
     else if (token == "--headless")       { headless      = true; }
     else if (token == "--render")         { doRender      = true; }
     else if (token == "--window")         { openWindow    = true; }
@@ -2914,7 +4925,7 @@ int main(int argc, char** argv) {
   }
   const bool doctorMode = doctor || checkBuild || checkCpu || checkBackends || checkAssets || checkShaders
                          || checkJobSystem || checkSceneSchema || checkBenchmarkArtifact;
-  const bool nonGuiCommandMode = doctorMode || listBackends || doRender;
+  const bool nonGuiCommandMode = doctorMode || listBackends || listAccelerators || doRender;
   auto effectivePlatform = selectedPlatform;
   if (nonGuiCommandMode && selectedPlatform == vkpt::platform::RuntimePlatformKind::Qt) {
     effectivePlatform = vkpt::platform::RuntimePlatformKind::Headless;
@@ -3032,6 +5043,15 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  if (listAccelerators) {
+    PrintNonGuiPlatformShellNotice("list-accelerators", selectedPlatform, effectivePlatform);
+    PrintAcceleratorDiagnostics(config.render_width.value, config.render_height.value);
+    recordUiAction("app.list_accelerators", "list_accelerators", "accelerator list",
+                   MakeUnsupportedUiCommand("app.list_accelerators", "handled on cli"));
+    writeStatus("list_accelerators");
+    return 0;
+  }
+
 #ifdef PT_ENABLE_VULKAN
   if (listGpus) {
     const std::string spvPath =
@@ -3102,9 +5122,22 @@ int main(int argc, char** argv) {
 
 #ifdef PT_ENABLE_QT
       auto* qtWindow = dynamic_cast<vkpt::platform::QtWindow*>(window);
+      std::unordered_map<NativeMenuId, std::string> qtMenuCommandLookup;
+      auto rebuildQtMenuBar = [&]() {
+        if (qtWindow == nullptr) {
+          return;
+        }
+        const auto uiMenu = vkpt::editor::BuildDefaultMenuBar(ui_selection_state);
+        qtWindow->set_menu_bar(BuildQtMenuBarFromModel(uiMenu, qtMenuCommandLookup));
+      };
       if (qtWindow) {
         qtWindow->resize(std::max<uint32_t>(1u, windowWidth),
                          std::max<uint32_t>(1u, windowHeight));
+        rebuildQtMenuBar();
+        logger.log(vkpt::log::Severity::Info,
+                   "app",
+                   std::string("Qt menu bar attached with ") +
+                       std::to_string(qtMenuCommandLookup.size()) + " command mappings");
       }
 #endif
       LogRuntimeMetadata(logger, "qt_platform_initialized", requestedPlatform,
@@ -3218,10 +5251,11 @@ int main(int argc, char** argv) {
         BootStep("tracer initialized");
       }
 
-      // Immutable geometry snapshot — bg thread uses this for camera-only reloads.
-      const vkpt::pathtracer::RTSceneData qtSceneBase = qtScene;
+      // Latest geometry snapshot for background reload fallbacks.
+      std::mutex qtSceneBaseMutex;
+      vkpt::pathtracer::RTSceneData qtSceneBase = qtScene;
 #ifdef PT_ENABLE_QT
-      const std::vector<ViewportPickable> qtPickables =
+      std::vector<ViewportPickable> qtPickables =
           BuildViewportPickables(qtSceneDocument, qtScene);
 #endif
 
@@ -3246,6 +5280,11 @@ int main(int argc, char** argv) {
         vkpt::pathtracer::Vec3 camPos{}, camTarget{}, camUp{};
         float camFov = 0.0f;
       } qtCameraCommand;
+      std::mutex qtSceneCommandMutex;
+      struct QtSceneCommand {
+        bool scenePending = false;
+        vkpt::pathtracer::RTSceneData scene;
+      } qtSceneCommand;
       const bool qtUseBg = (windowFrameLimit == 0u) &&
           (dynamic_cast<vkpt::cpu::TiledCpuPathTracer*>(qtTracer.get()) != nullptr);
       std::thread qtBgThread;
@@ -3255,6 +5294,29 @@ int main(int argc, char** argv) {
           uint32_t s = 0;
           auto lastPublish = std::chrono::steady_clock::time_point{};
           while (!qtBgStop.load(std::memory_order_relaxed)) {
+            QtSceneCommand sceneCommand{};
+            bool hasSceneCommand = false;
+            {
+              std::lock_guard<std::mutex> lock(qtSceneCommandMutex);
+              if (qtSceneCommand.scenePending) {
+                sceneCommand = std::move(qtSceneCommand);
+                qtSceneCommand.scenePending = false;
+                hasSceneCommand = true;
+              }
+            }
+
+            if (hasSceneCommand) {
+              if (!qtTracer->load_scene_snapshot(sceneCommand.scene) ||
+                  !qtTracer->build_or_update_acceleration() ||
+                  !qtTracer->reset_accumulation()) {
+                qtBgFailed.store(true, std::memory_order_release);
+                break;
+              }
+              s = 0u;
+              qtPublishedSample.store(0u, std::memory_order_relaxed);
+              lastPublish = std::chrono::steady_clock::time_point{};
+            }
+
             // Pick up any pending camera update between samples (no blocking).
             QtCameraCommand cameraCommand{};
             bool hasCameraCommand = false;
@@ -3272,7 +5334,11 @@ int main(int argc, char** argv) {
                   cameraCommand.camPos, cameraCommand.camTarget,
                   cameraCommand.camUp, cameraCommand.camFov);
               if (!ok) {
-                vkpt::pathtracer::RTSceneData camScene = qtSceneBase;
+                vkpt::pathtracer::RTSceneData camScene;
+                {
+                  std::lock_guard<std::mutex> lock(qtSceneBaseMutex);
+                  camScene = qtSceneBase;
+                }
                 camScene.camera_position = cameraCommand.camPos;
                 camScene.camera_target = cameraCommand.camTarget;
                 camScene.camera_up = cameraCommand.camUp;
@@ -3373,6 +5439,10 @@ int main(int argc, char** argv) {
       BootStep("entering qt render loop");
       uint32_t qtFrameCount = 0u;
       bool qtUserCameraActive = false;
+      constexpr auto kQtInteractiveFrameTarget = std::chrono::milliseconds(16);
+      constexpr uint32_t kQtMaxGpuBatchesPerTick = 64u;
+      uint32_t qtLastGpuBatchesPerTick = 0u;
+      double qtSmoothedGpuBatchMs = 0.0;
 #ifdef PT_ENABLE_QT
       ViewportCameraPose qtCameraPose{qtScene.camera_position,
                                       qtScene.camera_target,
@@ -3427,6 +5497,14 @@ int main(int argc, char** argv) {
         }
         ui_runtime_state.status_message = std::string("camera ") + std::string(reason);
       };
+      auto qtRenderAspect = [&]() {
+        const float renderWidth = static_cast<float>(
+            std::max(1u, qtPublishedWidth.load(std::memory_order_relaxed)));
+        const float renderHeight = static_cast<float>(
+            std::max(1u, qtPublishedHeight.load(std::memory_order_relaxed)));
+        return renderWidth / renderHeight;
+      };
+      std::optional<ViewportGizmoHit> qtHoveredGizmoHit;
       auto updateQtSelectionOverlay = [&]() {
         if (qtWindow == nullptr) {
           return;
@@ -3437,7 +5515,10 @@ int main(int argc, char** argv) {
             qtPickables,
             qtCameraPose,
             static_cast<float>(std::max(1, metrics.width)),
-            static_cast<float>(std::max(1, metrics.height))));
+            static_cast<float>(std::max(1, metrics.height)),
+            qtRenderAspect(),
+            ui_runtime_state.active_gizmo_mode,
+            qtHoveredGizmoHit));
       };
       syncQtFpsAnglesFromPose();
       bool qtFpsMode = false;
@@ -3448,6 +5529,20 @@ int main(int argc, char** argv) {
       float qtClickX = 0.0f;
       float qtClickY = 0.0f;
       float qtClickDragPixels = 0.0f;
+      bool qtDockPanelsDirty = true;
+      struct QtGizmoDragEntityStart {
+        vkpt::core::StableId entity_id = 0;
+        bool sdf_primitive = false;
+        vkpt::scene::TransformComponent transform;
+        vkpt::pathtracer::Vec3 local_pivot{};
+      };
+      struct QtGizmoDragState {
+        bool active = false;
+        ViewportGizmoHit hit;
+        float start_x = 0.0f;
+        float start_y = 0.0f;
+        std::vector<QtGizmoDragEntityStart> entities;
+      } qtGizmoDrag;
       std::unordered_set<int> qtKeysDown;
       auto qtNormalizeKey = [](int key) {
         if (key >= 'a' && key <= 'z') {
@@ -3469,6 +5564,136 @@ int main(int argc, char** argv) {
       auto qtAppendSelection = [&]() {
         return qtKeyActive(kQtKeyShift) || qtKeyActive(kQtKeyControl) ||
                qtKeyActive(16) || qtKeyActive(17) || IsShiftDown() || IsCtrlDown();
+      };
+      auto qtActiveSelectionBounds = [&]() -> std::optional<vkpt::editor::Bounds> {
+        if (ui_selection_state.active_primary_entity == 0u) {
+          return std::nullopt;
+        }
+        for (const auto& item : ui_selection_state.per_item_bounds) {
+          if (item.entity_id == ui_selection_state.active_primary_entity && item.bounds.valid) {
+            return item.bounds;
+          }
+        }
+        return std::nullopt;
+      };
+      auto qtSetViewportCursor = [&](vkpt::platform::QtViewportCursor cursor) {
+        if (qtWindow != nullptr) {
+          qtWindow->set_viewport_cursor(cursor);
+        }
+      };
+      auto qtUpdateGizmoHoverCursor = [&](float x, float y) {
+        auto clearHover = [&]() {
+          if (qtHoveredGizmoHit) {
+            qtHoveredGizmoHit = std::nullopt;
+            updateQtSelectionOverlay();
+          }
+          qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
+        };
+        if (qtFpsMode ||
+            qtLeftMouseDown ||
+            qtRightMouseDown ||
+            qtMiddleMouseDown ||
+            ui_runtime_state.active_gizmo_mode == vkpt::editor::GizmoMode::None) {
+          clearHover();
+          return;
+        }
+        const auto activeBounds = qtActiveSelectionBounds();
+        if (!activeBounds) {
+          clearHover();
+          return;
+        }
+        const auto metrics = window->metrics();
+        auto hit = PickSelectionGizmoHandle(
+            *activeBounds,
+            qtCameraPose,
+            static_cast<float>(std::max(1, metrics.width)),
+            static_cast<float>(std::max(1, metrics.height)),
+            qtRenderAspect(),
+            ui_runtime_state.active_gizmo_mode,
+            x,
+            y);
+        if (!hit) {
+          hit = PickSelectionBoundsFreeform(
+              *activeBounds,
+              qtCameraPose,
+              static_cast<float>(std::max(1, metrics.width)),
+              static_cast<float>(std::max(1, metrics.height)),
+              qtRenderAspect(),
+              ui_runtime_state.active_gizmo_mode,
+              x,
+              y);
+        }
+        qtSetViewportCursor(hit ? CursorForGizmoHit(*hit)
+                                : vkpt::platform::QtViewportCursor::Default);
+        if (!SameGizmoHandle(qtHoveredGizmoHit, hit)) {
+          qtHoveredGizmoHit = hit;
+          updateQtSelectionOverlay();
+        }
+      };
+      auto qtFindEntity = [&](vkpt::core::StableId id) -> vkpt::scene::SceneEntityDefinition* {
+        const auto it = std::find_if(qtSceneDocument.entities.begin(),
+                                     qtSceneDocument.entities.end(),
+                                     [id](const vkpt::scene::SceneEntityDefinition& entity) {
+                                       return entity.id == id;
+                                     });
+        return it == qtSceneDocument.entities.end() ? nullptr : &*it;
+      };
+      auto qtFindSdfPrimitive = [&](vkpt::core::StableId id) -> vkpt::scene::SceneSdfPrimitiveDefinition* {
+        const auto it = std::find_if(qtSceneDocument.sdf_primitives.begin(),
+                                     qtSceneDocument.sdf_primitives.end(),
+                                     [id](const vkpt::scene::SceneSdfPrimitiveDefinition& primitive) {
+                                       return primitive.id == id;
+                                     });
+        return it == qtSceneDocument.sdf_primitives.end() ? nullptr : &*it;
+      };
+      auto qtApplySceneLightingFallback = [&]() {
+        bool hasLight = !qtScene.lights.empty();
+        bool hasEmissive = false;
+        for (const auto& mat : qtScene.materials) {
+          if (mat.is_emissive()) {
+            hasEmissive = true;
+            break;
+          }
+        }
+        if (!hasLight && !hasEmissive) {
+          qtScene.environment_color = {0.35f, 0.4f, 0.5f};
+        }
+      };
+      auto qtReloadEditedScene = [&](std::string_view reason) {
+        auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(qtSceneDocument);
+        if (!sceneResult) {
+          ui_runtime_state.status_message = "scene edit failed: rebuild scene data";
+          qtPreviewStatus = "scene edit failed";
+          return false;
+        }
+        qtScene = std::move(sceneResult.value());
+        qtApplySceneLightingFallback();
+        qtScene.camera_position = qtCameraPose.position;
+        qtScene.camera_target = qtCameraPose.target;
+        qtScene.camera_up = qtCameraPose.up;
+        qtScene.camera_fov_deg = qtCameraPose.fov_deg;
+        qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
+        RebuildSelectionBounds(ui_selection_state, qtPickables);
+        {
+          std::lock_guard<std::mutex> lock(qtSceneBaseMutex);
+          qtSceneBase = qtScene;
+        }
+        qtPublishedSample.store(0u, std::memory_order_relaxed);
+        if (qtUseBg) {
+          std::lock_guard<std::mutex> lock(qtSceneCommandMutex);
+          qtSceneCommand.scene = qtScene;
+          qtSceneCommand.scenePending = true;
+        } else if (qtTracerReady) {
+          qtTracerReady = qtTracer->load_scene_snapshot(qtScene) &&
+                          qtTracer->build_or_update_acceleration() &&
+                          qtTracer->reset_accumulation();
+          qtSampleIndex = 0u;
+        }
+        qtDockPanelsDirty = true;
+        qtPreviewStatus = qtTracerReady ? "scene edited" : "scene edit renderer reload failed";
+        ui_runtime_state.status_message = std::string("gizmo ") + std::string(reason);
+        updateQtSelectionOverlay();
+        return qtTracerReady;
       };
       auto qtSceneScale = [&]() {
         if (qtPickables.empty()) {
@@ -3513,6 +5738,22 @@ int main(int argc, char** argv) {
                                           std::cos(yaw) * cosPitch}, radius));
         syncQtFpsAnglesFromPose();
         applyQtCameraPose("orbit drag");
+      };
+      auto qtApplyPanDrag = [&](float dx, float dy) {
+        const auto metrics = window->metrics();
+        const float viewportHeight = static_cast<float>(std::max(1, metrics.height));
+        const auto forward = qtCameraForward();
+        const auto right = PtNormalize(PtCross(forward, qtCameraPose.up), {1.0f, 0.0f, 0.0f});
+        const auto up = PtNormalize(PtCross(right, forward), {0.0f, 1.0f, 0.0f});
+        const float focusDistance = std::max(0.05f, PtLength(PtSub(qtCameraPose.target, qtCameraPose.position)));
+        const float worldPerPixel =
+            (2.0f * focusDistance * std::tan(0.5f * DegToRad(std::max(1.0f, qtCameraPose.fov_deg)))) /
+            viewportHeight;
+        const auto delta = PtAdd(PtMul(right, -dx * worldPerPixel),
+                                 PtMul(up, dy * worldPerPixel));
+        qtCameraPose.position = PtAdd(qtCameraPose.position, delta);
+        qtCameraPose.target = PtAdd(qtCameraPose.target, delta);
+        applyQtCameraPose("pan drag");
       };
       auto qtApplyDolly = [&](float wheelDelta) {
         if (std::fabs(wheelDelta) <= 1.0e-4f) {
@@ -3566,6 +5807,182 @@ int main(int argc, char** argv) {
         qtCameraPose.target = PtAdd(qtCameraPose.target, delta);
         applyQtCameraPose("fps move");
       };
+      auto qtCaptureGizmoDrag = [&](const ViewportGizmoHit& hit, float x, float y) {
+        qtGizmoDrag = {};
+        qtGizmoDrag.active = true;
+        qtGizmoDrag.hit = hit;
+        qtGizmoDrag.start_x = x;
+        qtGizmoDrag.start_y = y;
+        qtSetViewportCursor(CursorForGizmoHit(hit));
+        for (const auto selectedId : ui_selection_state.selected_entity_ids) {
+          if (auto* entity = qtFindEntity(selectedId)) {
+            if (!entity->has_transform) {
+              entity->has_transform = true;
+              entity->transform = {};
+            }
+            qtGizmoDrag.entities.push_back({
+                selectedId,
+                false,
+                entity->transform,
+                InverseSceneTransformPoint(hit.pivot, entity->transform)});
+            continue;
+          }
+          if (auto* primitive = qtFindSdfPrimitive(selectedId)) {
+            qtGizmoDrag.entities.push_back({
+                selectedId,
+                true,
+                primitive->transform,
+                InverseSceneTransformPoint(hit.pivot, primitive->transform)});
+          }
+        }
+        if (qtGizmoDrag.entities.empty()) {
+          qtGizmoDrag = {};
+        }
+      };
+      auto qtWriteGizmoTransform = [&](const QtGizmoDragEntityStart& start,
+                                       const vkpt::scene::TransformComponent& transform) {
+        if (start.sdf_primitive) {
+          if (auto* primitive = qtFindSdfPrimitive(start.entity_id)) {
+            primitive->transform = transform;
+            primitive->transform.dirty = true;
+          }
+          return;
+        }
+        if (auto* entity = qtFindEntity(start.entity_id)) {
+          entity->has_transform = true;
+          entity->transform = transform;
+          entity->transform.dirty = true;
+        }
+      };
+      auto qtApplyGizmoDrag = [&](float x, float y, vkpt::core::FrameIndex frameIndex) {
+        if (!qtGizmoDrag.active) {
+          return;
+        }
+        const float dx = x - qtGizmoDrag.start_x;
+        const float dy = y - qtGizmoDrag.start_y;
+        const float dragAlongAxis = dx * qtGizmoDrag.hit.screen_axis_x +
+                                    dy * qtGizmoDrag.hit.screen_axis_y;
+        vkpt::pathtracer::Vec3 freeformDelta{};
+        bool hasFreeformDelta = false;
+        if (qtGizmoDrag.hit.kind == ViewportGizmoDragKind::FreeformTranslate) {
+          const auto metrics = window->metrics();
+          const float viewportWidth = static_cast<float>(std::max(1, metrics.width));
+          const float viewportHeight = static_cast<float>(std::max(1, metrics.height));
+          const auto startWorld = ScreenPointOnCameraPlane(
+              qtCameraPose,
+              qtGizmoDrag.start_x,
+              qtGizmoDrag.start_y,
+              viewportWidth,
+              viewportHeight,
+              qtRenderAspect(),
+              qtGizmoDrag.hit.pivot);
+          const auto currentWorld = ScreenPointOnCameraPlane(
+              qtCameraPose,
+              x,
+              y,
+              viewportWidth,
+              viewportHeight,
+              qtRenderAspect(),
+              qtGizmoDrag.hit.pivot);
+          if (startWorld && currentWorld) {
+            freeformDelta = PtSub(*currentWorld, *startWorld);
+            hasFreeformDelta = true;
+          }
+        }
+        for (const auto& start : qtGizmoDrag.entities) {
+          auto transform = start.transform;
+          if (qtGizmoDrag.hit.kind == ViewportGizmoDragKind::Translate) {
+            const float units = dragAlongAxis / std::max(1.0f, qtGizmoDrag.hit.pixels_per_unit);
+            const auto delta = PtMul(qtGizmoDrag.hit.axis, units);
+            transform.translation.x = start.transform.translation.x + delta.x;
+            transform.translation.y = start.transform.translation.y + delta.y;
+            transform.translation.z = start.transform.translation.z + delta.z;
+          } else if (qtGizmoDrag.hit.kind == ViewportGizmoDragKind::FreeformTranslate) {
+            if (!hasFreeformDelta) {
+              continue;
+            }
+            transform.translation.x = start.transform.translation.x + freeformDelta.x;
+            transform.translation.y = start.transform.translation.y + freeformDelta.y;
+            transform.translation.z = start.transform.translation.z + freeformDelta.z;
+          } else if (qtGizmoDrag.hit.kind == ViewportGizmoDragKind::ScaleAxis) {
+            const float units = dragAlongAxis / std::max(1.0f, qtGizmoDrag.hit.pixels_per_unit);
+            const float factor = ClampFloat(
+                (std::max(1.0e-4f, qtGizmoDrag.hit.axis_world_length) + units) /
+                    std::max(1.0e-4f, qtGizmoDrag.hit.axis_world_length),
+                0.05f,
+                20.0f);
+            switch (qtGizmoDrag.hit.axis_index) {
+              case 0:
+                transform.scale.x = start.transform.scale.x * factor;
+                break;
+              case 1:
+                transform.scale.y = start.transform.scale.y * factor;
+                break;
+              case 2:
+                transform.scale.z = start.transform.scale.z * factor;
+                break;
+              default:
+                transform.scale.x = start.transform.scale.x * factor;
+                transform.scale.y = start.transform.scale.y * factor;
+                transform.scale.z = start.transform.scale.z * factor;
+                break;
+            }
+            const auto scaledPivot = vkpt::pathtracer::Vec3{
+                start.local_pivot.x * transform.scale.x,
+                start.local_pivot.y * transform.scale.y,
+                start.local_pivot.z * transform.scale.z};
+            const auto rotatedPivot = RotatePointByQuat(scaledPivot, transform.rotation);
+            const auto newTranslation = PtSub(qtGizmoDrag.hit.pivot, rotatedPivot);
+            transform.translation = {newTranslation.x, newTranslation.y, newTranslation.z};
+          } else if (qtGizmoDrag.hit.kind == ViewportGizmoDragKind::Rotate) {
+            const float angle = dragAlongAxis * 0.012f;
+            transform.rotation = QuatMultiply(QuatFromAxisAngle(qtGizmoDrag.hit.axis, angle),
+                                              start.transform.rotation);
+            const auto scaledPivot = vkpt::pathtracer::Vec3{
+                start.local_pivot.x * transform.scale.x,
+                start.local_pivot.y * transform.scale.y,
+                start.local_pivot.z * transform.scale.z};
+            const auto rotatedPivot = RotatePointByQuat(scaledPivot, transform.rotation);
+            const auto newTranslation = PtSub(qtGizmoDrag.hit.pivot, rotatedPivot);
+            transform.translation = {newTranslation.x, newTranslation.y, newTranslation.z};
+          }
+          qtWriteGizmoTransform(start, transform);
+        }
+        PushUiEvent(ui_event_log,
+                    "viewport_gizmo_drag",
+                    "viewport",
+                    "mouse",
+                    frameIndex,
+                    {},
+                    vkpt::editor::ToString(ui_runtime_state.active_gizmo_mode),
+                    "gizmo manipulating selection");
+        qtReloadEditedScene("drag");
+      };
+      auto qtSetGizmoMode = [&](vkpt::editor::GizmoMode mode,
+                                std::string_view source,
+                                vkpt::core::FrameIndex frameIndex) {
+        if (ui_runtime_state.active_gizmo_mode == mode) {
+          updateQtSelectionOverlay();
+          return;
+        }
+        ui_runtime_state.active_gizmo_mode = mode;
+        qtHoveredGizmoHit = std::nullopt;
+        qtDockPanelsDirty = true;
+        ui_runtime_state.status_message =
+            std::string("gizmo ") + vkpt::editor::ToString(mode);
+        PushUiEvent(ui_event_log,
+                    "viewport_gizmo_mode",
+                    "viewport",
+                    std::string(source),
+                    frameIndex,
+                    {},
+                    vkpt::editor::ToString(mode),
+                    ui_runtime_state.status_message);
+        updateQtSelectionOverlay();
+        if (mode == vkpt::editor::GizmoMode::None) {
+          qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
+        }
+      };
       auto qtApplyViewportPick = [&](float x, float y, vkpt::core::FrameIndex frameIndex) {
         const auto metrics = window->metrics();
         const auto picked = PickViewportObject(qtPickables,
@@ -3573,7 +5990,8 @@ int main(int argc, char** argv) {
                                                x,
                                                y,
                                                static_cast<float>(std::max(1, metrics.width)),
-                                               static_cast<float>(std::max(1, metrics.height)));
+                                               static_cast<float>(std::max(1, metrics.height)),
+                                               qtRenderAspect());
         vkpt::editor::EditorCommand command;
         command.command_id = picked ? "viewport.pick" : "viewport.clear_selection";
         command.kind = picked ? vkpt::editor::EditorCommandKind::kSelectEntity
@@ -3587,8 +6005,15 @@ int main(int argc, char** argv) {
         }
         ui_selection_state = vkpt::editor::ApplySelectionCommand(ui_selection_state, command);
         RebuildSelectionBounds(ui_selection_state, qtPickables);
+        qtHoveredGizmoHit = std::nullopt;
+        qtDockPanelsDirty = true;
         ui_command_history.push(command);
         ui_runtime_state.last_clicked_entity = picked ? picked->entity_id : 0u;
+        if (picked && ui_runtime_state.active_gizmo_mode == vkpt::editor::GizmoMode::None) {
+          ui_runtime_state.active_gizmo_mode = vkpt::editor::GizmoMode::Universal;
+        } else if (!picked && !qtAppendSelection()) {
+          ui_runtime_state.active_gizmo_mode = vkpt::editor::GizmoMode::None;
+        }
         ui_runtime_state.status_message = picked
             ? "viewport selected " + (picked->label.empty() ? std::to_string(picked->entity_id) : picked->label)
             : "viewport selection cleared";
@@ -3605,7 +6030,9 @@ int main(int argc, char** argv) {
                                        ui_layout_state,
                                        ui_event_log,
                                        ui_command_history);
+        rebuildQtMenuBar();
         updateQtSelectionOverlay();
+        qtUpdateGizmoHoverCursor(x, y);
         logger.log(vkpt::log::Severity::Info, "app", "Qt viewport pick", {
           {"entity_id", std::to_string(ui_runtime_state.last_clicked_entity)},
           {"x", std::to_string(x)},
@@ -3613,7 +6040,190 @@ int main(int argc, char** argv) {
           {"selection_count", std::to_string(ui_selection_state.selected_entity_ids.size())}
         });
       };
+      auto qtLogMenuCommand = [&](const std::string& actionId,
+                                  const vkpt::editor::EditorCommand& menuCommand,
+                                  const std::string& statusText,
+                                  vkpt::core::FrameIndex frameIndex) {
+        auto logged = menuCommand;
+        logged.command_id = actionId;
+        logged.frame_index = frameIndex;
+        if (logged.source_widget.empty()) {
+          logged.source_widget = "menu";
+        }
+        ui_command_history.push(logged);
+        ui_runtime_state.status_message = statusText;
+        ui_runtime_state.last_menu_action = actionId;
+        ui_runtime_state.focused_panel = logged.source_widget;
+        PushUiEvent(ui_event_log,
+                    "app_action",
+                    logged.source_widget,
+                    "menu",
+                    frameIndex,
+                    {},
+                    actionId,
+                    statusText);
+        qtDockPanelsDirty = true;
+        UpdateCrashArtifactsFromUiState(ui_runtime_state,
+                                       ui_selection_state,
+                                       ui_layout_state,
+                                       ui_event_log,
+                                       ui_command_history);
+      };
       auto qtInputPrevTime = std::chrono::steady_clock::now();
+      double qtLastUiFrameMs = 0.0;
+      auto qtLastDockPanelSync = std::chrono::steady_clock::time_point{};
+      std::vector<QtDockPanelContent> qtLastDockPanels;
+      auto qtBuildFrameStats = [&]() {
+        QtDockFrameStats stats;
+        stats.sample_count = qtUseBg
+            ? qtPublishedSample.load(std::memory_order_relaxed)
+            : qtSampleIndex;
+        stats.frame_width = qtPublishedWidth.load(std::memory_order_relaxed);
+        stats.frame_height = qtPublishedHeight.load(std::memory_order_relaxed);
+        stats.preview_publish_hz = qtPreviewPublishHz;
+        stats.gpu_batches_per_tick = qtLastGpuBatchesPerTick;
+        stats.gpu_batch_ms = qtSmoothedGpuBatchMs;
+        stats.ui_frame_ms = qtLastUiFrameMs;
+        stats.render_published = qtPublishedFrames.load(std::memory_order_relaxed);
+        stats.render_dropped = qtDroppedFrames.load(std::memory_order_relaxed);
+        stats.background_thread = qtUseBg;
+        stats.tracer_ready = qtTracerReady;
+        stats.preview_status = qtPreviewStatus;
+        if (qtWindow != nullptr) {
+          const auto windowStats = qtWindow->framebuffer_stats();
+          stats.window_received = windowStats.received;
+          stats.window_presented = windowStats.presented;
+          stats.window_dropped = windowStats.dropped;
+        }
+        return stats;
+      };
+      auto qtBuildBenchmarkPanel = [&](const QtDockFrameStats& frameStats) {
+        const std::string scenePath =
+            config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value;
+        const std::string rendererPath = qtUseBg
+            ? "cpu_tiled_background"
+            : (config.backend.value.empty() ? std::string("event_loop") : config.backend.value);
+        auto desc = vkpt::editor::MakeDefaultBenchmarkRunDesc(
+            scenePath,
+            config.backend.value.empty() ? "cpu" : config.backend.value,
+            rendererPath,
+            std::max<std::uint32_t>(1u, config.spp.value),
+            std::max<std::uint32_t>(1u, config.max_depth.value),
+            42u,
+            std::max<std::uint32_t>(1u, frameStats.frame_width),
+            std::max<std::uint32_t>(1u, frameStats.frame_height));
+        vkpt::editor::BenchmarkRawMetricsModel raw;
+        raw.fps = ui_runtime_state.fps;
+        raw.frame_ms = ui_runtime_state.frame_ms;
+        raw.spp_accumulated = frameStats.sample_count;
+        raw.samples_per_second = frameStats.ui_frame_ms > 0.0
+            ? (static_cast<double>(std::max<std::uint32_t>(1u, frameStats.sample_count)) * 1000.0 /
+               frameStats.ui_frame_ms)
+            : 0.0;
+        raw.paths_per_second = raw.samples_per_second;
+        raw.path_vertices_per_second = raw.samples_per_second *
+            static_cast<double>(std::max<std::size_t>(1u, qtScene.indices.size() / 3u));
+        raw.memory_estimate_bytes =
+            static_cast<std::uint64_t>(qtScene.vertices.size() * sizeof(vkpt::pathtracer::Vec3)) +
+            static_cast<std::uint64_t>(qtScene.indices.size() * sizeof(std::uint32_t)) +
+            static_cast<std::uint64_t>(qtScene.materials.size() * sizeof(vkpt::pathtracer::RTMaterial));
+        const auto workload = vkpt::editor::EstimateWorkloadComplexity(
+            desc,
+            static_cast<std::uint32_t>(qtScene.lights.size()),
+            static_cast<std::uint64_t>(qtScene.indices.size() / 3u),
+            static_cast<std::uint64_t>(qtScene.instances.size()),
+            0u,
+            false);
+        const double expected = raw.samples_per_second > 0.0 ? raw.samples_per_second : 1.0;
+        auto score = vkpt::editor::ComputeBenchmarkScore(
+            raw.samples_per_second,
+            expected,
+            raw.samples_per_second,
+            workload.normalized_cost_units,
+            false);
+        score.raw_paths_per_second = raw.paths_per_second;
+        return vkpt::editor::BuildBenchmarkPanelModel(
+            desc,
+            raw,
+            score,
+            workload,
+            "benchmarks/",
+            "Live preview defaults; benchmark not running",
+            frameStats.tracer_ready,
+            frameStats.tracer_ready ? std::string_view{} : std::string_view{"tracer is not ready"});
+      };
+      auto syncQtDockPanels = [&](bool force) {
+        if (qtWindow == nullptr) {
+          return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!force &&
+            !qtDockPanelsDirty &&
+            qtLastDockPanelSync != std::chrono::steady_clock::time_point{} &&
+            now - qtLastDockPanelSync < std::chrono::milliseconds(5000)) {
+          return;
+        }
+        const auto frameStats = qtBuildFrameStats();
+        ui_runtime_state.active_scene =
+            config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value;
+        ui_runtime_state.active_renderer_backend = config.backend.value;
+        ui_runtime_state.active_renderer_path = qtUseBg ? "cpu_tiled_background" : config.backend.value;
+        ui_runtime_state.spp_accumulated = frameStats.sample_count;
+        ui_runtime_state.frame_ms = frameStats.ui_frame_ms;
+        ui_runtime_state.fps = frameStats.ui_frame_ms > 0.0 ? 1000.0 / frameStats.ui_frame_ms : 0.0;
+        ui_runtime_state.background_job_count = qtUseBg ? 1u : 0u;
+        const auto benchmarkPanel = qtBuildBenchmarkPanel(frameStats);
+        const auto statusBar = vkpt::editor::BuildStatusBarModel(
+            ui_runtime_state,
+            ui_selection_state,
+            &benchmarkPanel.score);
+        ApplyQtStatusBarToWindow(qtWindow, BuildQtStatusBarText(statusBar));
+        qtLastDockPanels = BuildQtDockPanels(qtSceneDocument,
+                                             qtScene,
+                                             ui_runtime_state,
+                                             ui_selection_state,
+                                             ui_layout_state,
+                                             benchmarkPanel,
+                                             frameStats);
+        ApplyQtDockPanelsToWindow(qtWindow, qtLastDockPanels);
+        qtLastDockPanelSync = now;
+        qtDockPanelsDirty = false;
+      };
+      auto emitQtShellReadyMarker = [&]() {
+        constexpr std::string_view requiredDockIds[] = {
+            "scene_graph",
+            "inspector",
+            "materials",
+            "lights",
+            "camera",
+            "render_settings",
+            "diagnostics",
+            "performance",
+        };
+        std::ostringstream docks;
+        for (std::size_t i = 0; i < qtLastDockPanels.size(); ++i) {
+          if (i > 0u) {
+            docks << ",";
+          }
+          docks << qtLastDockPanels[i].id;
+        }
+        bool requiredDocksPresent = true;
+        for (const auto required : requiredDockIds) {
+          const auto found = std::find_if(qtLastDockPanels.begin(),
+                                          qtLastDockPanels.end(),
+                                          [required](const QtDockPanelContent& panel) {
+                                            return panel.id == required;
+                                          });
+          requiredDocksPresent = requiredDocksPresent && found != qtLastDockPanels.end();
+        }
+        const std::string message =
+            "qt shell ready menu_bar=true status_bar=true dock_count=" +
+            std::to_string(qtLastDockPanels.size()) +
+            " required_docks=" + (requiredDocksPresent ? std::string("true") : std::string("false")) +
+            " docks=" + docks.str();
+        std::cout << message << "\n";
+        logger.log(vkpt::log::Severity::Info, "app", message);
+      };
       auto updateQtPreviewOverlay = [&]() {
         if (qtWindow == nullptr) {
           return;
@@ -3637,6 +6247,14 @@ int main(int argc, char** argv) {
                    << (qtUseBg ? " (background thread)" : " (event loop)") << "\n"
                    << "samples: " << sampleCount << "\n"
                    << "frame: " << frameWidth << "x" << frameHeight << "\n"
+                   << "gpu batches/tick: ";
+        if (qtUseBg) {
+          statusText << "background";
+        } else {
+          statusText << qtLastGpuBatchesPerTick << " @ " << std::fixed << std::setprecision(2)
+                     << qtSmoothedGpuBatchMs << " ms";
+        }
+        statusText << "\n"
                    << "publish cap: ";
         if (qtUseBg) {
           statusText << qtPreviewPublishHz << " fps"
@@ -3649,12 +6267,16 @@ int main(int argc, char** argv) {
                    << "dropped frames: " << droppedFrames
                    << (qtWindowDropped ? " (QtWindow)" : " (render throttle)") << "\n"
                    << "camera: " << (qtFpsMode ? "fps" : "orbit") << "\n"
+                   << "gizmo: " << vkpt::editor::ToString(ui_runtime_state.active_gizmo_mode) << "\n"
                    << "selected: " << (ui_selection_state.active_primary_entity == 0
                        ? std::string("none")
                        : std::to_string(ui_selection_state.active_primary_entity)) << "\n"
                    << "status: " << qtPreviewStatus;
         qtWindow->set_overlay_text(statusText.str());
+        syncQtDockPanels(false);
       };
+      syncQtDockPanels(true);
+      emitQtShellReadyMarker();
       updateQtSelectionOverlay();
       updateQtPreviewOverlay();
 #endif
@@ -3681,6 +6303,66 @@ int main(int argc, char** argv) {
         for (const auto& event : qtInputEvents) {
           LogWindowInput(ui_event_log, ui_runtime_state, event, qtFrameCount);
           switch (event.type) {
+            case vkpt::platform::InputEventType::MenuCommand: {
+              const auto nativeCommandId = static_cast<NativeMenuId>(event.raw_code);
+              const auto mappedAction = qtMenuCommandLookup.find(nativeCommandId);
+              if (mappedAction == qtMenuCommandLookup.end()) {
+                const auto actionId =
+                    std::string("app.menu.unknown_command_") + std::to_string(nativeCommandId);
+                qtLogMenuCommand(actionId,
+                                 MakeUnsupportedUiCommand(actionId, "unknown Qt menu command id", "menu", qtFrameCount),
+                                 std::string("unknown menu action: ") + std::to_string(nativeCommandId),
+                                 qtFrameCount);
+                break;
+              }
+
+              const std::string actionId = mappedAction->second;
+              auto menuAction = vkpt::editor::MakeMenuCommand(actionId, "menu", qtFrameCount);
+              menuAction.command_id = actionId;
+
+              if (actionId == "file.exit") {
+                qtLogMenuCommand(actionId,
+                                 MakeUnsupportedUiCommand("file.exit", "user selected Exit", "menu", qtFrameCount),
+                                 "menu action executed: file.exit",
+                                 qtFrameCount);
+                window->close();
+                break;
+              }
+
+              if (menuAction.kind == vkpt::editor::EditorCommandKind::kClearSelection) {
+                ui_selection_state = vkpt::editor::ApplySelectionCommand(ui_selection_state, menuAction);
+                RebuildSelectionBounds(ui_selection_state, qtPickables);
+                ui_runtime_state.active_gizmo_mode = vkpt::editor::GizmoMode::None;
+                qtHoveredGizmoHit = std::nullopt;
+                qtLogMenuCommand(actionId,
+                                 menuAction,
+                                 "menu action executed: " + actionId,
+                                 qtFrameCount);
+                rebuildQtMenuBar();
+                updateQtSelectionOverlay();
+                qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
+                break;
+              }
+
+              if (menuAction.kind != vkpt::editor::EditorCommandKind::kUnsupportedUiAction) {
+                const std::string menuStatus =
+                    std::string("menu action routed: ") +
+                    vkpt::editor::ToString(menuAction.kind) +
+                    " (command queued)";
+                qtLogMenuCommand(actionId, menuAction, menuStatus, qtFrameCount);
+                break;
+              }
+
+              std::string reason = "unsupported in Qt menu runtime";
+              if (std::holds_alternative<vkpt::editor::UnsupportedUiActionCommand>(menuAction.payload)) {
+                reason = std::get<vkpt::editor::UnsupportedUiActionCommand>(menuAction.payload).reason;
+              }
+              qtLogMenuCommand(actionId,
+                               menuAction,
+                               "menu action unsupported: " + actionId + " (" + reason + ")",
+                               qtFrameCount);
+              break;
+            }
             case vkpt::platform::InputEventType::KeyDown: {
               const int key = qtNormalizeKey(event.code);
               const int rawKey = qtNormalizeKey(event.raw_code);
@@ -3706,10 +6388,22 @@ int main(int argc, char** argv) {
                             {},
                             qtFpsMode ? "fps" : "select",
                             ui_runtime_state.status_message);
+              } else if (!qtFpsMode && (key == 'T' || rawKey == 'T')) {
+                qtSetGizmoMode(vkpt::editor::GizmoMode::Translate, "keyboard", qtFrameCount);
+              } else if (!qtFpsMode && (key == 'R' || rawKey == 'R')) {
+                qtSetGizmoMode(vkpt::editor::GizmoMode::Rotate, "keyboard", qtFrameCount);
+              } else if (!qtFpsMode && (key == 'S' || rawKey == 'S')) {
+                qtSetGizmoMode(vkpt::editor::GizmoMode::Scale, "keyboard", qtFrameCount);
+              } else if (!qtFpsMode && (key == 'G' || rawKey == 'G')) {
+                qtSetGizmoMode(vkpt::editor::GizmoMode::Universal, "keyboard", qtFrameCount);
               } else if (key == kQtKeyEscape || rawKey == 27) {
                 qtFpsMode = false;
                 ui_runtime_state.active_viewport_tool = vkpt::editor::ViewportTool::Select;
+                ui_runtime_state.active_gizmo_mode = vkpt::editor::GizmoMode::None;
+                qtHoveredGizmoHit = std::nullopt;
                 ui_runtime_state.status_message = "select camera mode";
+                updateQtSelectionOverlay();
+                qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
               }
               break;
             }
@@ -3722,11 +6416,47 @@ int main(int argc, char** argv) {
             }
             case vkpt::platform::InputEventType::MouseButtonDown:
               if (event.code == 0) {
+                qtUserCameraActive = true;
                 qtLeftMouseDown = true;
-                qtPotentialClick = true;
                 qtClickX = event.x;
                 qtClickY = event.y;
                 qtClickDragPixels = 0.0f;
+                qtPotentialClick = true;
+                if (!qtFpsMode &&
+                    ui_runtime_state.active_gizmo_mode != vkpt::editor::GizmoMode::None &&
+                    ui_selection_state.active_primary_entity != 0u) {
+                  const auto activeBounds = qtActiveSelectionBounds();
+                  if (activeBounds) {
+                    const auto metrics = window->metrics();
+                    auto hit = PickSelectionGizmoHandle(
+                        *activeBounds,
+                        qtCameraPose,
+                        static_cast<float>(std::max(1, metrics.width)),
+                        static_cast<float>(std::max(1, metrics.height)),
+                        qtRenderAspect(),
+                        ui_runtime_state.active_gizmo_mode,
+                        event.x,
+                        event.y);
+                    if (!hit) {
+                      hit = PickSelectionBoundsFreeform(
+                          *activeBounds,
+                          qtCameraPose,
+                          static_cast<float>(std::max(1, metrics.width)),
+                          static_cast<float>(std::max(1, metrics.height)),
+                          qtRenderAspect(),
+                          ui_runtime_state.active_gizmo_mode,
+                          event.x,
+                          event.y);
+                    }
+                    if (hit) {
+                      qtCaptureGizmoDrag(*hit, event.x, event.y);
+                      if (qtGizmoDrag.active) {
+                        qtPotentialClick = false;
+                        ui_runtime_state.status_message = "gizmo drag started";
+                      }
+                    }
+                  }
+                }
               } else if (event.code == 1) {
                 qtRightMouseDown = true;
                 syncQtFpsAnglesFromPose();
@@ -3737,32 +6467,47 @@ int main(int argc, char** argv) {
             case vkpt::platform::InputEventType::MouseButtonUp:
               if (event.code == 0) {
                 qtLeftMouseDown = false;
-                if (qtPotentialClick && qtClickDragPixels <= 6.0f) {
+                if (qtGizmoDrag.active) {
+                  qtApplyGizmoDrag(event.x, event.y, qtFrameCount);
+                  qtGizmoDrag = {};
+                  ui_runtime_state.status_message = "gizmo drag committed";
+                  qtDockPanelsDirty = true;
+                } else if (qtPotentialClick && qtClickDragPixels <= 6.0f) {
                   qtApplyViewportPick(event.x, event.y, qtFrameCount);
                 }
                 qtPotentialClick = false;
+                qtUpdateGizmoHoverCursor(event.x, event.y);
               } else if (event.code == 1) {
                 qtRightMouseDown = false;
+                qtUpdateGizmoHoverCursor(event.x, event.y);
               } else if (event.code == 2) {
                 qtMiddleMouseDown = false;
+                qtUpdateGizmoHoverCursor(event.x, event.y);
               }
               break;
             case vkpt::platform::InputEventType::MouseMove: {
-              if (qtLeftMouseDown && qtPotentialClick) {
+              if (qtLeftMouseDown && qtGizmoDrag.active) {
+                qtApplyGizmoDrag(event.x, event.y, qtFrameCount);
+                qtClickDragPixels = std::max(qtClickDragPixels,
+                                             ScreenDistance(event.x, event.y, qtClickX, qtClickY));
+              } else if (qtLeftMouseDown && qtPotentialClick) {
                 const float dx = event.x - qtClickX;
                 const float dy = event.y - qtClickY;
                 qtClickDragPixels = std::max(qtClickDragPixels, std::sqrt(dx * dx + dy * dy));
               }
-              if (qtRightMouseDown) {
+              if (qtRightMouseDown && !qtGizmoDrag.active) {
                 qtUserCameraActive = true;
                 if (qtFpsMode) {
                   qtApplyFpsLookDelta(event.delta_x, event.delta_y);
                 } else {
                   qtApplyOrbitDrag(event.delta_x, event.delta_y);
                 }
-              } else if (qtMiddleMouseDown) {
+              } else if (qtMiddleMouseDown && !qtGizmoDrag.active) {
                 qtUserCameraActive = true;
-                qtApplyOrbitDrag(event.delta_x, event.delta_y);
+                qtApplyPanDrag(event.delta_x, event.delta_y);
+              }
+              if (!qtGizmoDrag.active && !qtRightMouseDown && !qtMiddleMouseDown) {
+                qtUpdateGizmoHoverCursor(event.x, event.y);
               }
               break;
             }
@@ -3785,6 +6530,9 @@ int main(int argc, char** argv) {
               qtRightMouseDown = false;
               qtMiddleMouseDown = false;
               qtPotentialClick = false;
+              qtGizmoDrag = {};
+              qtHoveredGizmoHit = std::nullopt;
+              qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
               ui_runtime_state.status_message = "window focus lost";
               break;
             case vkpt::platform::InputEventType::FocusGained:
@@ -3859,8 +6607,47 @@ int main(int argc, char** argv) {
             });
           }
         } else if (windowFrameLimit == 0u && qtTracerReady) {
-          if (qtTracer->render_sample_batch(0, qtSettings.height, qtSampleIndex, 0)) {
+          bool renderedThisTick = false;
+          qtLastGpuBatchesPerTick = 0u;
+          while (qtTracerReady && qtLastGpuBatchesPerTick < kQtMaxGpuBatchesPerTick) {
+            const auto now = std::chrono::steady_clock::now();
+            if (qtLastGpuBatchesPerTick > 0u) {
+              if (now >= qtFrameStart + kQtInteractiveFrameTarget) {
+                break;
+              }
+              if (qtSmoothedGpuBatchMs > 0.0) {
+                const auto estimatedNextBatch =
+                    std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double, std::milli>(qtSmoothedGpuBatchMs));
+                if (now + estimatedNextBatch > qtFrameStart + kQtInteractiveFrameTarget) {
+                  break;
+                }
+              }
+            }
+
+            const auto batchStart = std::chrono::steady_clock::now();
+            if (!qtTracer->render_sample_batch(0, qtSettings.height, qtSampleIndex, qtFrameCount)) {
+              qtTracerReady = false;
+              qtPreviewStatus = "render sample failed";
+              std::cerr << "[qt] render_sample_batch failed at sample " << qtSampleIndex << "\n";
+              logger.log(vkpt::log::Severity::Error, "app", "Qt render sample failed", {
+                {"sample", std::to_string(qtSampleIndex)},
+                {"effective_preview_present_hz", std::to_string(qtPreviewPublishHz)}
+              });
+              break;
+            }
+
+            const auto batchMs =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - batchStart).count();
+            qtSmoothedGpuBatchMs = (qtSmoothedGpuBatchMs <= 0.0)
+                ? batchMs
+                : (qtSmoothedGpuBatchMs * 0.75 + batchMs * 0.25);
             ++qtSampleIndex;
+            ++qtLastGpuBatchesPerTick;
+            renderedThisTick = true;
+          }
+
+          if (renderedThisTick && qtTracerReady) {
             auto ldr = qtTracer->resolve_ldr();
             qtPublishedSample.store(qtSampleIndex, std::memory_order_relaxed);
             qtPublishedWidth.store(ldr.width, std::memory_order_relaxed);
@@ -3871,18 +6658,12 @@ int main(int argc, char** argv) {
               qtPublishedFrames.fetch_add(1u, std::memory_order_relaxed);
             }
 #endif
-          } else {
-            qtTracerReady = false;
-            qtPreviewStatus = "render sample failed";
-            std::cerr << "[qt] render_sample_batch failed at sample " << qtSampleIndex << "\n";
-            logger.log(vkpt::log::Severity::Error, "app", "Qt render sample failed", {
-              {"sample", std::to_string(qtSampleIndex)},
-              {"effective_preview_present_hz", std::to_string(qtPreviewPublishHz)}
-            });
           }
         }
 
 #ifdef PT_ENABLE_QT
+        qtLastUiFrameMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - qtFrameStart).count();
         updateQtPreviewOverlay();
 #endif
         if (!window->is_open()) break;
@@ -3894,9 +6675,8 @@ int main(int argc, char** argv) {
         }
         const auto qtFrameEnd = std::chrono::steady_clock::now();
         const auto qtFrameDuration = qtFrameEnd - qtFrameStart;
-        const auto qtFrameTarget = std::chrono::milliseconds(16);
-        if (qtFrameDuration < qtFrameTarget) {
-          std::this_thread::sleep_for(qtFrameTarget - qtFrameDuration);
+        if (qtFrameDuration < kQtInteractiveFrameTarget) {
+          std::this_thread::sleep_for(kQtInteractiveFrameTarget - qtFrameDuration);
         }
         // Pace the UI/event loop so input and overlay updates do not busy-spin.
       }
@@ -4980,10 +7760,10 @@ int main(int argc, char** argv) {
     try {
       const auto backendNames = vkpt::render::AvailableBackendNames();
       if (!backendNames.empty()) {
-        auto backend = vkpt::render::CreateBackend(backendNames.front());
-        if (backend && backend->initialize()) {
+        auto rendererBackend = vkpt::render::CreateBackend(backendNames.front());
+        if (rendererBackend && rendererBackend->initialize()) {
           const auto state = vkpt::render::BuildRendererCrashState(
-              *backend, 0u, "ptapp.crash_test", "crash_test", "none", "crash_test_requested");
+              *rendererBackend, 0u, "ptapp.crash_test", "crash_test", "none", "crash_test_requested");
           vkpt::diagnostics::CrashRecorder::instance().update_renderer_state_json(
               vkpt::render::SerializeRenderCrashState(state));
         }

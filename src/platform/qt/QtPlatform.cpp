@@ -3,42 +3,67 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "core/Logging.h"
 
+#include <QAbstractItemView>
 #include <QApplication>
 #include <QByteArray>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QColor>
 #include <QCoreApplication>
+#include <QCursor>
 #include <QEventLoop>
 #include <QFocusEvent>
 #include <QFont>
 #include <QGuiApplication>
+#include <QHeaderView>
 #include <QImage>
 #include <QKeyEvent>
+#include <QAction>
+#include <QDockWidget>
+#include <QLabel>
+#include <QMainWindow>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QObject>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPoint>
+#include <QPointF>
 #include <QPen>
+#include <QPointer>
+#include <QPixmap>
+#include <QPolygonF>
 #include <QRect>
 #include <QResizeEvent>
 #include <QScreen>
+#include <QSettings>
 #include <QString>
+#include <QStatusBar>
+#include <QTableWidget>
+#include <QTableWidgetItem>
+#include <QTextEdit>
 #include <QTimer>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QtGlobal>
+#include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWidget>
 #include <QWindow>
@@ -56,6 +81,7 @@ namespace {
 
 constexpr const char* kQtLogSubsystem = "qt";
 constexpr std::uint64_t kQtFramebufferStatsLogPeriod = 120u;
+constexpr int kQtDockLayoutStateVersion = 2;
 
 int ClampToQtInt(std::size_t value) {
   constexpr auto kMax = static_cast<std::size_t>(std::numeric_limits<int>::max());
@@ -67,6 +93,42 @@ QString ToQString(std::string_view text) {
       text.size(),
       static_cast<std::size_t>(std::numeric_limits<int>::max()));
   return QString::fromUtf8(text.data(), static_cast<int>(size));
+}
+
+QCursor CursorForViewportCursor(QtViewportCursor cursor) {
+  switch (cursor) {
+    case QtViewportCursor::Translate:
+      return QCursor(Qt::SizeAllCursor);
+    case QtViewportCursor::Scale:
+      return QCursor(Qt::SizeFDiagCursor);
+    case QtViewportCursor::Rotate: {
+      static const QCursor rotateCursor = [] {
+        QPixmap pixmap(24, 24);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF arcRect(4.5, 4.5, 15.0, 15.0);
+        painter.setPen(QPen(QColor(0, 0, 0, 210), 4.0, Qt::SolidLine, Qt::RoundCap));
+        painter.drawArc(arcRect, 35 * 16, 285 * 16);
+        painter.setPen(QPen(QColor(255, 255, 255, 235), 2.0, Qt::SolidLine, Qt::RoundCap));
+        painter.drawArc(arcRect, 35 * 16, 285 * 16);
+        QPolygonF shadowHead;
+        shadowHead << QPointF(18.0, 2.5) << QPointF(22.0, 7.5) << QPointF(15.5, 8.0);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 0, 0, 210));
+        painter.drawPolygon(shadowHead);
+        QPolygonF head;
+        head << QPointF(18.0, 3.5) << QPointF(21.0, 7.0) << QPointF(16.5, 7.5);
+        painter.setBrush(QColor(255, 255, 255, 235));
+        painter.drawPolygon(head);
+        return QCursor(pixmap, 12, 12);
+      }();
+      return rotateCursor;
+    }
+    case QtViewportCursor::Default:
+    default:
+      return QCursor(Qt::ArrowCursor);
+  }
 }
 
 bool CheckedRgbaByteCount(std::size_t width, std::size_t height, std::size_t& out) {
@@ -219,6 +281,382 @@ void* WindowIdToHandle(WId id) {
 
 }  // namespace
 
+class QtMainWindow final : public QMainWindow {
+ public:
+  explicit QtMainWindow(QtWindow* owner) : QMainWindow(nullptr), m_owner(owner) {
+    setObjectName(QStringLiteral("vkpt.qt.main_window"));
+    setDockOptions(QMainWindow::AllowNestedDocks | QMainWindow::AllowTabbedDocks);
+    statusBar()->setObjectName(QStringLiteral("vkpt.qt.status_bar"));
+  }
+
+  void setOwner(QtWindow* owner) {
+    m_owner = owner;
+  }
+
+  void setDockPanels(const std::vector<QtDockPanel>& panels) {
+    std::unordered_set<std::string> seen;
+    for (const auto& panel : panels) {
+      if (panel.id.empty()) {
+        continue;
+      }
+      seen.insert(panel.id);
+      auto* dock = ensureDock(panel);
+      dock->setWindowTitle(ToQString(panel.title.empty() ? panel.id : panel.title));
+      dock->setEnabled(panel.enabled);
+      dock->setFeatures(dockFeatures(panel));
+      const std::string signature = panelContentSignature(panel);
+      const auto existingSignature = m_panelContentSignatures.find(panel.id);
+      if (existingSignature == m_panelContentSignatures.end() ||
+          existingSignature->second != signature ||
+          dock->widget() == nullptr) {
+        QPointer<QWidget> oldWidget = dock->widget();
+        dock->setWidget(buildDockWidget(panel));
+        m_panelContentSignatures[panel.id] = signature;
+        if (!oldWidget.isNull()) {
+          oldWidget->deleteLater();
+        }
+      }
+      dock->setVisible(panel.visible);
+    }
+
+    for (auto it = m_docks.begin(); it != m_docks.end();) {
+      if (seen.find(it->first) == seen.end()) {
+        removeDockWidget(it->second);
+        it->second->deleteLater();
+        m_panelContentSignatures.erase(it->first);
+        it = m_docks.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    if (!m_layoutRestored && !m_docks.empty()) {
+      if (!restoreDockLayout()) {
+        tabifyDefaultDockGroups();
+      }
+      m_layoutRestored = true;
+    }
+  }
+
+  void setStatusText(QString text) {
+    QtStatusBarText status;
+    status.message = ToUtf8String(text);
+    setStatusText(status);
+  }
+
+  void setStatusText(const QtStatusBarText& status) {
+    auto* bar = statusBar();
+    if (status.message.empty()) {
+      bar->clearMessage();
+    } else if (status.timeout_ms > 0) {
+      bar->showMessage(ToQString(status.message), status.timeout_ms);
+    } else {
+      bar->showMessage(ToQString(status.message));
+    }
+
+    for (auto& entry : m_statusFields) {
+      bar->removeWidget(entry.second);
+      delete entry.second;
+    }
+    m_statusFields.clear();
+
+    for (const auto& field : status.fields) {
+      if (field.id.empty() && field.text.empty()) {
+        continue;
+      }
+      const std::string id = field.id.empty() ? field.text : field.id;
+      auto* label = new QLabel(ToQString(field.text), bar);
+      label->setObjectName(ToQString(std::string("vkpt.status.") + id));
+      label->setContentsMargins(8, 0, 8, 0);
+      bar->addPermanentWidget(label, std::max(0, field.stretch));
+      m_statusFields.emplace(id, label);
+    }
+  }
+
+  void saveDockLayout() {
+    QSettings settings(QStringLiteral("vkPathTracer"), QStringLiteral("QtShell"));
+    settings.setValue(QStringLiteral("main_window_geometry"), saveGeometry());
+    settings.setValue(QStringLiteral("main_window_state"), saveState(kQtDockLayoutStateVersion));
+  }
+
+  bool restoreDockLayout() {
+    QSettings settings(QStringLiteral("vkPathTracer"), QStringLiteral("QtShell"));
+    const auto geometry = settings.value(QStringLiteral("main_window_geometry")).toByteArray();
+    if (!geometry.isEmpty()) {
+      restoreGeometry(geometry);
+    }
+    const auto state = settings.value(QStringLiteral("main_window_state")).toByteArray();
+    if (!state.isEmpty()) {
+      return restoreState(state, kQtDockLayoutStateVersion);
+    }
+    return false;
+  }
+
+ protected:
+  void closeEvent(QCloseEvent* event) override {
+    saveDockLayout();
+    if (m_owner != nullptr) {
+      m_owner->emit_close_requested();
+      m_owner->mark_closed();
+    }
+    event->accept();
+    QMainWindow::closeEvent(event);
+  }
+
+ private:
+  static Qt::DockWidgetArea toQtArea(QtDockArea area) {
+    switch (area) {
+      case QtDockArea::Left:
+        return Qt::LeftDockWidgetArea;
+      case QtDockArea::Bottom:
+        return Qt::BottomDockWidgetArea;
+      case QtDockArea::Top:
+        return Qt::TopDockWidgetArea;
+      case QtDockArea::Right:
+      default:
+        return Qt::RightDockWidgetArea;
+    }
+  }
+
+  QDockWidget* ensureDock(const QtDockPanel& panel) {
+    if (auto existing = m_docks.find(panel.id); existing != m_docks.end()) {
+      return existing->second;
+    }
+    auto* dock = new QDockWidget(ToQString(panel.title.empty() ? panel.id : panel.title), this);
+    dock->setObjectName(ToQString(std::string("vkpt.dock.") + panel.id));
+    dock->setAllowedAreas(Qt::AllDockWidgetAreas);
+    addDockWidget(toQtArea(panel.area), dock);
+    m_docks.emplace(panel.id, dock);
+    return dock;
+  }
+
+  static QDockWidget::DockWidgetFeatures dockFeatures(const QtDockPanel& panel) {
+    QDockWidget::DockWidgetFeatures features = QDockWidget::NoDockWidgetFeatures;
+    if (panel.closable) {
+      features |= QDockWidget::DockWidgetClosable;
+    }
+    if (panel.movable) {
+      features |= QDockWidget::DockWidgetMovable;
+    }
+    if (panel.floatable) {
+      features |= QDockWidget::DockWidgetFloatable;
+    }
+    return features;
+  }
+
+  static void appendSignatureField(std::ostringstream& out, std::string_view value) {
+    out << value.size() << ':' << value << ';';
+  }
+
+  static void appendRowSignature(std::ostringstream& out, const QtDockRow& row) {
+    appendSignatureField(out, row.label);
+    appendSignatureField(out, row.value);
+    out << row.children.size() << '[';
+    for (const auto& child : row.children) {
+      appendRowSignature(out, child);
+    }
+    out << ']';
+  }
+
+  static std::string panelContentSignature(const QtDockPanel& panel) {
+    std::ostringstream out;
+    out << static_cast<int>(panel.content) << '|';
+    appendSignatureField(out, panel.text);
+    out << panel.rows.size() << '|';
+    for (const auto& row : panel.rows) {
+      appendSignatureField(out, row);
+    }
+    out << panel.tree_rows.size() << '|';
+    for (const auto& row : panel.tree_rows) {
+      appendRowSignature(out, row);
+    }
+    out << panel.properties.size() << '|';
+    for (const auto& property : panel.properties) {
+      appendSignatureField(out, property.group);
+      appendSignatureField(out, property.name);
+      appendSignatureField(out, property.value);
+      appendSignatureField(out, property.unit);
+      out << (property.editable ? '1' : '0') << (property.enabled ? '1' : '0') << ';';
+    }
+    return out.str();
+  }
+
+  QDockWidget* dockById(std::string_view id) const {
+    const auto it = m_docks.find(std::string(id));
+    return it == m_docks.end() ? nullptr : it->second;
+  }
+
+  void tabifyDockIds(std::initializer_list<std::string_view> ids) {
+    QDockWidget* base = nullptr;
+    for (const auto id : ids) {
+      auto* dock = dockById(id);
+      if (dock == nullptr) {
+        continue;
+      }
+      if (base == nullptr) {
+        base = dock;
+      } else {
+        tabifyDockWidget(base, dock);
+      }
+    }
+    if (base != nullptr) {
+      base->raise();
+    }
+  }
+
+  void tabifyDefaultDockGroups() {
+    tabifyDockIds({"scene_graph", "asset_browser"});
+    tabifyDockIds({"inspector",
+                   "materials",
+                   "lights",
+                   "camera",
+                   "render_settings",
+                   "benchmark_panel",
+                   "debug_views",
+                   "script_panel",
+                   "physics"});
+    tabifyDockIds({"diagnostics", "performance", "timeline"});
+  }
+
+  static QTreeWidgetItem* buildTreeItem(const QtDockRow& row) {
+    auto* item = new QTreeWidgetItem();
+    item->setText(0, ToQString(row.label));
+    item->setText(1, ToQString(row.value));
+    for (const auto& child : row.children) {
+      item->addChild(buildTreeItem(child));
+    }
+    return item;
+  }
+
+  static void applyReadOnlyFlags(QTableWidgetItem* item, bool editable, bool enabled) {
+    if (item == nullptr) {
+      return;
+    }
+    Qt::ItemFlags flags = item->flags();
+    if (!editable) {
+      flags &= ~Qt::ItemIsEditable;
+    }
+    if (!enabled) {
+      flags &= ~Qt::ItemIsEnabled;
+    }
+    item->setFlags(flags);
+  }
+
+  QWidget* buildDockWidget(const QtDockPanel& panel) {
+    auto* root = new QWidget();
+    auto* layout = new QVBoxLayout(root);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(6);
+
+    const bool wantsText = panel.content == QtDockPanelContent::Text || !panel.text.empty();
+    const bool wantsTree = panel.content == QtDockPanelContent::Tree ||
+                           !panel.rows.empty() ||
+                           !panel.tree_rows.empty();
+    const bool wantsProperties = panel.content == QtDockPanelContent::Properties ||
+                                 !panel.properties.empty();
+
+    if (wantsText && !panel.text.empty()) {
+      auto* text = new QTextEdit(root);
+      text->setReadOnly(true);
+      text->setPlainText(ToQString(panel.text));
+      text->setMinimumHeight(72);
+      layout->addWidget(text);
+    }
+
+    if (wantsTree && (!panel.rows.empty() || !panel.tree_rows.empty())) {
+      auto* tree = new QTreeWidget(root);
+      tree->setColumnCount(panel.tree_rows.empty() ? 1 : 2);
+      if (panel.tree_rows.empty()) {
+        tree->setHeaderHidden(true);
+      } else {
+        tree->setHeaderLabels({QStringLiteral("Name"), QStringLiteral("Value")});
+        tree->header()->setStretchLastSection(true);
+      }
+      for (const auto& row : panel.rows) {
+        auto* item = new QTreeWidgetItem();
+        item->setText(0, ToQString(row));
+        tree->addTopLevelItem(item);
+      }
+      for (const auto& row : panel.tree_rows) {
+        tree->addTopLevelItem(buildTreeItem(row));
+      }
+      tree->expandAll();
+      layout->addWidget(tree);
+    }
+
+    if (wantsProperties && !panel.properties.empty()) {
+      const bool hasUnits = std::any_of(panel.properties.begin(),
+                                        panel.properties.end(),
+                                        [](const QtDockProperty& property) {
+                                          return !property.unit.empty();
+                                        });
+      const bool anyEditable = std::any_of(panel.properties.begin(),
+                                           panel.properties.end(),
+                                           [](const QtDockProperty& property) {
+                                             return property.editable;
+                                           });
+      const int columnCount = hasUnits ? 4 : 3;
+      auto* table = new QTableWidget(static_cast<int>(panel.properties.size()), columnCount, root);
+      if (hasUnits) {
+        table->setHorizontalHeaderLabels({QStringLiteral("Group"),
+                                          QStringLiteral("Property"),
+                                          QStringLiteral("Value"),
+                                          QStringLiteral("Unit")});
+      } else {
+        table->setHorizontalHeaderLabels({QStringLiteral("Group"),
+                                          QStringLiteral("Property"),
+                                          QStringLiteral("Value")});
+      }
+      table->verticalHeader()->setVisible(false);
+      table->setEditTriggers(anyEditable
+          ? QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed
+          : QAbstractItemView::NoEditTriggers);
+      table->setSelectionBehavior(QAbstractItemView::SelectRows);
+      table->setSelectionMode(QAbstractItemView::SingleSelection);
+      table->horizontalHeader()->setStretchLastSection(true);
+      table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+      table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+      for (std::size_t i = 0; i < panel.properties.size(); ++i) {
+        const auto& property = panel.properties[i];
+        const int row = static_cast<int>(i);
+        auto* groupItem = new QTableWidgetItem(ToQString(property.group));
+        auto* nameItem = new QTableWidgetItem(ToQString(property.name));
+        auto* valueItem = new QTableWidgetItem(ToQString(property.value));
+        applyReadOnlyFlags(groupItem, false, property.enabled);
+        applyReadOnlyFlags(nameItem, false, property.enabled);
+        applyReadOnlyFlags(valueItem, property.editable, property.enabled);
+        table->setItem(row, 0, groupItem);
+        table->setItem(row, 1, nameItem);
+        table->setItem(row, 2, valueItem);
+        if (hasUnits) {
+          auto* unitItem = new QTableWidgetItem(ToQString(property.unit));
+          applyReadOnlyFlags(unitItem, false, property.enabled);
+          table->setItem(row, 3, unitItem);
+        }
+      }
+      layout->addWidget(table);
+    }
+
+    if (panel.text.empty() &&
+        panel.rows.empty() &&
+        panel.tree_rows.empty() &&
+        panel.properties.empty()) {
+      auto* text = new QTextEdit(root);
+      text->setReadOnly(true);
+      text->setPlainText(QStringLiteral("No data"));
+      layout->addWidget(text);
+    }
+
+    return root;
+  }
+
+  QtWindow* m_owner = nullptr;
+  std::unordered_map<std::string, QDockWidget*> m_docks;
+  std::unordered_map<std::string, std::string> m_panelContentSignatures;
+  std::unordered_map<std::string, QLabel*> m_statusFields;
+  bool m_layoutRestored = false;
+};
+
 class QtViewportWindow final : public QWidget {
  public:
   explicit QtViewportWindow(QtWindow* owner) : QWidget(nullptr), m_owner(owner) {
@@ -254,6 +692,14 @@ class QtViewportWindow final : public QWidget {
     m_overlayBoxes = std::move(boxes);
     m_dirty = true;
     update();
+  }
+
+  void setViewportCursor(QtViewportCursor cursor) {
+    if (m_viewportCursor == cursor) {
+      return;
+    }
+    m_viewportCursor = cursor;
+    applyViewportCursor();
   }
 
   void clearFrameOnUiThread() {
@@ -338,29 +784,77 @@ class QtViewportWindow final : public QWidget {
       for (const auto& box : m_overlayBoxes) {
         const QRectF rawRect(box.x, box.y, box.width, box.height);
         QRectF clipped = rawRect.intersected(QRectF(rect()));
-        if (!clipped.isValid() || clipped.width() < 2.0 || clipped.height() < 2.0) {
+        const bool hasWireframe = !box.lines.empty();
+        if (!hasWireframe &&
+            (!clipped.isValid() || clipped.width() < 2.0 || clipped.height() < 2.0)) {
           continue;
         }
 
         const QColor stroke = box.primary ? QColor(255, 214, 64, 245)
                                           : QColor(102, 204, 255, 230);
-        const QColor fill = box.primary ? QColor(255, 214, 64, 24)
-                                        : QColor(102, 204, 255, 18);
-        painter.fillRect(clipped, fill);
-        QPen shadowPen(QColor(0, 0, 0, 190));
-        shadowPen.setWidthF(4.0);
-        painter.setPen(shadowPen);
-        painter.drawRect(clipped);
-        QPen strokePen(stroke);
-        strokePen.setWidthF(box.primary ? 2.0 : 1.5);
-        painter.setPen(strokePen);
-        painter.drawRect(clipped);
+        if (hasWireframe) {
+          for (const auto& line : box.lines) {
+            if (!std::isfinite(line.x0) || !std::isfinite(line.y0) ||
+                !std::isfinite(line.x1) || !std::isfinite(line.y1)) {
+              continue;
+            }
+            QPen shadowPen(QColor(0, 0, 0, 130));
+            shadowPen.setWidthF(std::max(1.0f, line.width + 1.25f));
+            painter.setPen(shadowPen);
+            painter.drawLine(QPointF(line.x0, line.y0), QPointF(line.x1, line.y1));
+
+            QPen linePen(QColor(line.r, line.g, line.b, line.a));
+            linePen.setWidthF(std::max(1.0f, line.width));
+            linePen.setCapStyle(Qt::RoundCap);
+            painter.setPen(linePen);
+            painter.drawLine(QPointF(line.x0, line.y0), QPointF(line.x1, line.y1));
+          }
+
+          for (const auto& point : box.points) {
+            if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+                !std::isfinite(point.radius)) {
+              continue;
+            }
+            const float radius = std::max(2.0f, point.radius);
+            const QRectF handle(point.x - radius, point.y - radius, radius * 2.0f, radius * 2.0f);
+            painter.setPen(QPen(QColor(0, 0, 0, 150), 1.25));
+            painter.setBrush(QColor(point.r, point.g, point.b, point.a));
+            painter.drawEllipse(handle);
+            if (!point.label.empty()) {
+              painter.setPen(QColor(point.r, point.g, point.b, std::min<int>(point.a, 180)));
+              painter.drawText(handle.adjusted(radius + 1.5f, -3.0f, 42.0f, 6.0f),
+                               Qt::AlignLeft | Qt::AlignVCenter,
+                               ToQString(point.label));
+            }
+          }
+        } else {
+          const QColor fill = box.primary ? QColor(255, 214, 64, 24)
+                                          : QColor(102, 204, 255, 18);
+          painter.fillRect(clipped, fill);
+          QPen shadowPen(QColor(0, 0, 0, 190));
+          shadowPen.setWidthF(4.0);
+          painter.setPen(shadowPen);
+          painter.drawRect(clipped);
+          QPen strokePen(stroke);
+          strokePen.setWidthF(box.primary ? 2.0 : 1.5);
+          painter.setPen(strokePen);
+          painter.drawRect(clipped);
+        }
 
         if (!box.label.empty()) {
           const QString label = ToQString(box.label);
-          const QRectF labelRect(clipped.left() + 4.0,
-                                 std::max(0.0, clipped.top() - 20.0),
-                                 std::max(48.0, clipped.width()),
+          const double labelX = clipped.isValid()
+              ? clipped.left() + 4.0
+              : std::max(0.0f, box.x + 4.0f);
+          const double labelY = clipped.isValid()
+              ? std::max(0.0, clipped.top() - 20.0)
+              : std::max(0.0f, box.y - 20.0f);
+          const double labelWidth = clipped.isValid()
+              ? std::max(48.0, clipped.width())
+              : std::max(48.0f, box.width);
+          const QRectF labelRect(labelX,
+                                 labelY,
+                                 labelWidth,
                                  18.0);
           painter.fillRect(labelRect.adjusted(-2.0, 0.0, 2.0, 0.0), QColor(0, 0, 0, 150));
           painter.setPen(stroke);
@@ -398,6 +892,7 @@ class QtViewportWindow final : public QWidget {
   }
 
   void closeEvent(QCloseEvent* event) override {
+    releaseMouseGrab();
     if (m_owner != nullptr) {
       m_owner->emit_close_requested();
       m_owner->mark_closed();
@@ -423,6 +918,7 @@ class QtViewportWindow final : public QWidget {
 
   void focusOutEvent(QFocusEvent* event) override {
     QWidget::focusOutEvent(event);
+    releaseMouseGrab();
     if (m_owner != nullptr) {
       m_owner->emit_focus_change(false);
     }
@@ -451,6 +947,15 @@ class QtViewportWindow final : public QWidget {
   }
 
   void mousePressEvent(QMouseEvent* event) override {
+    setFocus(Qt::MouseFocusReason);
+    if (!m_mouseGrabbed) {
+      grabMouse();
+      m_mouseGrabbed = true;
+    }
+    if (event->button() == Qt::RightButton || event->button() == Qt::MiddleButton) {
+      m_forceClosedHandCursor = true;
+      applyViewportCursor();
+    }
     if (m_owner != nullptr) {
       const QPointF pos = event->position();
       m_owner->emit_mouse_button(QtMouseButtonCode(event->button()),
@@ -468,6 +973,9 @@ class QtViewportWindow final : public QWidget {
                                  false,
                                  static_cast<int>(pos.x()),
                                  static_cast<int>(pos.y()));
+    }
+    if (event->buttons() == Qt::NoButton) {
+      releaseMouseGrab();
     }
     event->accept();
   }
@@ -488,6 +996,23 @@ class QtViewportWindow final : public QWidget {
   }
 
  private:
+  void releaseMouseGrab() {
+    if (m_mouseGrabbed) {
+      releaseMouse();
+      m_mouseGrabbed = false;
+    }
+    m_forceClosedHandCursor = false;
+    applyViewportCursor();
+  }
+
+  void applyViewportCursor() {
+    if (m_forceClosedHandCursor) {
+      setCursor(Qt::ClosedHandCursor);
+      return;
+    }
+    setCursor(CursorForViewportCursor(m_viewportCursor));
+  }
+
   void dropUnpresentedFrame() {
     if (!m_frame.isNull() && !m_framePresented && m_frameId != 0u && m_owner != nullptr) {
       m_owner->record_frame_dropped(m_frameId);
@@ -503,7 +1028,10 @@ class QtViewportWindow final : public QWidget {
   bool m_framePresented = true;
   QString m_overlayText;
   std::vector<QtSelectionOverlayBox> m_overlayBoxes;
+  QtViewportCursor m_viewportCursor = QtViewportCursor::Default;
   bool m_dirty = false;
+  bool m_mouseGrabbed = false;
+  bool m_forceClosedHandCursor = false;
 };
 
 namespace {
@@ -518,6 +1046,53 @@ struct QtAppRuntime {
 QtAppRuntime& AppRuntime() {
   static QtAppRuntime runtime;
   return runtime;
+}
+
+void AppendQtMenuSignature(std::ostringstream& out,
+                           const std::vector<QtMenuItem>& items) {
+  for (const auto& item : items) {
+    out << item.command_id << '|'
+        << (item.enabled ? '1' : '0') << '|'
+        << item.label.size() << ':' << item.label << '[';
+    AppendQtMenuSignature(out, item.children);
+    out << ']';
+  }
+}
+
+std::string QtMenuSignature(const std::vector<QtMenuItem>& menus) {
+  std::ostringstream out;
+  AppendQtMenuSignature(out, menus);
+  return out.str();
+}
+
+void AppendQtMenuItems(QMenu* menu,
+                       const std::vector<QtMenuItem>& items,
+                       QtWindow* owner,
+                       QWidget* focusTarget) {
+  if (menu == nullptr) {
+    return;
+  }
+
+  for (const auto& item : items) {
+    if (!item.children.empty()) {
+      auto* submenu = menu->addMenu(ToQString(item.label));
+      submenu->setEnabled(item.enabled);
+      AppendQtMenuItems(submenu, item.children, owner, focusTarget);
+      continue;
+    }
+
+    auto* action = menu->addAction(ToQString(item.label));
+    action->setEnabled(item.enabled);
+    const std::uint32_t commandId = item.command_id;
+    QObject::connect(action, &QAction::triggered, action, [owner, focusTarget, commandId]() {
+      if (owner != nullptr) {
+        owner->emit_menu_command(commandId);
+      }
+      if (focusTarget != nullptr) {
+        focusTarget->setFocus(Qt::OtherFocusReason);
+      }
+    });
+  }
 }
 
 }  // namespace
@@ -551,10 +1126,20 @@ bool QtWindow::initialize(std::size_t width, std::size_t height, std::string_vie
     return false;
   }
 
+  if (m_shell == nullptr) {
+    m_shell = new QtMainWindow(this);
+  } else {
+    static_cast<QtMainWindow*>(m_shell)->setOwner(this);
+  }
+
   if (m_widget == nullptr) {
     m_widget = new QtViewportWindow(this);
+    static_cast<QtMainWindow*>(m_shell)->setCentralWidget(m_widget);
   } else {
     static_cast<QtViewportWindow*>(m_widget)->setOwner(this);
+    if (m_widget->parentWidget() == nullptr) {
+      static_cast<QtMainWindow*>(m_shell)->setCentralWidget(m_widget);
+    }
   }
   static_cast<QtViewportWindow*>(m_widget)->clearFrameOnUiThread();
 
@@ -572,15 +1157,16 @@ bool QtWindow::initialize(std::size_t width, std::size_t height, std::string_vie
   m_closeEventQueued = false;
   m_focused = false;
   m_title.assign(title);
+  m_menuBarSignature.clear();
   m_lastMouseX = 0;
   m_lastMouseY = 0;
 
-  m_widget->resize(ClampToQtInt(width), ClampToQtInt(height));
-  m_widget->setWindowTitle(ToQString(m_title));
+  m_shell->resize(ClampToQtInt(width), ClampToQtInt(height));
+  m_shell->setWindowTitle(ToQString(m_title));
   static_cast<QtViewportWindow*>(m_widget)->setOverlayText(ToQString(m_overlayText));
-  m_widget->show();
-  m_widget->raise();
-  m_widget->activateWindow();
+  m_shell->show();
+  m_shell->raise();
+  m_shell->activateWindow();
   m_widget->setFocus(Qt::OtherFocusReason);
 
   m_open = true;
@@ -609,7 +1195,7 @@ bool QtWindow::is_open() const {
 }
 
 void QtWindow::close() {
-  if (!m_open && m_widget == nullptr) {
+  if (!m_open && m_shell == nullptr && m_widget == nullptr) {
     return;
   }
 
@@ -619,7 +1205,9 @@ void QtWindow::close() {
     std::scoped_lock lock(m_frameMutex);
     clear_frame_handoff_locked(false);
   }
-  if (m_widget != nullptr) {
+  if (m_shell != nullptr) {
+    m_shell->hide();
+  } else if (m_widget != nullptr) {
     m_widget->hide();
   }
 }
@@ -634,24 +1222,34 @@ bool QtWindow::poll_events() {
   }
 
   update_metrics_from_widget();
-  if (m_widget != nullptr && !m_widget->isVisible() && m_open) {
+  if (m_shell != nullptr && !m_shell->isVisible() && m_open) {
+    mark_closed();
+  } else if (m_shell == nullptr && m_widget != nullptr && !m_widget->isVisible() && m_open) {
     mark_closed();
   }
   return m_open;
 }
 
 bool QtWindow::resize(std::size_t width, std::size_t height) {
-  if (!m_open || m_widget == nullptr || width == 0u || height == 0u) {
+  if (!m_open || width == 0u || height == 0u) {
     return false;
   }
-  m_widget->resize(ClampToQtInt(width), ClampToQtInt(height));
+  if (m_shell != nullptr) {
+    m_shell->resize(ClampToQtInt(width), ClampToQtInt(height));
+  } else if (m_widget != nullptr) {
+    m_widget->resize(ClampToQtInt(width), ClampToQtInt(height));
+  } else {
+    return false;
+  }
   update_metrics_from_widget();
   return true;
 }
 
 void QtWindow::set_title(std::string_view title) {
   m_title.assign(title);
-  if (m_widget != nullptr) {
+  if (m_shell != nullptr) {
+    m_shell->setWindowTitle(ToQString(title));
+  } else if (m_widget != nullptr) {
     m_widget->setWindowTitle(ToQString(title));
   }
 }
@@ -667,6 +1265,68 @@ void QtWindow::set_selection_overlay_boxes(const std::vector<QtSelectionOverlayB
   if (m_widget != nullptr) {
     static_cast<QtViewportWindow*>(m_widget)->setSelectionOverlayBoxes(boxes);
   }
+}
+
+void QtWindow::set_viewport_cursor(QtViewportCursor cursor) {
+  if (m_widget != nullptr) {
+    static_cast<QtViewportWindow*>(m_widget)->setViewportCursor(cursor);
+  }
+}
+
+void QtWindow::set_menu_bar(const std::vector<QtMenuItem>& menus) {
+  if (m_shell == nullptr) {
+    return;
+  }
+
+  const std::string signature = QtMenuSignature(menus);
+  if (signature == m_menuBarSignature) {
+    return;
+  }
+  m_menuBarSignature = signature;
+
+  auto* mainWindow = static_cast<QtMainWindow*>(m_shell);
+  auto* menuBar = mainWindow->menuBar();
+  if (menuBar == nullptr) {
+    menuBar = new QMenuBar(mainWindow);
+    mainWindow->setMenuBar(menuBar);
+  }
+  menuBar->setUpdatesEnabled(false);
+  menuBar->clear();
+  for (const auto& top : menus) {
+    auto* menu = menuBar->addMenu(ToQString(top.label));
+    menu->setEnabled(top.enabled);
+    AppendQtMenuItems(menu, top.children, this, m_widget);
+  }
+  menuBar->setUpdatesEnabled(true);
+  menuBar->updateGeometry();
+  menuBar->update();
+  if (m_widget != nullptr) {
+    m_widget->setFocus(Qt::OtherFocusReason);
+  }
+}
+
+void QtWindow::set_dock_panels(const std::vector<QtDockPanel>& panels) {
+  if (m_shell == nullptr) {
+    return;
+  }
+  static_cast<QtMainWindow*>(m_shell)->setDockPanels(panels);
+  if (m_widget != nullptr) {
+    m_widget->setFocus(Qt::OtherFocusReason);
+  }
+}
+
+void QtWindow::set_status_bar_text(std::string_view text) {
+  if (m_shell == nullptr) {
+    return;
+  }
+  static_cast<QtMainWindow*>(m_shell)->setStatusText(ToQString(text));
+}
+
+void QtWindow::set_status_bar_text(const QtStatusBarText& status) {
+  if (m_shell == nullptr) {
+    return;
+  }
+  static_cast<QtMainWindow*>(m_shell)->setStatusText(status);
 }
 
 void QtWindow::set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba,
@@ -1026,6 +1686,8 @@ void QtWindow::emit_mouse_move(int x, int y) {
 }
 
 void QtWindow::emit_mouse_button(std::int32_t button, bool pressed, int x, int y) {
+  m_lastMouseX = x;
+  m_lastMouseY = y;
   queue_event(InputEventNormalizer::mouse_button(button,
                                                  pressed,
                                                  static_cast<float>(x),
@@ -1033,6 +1695,8 @@ void QtWindow::emit_mouse_button(std::int32_t button, bool pressed, int x, int y
 }
 
 void QtWindow::emit_mouse_wheel(float delta_x, float delta_y, int x, int y) {
+  m_lastMouseX = x;
+  m_lastMouseY = y;
   InputEvent event = InputEventNormalizer::mouse_wheel(
       delta_y != 0.0f ? delta_y : delta_x,
       static_cast<float>(x),
@@ -1040,6 +1704,10 @@ void QtWindow::emit_mouse_wheel(float delta_x, float delta_y, int x, int y) {
   event.delta_x = delta_x;
   event.delta_y = delta_y;
   queue_event(event);
+}
+
+void QtWindow::emit_menu_command(std::uint32_t command_id) {
+  queue_event(InputEventNormalizer::menu_command(command_id));
 }
 
 std::vector<InputEvent> QtWindow::drain_events() {
@@ -1062,14 +1730,28 @@ void QtWindow::destroy() {
   m_open = false;
   m_closeEventQueued = false;
   m_events.clear();
+  m_menuBarSignature.clear();
+  QWidget* shell = nullptr;
   QWidget* widget = nullptr;
   {
     std::scoped_lock lock(m_frameMutex);
     clear_frame_handoff_locked(false);
+    shell = m_shell;
+    m_shell = nullptr;
     widget = m_widget;
     m_widget = nullptr;
   }
-  if (widget != nullptr) {
+  if (shell != nullptr) {
+    if (widget != nullptr) {
+      auto* viewport = static_cast<QtViewportWindow*>(widget);
+      viewport->clearFrameOnUiThread();
+      viewport->setOwner(nullptr);
+    }
+    auto* mainWindow = static_cast<QtMainWindow*>(shell);
+    mainWindow->setOwner(nullptr);
+    mainWindow->hide();
+    delete mainWindow;
+  } else if (widget != nullptr) {
     auto* viewport = static_cast<QtViewportWindow*>(widget);
     viewport->clearFrameOnUiThread();
     viewport->setOwner(nullptr);
