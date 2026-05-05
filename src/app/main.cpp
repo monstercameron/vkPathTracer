@@ -766,6 +766,64 @@ DoctorCheckResult CheckSceneSchema() {
   std::size_t totalLights = 0;
   std::size_t totalSdfPrimitives = 0;
 
+  auto checkRuntimeMaterialPresets = [&]() {
+    vkpt::scene::SceneDocument presetDoc;
+    presetDoc.metadata.schema = "1.0";
+    presetDoc.metadata.scene_name = "material_preset_smoke";
+    auto addMaterial = [&](vkpt::core::StableId id, std::string family) {
+      vkpt::scene::SceneMaterialDefinition material;
+      material.id = id;
+      material.name = family;
+      material.family = std::move(family);
+      presetDoc.materials.push_back(std::move(material));
+    };
+    addMaterial(1u, "mirror");
+    addMaterial(2u, "dielectric_glass");
+    addMaterial(3u, "clearcoat");
+    addMaterial(4u, "emissive");
+    for (std::uint32_t i = 0; i < 4u; ++i) {
+      const float x = static_cast<float>(i);
+      vkpt::scene::SceneGeometryDefinition geometry;
+      geometry.id = 100u + i;
+      geometry.primitive = "triangle";
+      geometry.material_id = i + 1u;
+      geometry.vertices = {
+          {x, 0.0f, 0.0f},
+          {x + 0.5f, 0.0f, 0.0f},
+          {x, 0.5f, 0.0f},
+      };
+      geometry.indices = {0u, 1u, 2u};
+      presetDoc.geometry.push_back(std::move(geometry));
+
+      vkpt::scene::SceneEntityDefinition entity;
+      entity.id = 200u + i;
+      entity.name = "preset_triangle_" + std::to_string(i);
+      entity.has_mesh = true;
+      entity.mesh.mesh_id = 100u + i;
+      entity.mesh.material_id = i + 1u;
+      presetDoc.entities.push_back(std::move(entity));
+    }
+    auto rtResult = vkpt::pathtracer::BuildSceneDataFromDocument(presetDoc);
+    if (!rtResult || rtResult.value().materials.size() < 4u) {
+      issues.push_back("material_preset_smoke:rt_scene_failed");
+      return;
+    }
+    const auto& mats = rtResult.value().materials;
+    if (mats[0].material_model != 2u || mats[0].roughness > 0.001f || mats[0].metallic < 0.99f) {
+      issues.push_back("material_preset_smoke:mirror_defaults");
+    }
+    if (mats[1].material_model != 5u || mats[1].transmission < 0.99f || mats[1].alpha > 0.5f) {
+      issues.push_back("material_preset_smoke:glass_defaults");
+    }
+    if (mats[2].material_model != 7u || mats[2].clearcoat < 0.99f) {
+      issues.push_back("material_preset_smoke:clearcoat_defaults");
+    }
+    if (mats[3].material_model != 1u || !mats[3].is_emissive()) {
+      issues.push_back("material_preset_smoke:emissive_defaults");
+    }
+  };
+  checkRuntimeMaterialPresets();
+
   for (const auto& scenePath : scenePaths) {
     const auto sceneName = scenePath.filename().string();
     auto result = vkpt::scene::SceneDocument::load_from_file(scenePath.string());
@@ -1833,117 +1891,6 @@ std::string QtTrim(std::string_view text) {
     return {};
   }
   return std::string(first, last);
-}
-
-std::string QtNormalizeToken(std::string_view text) {
-  std::string out;
-  out.reserve(text.size());
-  for (const char c : text) {
-    const unsigned char uc = static_cast<unsigned char>(c);
-    if ((uc >= 'A' && uc <= 'Z') || (uc >= 'a' && uc <= 'z') || (uc >= '0' && uc <= '9')) {
-      out.push_back(static_cast<char>(std::tolower(uc)));
-    } else if (uc == '_' || uc == '-' || uc == ' ') {
-      if (!out.empty() && out.back() != '_') {
-        out.push_back('_');
-      }
-    }
-  }
-  while (!out.empty() && out.back() == '_') {
-    out.pop_back();
-  }
-  return out;
-}
-
-void QtApplyMaterialFamilyPreset(vkpt::scene::SceneMaterialDefinition& material) {
-  const std::string family = QtNormalizeToken(material.family);
-  material.alpha = 1.0f;
-  material.transmission = 0.0f;
-  material.clearcoat = 0.0f;
-  material.sheen = 0.0f;
-  material.anisotropy = 0.0f;
-
-  if (family == "mirror") {
-    material.roughness = 0.0f;
-    material.metallic = 1.0f;
-  } else if (family == "glossy" || family == "specular") {
-    material.roughness = 0.18f;
-    material.metallic = 0.0f;
-  } else if (family == "metallic_pbr" ||
-             family == "ggx_rough_conductor" ||
-             family == "brushed_metal" ||
-             family == "ground_metal") {
-    material.roughness = family == "ggx_rough_conductor" ? 0.35f : 0.24f;
-    material.metallic = 1.0f;
-    material.anisotropy = family == "brushed_metal" ? 0.65f : 0.0f;
-  } else if (family == "dielectric_glass" || family == "ggx_rough_dielectric") {
-    material.roughness = 0.02f;
-    material.metallic = 0.0f;
-    material.ior = 1.5f;
-    material.transmission = 1.0f;
-    material.alpha = 0.35f;
-  } else if (family == "frosted_glass" || family == "dirty_glass") {
-    material.roughness = 0.48f;
-    material.metallic = 0.0f;
-    material.ior = 1.45f;
-    material.transmission = 0.85f;
-    material.alpha = 0.5f;
-  } else if (family == "clearcoat" || family == "paint" || family == "car_paint") {
-    material.roughness = 0.22f;
-    material.metallic = 0.0f;
-    material.clearcoat = 1.0f;
-  } else if (family == "velvet" || family == "fabric_cloth") {
-    material.roughness = 0.86f;
-    material.metallic = 0.0f;
-    material.sheen = family == "velvet" ? 0.85f : 0.62f;
-  } else if (family == "toon_surface" || family == "stylized_diffuse") {
-    material.roughness = 1.0f;
-    material.metallic = 0.0f;
-  } else if (family == "emissive" ||
-             family == "blackbody_emission" ||
-             family == "fire_plasma" ||
-             family == "fire_sparkle_emission") {
-    material.roughness = 1.0f;
-    material.metallic = 0.0f;
-    if (material.emission.x <= 0.0f && material.emission.y <= 0.0f && material.emission.z <= 0.0f) {
-      material.emission = {
-          std::max(0.2f, material.albedo.x),
-          std::max(0.2f, material.albedo.y),
-          std::max(0.2f, material.albedo.z)};
-    }
-    if (material.emission_intensity <= 0.0f) {
-      material.emission_intensity = family == "blackbody_emission" ? 5.0f : 3.0f;
-    }
-  } else if (family == "thin_film_iridescent" ||
-             family == "holographic_coating" ||
-             family == "pearl_lustre") {
-    material.roughness = 0.2f;
-    material.metallic = 0.0f;
-    material.clearcoat = 0.8f;
-    material.sheen = 0.35f;
-  } else if (family == "alpha_mask") {
-    material.roughness = 0.8f;
-    material.metallic = 0.0f;
-    material.alpha = 0.5f;
-  } else if (family == "wet_surface" || family == "water_fluid_surface") {
-    material.roughness = 0.08f;
-    material.metallic = 0.0f;
-    material.clearcoat = 0.9f;
-  } else if (family == "retroreflector" || family == "caustics_inspired_response") {
-    material.roughness = 0.12f;
-    material.metallic = 0.0f;
-    material.clearcoat = 0.75f;
-  } else {
-    material.roughness = family == "diffuse" ? 0.85f : material.roughness;
-    material.metallic = 0.0f;
-  }
-
-  if (family != "emissive" &&
-      family != "blackbody_emission" &&
-      family != "fire_plasma" &&
-      family != "fire_sparkle_emission") {
-    material.emission = {0.0f, 0.0f, 0.0f};
-    material.emission_intensity = 0.0f;
-  }
 }
 
 std::vector<std::string> QtSplitPropertyPath(std::string_view id) {
@@ -3456,7 +3403,7 @@ int RunDynamicPhysicsPerformanceGate(std::string scenePath,
 
   vkpt::physics::PhysicsStepConfig physicsConfig{};
   physicsConfig.fixed_dt = 1.0f / 60.0f;
-  physicsConfig.collision_steps = 2;
+  physicsConfig.collision_steps = 6;
   physicsConfig.deterministic = true;
   physicsConfig.collision_detection_enabled = true;
 
@@ -3565,6 +3512,82 @@ vkpt::pathtracer::Vec3 TransformPointForPreview(const vkpt::scene::Vec3& point,
   return ApplySceneTransformToPoint({point.x, point.y, point.z}, transform);
 }
 
+std::optional<vkpt::scene::SceneWorld> BuildSceneWorldSnapshot(
+    const vkpt::scene::SceneDocument& document) {
+  auto worldResult = document.to_world();
+  if (!worldResult) {
+    return std::nullopt;
+  }
+  auto world = std::move(worldResult.value());
+  world.recompute_world_transforms();
+  return world;
+}
+
+vkpt::scene::TransformComponent ResolveEntityWorldTransform(
+    const vkpt::scene::SceneEntityDefinition& entity,
+    const vkpt::scene::SceneWorld* world) {
+  if (world != nullptr) {
+    if (const auto* worldTransform = world->world_transform(entity.id)) {
+      vkpt::scene::TransformComponent transform = *worldTransform;
+      transform.dirty = entity.has_transform ? entity.transform.dirty : false;
+      return transform;
+    }
+  }
+  return entity.has_transform ? entity.transform : vkpt::scene::TransformComponent{};
+}
+
+vkpt::scene::TransformComponent TransformFromRtInstance(
+    const vkpt::pathtracer::RTInstance& instance) {
+  vkpt::scene::TransformComponent transform;
+  transform.translation = {instance.translation.x, instance.translation.y, instance.translation.z};
+  transform.rotation = {instance.rotation.x, instance.rotation.y, instance.rotation.z, instance.rotation.w};
+  transform.scale = {instance.scale.x, instance.scale.y, instance.scale.z};
+  transform.dirty = false;
+  return transform;
+}
+
+vkpt::scene::Quat InverseQuat(vkpt::scene::Quat q) {
+  q = NormalizeQuat(q);
+  q.x = -q.x;
+  q.y = -q.y;
+  q.z = -q.z;
+  return q;
+}
+
+float SafeTransformScaleDivisor(float value) {
+  return std::fabs(value) <= 1.0e-6f ? 1.0f : value;
+}
+
+vkpt::scene::TransformComponent ConvertWorldTransformToDocumentLocal(
+    const vkpt::scene::SceneEntityDefinition& entity,
+    const vkpt::scene::SceneWorld* currentWorld,
+    const vkpt::scene::TransformComponent& worldTransform) {
+  if (!entity.has_hierarchy || entity.hierarchy.parent == 0 || currentWorld == nullptr) {
+    return worldTransform;
+  }
+
+  const auto* parentWorld = currentWorld->world_transform(entity.hierarchy.parent);
+  if (parentWorld == nullptr) {
+    return worldTransform;
+  }
+
+  vkpt::scene::TransformComponent local = worldTransform;
+  const auto delta = PtSub(ToPtVec3(worldTransform.translation),
+                           ToPtVec3(parentWorld->translation));
+  const auto unrotated = InverseRotatePointByQuat(delta, parentWorld->rotation);
+  local.translation = {
+      unrotated.x / SafeTransformScaleDivisor(parentWorld->scale.x),
+      unrotated.y / SafeTransformScaleDivisor(parentWorld->scale.y),
+      unrotated.z / SafeTransformScaleDivisor(parentWorld->scale.z)};
+  local.rotation = QuatMultiply(InverseQuat(parentWorld->rotation), worldTransform.rotation);
+  local.scale = {
+      worldTransform.scale.x / SafeTransformScaleDivisor(parentWorld->scale.x),
+      worldTransform.scale.y / SafeTransformScaleDivisor(parentWorld->scale.y),
+      worldTransform.scale.z / SafeTransformScaleDivisor(parentWorld->scale.z)};
+  local.dirty = true;
+  return local;
+}
+
 std::string PickableLabel(std::string_view name, vkpt::core::StableId id) {
   if (!name.empty()) {
     return std::string(name);
@@ -3640,6 +3663,8 @@ void AddSdfPickable(std::vector<ViewportPickable>& pickables,
 std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDocument& document,
                                                      const vkpt::pathtracer::RTSceneData& scene) {
   std::vector<ViewportPickable> pickables;
+  const auto worldSnapshot = BuildSceneWorldSnapshot(document);
+  const auto* world = worldSnapshot ? &worldSnapshot.value() : nullptr;
   std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneGeometryDefinition*> geometryById;
   for (const auto& geometry : document.geometry) {
     geometryById[geometry.id] = &geometry;
@@ -3648,8 +3673,6 @@ std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDoc
   struct MeshPickableRef {
     vkpt::core::StableId entity_id = 0;
     vkpt::core::StableId mesh_id = 0;
-    vkpt::scene::TransformComponent transform{};
-    bool has_transform = false;
     std::string label;
   };
   std::vector<MeshPickableRef> meshRefs;
@@ -3669,8 +3692,6 @@ std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDoc
     meshRefs.push_back({
         entity.id,
         entity.mesh.mesh_id,
-        entity.has_transform ? entity.transform : vkpt::scene::TransformComponent{},
-        entity.has_transform,
         PickableLabel(entity.name, entity.id)});
   }
 
@@ -3679,7 +3700,7 @@ std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDoc
       if (!entity.has_sdf_primitive) {
         continue;
       }
-      const auto transform = entity.has_transform ? entity.transform : vkpt::scene::TransformComponent{};
+      const auto transform = ResolveEntityWorldTransform(entity, world);
       const std::string shape = entity.sdf_primitive.shape.empty()
           ? std::string("sphere")
           : entity.sdf_primitive.shape;
@@ -3703,7 +3724,7 @@ std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDoc
           continue;
         }
         const auto* geometry = geometryIt->second;
-        const auto transform = meshRef.has_transform ? meshRef.transform : vkpt::scene::TransformComponent{};
+        const auto transform = TransformFromRtInstance(instance);
         vkpt::editor::Bounds bounds{};
         for (const auto& vertex : geometry->vertices) {
           ExpandBounds(bounds, TransformPointForPreview(vertex, transform));
@@ -3796,7 +3817,7 @@ std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDoc
     if (geometry == nullptr || geometry->vertices.empty()) {
       continue;
     }
-    const auto transform = entity.has_transform ? entity.transform : vkpt::scene::TransformComponent{};
+    const auto transform = ResolveEntityWorldTransform(entity, world);
     vkpt::editor::Bounds bounds{};
     for (const auto& vertex : geometry->vertices) {
       ExpandBounds(bounds, TransformPointForPreview(vertex, transform));
@@ -6735,7 +6756,7 @@ int main(int argc, char** argv) {
       std::vector<ViewportPickable> qtPickables =
           BuildViewportPickables(qtSceneDocument, qtScene);
 #endif
-      auto qtBuildPhysicsBodies = [&]() {
+      auto qtBuildPhysicsBodies = [&](const vkpt::scene::SceneWorld* world) {
         std::vector<vkpt::physics::PhysicsBodySync> bodies;
         bodies.reserve(qtSceneDocument.entities.size());
         for (const auto& entity : qtSceneDocument.entities) {
@@ -6745,21 +6766,24 @@ int main(int argc, char** argv) {
           vkpt::physics::PhysicsBodySync sync;
           sync.entity = entity.id;
           sync.body = entity.physics_body;
-          if (entity.has_transform) {
-            sync.transform = entity.transform;
-          }
+          sync.transform = ResolveEntityWorldTransform(entity, world);
           bodies.push_back(std::move(sync));
         }
         return bodies;
       };
       auto qtPhysics = vkpt::physics::CreatePhysicsWorld();
-      auto qtPhysicsSummary =
-          qtPhysics->sync_from_bodies(qtBuildPhysicsBodies(), qtSceneDocument.entities.size());
+      auto qtSyncPhysicsSceneDocumentNow = [&]() {
+        if (auto world = BuildSceneWorldSnapshot(qtSceneDocument)) {
+          return qtPhysics->sync_from_scene_world(*world);
+        }
+        return qtPhysics->sync_from_bodies(qtBuildPhysicsBodies(nullptr),
+                                           qtSceneDocument.entities.size());
+      };
+      auto qtPhysicsSummary = qtSyncPhysicsSceneDocumentNow();
       const auto qtPhysicsInfo = qtPhysics->engine_info();
       bool qtPhysicsRuntimeDirty = false;
       auto qtSyncPhysicsFromSceneDocument = [&]() {
-        qtPhysicsSummary =
-            qtPhysics->sync_from_bodies(qtBuildPhysicsBodies(), qtSceneDocument.entities.size());
+        qtPhysicsSummary = qtSyncPhysicsSceneDocumentNow();
         qtPhysicsRuntimeDirty = true;
       };
 #ifndef PT_ENABLE_QT
@@ -7839,7 +7863,9 @@ int main(int argc, char** argv) {
             if (material->family.empty()) {
               material->family = "diffuse";
             }
-            QtApplyMaterialFamilyPreset(*material);
+            vkpt::scene::ApplyMaterialFamilyPreset(
+                *material,
+                vkpt::scene::SceneMaterialPresetPolicy::Override);
           } else if (field == "albedo") {
             vkpt::scene::Vec3 value{};
             if (!QtParseVec3(edit.value, value)) {
@@ -8549,7 +8575,7 @@ int main(int argc, char** argv) {
       };
       vkpt::physics::PhysicsStepConfig qtPhysicsStepConfig;
       qtPhysicsStepConfig.fixed_dt = 1.0f / 60.0f;
-      qtPhysicsStepConfig.collision_steps = 2;
+      qtPhysicsStepConfig.collision_steps = 6;
       qtPhysicsStepConfig.deterministic = true;
       bool qtPhysicsCollisionDetectionEnabled = true;
       float qtPhysicsAccumulatorSeconds = 0.0f;
@@ -8791,33 +8817,36 @@ int main(int argc, char** argv) {
 
         if (stepped) {
           bool sceneChanged = false;
+          const auto preWriteWorldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
+          const auto* preWriteWorld =
+              preWriteWorldSnapshot ? &preWriteWorldSnapshot.value() : nullptr;
           for (const auto& write : qtPhysics->extract_transform_writes()) {
             auto* entity = qtFindEntity(write.entity);
             if (entity == nullptr) {
               continue;
             }
-            const auto& current = entity->transform;
+            const auto currentWorld = ResolveEntityWorldTransform(*entity, preWriteWorld);
             const auto& next = write.transform;
             const bool transformChanged =
-                !nearlyEqual(current.translation.x, next.translation.x, 0.0005f) ||
-                !nearlyEqual(current.translation.y, next.translation.y, 0.0005f) ||
-                !nearlyEqual(current.translation.z, next.translation.z, 0.0005f) ||
-                !nearlyEqual(current.rotation.x, next.rotation.x, 0.0005f) ||
-                !nearlyEqual(current.rotation.y, next.rotation.y, 0.0005f) ||
-                !nearlyEqual(current.rotation.z, next.rotation.z, 0.0005f) ||
-                !nearlyEqual(current.rotation.w, next.rotation.w, 0.0005f) ||
-                !nearlyEqual(current.scale.x, next.scale.x, 0.0005f) ||
-                !nearlyEqual(current.scale.y, next.scale.y, 0.0005f) ||
-                !nearlyEqual(current.scale.z, next.scale.z, 0.0005f);
+                !nearlyEqual(currentWorld.translation.x, next.translation.x, 0.0005f) ||
+                !nearlyEqual(currentWorld.translation.y, next.translation.y, 0.0005f) ||
+                !nearlyEqual(currentWorld.translation.z, next.translation.z, 0.0005f) ||
+                !nearlyEqual(currentWorld.rotation.x, next.rotation.x, 0.0005f) ||
+                !nearlyEqual(currentWorld.rotation.y, next.rotation.y, 0.0005f) ||
+                !nearlyEqual(currentWorld.rotation.z, next.rotation.z, 0.0005f) ||
+                !nearlyEqual(currentWorld.rotation.w, next.rotation.w, 0.0005f) ||
+                !nearlyEqual(currentWorld.scale.x, next.scale.x, 0.0005f) ||
+                !nearlyEqual(currentWorld.scale.y, next.scale.y, 0.0005f) ||
+                !nearlyEqual(currentWorld.scale.z, next.scale.z, 0.0005f);
             if (!transformChanged) {
               continue;
             }
             auto& renderPose = qtPhysicsRenderPoses[write.entity];
-            renderPose.previous = current;
+            renderPose.previous = currentWorld;
             renderPose.current = next;
             renderPose.valid = true;
             entity->has_transform = true;
-            entity->transform = next;
+            entity->transform = ConvertWorldTransformToDocumentLocal(*entity, preWriteWorld, next);
             entity->transform.dirty = true;
             auto& pending = qtPendingPhysicsInstanceUpdates[write.entity];
             pending.entity_id = write.entity;
