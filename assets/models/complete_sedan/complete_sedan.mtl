@@ -1,0 +1,132 @@
+# Material buckets authored for vkPathTracer material-family testing.
+# Custom keys are consumed by SceneAssetLoader: family, transmission, clearcoat, sheen, anisotropy, emission_intensity, double_sided.
+
+newmtl sedan_black_plastic
+family plastic
+Kd 0.035000 0.035000 0.033000
+Ks 0.120000 0.120000 0.110000
+Pr 0.440000
+Pm 0.000000
+Ni 1.500000
+transmission 0.000000
+clearcoat 0.120000
+double_sided true
+
+newmtl sedan_black_rubber
+family rubber
+Kd 0.018000 0.017000 0.016000
+Ks 0.050000 0.050000 0.050000
+Pr 0.680000
+Pm 0.000000
+Ni 1.350000
+transmission 0.000000
+clearcoat 0.000000
+double_sided true
+
+newmtl sedan_brushed_aluminum
+family brushed_metal
+Kd 0.550000 0.560000 0.550000
+Ks 0.750000 0.740000 0.700000
+Pr 0.260000
+Pm 1.000000
+Ni 1.500000
+transmission 0.000000
+clearcoat 0.000000
+anisotropy 0.450000
+double_sided true
+
+newmtl sedan_chrome_trim
+family metallic_pbr
+Kd 0.820000 0.800000 0.760000
+Ks 1.000000 0.960000 0.900000
+Pr 0.090000
+Pm 1.000000
+Ni 1.500000
+transmission 0.000000
+clearcoat 0.000000
+double_sided true
+
+newmtl sedan_cool_headlamp_lens
+family dielectric_glass
+Kd 0.550000 0.620000 0.920000
+Ks 1.000000 1.000000 1.000000
+Ke 0.120000 0.150000 0.280000
+Pr 0.040000
+Pm 0.000000
+d 0.550000
+Ni 1.450000
+transmission 0.350000
+clearcoat 0.000000
+emission_intensity 0.600000
+double_sided true
+
+newmtl sedan_dark_body_trim
+family plastic
+Kd 0.060000 0.060000 0.055000
+Ks 0.140000 0.140000 0.130000
+Pr 0.360000
+Pm 0.000000
+Ni 1.500000
+transmission 0.000000
+clearcoat 0.200000
+double_sided true
+
+newmtl sedan_deep_red_car_paint
+family car_paint
+Kd 0.340000 0.015000 0.012000
+Ks 0.800000 0.720000 0.680000
+Pr 0.180000
+Pm 0.180000
+Ni 1.500000
+transmission 0.000000
+clearcoat 0.900000
+double_sided true
+
+newmtl sedan_interior_fabric
+family fabric_cloth
+Kd 0.160000 0.150000 0.140000
+Ks 0.080000 0.075000 0.070000
+Pr 0.720000
+Pm 0.000000
+Ni 1.500000
+transmission 0.000000
+clearcoat 0.000000
+sheen 0.550000
+double_sided true
+
+newmtl sedan_plate_plastic
+family plastic
+Kd 0.750000 0.720000 0.640000
+Ks 0.180000 0.180000 0.160000
+Pr 0.480000
+Pm 0.000000
+Ni 1.500000
+transmission 0.000000
+clearcoat 0.080000
+double_sided true
+
+newmtl sedan_tinted_glass
+family dielectric_glass
+Kd 0.040000 0.080000 0.110000
+Ks 0.950000 0.980000 1.000000
+Pr 0.015000
+Pm 0.000000
+d 0.340000
+Ni 1.450000
+transmission 0.820000
+clearcoat 0.000000
+double_sided true
+
+newmtl sedan_warm_signal_lens
+family dielectric_glass
+Kd 0.900000 0.380000 0.120000
+Ks 1.000000 0.780000 0.450000
+Ke 0.180000 0.080000 0.025000
+Pr 0.050000
+Pm 0.000000
+d 0.600000
+Ni 1.450000
+transmission 0.280000
+clearcoat 0.000000
+emission_intensity 0.450000
+double_sided true

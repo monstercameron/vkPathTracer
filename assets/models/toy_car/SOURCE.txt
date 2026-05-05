@@ -1,0 +1,20 @@
+Toy Car model asset
+
+Source: Khronos Group glTF Sample Assets, Models/ToyCar
+Repository: https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/ToyCar
+Raw glTF source files:
+https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/ToyCar/glTF/ToyCar.gltf
+https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/ToyCar/glTF/ToyCar.bin
+
+License for model, binary, and image files: CC0 1.0 Universal.
+Credited upstream artists: Guido Odendahl for the initial car model and
+Eric Chadwick for extensions and scene composition.
+
+Local conversion notes:
+- The original glTF mesh was converted to OBJ/MTL for the current scene asset
+  expander, which instantiates OBJ scene assets.
+- Vertex positions include the authored glTF node transforms and were normalized
+  to a 4-unit horizontal footprint with the lowest point on Y=0.
+- The MTL uses vkPathTracer material hints such as family, clearcoat,
+  transmission, and sheen so the renderer can preserve the car paint, glass,
+  metal, and fabric intent even before full texture sampling is available.

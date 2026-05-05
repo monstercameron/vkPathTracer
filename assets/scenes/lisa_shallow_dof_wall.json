@@ -18,7 +18,7 @@
     {
       "id": 102,
       "type": "texture",
-      "uri": "../models/sponza/textures/sponza_plaster.png"
+      "uri": "../models/sponza/textures/sponza_arch_diff.png"
     }
   ],
   "materials": [
@@ -629,7 +629,7 @@
           0.9,
           0.78
         ],
-        "intensity": 12.0,
+        "intensity": 3.5,
         "radius": 0.35
       }
     },
@@ -661,8 +661,86 @@
           0.68,
           1.0
         ],
-        "intensity": 3.5,
+        "intensity": 1.2,
         "radius": 0.18
+      }
+    },
+    {
+      "id": 122,
+      "name": "Left off-axis Lisa spot",
+      "transform": {
+        "translation": [
+          -1.7,
+          2.6,
+          1.35
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "light": {
+        "type": "spot",
+        "color": [
+          1.0,
+          0.88,
+          0.72
+        ],
+        "intensity": 8.0,
+        "radius": 0.04,
+        "direction": [
+          0.651,
+          -0.556,
+          -0.517
+        ],
+        "beam_angle": 34.0,
+        "blend": 0.32
+      }
+    },
+    {
+      "id": 123,
+      "name": "Right off-axis Lisa spot",
+      "transform": {
+        "translation": [
+          1.55,
+          2.0,
+          0.95
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "light": {
+        "type": "spot",
+        "color": [
+          0.72,
+          0.82,
+          1.0
+        ],
+        "intensity": 5.5,
+        "radius": 0.035,
+        "direction": [
+          -0.772,
+          -0.423,
+          -0.473
+        ],
+        "beam_angle": 30.0,
+        "blend": 0.38
       }
     },
     {
@@ -671,6 +749,41 @@
       "mesh": {
         "mesh_id": 201,
         "material_id": 201
+      }
+    },
+    {
+      "id": 114,
+      "name": "Studio floor physics collider",
+      "transform": {
+        "translation": [
+          0.0,
+          0.44,
+          1.25
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          8.0,
+          0.1,
+          7.5
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.85,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
       }
     },
     {
@@ -731,7 +844,7 @@
           0.50,
           0.68
         ],
-        "intensity": 0.4,
+        "intensity": 0.25,
         "radius": 0.0
       }
     }
