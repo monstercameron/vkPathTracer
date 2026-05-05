@@ -25,11 +25,13 @@
         "obj",
         "mtl",
         "static_mesh_metadata",
+        "triangle_geometry_decode",
+        "scene_asset_expansion",
         "legacy_material_to_pbr_fallback"
       ],
-      "decode_status": "metadata_only",
+      "decode_status": "renderable_scene_geometry",
       "lossy_notes": [
-        "non-triangle face triangulation is declared but deferred",
+        "OBJ polygons are triangulated with a fan for renderer upload",
         "MTL diffuse/specular/opacity fields map to compatibility fallback descriptors"
       ]
     },
@@ -42,9 +44,9 @@
         "texture_metadata",
         "sampler_defaults"
       ],
-      "decode_status": "header_validation",
+      "decode_status": "texture_asset_header_decode",
       "lossy_notes": [
-        "pixel decode/upload is deferred; width, height, format, color space and semantic are available"
+        "PNG/JPEG assets are validated and classified for scene asset manifests; renderer texture sampling/upload is deferred"
       ]
     },
     {

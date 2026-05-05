@@ -716,7 +716,8 @@ class ObjMtlImporter final : public IAssetImporter {
   }
 
   [[nodiscard]] std::vector<std::string_view> supported_features() const override {
-    return {"obj", "mtl", "static_mesh_metadata", "legacy_material_to_pbr_fallback"};
+    return {"obj", "mtl", "static_mesh_metadata", "triangle_geometry_decode", "scene_asset_expansion",
+            "legacy_material_to_pbr_fallback"};
   }
 
   [[nodiscard]] AssetValidationResult validate_source(const AssetImportSource& source,
@@ -858,7 +859,7 @@ class ObjMtlImporter final : public IAssetImporter {
   [[nodiscard]] std::vector<AssetImportDiagnostic> emit_diagnostics() const override {
     return {detail::Diagnostic(ImportDiagnosticSeverity::Info,
                                "obj.ready",
-                               "OBJ/MTL metadata importer is registered with legacy material compatibility diagnostics")};
+                               "OBJ/MTL importer is registered with scene expansion support and legacy material compatibility diagnostics")};
   }
 
  private:
@@ -903,7 +904,7 @@ class TextureMetadataImporter final : public IAssetImporter {
   }
 
   [[nodiscard]] std::vector<std::string_view> supported_features() const override {
-    return {"png_header", "jpeg_header", "texture_metadata", "sampler_defaults"};
+    return {"png_header", "jpeg_header", "texture_asset_header_decode", "texture_metadata", "sampler_defaults"};
   }
 
   [[nodiscard]] AssetValidationResult validate_source(const AssetImportSource& source,
@@ -962,8 +963,8 @@ class TextureMetadataImporter final : public IAssetImporter {
     desc.format = TextureFormatForChannels(channels, desc.color_space);
     result.assets.push_back(MakeTextureAssetRecord(detail::FileNameOrUri(source.uri), source.uri, desc));
     result.diagnostics.push_back(detail::Diagnostic(ImportDiagnosticSeverity::Warning,
-                                                    "texture.metadata_only",
-                                                    "PNG/JPEG path validates image headers and creates texture metadata; full pixel decode is deferred",
+                                                    "texture.header_decode",
+                                                    "PNG/JPEG path validates image headers and creates texture asset metadata; renderer sampling/upload is deferred",
                                                     true));
     result.deterministic_import_hash = HashTextHex(std::string("texture:") + source.uri + ":" + desc.source_hash);
     result.success = true;
@@ -973,7 +974,7 @@ class TextureMetadataImporter final : public IAssetImporter {
   [[nodiscard]] std::vector<AssetImportDiagnostic> emit_diagnostics() const override {
     return {detail::Diagnostic(ImportDiagnosticSeverity::Info,
                                "texture.ready",
-                               "PNG/JPEG metadata importer is registered with robust header validation")};
+                               "PNG/JPEG texture importer is registered with robust header validation and semantic classification")};
   }
 
  private:

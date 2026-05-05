@@ -1,0 +1,9 @@
+Lisa scene model asset
+
+Model: Suzanne / Blender monkey head
+Downloaded from:
+https://github.com/alecjacobson/common-3d-test-models/blob/master/data/suzanne.obj
+
+The source repository lists the original source as Blender. The OBJ has been
+normalized for this scene so that Blender Y maps to vkPathTracer world Y and
+Blender Z points toward the authored camera.

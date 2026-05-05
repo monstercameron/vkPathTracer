@@ -1369,6 +1369,8 @@ int RunCommand(const std::vector<std::string_view>& args) {
   renderSettings.spp = opts.spp;
   renderSettings.max_depth = opts.maxDepth;
   renderSettings.seed = opts.seed;
+  renderSettings.enable_nee = true;
+  renderSettings.enable_mis = true;
 
   std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer;
   if (isTiledPath) {
