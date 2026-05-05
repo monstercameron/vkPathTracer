@@ -10,7 +10,7 @@ cbuffer PCBuf {
     float  cam_up_x;      float cam_up_y;      float cam_up_z;      uint  sample_index;
     uint   num_insts;     uint   num_mats;      uint   num_lights;   uint  width;
     uint   height;        uint   base_seed;     float  env_r;        float env_g;
-    float  env_b;         float  max_depth_f;   uint   rays_per_pixel; float  _pad10;
+    float  env_b;         float  max_depth_f;   uint   rays_per_pixel; float  exposure;
 };
 
 Buffer<float>    VertBuf  : register(t0);
@@ -21,6 +21,7 @@ Buffer<float>    LightBuf : register(t4);
 Buffer<float>    BvhBuf    : register(t5);
 Buffer<uint>     TriMatBuf : register(t6);
 RWBuffer<float4> FilmBuf  : register(u0);
+RWBuffer<uint>   LdrBuf   : register(u1); // tonemapped RGBA8 output (R|G<<8|B<<16|0xFF<<24)
 
 // ---- Forward declarations (fxc requires them) -------------------------------
 float Halton2(uint idx);
@@ -64,6 +65,34 @@ void main(uint3 gid : SV_DispatchThreadID) {
     float4 prev = FilmBuf[pixel];
     FilmBuf[pixel] = float4(prev.x + total_color.x, prev.y + total_color.y,
                             prev.z + total_color.z, prev.w + float(rpp));
+}
+
+// ============================================================================
+// GPU tonemap pass — second entry point, dispatched after path trace.
+// Reads the RGBA32F accumulation buffer (R_sum, G_sum, B_sum, count),
+// applies per-sample averaging, Reinhard tonemapping with exposure, sRGB
+// gamma 2.2, and writes packed RGBA8 (R | G<<8 | B<<16 | 0xFF<<24) to LdrBuf.
+// ============================================================================
+[numthreads(8, 8, 1)]
+void tonemap_main(uint3 gid : SV_DispatchThreadID) {
+    if (gid.x >= width || gid.y >= height) return;
+    uint pixel = gid.y * width + gid.x;
+
+    float4 acc = FilmBuf[pixel];
+    float  cnt = max(1.0f, acc.w);
+    float3 c   = acc.xyz / cnt;
+
+    // Reinhard tonemapping with per-frame exposure
+    c *= max(0.0f, exposure);
+    c  = c / (1.0f + c);
+
+    // Gamma 2.2 encode
+    c = pow(saturate(c), 1.0f / 2.2f);
+
+    uint r = min(255u, (uint)(c.x * 255.0f + 0.5f));
+    uint g = min(255u, (uint)(c.y * 255.0f + 0.5f));
+    uint b = min(255u, (uint)(c.z * 255.0f + 0.5f));
+    LdrBuf[pixel] = r | (g << 8u) | (b << 16u) | (0xFFu << 24u);
 }
 
 // ============================================================================

@@ -32,7 +32,7 @@ struct PathTraceConstants {
     uint32_t height;      uint32_t base_seed;   float    env_r;      float env_g;
     float  env_b;         float  max_depth_f;
     uint32_t rays_per_pixel;
-    float  _pad1; // pad to 112 bytes (multiple of 16)
+    float  exposure; // tonemap exposure (replaces unused _pad1)
 };
 static_assert(sizeof(PathTraceConstants) == 112,
               "PathTraceConstants size mismatch (expected 112)");
@@ -58,7 +58,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   const vkpt::pathtracer::FilmBuffer& film() const override { return m_film; }
   void shutdown() override;
 
-  bool        is_valid()   const { return m_valid; }
+  bool        is_valid()     const { return m_valid; }
   std::string last_error() const { return m_error; }
   std::string gpu_name()   const { return m_gpuName; }
   uint32_t    vram_mb()    const { return m_vramMb; }
@@ -72,6 +72,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool init_device();
   bool init_dxr_runtime_objects();
   bool create_root_sig_and_pso();
+  bool create_tonemap_pso(const std::string& src);
   bool create_film_buffer();
   bool upload_scene_buffers();
   void destroy_scene_buffers();
@@ -101,6 +102,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   UINT64  m_dxrFenceValue  = 0;
   Microsoft::WRL::ComPtr<ID3D12RootSignature>       m_rootSig;
   Microsoft::WRL::ComPtr<ID3D12PipelineState>       m_pso;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState>       m_tonemapPso; // second PSO for tonemap pass
   Microsoft::WRL::ComPtr<ID3D12Fence>               m_fence;
   HANDLE m_fenceEvent = nullptr;
   UINT64 m_fenceValue = 0;
@@ -119,8 +121,12 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
 
   Microsoft::WRL::ComPtr<ID3D12Resource> m_filmBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_filmReadbackBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_ldrBuf;          // GPU-side RGBA8 tonemap output
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_ldrReadbackBuf;  // CPU-readable copy of ldrBuf
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
+  Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_clearHeap; // persistent heap for reset_accumulation
   void* m_filmReadbackPtr = nullptr;
+  void* m_ldrReadbackPtr  = nullptr;
 
   vkpt::pathtracer::RenderSettings        m_settings{};
   vkpt::pathtracer::RTSceneData           m_sceneData{};
@@ -170,6 +176,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::vector<float>    m_gpuBvh;
   std::vector<uint32_t> m_gpuTriMat;
   mutable uint32_t m_lastSampleIdx = 0;
+  mutable vkpt::pathtracer::FilmLdr m_ldrResolve; // latest GPU-tonemapped frame
 };
 
 }  // namespace vkpt::gpu
