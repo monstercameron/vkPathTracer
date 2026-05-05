@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -409,6 +410,16 @@ class IPathTracer {
   virtual bool update_instance_transforms(
       const std::vector<RTInstanceTransformUpdate>& /*updates*/) { return false; }
   virtual bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) = 0;
+  virtual bool render_sample_batch_cancellable(uint32_t start_y,
+                                               uint32_t end_y,
+                                               uint32_t sample_index,
+                                               uint32_t frame_index,
+                                               std::stop_token stop) {
+    if (stop.stop_requested()) {
+      return false;
+    }
+    return render_sample_batch(start_y, end_y, sample_index, frame_index);
+  }
   virtual FilmLdr resolve_ldr() const = 0;
   virtual FilmHdr resolve_hdr() const = 0;
   virtual SampleCounters read_counters() const = 0;
