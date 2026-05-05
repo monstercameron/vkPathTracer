@@ -1,0 +1,277 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Complete Sedan Showcase",
+    "author": "vkPathTracer"
+  },
+  "assets": [
+    {
+      "id": 510,
+      "type": "model/obj",
+      "uri": "../models/complete_sedan/complete_sedan.obj"
+    }
+  ],
+  "materials": [
+    {
+      "id": 51,
+      "name": "Neutral studio floor",
+      "family": "concrete",
+      "albedo": [
+        0.28,
+        0.29,
+        0.30
+      ],
+      "roughness": 0.78,
+      "metallic": 0.0
+    },
+    {
+      "id": 52,
+      "name": "Soft grey backdrop",
+      "family": "plaster",
+      "albedo": [
+        0.58,
+        0.58,
+        0.56
+      ],
+      "roughness": 0.84,
+      "metallic": 0.0
+    }
+  ],
+  "geometry": [
+    {
+      "id": 51,
+      "primitive": "triangle",
+      "material_id": 51,
+      "vertices": [
+        [
+          -6.2,
+          0.0,
+          -6.2
+        ],
+        [
+          6.2,
+          0.0,
+          -6.2
+        ],
+        [
+          6.2,
+          0.0,
+          6.2
+        ],
+        [
+          -6.2,
+          0.0,
+          6.2
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    },
+    {
+      "id": 52,
+      "primitive": "triangle",
+      "material_id": 52,
+      "vertices": [
+        [
+          -6.2,
+          0.0,
+          -4.4
+        ],
+        [
+          6.2,
+          0.0,
+          -4.4
+        ],
+        [
+          6.2,
+          4.4,
+          -4.4
+        ],
+        [
+          -6.2,
+          4.4,
+          -4.4
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "id": 511,
+      "name": "Camera",
+      "transform": {
+        "translation": [
+          4.6,
+          2.2,
+          5.8
+        ],
+        "rotation": [
+          -0.09301851,
+          0.32741537,
+          0.03240891,
+          0.93973209
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "camera": {
+        "fov": 39.0,
+        "near_plane": 0.05,
+        "far_plane": 140.0,
+        "focal_length_mm": 60.0,
+        "aperture_radius": 0.010,
+        "focus_distance": 7.55,
+        "f_stop": 6.3,
+        "iso": 100.0
+      }
+    },
+    {
+      "id": 512,
+      "name": "Studio floor",
+      "mesh": {
+        "mesh_id": 51,
+        "material_id": 51
+      }
+    },
+    {
+      "id": 513,
+      "name": "Studio backdrop",
+      "mesh": {
+        "mesh_id": 52,
+        "material_id": 52
+      }
+    },
+    {
+      "id": 514,
+      "name": "Large warm key",
+      "transform": {
+        "translation": [
+          -3.4,
+          4.2,
+          4.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [
+          1.0,
+          0.86,
+          0.68
+        ],
+        "intensity": 48.0,
+        "radius": 1.25
+      }
+    },
+    {
+      "id": 515,
+      "name": "Cool rim light",
+      "transform": {
+        "translation": [
+          3.6,
+          2.4,
+          -3.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "light": {
+        "type": "point",
+        "color": [
+          0.54,
+          0.72,
+          1.0
+        ],
+        "intensity": 12.0,
+        "radius": 0.65
+      }
+    },
+    {
+      "id": 516,
+      "name": "Long overhead softbox",
+      "transform": {
+        "translation": [
+          0.0,
+          3.8,
+          0.2
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [
+          0.80,
+          0.88,
+          1.0
+        ],
+        "intensity": 10.0,
+        "radius": 2.6
+      }
+    },
+    {
+      "id": 517,
+      "name": "Low studio ambient",
+      "light": {
+        "type": "environment",
+        "color": [
+          0.09,
+          0.10,
+          0.12
+        ],
+        "intensity": 0.28,
+        "radius": 0.0
+      }
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 128,
+    "warmup_frames": 10
+  }
+}

@@ -9151,7 +9151,7 @@
     },
     {
       "id": 7020,
-      "name": "Physics floor",
+      "name": "Visible floor mesh",
       "mesh": {
         "mesh_id": 8002,
         "material_id": 9001
@@ -9159,6 +9159,32 @@
       "hierarchy": {
         "parent": 7004,
         "sibling_order": 0
+      }
+    },
+    {
+      "id": 7022,
+      "name": "Physics floor collider",
+      "transform": {
+        "translation": [
+          0.0,
+          -0.05,
+          1.9
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          13.0,
+          0.1,
+          14.6
+        ]
+      },
+      "hierarchy": {
+        "parent": 7004,
+        "sibling_order": 1
       },
       "physics": {
         "enabled": true,
@@ -9183,7 +9209,7 @@
       },
       "hierarchy": {
         "parent": 7004,
-        "sibling_order": 1
+        "sibling_order": 2
       },
       "physics": {
         "enabled": true,

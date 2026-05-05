@@ -1,0 +1,82 @@
+# Converted from Khronos glTF Sample Assets Toy Car.
+# Extra fields such as family, clearcoat, transmission, and sheen are read by vkPathTracer.
+
+newmtl ToyCar_detail_plastic
+family plastic
+Kd 0.541589 0.528793 0.183282
+Pr 0.420000
+Pm 0.000000
+map_Kd textures/ToyCar_basecolor.png
+map_Bump textures/ToyCar_normal.png
+map_Pr textures/ToyCar_occlusion_roughness_metallic.png
+map_Pm textures/ToyCar_occlusion_roughness_metallic.png
+double_sided true
+newmtl ToyCar_green_glass
+family dielectric_glass
+Kd 0.300000 0.800000 0.300000
+Pr 0.020000
+Pm 0.000000
+Ni 1.450000
+transmission 1.000000
+d 0.350000
+double_sided true
+
+newmtl ToyCar_green_paint
+family car_paint
+Kd 0.004074 0.470426 0.162403
+Pr 0.240000
+Pm 0.250000
+clearcoat 1.000000
+map_Kd textures/ToyCar_basecolor.png
+map_Bump textures/ToyCar_normal.png
+map_Pr textures/ToyCar_occlusion_roughness_metallic.png
+map_Pm textures/ToyCar_occlusion_roughness_metallic.png
+double_sided true
+
+newmtl ToyCar_metal_trim
+family metallic_pbr
+Kd 0.199972 0.200657 0.200203
+Pr 0.200000
+Pm 1.000000
+clearcoat 0.150000
+map_Kd textures/ToyCar_basecolor.png
+map_Bump textures/ToyCar_normal.png
+map_Pr textures/ToyCar_occlusion_roughness_metallic.png
+map_Pm textures/ToyCar_occlusion_roughness_metallic.png
+double_sided true
+
+newmtl ToyCar_red_fabric
+family fabric_cloth
+Kd 0.360000 0.079535 0.085336
+Pr 0.860000
+Pm 0.000000
+sheen 0.620000
+map_Kd textures/Fabric_baseColor.png
+map_Bump textures/Fabric_normal.png
+double_sided true
+
+newmtl ToyCar_warm_lenses
+family clearcoat
+Kd 0.799740 0.183862 0.113535
+Pr 0.180000
+Pm 0.000000
+clearcoat 0.800000
+Ke 1.000000 0.250000 0.080000
+emission_intensity 0.350000
+map_Kd textures/ToyCar_basecolor.png
+map_Bump textures/ToyCar_normal.png
+map_Pr textures/ToyCar_occlusion_roughness_metallic.png
+map_Pm textures/ToyCar_occlusion_roughness_metallic.png
+double_sided true
+
+newmtl ToyCar_white_trim
+family plastic
+Kd 0.977477 0.977512 0.977489
+Pr 0.300000
+Pm 0.000000
+clearcoat 0.350000
+map_Kd textures/ToyCar_basecolor.png
+map_Bump textures/ToyCar_normal.png
+map_Pr textures/ToyCar_occlusion_roughness_metallic.png
+map_Pm textures/ToyCar_occlusion_roughness_metallic.png
+double_sided true
