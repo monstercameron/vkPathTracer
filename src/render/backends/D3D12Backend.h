@@ -112,6 +112,9 @@ class D3D12Backend final : public IRenderBackend {
   std::unique_ptr<D3D12ShaderCache> m_cache;
 };
 
+std::vector<AcceleratorCapabilities> EnumerateD3D12Accelerators(bool include_cpu = true,
+                                                                bool include_warp = false);
+RayBudgetPlan BuildD3D12RayBudgetPlan(const RayBudgetRequest& request);
 bool RunD3D12ComputeSmoke(vkpt::render::IRenderBackend& backend);
 
 }  // namespace vkpt::render

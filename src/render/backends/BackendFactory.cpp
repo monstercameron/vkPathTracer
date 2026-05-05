@@ -151,6 +151,18 @@ bool TrySelectNamed(const std::vector<BackendCandidateDesc>& candidates,
   return true;
 }
 
+#if defined(PT_ENABLE_D3D12)
+bool HasD3D12RayTracingAccelerator() {
+  static const bool has_dxr = []() {
+    const auto accelerators = EnumerateD3D12Accelerators(false, false);
+    return std::any_of(accelerators.begin(), accelerators.end(), [](const AcceleratorCapabilities& accel) {
+      return accel.available && accel.compute && accel.ray_tracing && !accel.warp;
+    });
+  }();
+  return has_dxr;
+}
+#endif
+
 }  // namespace
 
 std::string NormalizeBackendName(std::string_view backend_name) {
@@ -166,7 +178,7 @@ std::string NormalizeBackendName(std::string_view backend_name) {
   } else if (out == "vulkanrt" || out == "vulkan-rt") {
     out = "vulkan-rt";
   } else if (out == "dxr" || out == "d3d12dxr" || out == "d3d12-dxr") {
-    out = "d3d12";
+    out = "d3d12-dxr";
   } else if (out == "metalrt" || out == "metal-rt") {
     out = "metal";
   } else if (out == "webgpuwgsl" || out == "webgpu-wgsl") {
@@ -182,9 +194,15 @@ std::vector<BackendCandidateDesc> DescribeBackendCandidates() {
   candidates.push_back(MakeCandidate("vulkan", BackendKind::VulkanCompute, 10u, true, true, true, false, true, false, false));
 
 #if defined(PT_ENABLE_D3D12)
+  const bool has_d3d12_dxr = HasD3D12RayTracingAccelerator();
   candidates.push_back(MakeCandidate("d3d12", BackendKind::D3d12, 20u, true, true, true, false, true, false, false));
+  candidates.push_back(MakeCandidate("d3d12-dxr", BackendKind::D3d12, 21u, true, has_d3d12_dxr, true, false, true, false,
+                                     has_d3d12_dxr,
+                                     has_d3d12_dxr ? "" : "No DXR-capable D3D12 accelerator found"));
 #else
   candidates.push_back(MakeCandidate("d3d12", BackendKind::D3d12, 20u, false, false, true, false, true, false, false,
+                                     "PT_ENABLE_D3D12 is disabled"));
+  candidates.push_back(MakeCandidate("d3d12-dxr", BackendKind::D3d12, 21u, false, false, true, false, true, false, false,
                                      "PT_ENABLE_D3D12 is disabled"));
 #endif
 
@@ -314,7 +332,7 @@ std::unique_ptr<IRenderBackend> CreateBackend(std::string_view backend_name) {
     return {};
   }
 #if defined(PT_ENABLE_D3D12)
-  if (normalized == "d3d12") {
+  if (normalized == "d3d12" || normalized == "d3d12-dxr") {
     return std::make_unique<D3D12Backend>();
   }
 #endif

@@ -8,13 +8,21 @@
     {
       "id": 31,
       "name": "Atrium stone",
-      "albedo": [0.75, 0.72, 0.68],
+      "albedo": [
+        0.75,
+        0.72,
+        0.68
+      ],
       "roughness": 1.0
     },
     {
       "id": 32,
       "name": "Atrium metal",
-      "albedo": [0.55, 0.52, 0.48],
+      "albedo": [
+        0.55,
+        0.52,
+        0.48
+      ],
       "roughness": 0.25
     }
   ],
@@ -24,15 +32,62 @@
       "primitive": "triangle",
       "material_id": 31,
       "vertices": [
-        [-2.0, 0.0, -2.0],
-        [2.0, 0.0, -2.0],
-        [0.0, 2.0, 2.0]
+        [
+          -2.0,
+          0.0,
+          -2.0
+        ],
+        [
+          2.0,
+          0.0,
+          -2.0
+        ],
+        [
+          0.0,
+          2.0,
+          2.0
+        ]
       ],
-      "indices": [0, 1, 2]
+      "indices": [
+        0,
+        1,
+        2
+      ]
     }
   ],
-  "sdf_primitives": [],
   "entities": [
+    {
+      "id": 305,
+      "name": "Scene Root",
+      "hierarchy": {
+        "parent": 0,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 306,
+      "name": "Cameras",
+      "hierarchy": {
+        "parent": 305,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 307,
+      "name": "Lights",
+      "hierarchy": {
+        "parent": 305,
+        "sibling_order": 1
+      }
+    },
+    {
+      "id": 308,
+      "name": "Geometry",
+      "hierarchy": {
+        "parent": 305,
+        "sibling_order": 2
+      }
+    },
     {
       "id": 301,
       "name": "camera",
@@ -40,6 +95,10 @@
         "fov": 55.0,
         "near_plane": 0.05,
         "far_plane": 300.0
+      },
+      "hierarchy": {
+        "parent": 306,
+        "sibling_order": 0
       }
     },
     {
@@ -48,6 +107,10 @@
       "mesh": {
         "mesh_id": 31,
         "material_id": 31
+      },
+      "hierarchy": {
+        "parent": 308,
+        "sibling_order": 0
       }
     },
     {
@@ -56,6 +119,10 @@
       "mesh": {
         "mesh_id": 31,
         "material_id": 32
+      },
+      "hierarchy": {
+        "parent": 308,
+        "sibling_order": 1
       }
     },
     {
@@ -63,27 +130,18 @@
       "name": "sun",
       "light": {
         "type": "directional",
-        "color": [1.0, 0.95, 0.9],
+        "color": [
+          1.0,
+          0.95,
+          0.9
+        ],
         "intensity": 2.2,
         "radius": 0.0
+      },
+      "hierarchy": {
+        "parent": 307,
+        "sibling_order": 0
       }
-    }
-  ],
-  "cameras": [
-    {
-      "id": 301,
-      "fov": 55.0,
-      "near_plane": 0.05,
-      "far_plane": 300.0
-    }
-  ],
-  "lights": [
-    {
-      "id": 304,
-      "type": "directional",
-      "color": [1.0, 0.95, 0.9],
-      "intensity": 2.2,
-      "radius": 0.0
     }
   ],
   "benchmark": {

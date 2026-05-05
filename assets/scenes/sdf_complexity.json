@@ -8,40 +8,48 @@
     {
       "id": 11,
       "name": "SDF matte",
-      "albedo": [0.72, 0.72, 0.88],
+      "albedo": [
+        0.72,
+        0.72,
+        0.88
+      ],
       "roughness": 1.0
     }
   ],
   "geometry": [],
-  "sdf_primitives": [
+  "entities": [
     {
-      "id": 101,
-      "shape": "sphere",
-      "transform": {
-        "translation": [0.0, 1.0, 0.0],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.8, 0.8, 0.8]
-      },
-      "primitive": {
-        "shape": "sphere",
-        "radius": 0.8
+      "id": 105,
+      "name": "Scene Root",
+      "hierarchy": {
+        "parent": 0,
+        "sibling_order": 0
       }
     },
     {
-      "id": 102,
-      "shape": "box",
-      "transform": {
-        "translation": [1.2, 0.5, 0.0],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.4, 0.6, 0.4]
-      },
-      "primitive": {
-        "shape": "box",
-        "param_a": 0.4
+      "id": 106,
+      "name": "Cameras",
+      "hierarchy": {
+        "parent": 105,
+        "sibling_order": 0
       }
-    }
-  ],
-  "entities": [
+    },
+    {
+      "id": 107,
+      "name": "Lights",
+      "hierarchy": {
+        "parent": 105,
+        "sibling_order": 1
+      }
+    },
+    {
+      "id": 108,
+      "name": "SDF Primitives",
+      "hierarchy": {
+        "parent": 105,
+        "sibling_order": 2
+      }
+    },
     {
       "id": 101,
       "name": "camera",
@@ -49,6 +57,10 @@
         "fov": 58.0,
         "near_plane": 0.1,
         "far_plane": 200.0
+      },
+      "hierarchy": {
+        "parent": 106,
+        "sibling_order": 0
       }
     },
     {
@@ -56,27 +68,82 @@
       "name": "rim",
       "light": {
         "type": "directional",
-        "color": [0.85, 0.9, 1.0],
+        "color": [
+          0.85,
+          0.9,
+          1.0
+        ],
         "intensity": 1.1,
         "radius": 0.0
+      },
+      "hierarchy": {
+        "parent": 107,
+        "sibling_order": 0
       }
-    }
-  ],
-  "cameras": [
+    },
     {
-      "id": 101,
-      "fov": 58.0,
-      "near_plane": 0.1,
-      "far_plane": 200.0
-    }
-  ],
-  "lights": [
+      "id": 103,
+      "name": "sphere_103",
+      "transform": {
+        "translation": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.8,
+          0.8,
+          0.8
+        ]
+      },
+      "sdf_primitive": {
+        "shape": "sphere",
+        "radius": 0.8,
+        "param_a": 0.0,
+        "param_b": 0.0
+      },
+      "hierarchy": {
+        "parent": 108,
+        "sibling_order": 0
+      }
+    },
     {
-      "id": 102,
-      "type": "directional",
-      "color": [0.85, 0.9, 1.0],
-      "intensity": 1.1,
-      "radius": 0.0
+      "id": 104,
+      "name": "box_104",
+      "transform": {
+        "translation": [
+          1.2,
+          0.5,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.4,
+          0.6,
+          0.4
+        ]
+      },
+      "sdf_primitive": {
+        "shape": "box",
+        "radius": 1.0,
+        "param_a": 0.4,
+        "param_b": 0.0
+      },
+      "hierarchy": {
+        "parent": 108,
+        "sibling_order": 1
+      }
     }
   ],
   "benchmark": {

@@ -109,9 +109,14 @@ bool VulkanGpuPathTracer::build_or_update_acceleration() {
     m_gpuMats.push_back(m.albedo.z);
     m_gpuMats.push_back(m.emissive.x); m_gpuMats.push_back(m.emissive.y);
     m_gpuMats.push_back(m.emissive.z);
-    m_gpuMats.push_back(m.roughness);  m_gpuMats.push_back(0.0f);
+    m_gpuMats.push_back(m.roughness);  m_gpuMats.push_back(static_cast<float>(m.material_model));
+    m_gpuMats.push_back(m.metallic);   m_gpuMats.push_back(m.ior);
+    m_gpuMats.push_back(m.transmission); m_gpuMats.push_back(m.clearcoat);
+    m_gpuMats.push_back(m.sheen);      m_gpuMats.push_back(m.anisotropy);
+    const uint32_t packed_effect = (m.material_effect & 1023u) | ((m.material_flags & 1u) ? 1024u : 0u);
+    m_gpuMats.push_back(m.alpha);      m_gpuMats.push_back(static_cast<float>(packed_effect));
   }
-  if (m_gpuMats.empty()) m_gpuMats.assign(8, 0.0f);
+  if (m_gpuMats.empty()) m_gpuMats.assign(16, 0.0f);
 
   m_gpuInsts.clear();
   for (const auto& inst : m_sceneData.instances) {

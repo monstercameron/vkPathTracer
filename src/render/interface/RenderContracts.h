@@ -26,6 +26,15 @@ enum class BackendKind {
   Unknown
 };
 
+enum class AcceleratorKind {
+  Unknown,
+  Cpu,
+  DiscreteGpu,
+  IntegratedGpu,
+  Warp,
+  VirtualGpu
+};
+
 enum class PassType {
   Upload,
   Compute,
@@ -121,6 +130,7 @@ inline bool HasUsage(ResourceBindingUsage value, ResourceBindingUsage flag) {
 }
 
 std::string_view BackendKindToString(BackendKind kind);
+std::string_view AcceleratorKindToString(AcceleratorKind kind);
 
 using ResourceHandle = vkpt::core::RuntimeHandle;
 
@@ -320,6 +330,77 @@ struct RenderBackendCapabilities {
   ShaderCapabilities shader;
   TextureFormatCapabilities texture_formats_caps;
   MemoryBudgetCapabilities memory_budget;
+};
+
+struct AcceleratorCapabilities {
+  std::string id;
+  std::string name = "unknown";
+  AcceleratorKind accelerator_kind = AcceleratorKind::Unknown;
+  BackendKind backend_kind = BackendKind::Unknown;
+  bool available = false;
+  bool hardware = false;
+  bool cpu = false;
+  bool d3d12 = false;
+  bool compute = false;
+  bool ray_tracing = false;
+  bool presentation = false;
+  bool warp = false;
+  bool unified_memory = false;
+  bool cache_coherent_uma = false;
+  bool selected_by_default = false;
+  std::uint32_t node_count = 1u;
+  std::uint32_t vendor_id = 0u;
+  std::uint32_t device_id = 0u;
+  std::uint64_t dedicated_video_memory_bytes = 0u;
+  std::uint64_t shared_system_memory_bytes = 0u;
+  std::uint64_t current_budget_bytes = 0u;
+  std::uint64_t current_usage_bytes = 0u;
+  double estimated_rays_per_ms = 0.0;
+  std::string adapter_luid;
+  std::string notes;
+  RenderBackendCapabilities backend_caps;
+};
+
+struct RayBudgetRequest {
+  double polygon_frame_budget_ms = 16.6667;
+  double reserved_polygon_ms = 5.0;
+  double merge_budget_ms = 1.0;
+  std::uint32_t width = 1280u;
+  std::uint32_t height = 720u;
+  std::uint32_t max_bounces = 6u;
+  std::uint64_t min_rays_per_batch = 65536u;
+  bool include_cpu = true;
+  bool include_integrated_gpu = true;
+  bool include_warp = false;
+  bool require_ray_tracing = false;
+};
+
+struct RayBudgetAssignment {
+  std::string accelerator_id;
+  std::string accelerator_name;
+  AcceleratorKind accelerator_kind = AcceleratorKind::Unknown;
+  BackendKind backend_kind = BackendKind::Unknown;
+  std::string backend_name;
+  bool active = false;
+  bool uses_dxr = false;
+  std::uint32_t worker_threads = 1u;
+  std::uint64_t target_rays = 0u;
+  double budget_ms = 0.0;
+  double estimated_rays_per_ms = 0.0;
+  std::string reason;
+};
+
+struct RayBudgetPlan {
+  double polygon_frame_budget_ms = 0.0;
+  double reserved_polygon_ms = 0.0;
+  double merge_budget_ms = 0.0;
+  double ray_budget_ms = 0.0;
+  std::uint32_t width = 0u;
+  std::uint32_t height = 0u;
+  std::uint64_t total_target_rays = 0u;
+  double estimated_samples_per_pixel = 0.0;
+  std::vector<RayBudgetAssignment> assignments;
+  std::vector<std::string> diagnostics;
 };
 
 struct RenderCrashState {
@@ -547,6 +628,10 @@ RenderCrashState BuildRendererCrashState(const IRenderBackend& backend,
                                         const std::string& extra_error = {});
 std::string SerializeRenderCrashState(const RenderCrashState& state);
 std::string SerializeBackendCapabilities(const RenderBackendCapabilities& caps);
+std::string SerializeAcceleratorCapabilities(const AcceleratorCapabilities& caps);
+std::string SerializeRayBudgetRequest(const RayBudgetRequest& request);
+std::string SerializeRayBudgetAssignment(const RayBudgetAssignment& assignment);
+std::string SerializeRayBudgetPlan(const RayBudgetPlan& plan);
 std::string SerializePlatformCapabilities(const PlatformCapabilities& caps);
 std::string SerializeCpuCapabilities(const CpuCapabilities& caps);
 std::string SerializeSimdCapabilities(const SimdCapabilities& caps);

@@ -8,45 +8,77 @@
     {
       "id": 1,
       "name": "White matte",
-      "albedo": [0.82, 0.82, 0.80],
+      "albedo": [
+        0.82,
+        0.82,
+        0.8
+      ],
       "roughness": 1.0
     },
     {
       "id": 2,
       "name": "Red wall",
-      "albedo": [0.65, 0.05, 0.05],
+      "albedo": [
+        0.65,
+        0.05,
+        0.05
+      ],
       "roughness": 1.0
     },
     {
       "id": 3,
       "name": "Green wall",
-      "albedo": [0.12, 0.45, 0.12],
+      "albedo": [
+        0.12,
+        0.45,
+        0.12
+      ],
       "roughness": 1.0
     },
     {
       "id": 4,
       "name": "Ceiling light",
-      "albedo": [1.0, 1.0, 1.0],
-      "emission": [1.0, 1.0, 1.0],
+      "albedo": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "emission": [
+        1.0,
+        1.0,
+        1.0
+      ],
       "emission_intensity": 12.0,
       "roughness": 1.0
     },
     {
       "id": 5,
       "name": "Diffuse light gray (cuboid)",
-      "albedo": [0.76, 0.75, 0.74],
+      "albedo": [
+        0.76,
+        0.75,
+        0.74
+      ],
       "roughness": 1.0
     },
     {
       "id": 6,
       "name": "Mirror silver (cuboid)",
-      "albedo": [0.95, 0.95, 0.93],
+      "albedo": [
+        0.95,
+        0.95,
+        0.93
+      ],
       "roughness": 0.0
     },
     {
       "id": 7,
       "name": "Glossy warm gold (cuboid)",
-      "albedo": [0.85, 0.55, 0.15],
+      "albedo": [
+        0.85,
+        0.55,
+        0.15
+      ],
       "roughness": 0.3
     }
   ],
@@ -57,12 +89,35 @@
       "primitive": "triangle",
       "material_id": 1,
       "vertices": [
-        [-1.0,  0.0, -1.0],
-        [ 1.0,  0.0, -1.0],
-        [ 1.0,  0.0,  1.0],
-        [-1.0,  0.0,  1.0]
+        [
+          -1.0,
+          0.0,
+          -1.0
+        ],
+        [
+          1.0,
+          0.0,
+          -1.0
+        ],
+        [
+          1.0,
+          0.0,
+          1.0
+        ],
+        [
+          -1.0,
+          0.0,
+          1.0
+        ]
       ],
-      "indices": [0, 2, 1, 0, 3, 2]
+      "indices": [
+        0,
+        2,
+        1,
+        0,
+        3,
+        2
+      ]
     },
     {
       "id": 2,
@@ -70,12 +125,35 @@
       "primitive": "triangle",
       "material_id": 1,
       "vertices": [
-        [-1.0, 2.0, -1.0],
-        [-1.0, 2.0,  1.0],
-        [ 1.0, 2.0,  1.0],
-        [ 1.0, 2.0, -1.0]
+        [
+          -1.0,
+          2.0,
+          -1.0
+        ],
+        [
+          -1.0,
+          2.0,
+          1.0
+        ],
+        [
+          1.0,
+          2.0,
+          1.0
+        ],
+        [
+          1.0,
+          2.0,
+          -1.0
+        ]
       ],
-      "indices": [0, 2, 1, 0, 3, 2]
+      "indices": [
+        0,
+        2,
+        1,
+        0,
+        3,
+        2
+      ]
     },
     {
       "id": 3,
@@ -83,12 +161,35 @@
       "primitive": "triangle",
       "material_id": 1,
       "vertices": [
-        [-1.0, 0.0, -1.0],
-        [-1.0, 2.0, -1.0],
-        [ 1.0, 2.0, -1.0],
-        [ 1.0, 0.0, -1.0]
+        [
+          -1.0,
+          0.0,
+          -1.0
+        ],
+        [
+          -1.0,
+          2.0,
+          -1.0
+        ],
+        [
+          1.0,
+          2.0,
+          -1.0
+        ],
+        [
+          1.0,
+          0.0,
+          -1.0
+        ]
       ],
-      "indices": [0, 2, 1, 0, 3, 2]
+      "indices": [
+        0,
+        2,
+        1,
+        0,
+        3,
+        2
+      ]
     },
     {
       "id": 4,
@@ -96,12 +197,35 @@
       "primitive": "triangle",
       "material_id": 2,
       "vertices": [
-        [-1.0, 0.0, -1.0],
-        [-1.0, 0.0,  1.0],
-        [-1.0, 2.0,  1.0],
-        [-1.0, 2.0, -1.0]
+        [
+          -1.0,
+          0.0,
+          -1.0
+        ],
+        [
+          -1.0,
+          0.0,
+          1.0
+        ],
+        [
+          -1.0,
+          2.0,
+          1.0
+        ],
+        [
+          -1.0,
+          2.0,
+          -1.0
+        ]
       ],
-      "indices": [0, 2, 1, 0, 3, 2]
+      "indices": [
+        0,
+        2,
+        1,
+        0,
+        3,
+        2
+      ]
     },
     {
       "id": 5,
@@ -109,12 +233,35 @@
       "primitive": "triangle",
       "material_id": 3,
       "vertices": [
-        [ 1.0, 0.0, -1.0],
-        [ 1.0, 2.0, -1.0],
-        [ 1.0, 2.0,  1.0],
-        [ 1.0, 0.0,  1.0]
+        [
+          1.0,
+          0.0,
+          -1.0
+        ],
+        [
+          1.0,
+          2.0,
+          -1.0
+        ],
+        [
+          1.0,
+          2.0,
+          1.0
+        ],
+        [
+          1.0,
+          0.0,
+          1.0
+        ]
       ],
-      "indices": [0, 2, 1, 0, 3, 2]
+      "indices": [
+        0,
+        2,
+        1,
+        0,
+        3,
+        2
+      ]
     },
     {
       "id": 6,
@@ -122,12 +269,35 @@
       "primitive": "triangle",
       "material_id": 4,
       "vertices": [
-        [-0.35, 1.98, -0.35],
-        [-0.35, 1.98,  0.35],
-        [ 0.35, 1.98,  0.35],
-        [ 0.35, 1.98, -0.35]
+        [
+          -0.35,
+          1.98,
+          -0.35
+        ],
+        [
+          -0.35,
+          1.98,
+          0.35
+        ],
+        [
+          0.35,
+          1.98,
+          0.35
+        ],
+        [
+          0.35,
+          1.98,
+          -0.35
+        ]
       ],
-      "indices": [0, 2, 1, 0, 3, 2]
+      "indices": [
+        0,
+        2,
+        1,
+        0,
+        3,
+        2
+      ]
     },
     {
       "id": 7,
@@ -135,22 +305,84 @@
       "primitive": "triangle",
       "material_id": 5,
       "vertices": [
-        [-0.70, 0.00, -0.60],
-        [-0.20, 0.00, -0.60],
-        [-0.20, 1.00, -0.60],
-        [-0.70, 1.00, -0.60],
-        [-0.70, 0.00, -0.10],
-        [-0.20, 0.00, -0.10],
-        [-0.20, 1.00, -0.10],
-        [-0.70, 1.00, -0.10]
+        [
+          -0.7,
+          0.0,
+          -0.6
+        ],
+        [
+          -0.2,
+          0.0,
+          -0.6
+        ],
+        [
+          -0.2,
+          1.0,
+          -0.6
+        ],
+        [
+          -0.7,
+          1.0,
+          -0.6
+        ],
+        [
+          -0.7,
+          0.0,
+          -0.1
+        ],
+        [
+          -0.2,
+          0.0,
+          -0.1
+        ],
+        [
+          -0.2,
+          1.0,
+          -0.1
+        ],
+        [
+          -0.7,
+          1.0,
+          -0.1
+        ]
       ],
       "indices": [
-        0, 5, 4,  0, 1, 5,
-        3, 7, 6,  3, 6, 2,
-        0, 2, 1,  0, 3, 2,
-        4, 5, 6,  4, 6, 7,
-        0, 4, 7,  0, 7, 3,
-        1, 2, 6,  1, 6, 5
+        0,
+        5,
+        4,
+        0,
+        1,
+        5,
+        3,
+        7,
+        6,
+        3,
+        6,
+        2,
+        0,
+        2,
+        1,
+        0,
+        3,
+        2,
+        4,
+        5,
+        6,
+        4,
+        6,
+        7,
+        0,
+        4,
+        7,
+        0,
+        7,
+        3,
+        1,
+        2,
+        6,
+        1,
+        6,
+        5
       ]
     },
     {
@@ -159,22 +391,84 @@
       "primitive": "triangle",
       "material_id": 6,
       "vertices": [
-        [ 0.05, 0.00, -0.50],
-        [ 0.55, 0.00, -0.50],
-        [ 0.55, 0.80, -0.50],
-        [ 0.05, 0.80, -0.50],
-        [ 0.05, 0.00,  0.00],
-        [ 0.55, 0.00,  0.00],
-        [ 0.55, 0.80,  0.00],
-        [ 0.05, 0.80,  0.00]
+        [
+          0.05,
+          0.0,
+          -0.5
+        ],
+        [
+          0.55,
+          0.0,
+          -0.5
+        ],
+        [
+          0.55,
+          0.8,
+          -0.5
+        ],
+        [
+          0.05,
+          0.8,
+          -0.5
+        ],
+        [
+          0.05,
+          0.0,
+          0.0
+        ],
+        [
+          0.55,
+          0.0,
+          0.0
+        ],
+        [
+          0.55,
+          0.8,
+          0.0
+        ],
+        [
+          0.05,
+          0.8,
+          0.0
+        ]
       ],
       "indices": [
-        0, 5, 4,  0, 1, 5,
-        3, 7, 6,  3, 6, 2,
-        0, 2, 1,  0, 3, 2,
-        4, 5, 6,  4, 6, 7,
-        0, 4, 7,  0, 7, 3,
-        1, 2, 6,  1, 6, 5
+        0,
+        5,
+        4,
+        0,
+        1,
+        5,
+        3,
+        7,
+        6,
+        3,
+        6,
+        2,
+        0,
+        2,
+        1,
+        0,
+        3,
+        2,
+        4,
+        5,
+        6,
+        4,
+        6,
+        7,
+        0,
+        4,
+        7,
+        0,
+        7,
+        3,
+        1,
+        2,
+        6,
+        1,
+        6,
+        5
       ]
     },
     {
@@ -183,113 +477,456 @@
       "primitive": "triangle",
       "material_id": 7,
       "vertices": [
-        [ 0.30, 0.00, 0.10],
-        [ 0.85, 0.00, 0.10],
-        [ 0.85, 0.45, 0.10],
-        [ 0.30, 0.45, 0.10],
-        [ 0.30, 0.00, 0.55],
-        [ 0.85, 0.00, 0.55],
-        [ 0.85, 0.45, 0.55],
-        [ 0.30, 0.45, 0.55]
+        [
+          0.3,
+          0.0,
+          0.1
+        ],
+        [
+          0.85,
+          0.0,
+          0.1
+        ],
+        [
+          0.85,
+          0.45,
+          0.1
+        ],
+        [
+          0.3,
+          0.45,
+          0.1
+        ],
+        [
+          0.3,
+          0.0,
+          0.55
+        ],
+        [
+          0.85,
+          0.0,
+          0.55
+        ],
+        [
+          0.85,
+          0.45,
+          0.55
+        ],
+        [
+          0.3,
+          0.45,
+          0.55
+        ]
       ],
       "indices": [
-        0, 5, 4,  0, 1, 5,
-        3, 7, 6,  3, 6, 2,
-        0, 2, 1,  0, 3, 2,
-        4, 5, 6,  4, 6, 7,
-        0, 4, 7,  0, 7, 3,
-        1, 2, 6,  1, 6, 5
+        0,
+        5,
+        4,
+        0,
+        1,
+        5,
+        3,
+        7,
+        6,
+        3,
+        6,
+        2,
+        0,
+        2,
+        1,
+        0,
+        3,
+        2,
+        4,
+        5,
+        6,
+        4,
+        6,
+        7,
+        0,
+        4,
+        7,
+        0,
+        7,
+        3,
+        1,
+        2,
+        6,
+        1,
+        6,
+        5
       ]
     }
   ],
-  "sdf_primitives": [],
   "entities": [
+    {
+      "id": 12,
+      "name": "Scene Root",
+      "hierarchy": {
+        "parent": 0,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 13,
+      "name": "Cameras",
+      "hierarchy": {
+        "parent": 12,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 14,
+      "name": "Lights",
+      "hierarchy": {
+        "parent": 12,
+        "sibling_order": 1
+      }
+    },
+    {
+      "id": 15,
+      "name": "Geometry",
+      "hierarchy": {
+        "parent": 12,
+        "sibling_order": 2
+      }
+    },
     {
       "id": 1,
       "name": "camera",
       "transform": {
-        "translation": [0.0, 1.0, 3.0],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [1.0, 1.0, 1.0]
+        "translation": [
+          0.0,
+          1.0,
+          3.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
       },
       "camera": {
         "fov": 55.0,
         "near_plane": 0.1,
         "far_plane": 1000.0
+      },
+      "hierarchy": {
+        "parent": 13,
+        "sibling_order": 0
       }
     },
     {
       "id": 2,
       "name": "point_light",
       "transform": {
-        "translation": [0.0, 1.85, 0.0],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [1.0, 1.0, 1.0]
+        "translation": [
+          0.0,
+          1.85,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
       },
       "light": {
         "type": "point",
-        "color": [1.0, 0.98, 0.95],
+        "color": [
+          1.0,
+          0.98,
+          0.95
+        ],
         "intensity": 14.0,
-        "radius": 0.65
+        "radius": 0.0
+      },
+      "hierarchy": {
+        "parent": 14,
+        "sibling_order": 0
       }
     },
     {
-      "id": 3,  "name": "floor",
-      "mesh": { "mesh_id": 1, "material_id": 1 },
-      "transform": { "translation": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1] }
+      "id": 3,
+      "name": "floor",
+      "mesh": {
+        "mesh_id": 1,
+        "material_id": 1
+      },
+      "transform": {
+        "translation": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 15,
+        "sibling_order": 0
+      }
     },
     {
-      "id": 4, "name": "ceiling",
-      "mesh": { "mesh_id": 2, "material_id": 1 },
-      "transform": { "translation": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1] }
+      "id": 4,
+      "name": "ceiling",
+      "mesh": {
+        "mesh_id": 2,
+        "material_id": 1
+      },
+      "transform": {
+        "translation": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 15,
+        "sibling_order": 1
+      }
     },
     {
-      "id": 5, "name": "back_wall",
-      "mesh": { "mesh_id": 3, "material_id": 1 },
-      "transform": { "translation": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1] }
+      "id": 5,
+      "name": "back_wall",
+      "mesh": {
+        "mesh_id": 3,
+        "material_id": 1
+      },
+      "transform": {
+        "translation": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 15,
+        "sibling_order": 2
+      }
     },
     {
-      "id": 6, "name": "left_wall",
-      "mesh": { "mesh_id": 4, "material_id": 2 },
-      "transform": { "translation": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1] }
+      "id": 6,
+      "name": "left_wall",
+      "mesh": {
+        "mesh_id": 4,
+        "material_id": 2
+      },
+      "transform": {
+        "translation": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 15,
+        "sibling_order": 3
+      }
     },
     {
-      "id": 7, "name": "right_wall",
-      "mesh": { "mesh_id": 5, "material_id": 3 },
-      "transform": { "translation": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1] }
+      "id": 7,
+      "name": "right_wall",
+      "mesh": {
+        "mesh_id": 5,
+        "material_id": 3
+      },
+      "transform": {
+        "translation": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 15,
+        "sibling_order": 4
+      }
     },
     {
-      "id": 8, "name": "ceiling_light_mesh",
-      "mesh": { "mesh_id": 6, "material_id": 4 },
-      "transform": { "translation": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1] }
+      "id": 8,
+      "name": "ceiling_light_mesh",
+      "mesh": {
+        "mesh_id": 6,
+        "material_id": 4
+      },
+      "transform": {
+        "translation": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 15,
+        "sibling_order": 5
+      }
     },
     {
-      "id": 9, "name": "diffuse_cuboid",
-      "mesh": { "mesh_id": 7, "material_id": 5 },
-      "transform": { "translation": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1] }
+      "id": 9,
+      "name": "diffuse_cuboid",
+      "mesh": {
+        "mesh_id": 7,
+        "material_id": 5
+      },
+      "transform": {
+        "translation": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 15,
+        "sibling_order": 6
+      }
     },
     {
-      "id": 10, "name": "mirror_cuboid",
-      "mesh": { "mesh_id": 8, "material_id": 6 },
-      "transform": { "translation": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1] }
+      "id": 10,
+      "name": "mirror_cuboid",
+      "mesh": {
+        "mesh_id": 8,
+        "material_id": 6
+      },
+      "transform": {
+        "translation": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 15,
+        "sibling_order": 7
+      }
     },
     {
-      "id": 11, "name": "glossy_cuboid",
-      "mesh": { "mesh_id": 9, "material_id": 7 },
-      "transform": { "translation": [0,0,0], "rotation": [0,0,0,1], "scale": [1,1,1] }
-    }
-  ],
-  "transforms": [],
-  "cameras": [
-    { "id": 1, "fov": 55.0, "near_plane": 0.1, "far_plane": 1000.0 }
-  ],
-  "lights": [
-    {
-      "id": 2,
-      "type": "point",
-      "color": [1.0, 0.98, 0.95],
-      "intensity": 14.0,
-      "radius": 0.0
+      "id": 11,
+      "name": "glossy_cuboid",
+      "mesh": {
+        "mesh_id": 9,
+        "material_id": 7
+      },
+      "transform": {
+        "translation": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "hierarchy": {
+        "parent": 15,
+        "sibling_order": 8
+      }
     }
   ],
   "benchmark": {

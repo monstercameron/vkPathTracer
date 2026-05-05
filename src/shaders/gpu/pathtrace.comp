@@ -27,7 +27,9 @@ layout(push_constant) uniform PC {
 layout(std430, set = 0, binding = 0) readonly buffer VBuf { float verts[]; };
 // Binding 1: triangle indices (global flat array)
 layout(std430, set = 0, binding = 1) readonly buffer IBuf  { uint  tidx[];  };
-// Binding 2: materials — 8 floats each: albedo.xyz, emissive.xyz, roughness, pad
+// Binding 2: materials — 16 floats each:
+// albedo.xyz, emissive.xyz, roughness, model,
+// metallic, ior, transmission, clearcoat, sheen, anisotropy, alpha, effect
 layout(std430, set = 0, binding = 2) readonly buffer MBuf  { float mats[];  };
 // Binding 3: instances — 4 uints each: first_triangle, triangle_count, material_index, pad
 layout(std430, set = 0, binding = 3) readonly buffer InstBuf { uint insts[]; };
@@ -71,6 +73,8 @@ bool intersect_tri(vec3 ro, vec3 rd,
     return t > 1e-4;
 }
 
+bool mat_double_sided(uint idx);
+
 // ---- Scene intersection (brute-force) ---------------------------------------
 struct Hit { bool ok; float t; vec3 pos; vec3 n; uint mat; };
 
@@ -93,6 +97,9 @@ Hit intersect_scene(vec3 ro, vec3 rd) {
                 vec3 v1 = vec3(verts[i1*3u], verts[i1*3u+1u], verts[i1*3u+2u]);
                 vec3 v2 = vec3(verts[i2*3u], verts[i2*3u+1u], verts[i2*3u+2u]);
                 h.n   = normalize(cross(v1 - v0, v2 - v0));
+                if (mat_double_sided(mat) && dot(h.n, rd) > 0.0) {
+                    h.n = -h.n;
+                }
                 h.mat = mat;
             }
         }
@@ -136,9 +143,67 @@ vec3 sample_phong_lobe(vec3 refl, float exponent, vec3 normal, inout uint rng) {
 }
 
 // ---- Material helpers -------------------------------------------------------
-vec3  mat_albedo(uint idx)    { uint b=idx*8u; return vec3(mats[b],   mats[b+1u], mats[b+2u]); }
-vec3  mat_emissive(uint idx)  { uint b=idx*8u; return vec3(mats[b+3u],mats[b+4u], mats[b+5u]); }
-float mat_roughness(uint idx) { return mats[idx*8u + 6u]; }
+const uint k_mat_stride = 16u;
+vec3  mat_albedo(uint idx)    { uint b=idx*k_mat_stride; return vec3(mats[b],   mats[b+1u], mats[b+2u]); }
+vec3  mat_emissive(uint idx)  { uint b=idx*k_mat_stride; return vec3(mats[b+3u],mats[b+4u], mats[b+5u]); }
+float mat_roughness(uint idx) { return mats[idx*k_mat_stride + 6u]; }
+uint  mat_model(uint idx)     { return uint(mats[idx*k_mat_stride + 7u] + 0.5); }
+float mat_metallic(uint idx)  { return mats[idx*k_mat_stride + 8u]; }
+float mat_ior(uint idx)       { return max(1.01, mats[idx*k_mat_stride + 9u]); }
+float mat_transmission(uint idx){ return mats[idx*k_mat_stride + 10u]; }
+float mat_clearcoat(uint idx) { return mats[idx*k_mat_stride + 11u]; }
+float mat_sheen(uint idx)     { return mats[idx*k_mat_stride + 12u]; }
+float mat_alpha(uint idx)     { return mats[idx*k_mat_stride + 14u]; }
+uint  mat_effect_raw(uint idx){ return uint(mats[idx*k_mat_stride + 15u] + 0.5); }
+uint  mat_effect(uint idx)    { return mat_effect_raw(idx) & 1023u; }
+bool  mat_double_sided(uint idx) { return (mat_effect_raw(idx) & 1024u) != 0u; }
+
+float hash01(vec3 p, float seed) {
+    return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719)) + seed * 19.19) * 43758.5453);
+}
+
+vec3 mat_surface_albedo(uint idx, vec3 p, vec3 n, vec3 rd) {
+    vec3 color = mat_albedo(idx);
+    uint effect = mat_effect(idx);
+    float h = hash01(p, float(effect));
+    if (effect == 1u) {
+        float rim = pow(clamp(1.0 - abs(dot(n, -rd)), 0.0, 1.0), 2.0);
+        color = color * (0.65 + 0.25 * h) + vec3(0.25, 0.22, 0.28) * rim * (0.4 + mat_sheen(idx));
+    } else if (effect == 2u) {
+        float stripes = 0.5 + 0.5 * sin(p.x * 7.0 + p.z * 5.0 + h * 6.0);
+        color *= 0.45 + 0.55 * stripes;
+    } else if (effect == 3u) {
+        color *= (h > 0.72) ? 0.18 : 1.0;
+    } else if (effect == 4u) {
+        float vein = 0.5 + 0.5 * sin((p.x + p.y * 0.4 + p.z * 0.7) * 9.0 + h * 3.0);
+        color = color * (0.55 + 0.45 * vein) + vec3(0.18, 0.20, 0.23) * (1.0 - vein);
+    } else if (effect == 5u) {
+        color = color * (0.55 + 0.35 * h) + vec3(0.45, 0.16, 0.04) * (0.25 + 0.25 * h);
+    } else if (effect == 6u) {
+        color *= 0.65 + 0.35 * h;
+    } else if (effect == 7u) {
+        color = color * 0.78 + vec3(1.0, 0.62, 0.42) * 0.16;
+    } else if (effect == 8u) {
+        color = color * 0.55 + vec3(0.35 + 0.45 * h, 0.25 + 0.35 * (1.0 - h), 0.85) * 0.45;
+    } else if (effect == 9u) {
+        float check = mod(floor(p.x * 4.0) + floor(p.z * 4.0), 2.0);
+        color *= (check < 0.5) ? 1.0 : 0.28;
+    } else if (effect == 10u) {
+        color = color * 0.45 + vec3(1.0, 0.35 + 0.3 * h, 0.08) * 0.55;
+    } else if (effect == 11u) {
+        float streak = 0.5 + 0.5 * sin(p.y * 18.0 + h * 5.0);
+        color *= 0.55 + 0.45 * streak;
+    } else if (effect == 12u) {
+        float retro = pow(clamp(dot(n, -rd), 0.0, 1.0), 6.0);
+        color += vec3(0.55, 0.65, 0.95) * retro;
+    } else if (effect == 13u) {
+        color *= 0.65 + 0.35 * abs(sin(p.x * 10.0) * cos(p.z * 10.0));
+    } else if (effect == 14u) {
+        float rim = pow(clamp(1.0 - abs(dot(n, -rd)), 0.0, 1.0), 0.8);
+        color = vec3(0.15, 0.75, 1.0) * (0.2 + 0.8 * rim);
+    }
+    return clamp(color, vec3(0.0), vec3(1.5));
+}
 bool  mat_is_emissive(uint idx) {
     vec3 e = mat_emissive(idx);
     return e.r > 0.0 || e.g > 0.0 || e.b > 0.0;
@@ -162,7 +227,7 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
         if (dot(n, -rd) < 0.0) n = -n;
 
         uint mi = (pc.num_mats > 0u) ? min(hit.mat, pc.num_mats - 1u) : 0u;
-        vec3 albedo   = mat_albedo(mi);
+        vec3 albedo   = mat_surface_albedo(mi, hit.pos, n, rd);
         vec3 emissive = mat_emissive(mi);
 
         // Emissive contribution — add at depth 0 (direct visibility) and
@@ -172,11 +237,17 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
         }
 
         float roughness = mat_roughness(mi);
-        bool  is_mirror  = (roughness <= 0.001);
-        bool  is_diffuse = (roughness >= 0.999);
+        uint  model = mat_model(mi);
+        bool  is_mirror  = (model == 2u) || (roughness <= 0.001);
+        bool  is_metallic = (model == 4u) || (mat_metallic(mi) > 0.65);
+        bool  is_transmissive = (model == 5u) || (mat_transmission(mi) > 0.05);
+        bool  is_diffuse = (roughness >= 0.999) && !is_mirror && !is_metallic && !is_transmissive;
+        bool  is_sheen = (model == 6u);
+        bool  is_clearcoat = (model == 7u) || (mat_clearcoat(mi) > 0.05);
+        bool  is_toon = (model == 8u);
 
         // NEE: sample one point light — skip for perfect mirrors
-        if (pc.num_lights > 0u && !is_mirror) {
+        if (pc.num_lights > 0u && !is_mirror && !is_transmissive) {
             uint  li    = uint(rand_f(rng) * float(pc.num_lights));
             li = min(li, pc.num_lights - 1u);
             uint  lb    = li * 8u;
@@ -207,19 +278,48 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
         if (is_mirror) {
             // Perfect specular reflection
             out_dir = rd - 2.0 * dot(n, rd) * n;
-        } else if (is_diffuse) {
+        } else if (is_transmissive) {
+            float cosTheta = clamp(dot(n, -rd), 0.0, 1.0);
+            float ior = mat_ior(mi);
+            float r0 = (1.0 - ior) / (1.0 + ior);
+            r0 *= r0;
+            float fresnel = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+            if (rand_f(rng) < min(0.98, fresnel + mat_clearcoat(mi) * 0.15)) {
+                out_dir = rd - 2.0 * dot(n, rd) * n;
+            } else {
+                out_dir = refract(rd, n, 1.0 / ior);
+                if (dot(out_dir, out_dir) <= 1.0e-8) {
+                    out_dir = rd - 2.0 * dot(n, rd) * n;
+                } else {
+                    out_dir = normalize(out_dir);
+                }
+            }
+        } else if (is_diffuse || is_toon) {
             out_dir = sample_hemisphere(n, rng);
         } else {
             // Glossy — Phong lobe around mirror direction
             // exponent = 2/alpha^4 - 2,  alpha = roughness^2
-            float a2   = roughness * roughness;
+            float effective_roughness = max(0.025, roughness * (is_metallic ? 0.75 : 1.0) * (is_clearcoat ? 0.65 : 1.0));
+            float a2   = effective_roughness * effective_roughness;
             float expt = max(0.0, 2.0 / (a2 * a2) - 2.0);
             vec3  refl = rd - 2.0 * dot(n, rd) * n;
             out_dir = sample_phong_lobe(refl, expt, n, rng);
+            if (is_sheen && rand_f(rng) < mat_sheen(mi) * 0.35) {
+                out_dir = sample_hemisphere(n, rng);
+            }
         }
-        if (dot(out_dir, n) <= 0.0) break;
+        if (!is_transmissive && dot(out_dir, n) <= 0.0) break;
         // Throughput weight = albedo for all cases (energy-conserving approx)
-        thr *= albedo;
+        vec3 bounce_weight = albedo;
+        if (is_metallic || is_mirror) {
+            bounce_weight = albedo * (0.65 + 0.35 * mat_metallic(mi));
+        } else if (is_transmissive) {
+            bounce_weight = albedo * (0.25 + 0.55 * mat_alpha(mi)) + vec3(0.2);
+        }
+        if (is_toon) {
+            bounce_weight *= (dot(out_dir, n) > 0.55) ? 1.0 : 0.45;
+        }
+        thr *= bounce_weight;
 
         float mx = max(thr.r, max(thr.g, thr.b));
         if (mx < 0.001) break;

@@ -10,7 +10,7 @@ cbuffer PCBuf : register(b0) {
     float  cam_up_x;      float cam_up_y;      float cam_up_z;      uint  sample_index;
     uint   num_insts;     uint  num_mats;       uint  num_lights;    uint  width;
     uint   height;        uint  base_seed;      float env_r;         float env_g;
-    float  env_b;         float max_depth_f;    uint  rays_per_pixel; float _pad1;
+    float  env_b;         float max_depth_f;    uint  rays_per_pixel; float exposure;
 };
 
 // ---- Resources -------------------------------------------------------------
@@ -34,6 +34,65 @@ struct PathPayload {
     float3 next_dir;     // 12
     float  _pad;         //  4  → 64
 };
+
+static const uint kMatStride = 16u;
+float3 MatAlbedo(uint idx)   { uint b=idx*kMatStride; return float3(MatBuf[b], MatBuf[b+1u], MatBuf[b+2u]); }
+float3 MatEmissive(uint idx) { uint b=idx*kMatStride; return float3(MatBuf[b+3u], MatBuf[b+4u], MatBuf[b+5u]); }
+float  MatRoughness(uint idx){ return MatBuf[idx*kMatStride + 6u]; }
+uint   MatModel(uint idx)    { return uint(MatBuf[idx*kMatStride + 7u] + 0.5); }
+float  MatMetallic(uint idx) { return MatBuf[idx*kMatStride + 8u]; }
+float  MatIor(uint idx)      { return max(1.01, MatBuf[idx*kMatStride + 9u]); }
+float  MatTransmission(uint idx){ return MatBuf[idx*kMatStride + 10u]; }
+float  MatClearcoat(uint idx){ return MatBuf[idx*kMatStride + 11u]; }
+float  MatSheen(uint idx)    { return MatBuf[idx*kMatStride + 12u]; }
+float  MatAlpha(uint idx)    { return MatBuf[idx*kMatStride + 14u]; }
+uint   MatEffectRaw(uint idx){ return uint(MatBuf[idx*kMatStride + 15u] + 0.5); }
+uint   MatEffect(uint idx)   { return MatEffectRaw(idx) & 1023u; }
+bool   MatDoubleSided(uint idx) { return (MatEffectRaw(idx) & 1024u) != 0u; }
+
+float Hash01(float3 p, float seed) {
+    return frac(sin(dot(p, float3(12.9898, 78.233, 37.719)) + seed * 19.19) * 43758.5453);
+}
+
+float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
+    float3 color = MatAlbedo(idx);
+    uint effect = MatEffect(idx);
+    float h = Hash01(p, float(effect));
+    if (effect == 1u) {
+        float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 2.0);
+        color = color * (0.65 + 0.25 * h) + float3(0.25, 0.22, 0.28) * rim * (0.4 + MatSheen(idx));
+    } else if (effect == 2u) {
+        color *= 0.45 + 0.55 * (0.5 + 0.5 * sin(p.x * 7.0 + p.z * 5.0 + h * 6.0));
+    } else if (effect == 3u) {
+        color *= (h > 0.72) ? 0.18 : 1.0;
+    } else if (effect == 4u) {
+        float vein = 0.5 + 0.5 * sin((p.x + p.y * 0.4 + p.z * 0.7) * 9.0 + h * 3.0);
+        color = color * (0.55 + 0.45 * vein) + float3(0.18, 0.20, 0.23) * (1.0 - vein);
+    } else if (effect == 5u) {
+        color = color * (0.55 + 0.35 * h) + float3(0.45, 0.16, 0.04) * (0.25 + 0.25 * h);
+    } else if (effect == 6u) {
+        color *= 0.65 + 0.35 * h;
+    } else if (effect == 7u) {
+        color = color * 0.78 + float3(1.0, 0.62, 0.42) * 0.16;
+    } else if (effect == 8u) {
+        color = color * 0.55 + float3(0.35 + 0.45 * h, 0.25 + 0.35 * (1.0 - h), 0.85) * 0.45;
+    } else if (effect == 9u) {
+        float check = fmod(floor(p.x * 4.0) + floor(p.z * 4.0), 2.0);
+        color *= (check < 0.5) ? 1.0 : 0.28;
+    } else if (effect == 10u) {
+        color = color * 0.45 + float3(1.0, 0.35 + 0.3 * h, 0.08) * 0.55;
+    } else if (effect == 11u) {
+        color *= 0.55 + 0.45 * (0.5 + 0.5 * sin(p.y * 18.0 + h * 5.0));
+    } else if (effect == 12u) {
+        color += float3(0.55, 0.65, 0.95) * pow(saturate(dot(n, -rd)), 6.0);
+    } else if (effect == 13u) {
+        color *= 0.65 + 0.35 * abs(sin(p.x * 10.0) * cos(p.z * 10.0));
+    } else if (effect == 14u) {
+        float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 0.8);
+        color = float3(0.15, 0.75, 1.0) * (0.2 + 0.8 * rim);
+    }
+    return clamp(color, 0.0, 1.5);
+}
 
 // ---- Forward declarations --------------------------------------------------
 uint  Pcg(uint v);
@@ -94,7 +153,7 @@ void RayGen() {
             ray.TMin      = 1e-4f;
             ray.TMax      = 1e30f;
             TraceRay(SceneTLAS,
-                     RAY_FLAG_NONE,
+                     RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
                      /*InstanceMask*/ 0xFF,
                      /*HitGroup offset*/ 0,
                      /*Geometry multiplier*/ 1,
@@ -128,12 +187,19 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
     float3 v2 = float3(VertBuf[i2 * 3u], VertBuf[i2 * 3u + 1u], VertBuf[i2 * 3u + 2u]);
     float3 n = normalize(cross(v1 - v0, v2 - v0));
     if (dot(n, WorldRayDirection()) > 0.0f) n = -n;
-    uint   mb      = matIdx * 8u;
-    float3 albedo   = float3(MatBuf[mb + 0u], MatBuf[mb + 1u], MatBuf[mb + 2u]);
-    float3 emissive = float3(MatBuf[mb + 3u], MatBuf[mb + 4u], MatBuf[mb + 5u]);
     float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+    float3 albedo   = MatSurfaceAlbedo(matIdx, hitPos, n, WorldRayDirection());
+    float3 emissive = MatEmissive(matIdx);
     payload.radiance  += payload.throughput * emissive;
-    payload.throughput *= albedo;
+    float roughness = MatRoughness(matIdx);
+    uint model = MatModel(matIdx);
+    bool isMirror = (model == 2u) || (roughness <= 0.001);
+    bool isMetallic = (model == 4u) || (MatMetallic(matIdx) > 0.65);
+    bool isTransmissive = (model == 5u) || (MatTransmission(matIdx) > 0.05);
+    bool isDiffuse = (roughness >= 0.999) && !isMirror && !isMetallic && !isTransmissive;
+    bool isSheen = (model == 6u);
+    bool isClearcoat = (model == 7u) || (MatClearcoat(matIdx) > 0.05);
+    bool isToon = (model == 8u);
     uint rng = payload.rng;
     if (payload.depth >= 2u) {
         float q = max(payload.throughput.x, max(payload.throughput.y, payload.throughput.z));
@@ -141,14 +207,64 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
         if (RandF(rng) > q) { payload.rng = rng; payload.done = 1u; return; }
         payload.throughput /= q;
     }
-    float r1 = RandF(rng); float r2 = RandF(rng); payload.rng = rng;
-    float phi = 6.28318530718f * r1;
-    float sinTheta = sqrt(1.0f - r2); float cosTheta = sqrt(r2);
-    float3 t = (abs(n.x) > 0.9f) ? float3(0,1,0) : float3(1,0,0);
-    float3 bitan = normalize(cross(n, t)); float3 tan2 = cross(bitan, n);
-    float3 local = cos(phi)*sinTheta*tan2 + sin(phi)*sinTheta*bitan + cosTheta*n;
+    float3 nextDir;
+    if (isMirror) {
+        nextDir = WorldRayDirection() - 2.0 * dot(n, WorldRayDirection()) * n;
+    } else if (isTransmissive) {
+        float cosN = saturate(dot(n, -WorldRayDirection()));
+        float ior = MatIor(matIdx);
+        float r0 = (1.0 - ior) / (1.0 + ior);
+        r0 *= r0;
+        float fresnel = r0 + (1.0 - r0) * pow(1.0 - cosN, 5.0);
+        if (RandF(rng) < min(0.98, fresnel + MatClearcoat(matIdx) * 0.15)) {
+            nextDir = WorldRayDirection() - 2.0 * dot(n, WorldRayDirection()) * n;
+        } else {
+            nextDir = refract(WorldRayDirection(), n, 1.0 / ior);
+            if (dot(nextDir, nextDir) <= 1.0e-8) {
+                nextDir = WorldRayDirection() - 2.0 * dot(n, WorldRayDirection()) * n;
+            } else {
+                nextDir = normalize(nextDir);
+            }
+        }
+    } else {
+        float r1 = RandF(rng); float r2 = RandF(rng);
+        float phi = 6.28318530718f * r1;
+        float sinTheta = sqrt(1.0f - r2); float cosTheta = sqrt(r2);
+        float3 t = (abs(n.x) > 0.9f) ? float3(0,1,0) : float3(1,0,0);
+        float3 bitan = normalize(cross(n, t)); float3 tan2 = cross(bitan, n);
+        float3 diffuseDir = normalize(cos(phi)*sinTheta*tan2 + sin(phi)*sinTheta*bitan + cosTheta*n);
+        if (isDiffuse || isToon) {
+            nextDir = diffuseDir;
+        } else {
+            float effectiveRoughness = max(0.025, roughness * (isMetallic ? 0.75 : 1.0) * (isClearcoat ? 0.65 : 1.0));
+            float exponent = max(0.0, 2.0 / pow(effectiveRoughness * effectiveRoughness, 2.0) - 2.0);
+            float r3 = RandF(rng); float r4 = RandF(rng);
+            float p2 = 6.28318530718f * r3;
+            float ct = pow(r4, 1.0 / (exponent + 1.0));
+            float st = sqrt(max(0.0, 1.0 - ct * ct));
+            float3 refl = normalize(WorldRayDirection() - 2.0 * dot(n, WorldRayDirection()) * n);
+            float3 ref = (abs(refl.x) > 0.9f) ? float3(0,1,0) : float3(1,0,0);
+            float3 tangent = normalize(cross(ref, refl));
+            float3 bitangent = cross(refl, tangent);
+            nextDir = normalize(tangent * (st * cos(p2)) + bitangent * (st * sin(p2)) + refl * ct);
+            if (dot(nextDir, n) <= 0.0 || (isSheen && RandF(rng) < MatSheen(matIdx) * 0.35)) {
+                nextDir = diffuseDir;
+            }
+        }
+    }
+    float3 bounceWeight = albedo;
+    if (isMetallic || isMirror) {
+        bounceWeight = albedo * (0.65 + 0.35 * MatMetallic(matIdx));
+    } else if (isTransmissive) {
+        bounceWeight = albedo * (0.25 + 0.55 * MatAlpha(matIdx)) + float3(0.2, 0.2, 0.2);
+    }
+    if (isToon) {
+        bounceWeight *= (dot(nextDir, n) > 0.55) ? 1.0 : 0.45;
+    }
+    payload.throughput *= bounceWeight;
+    payload.rng = rng;
     payload.next_origin = hitPos + n * 1e-4f;
-    payload.next_dir    = normalize(local);
+    payload.next_dir    = normalize(nextDir);
     payload.depth++;
 }
 

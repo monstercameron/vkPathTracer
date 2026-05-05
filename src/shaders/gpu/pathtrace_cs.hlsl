@@ -29,8 +29,11 @@ float Halton3(uint idx);
 struct Hit { bool ok; float t; float3 pos; float3 n; uint mat; };
 uint  Pcg(uint v);
 float RandF(inout uint rng);
-bool  IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, inout float best_t);
+bool  IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool double_sided, inout float best_t);
+bool  IntersectTriAny(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool double_sided, float max_t);
+bool  MatDoubleSided(uint idx);
 Hit   IntersectScene(float3 ro, float3 rd);
+bool  OccludedScene(float3 ro, float3 rd, float max_t);
 float3 SampleHemisphere(float3 n, inout uint rng);
 float3 SamplePhongLobe(float3 refl, float exponent, float3 normal, inout uint rng);
 float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env);
@@ -145,7 +148,7 @@ float Halton3(uint idx) {
 // ============================================================================
 // Möller-Trumbore intersection
 // ============================================================================
-bool IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, inout float best_t) {
+bool IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool double_sided, inout float best_t) {
     float3 v0 = float3(VertBuf[i0*3u],    VertBuf[i0*3u+1u],  VertBuf[i0*3u+2u]);
     float3 v1 = float3(VertBuf[i1*3u],    VertBuf[i1*3u+1u],  VertBuf[i1*3u+2u]);
     float3 v2 = float3(VertBuf[i2*3u],    VertBuf[i2*3u+1u],  VertBuf[i2*3u+2u]);
@@ -155,7 +158,11 @@ bool IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, inout float b
     float a   = dot(e1, h);
     // Cornell scene faces are wound inward, so this culls exterior backsides
     // while keeping the interior visible from the orbiting camera.
-    if (a < 1e-5) return false;
+    if (double_sided) {
+        if (abs(a) < 1e-5) return false;
+    } else if (a < 1e-5) {
+        return false;
+    }
     float f = 1.0 / a;
     float3 s = ro - v0;
     float u = f * dot(s, h);
@@ -166,6 +173,30 @@ bool IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, inout float b
     float t = f * dot(e2, q);
     if (t > 1e-4 && t < best_t) { best_t = t; return true; }
     return false;
+}
+
+bool IntersectTriAny(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool double_sided, float max_t) {
+    float3 v0 = float3(VertBuf[i0*3u],    VertBuf[i0*3u+1u],  VertBuf[i0*3u+2u]);
+    float3 v1 = float3(VertBuf[i1*3u],    VertBuf[i1*3u+1u],  VertBuf[i1*3u+2u]);
+    float3 v2 = float3(VertBuf[i2*3u],    VertBuf[i2*3u+1u],  VertBuf[i2*3u+2u]);
+    float3 e1 = v1 - v0;
+    float3 e2 = v2 - v0;
+    float3 h  = cross(rd, e2);
+    float a   = dot(e1, h);
+    if (double_sided) {
+        if (abs(a) < 1e-5) return false;
+    } else if (a < 1e-5) {
+        return false;
+    }
+    float f = 1.0 / a;
+    float3 s = ro - v0;
+    float u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) return false;
+    float3 q = cross(s, e1);
+    float v  = f * dot(rd, q);
+    if (v < 0.0 || u + v > 1.0) return false;
+    float t = f * dot(e2, q);
+    return t > 1e-4 && t < max_t;
 }
 
 // ============================================================================
@@ -212,8 +243,10 @@ Hit IntersectScene(float3 ro, float3 rd) {
                 uint i0 = IndexBuf[tb];
                 uint i1 = IndexBuf[tb + 1u];
                 uint i2 = IndexBuf[tb + 2u];
+                uint mat_index = TriMatBuf[first_tri + ti];
+                bool double_sided = MatDoubleSided(mat_index);
                 float t_best = h.t;
-                if (IntersectTri(ro, rd, i0, i1, i2, t_best)) {
+                if (IntersectTri(ro, rd, i0, i1, i2, double_sided, t_best)) {
                     h.ok  = true;
                     h.t   = t_best;
                     h.pos = ro + rd * h.t;
@@ -221,7 +254,10 @@ Hit IntersectScene(float3 ro, float3 rd) {
                     float3 v1 = float3(VertBuf[i1*3u], VertBuf[i1*3u+1u], VertBuf[i1*3u+2u]);
                     float3 v2 = float3(VertBuf[i2*3u], VertBuf[i2*3u+1u], VertBuf[i2*3u+2u]);
                     h.n   = normalize(cross(v1 - v0, v2 - v0));
-                    h.mat = TriMatBuf[first_tri + ti];
+                    if (double_sided && dot(h.n, rd) > 0.0) {
+                        h.n = -h.n;
+                    }
+                    h.mat = mat_index;
                 }
             }
         } else {
@@ -231,6 +267,49 @@ Hit IntersectScene(float3 ro, float3 rd) {
         }
     }
     return h;
+}
+
+bool OccludedScene(float3 ro, float3 rd, float max_t) {
+    if (max_t <= 1e-4f) return false;
+
+    float3 inv_rd = float3(1.0f / rd.x, 1.0f / rd.y, 1.0f / rd.z);
+    uint stack[32];
+    uint sp = 0u;
+    stack[sp++] = 0u;
+
+    [loop]
+    while (sp > 0u) {
+        uint ni = stack[--sp];
+        uint nb = ni * 8u;
+
+        float3 bmin = float3(BvhBuf[nb+0u], BvhBuf[nb+1u], BvhBuf[nb+2u]);
+        float3 bmax = float3(BvhBuf[nb+3u], BvhBuf[nb+4u], BvhBuf[nb+5u]);
+        float3 t0 = (bmin - ro) * inv_rd;
+        float3 t1 = (bmax - ro) * inv_rd;
+        float tenter = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
+        float texit  = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
+        if (texit < 1e-4f || tenter > texit || tenter > max_t) continue;
+
+        uint lf = asuint(BvhBuf[nb+6u]);
+        uint rc = asuint(BvhBuf[nb+7u]);
+        bool is_leaf = (lf & 0x80000000u) != 0u;
+        if (is_leaf) {
+            uint first_tri = lf & 0x7FFFFFFFu;
+            uint ntri = rc;
+            for (uint ti = 0u; ti < ntri; ++ti) {
+                uint tb = (first_tri + ti) * 3u;
+                uint mat_index = TriMatBuf[first_tri + ti];
+                if (IntersectTriAny(ro, rd, IndexBuf[tb], IndexBuf[tb + 1u], IndexBuf[tb + 2u],
+                                    MatDoubleSided(mat_index), max_t)) {
+                    return true;
+                }
+            }
+        } else {
+            stack[sp++] = rc;
+            stack[sp++] = lf;
+        }
+    }
+    return false;
 }
 
 // ============================================================================
@@ -273,9 +352,67 @@ float3 SamplePhongLobe(float3 refl, float exponent, float3 normal, inout uint rn
 // ============================================================================
 // Material helpers
 // ============================================================================
-float3 MatAlbedo(uint idx)   { uint b=idx*8u; return float3(MatBuf[b], MatBuf[b+1u], MatBuf[b+2u]); }
-float3 MatEmissive(uint idx) { uint b=idx*8u; return float3(MatBuf[b+3u], MatBuf[b+4u], MatBuf[b+5u]); }
-float  MatRoughness(uint idx){ return MatBuf[idx*8u + 6u]; }
+static const uint kMatStride = 16u;
+float3 MatAlbedo(uint idx)   { uint b=idx*kMatStride; return float3(MatBuf[b], MatBuf[b+1u], MatBuf[b+2u]); }
+float3 MatEmissive(uint idx) { uint b=idx*kMatStride; return float3(MatBuf[b+3u], MatBuf[b+4u], MatBuf[b+5u]); }
+float  MatRoughness(uint idx){ return MatBuf[idx*kMatStride + 6u]; }
+uint   MatModel(uint idx)    { return uint(MatBuf[idx*kMatStride + 7u] + 0.5); }
+float  MatMetallic(uint idx) { return MatBuf[idx*kMatStride + 8u]; }
+float  MatIor(uint idx)      { return max(1.01, MatBuf[idx*kMatStride + 9u]); }
+float  MatTransmission(uint idx){ return MatBuf[idx*kMatStride + 10u]; }
+float  MatClearcoat(uint idx){ return MatBuf[idx*kMatStride + 11u]; }
+float  MatSheen(uint idx)    { return MatBuf[idx*kMatStride + 12u]; }
+float  MatAlpha(uint idx)    { return MatBuf[idx*kMatStride + 14u]; }
+uint   MatEffectRaw(uint idx){ return uint(MatBuf[idx*kMatStride + 15u] + 0.5); }
+uint   MatEffect(uint idx)   { return MatEffectRaw(idx) & 1023u; }
+bool   MatDoubleSided(uint idx) { return (MatEffectRaw(idx) & 1024u) != 0u; }
+
+float Hash01(float3 p, float seed) {
+    return frac(sin(dot(p, float3(12.9898, 78.233, 37.719)) + seed * 19.19) * 43758.5453);
+}
+
+float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
+    float3 color = MatAlbedo(idx);
+    uint effect = MatEffect(idx);
+    float h = Hash01(p, float(effect));
+    if (effect == 1u) {
+        float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 2.0);
+        color = color * (0.65 + 0.25 * h) + float3(0.25, 0.22, 0.28) * rim * (0.4 + MatSheen(idx));
+    } else if (effect == 2u) {
+        float stripes = 0.5 + 0.5 * sin(p.x * 7.0 + p.z * 5.0 + h * 6.0);
+        color *= 0.45 + 0.55 * stripes;
+    } else if (effect == 3u) {
+        color *= (h > 0.72) ? 0.18 : 1.0;
+    } else if (effect == 4u) {
+        float vein = 0.5 + 0.5 * sin((p.x + p.y * 0.4 + p.z * 0.7) * 9.0 + h * 3.0);
+        color = color * (0.55 + 0.45 * vein) + float3(0.18, 0.20, 0.23) * (1.0 - vein);
+    } else if (effect == 5u) {
+        color = color * (0.55 + 0.35 * h) + float3(0.45, 0.16, 0.04) * (0.25 + 0.25 * h);
+    } else if (effect == 6u) {
+        color *= 0.65 + 0.35 * h;
+    } else if (effect == 7u) {
+        color = color * 0.78 + float3(1.0, 0.62, 0.42) * 0.16;
+    } else if (effect == 8u) {
+        color = color * 0.55 + float3(0.35 + 0.45 * h, 0.25 + 0.35 * (1.0 - h), 0.85) * 0.45;
+    } else if (effect == 9u) {
+        float check = fmod(floor(p.x * 4.0) + floor(p.z * 4.0), 2.0);
+        color *= (check < 0.5) ? 1.0 : 0.28;
+    } else if (effect == 10u) {
+        color = color * 0.45 + float3(1.0, 0.35 + 0.3 * h, 0.08) * 0.55;
+    } else if (effect == 11u) {
+        float streak = 0.5 + 0.5 * sin(p.y * 18.0 + h * 5.0);
+        color *= 0.55 + 0.45 * streak;
+    } else if (effect == 12u) {
+        float retro = pow(saturate(dot(n, -rd)), 6.0);
+        color += float3(0.55, 0.65, 0.95) * retro;
+    } else if (effect == 13u) {
+        color *= 0.65 + 0.35 * abs(sin(p.x * 10.0) * cos(p.z * 10.0));
+    } else if (effect == 14u) {
+        float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 0.8);
+        color = float3(0.15, 0.75, 1.0) * (0.2 + 0.8 * rim);
+    }
+    return clamp(color, 0.0, 1.5);
+}
 
 bool MatIsEmissive(uint idx) {
     float3 e = MatEmissive(idx);
@@ -301,7 +438,7 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         if (dot(n, -rd) < 0.0) n = -n;
 
         uint mi = (num_mats > 0u) ? min(hit.mat, num_mats - 1u) : 0u;
-        float3 albedo   = MatAlbedo(mi);
+        float3 albedo   = MatSurfaceAlbedo(mi, hit.pos, n, rd);
         float3 emissive = MatEmissive(mi);
 
         if (depth == 0u || num_lights == 0u) {
@@ -309,11 +446,17 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         }
 
         float roughness = MatRoughness(mi);
-        bool  is_mirror  = (roughness <= 0.001);
-        bool  is_diffuse = (roughness >= 0.999);
+        uint  model = MatModel(mi);
+        bool  is_mirror  = (model == 2u) || (roughness <= 0.001);
+        bool  is_metallic = (model == 4u) || (MatMetallic(mi) > 0.65);
+        bool  is_transmissive = (model == 5u) || (MatTransmission(mi) > 0.05);
+        bool  is_diffuse = (roughness >= 0.999) && !is_mirror && !is_metallic && !is_transmissive;
+        bool  is_sheen = (model == 6u);
+        bool  is_clearcoat = (model == 7u) || (MatClearcoat(mi) > 0.05);
+        bool  is_toon = (model == 8u);
 
         // NEE: sample one point light (skip for perfect mirrors)
-        if (num_lights > 0u && !is_mirror) {
+        if (num_lights > 0u && !is_mirror && !is_transmissive) {
             uint  li   = uint(RandF(rng) * float(num_lights));
             li = min(li, num_lights - 1u);
             uint  lb   = li * 8u;
@@ -339,8 +482,7 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
             float  cos_t = dot(n, ldir);
 
             if (cos_t > 0.0 && dist > 1e-4) {
-                Hit shadow = IntersectScene(hit.pos + n * 0.002, ldir);
-                bool occ   = shadow.ok && shadow.t < dist - 0.004;
+                bool occ = OccludedScene(hit.pos + n * 0.002, ldir, dist - 0.004);
                 if (!occ) {
                     float3 irrad  = lcol * (lint / (dist2 + 1e-4));
                     float3 direct = albedo * (1.0 / 3.14159265) * irrad * cos_t * float(num_lights);
@@ -353,16 +495,45 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         float3 out_dir;
         if (is_mirror) {
             out_dir = rd - 2.0 * dot(n, rd) * n;
-        } else if (is_diffuse) {
+        } else if (is_transmissive) {
+            float cosTheta = saturate(dot(n, -rd));
+            float ior = MatIor(mi);
+            float r0 = (1.0 - ior) / (1.0 + ior);
+            r0 *= r0;
+            float fresnel = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+            if (RandF(rng) < min(0.98, fresnel + MatClearcoat(mi) * 0.15)) {
+                out_dir = rd - 2.0 * dot(n, rd) * n;
+            } else {
+                out_dir = refract(rd, n, 1.0 / ior);
+                if (dot(out_dir, out_dir) <= 1.0e-8) {
+                    out_dir = rd - 2.0 * dot(n, rd) * n;
+                } else {
+                    out_dir = normalize(out_dir);
+                }
+            }
+        } else if (is_diffuse || is_toon) {
             out_dir = SampleHemisphere(n, rng);
         } else {
-            float a2   = roughness * roughness;
+            float effectiveRoughness = max(0.025, roughness * (is_metallic ? 0.75 : 1.0) * (is_clearcoat ? 0.65 : 1.0));
+            float a2   = effectiveRoughness * effectiveRoughness;
             float expt = max(0.0, 2.0 / (a2 * a2) - 2.0);
             float3 refl = rd - 2.0 * dot(n, rd) * n;
             out_dir = SamplePhongLobe(refl, expt, n, rng);
+            if (is_sheen && RandF(rng) < MatSheen(mi) * 0.35) {
+                out_dir = SampleHemisphere(n, rng);
+            }
         }
-        if (dot(out_dir, n) <= 0.0) break;
-        thr *= albedo;
+        if (!is_transmissive && dot(out_dir, n) <= 0.0) break;
+        float3 bounce_weight = albedo;
+        if (is_metallic || is_mirror) {
+            bounce_weight = albedo * (0.65 + 0.35 * MatMetallic(mi));
+        } else if (is_transmissive) {
+            bounce_weight = albedo * (0.25 + 0.55 * MatAlpha(mi)) + float3(0.2, 0.2, 0.2);
+        }
+        if (is_toon) {
+            bounce_weight *= (dot(out_dir, n) > 0.55) ? 1.0 : 0.45;
+        }
+        thr *= bounce_weight;
 
         float mx = max(thr.x, max(thr.y, thr.z));
         if (mx < 0.001) break;

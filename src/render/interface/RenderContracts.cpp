@@ -122,6 +122,24 @@ std::string_view BackendKindToString(BackendKind kind) {
   }
 }
 
+std::string_view AcceleratorKindToString(AcceleratorKind kind) {
+  switch (kind) {
+    case AcceleratorKind::Cpu:
+      return "cpu";
+    case AcceleratorKind::DiscreteGpu:
+      return "discrete-gpu";
+    case AcceleratorKind::IntegratedGpu:
+      return "integrated-gpu";
+    case AcceleratorKind::Warp:
+      return "warp";
+    case AcceleratorKind::VirtualGpu:
+      return "virtual-gpu";
+    case AcceleratorKind::Unknown:
+    default:
+      return "unknown";
+  }
+}
+
 std::string_view PassTypeToString(PassType type) {
   switch (type) {
     case PassType::Upload:
@@ -502,6 +520,99 @@ std::string SerializeBackendCapabilities(const RenderBackendCapabilities& caps) 
   out << "\"texture_format_capabilities\":" << SerializeTextureFormatCapabilities(caps.texture_formats_caps) << ',';
   out << "\"memory_budget\":" << SerializeMemoryBudgetCapabilities(caps.memory_budget);
   out << '}';
+  return out.str();
+}
+
+std::string SerializeAcceleratorCapabilities(const AcceleratorCapabilities& caps) {
+  std::ostringstream out;
+  out << '{';
+  out << "\"id\":" << Quote(caps.id) << ',';
+  out << "\"name\":" << Quote(caps.name) << ',';
+  out << "\"accelerator_kind\":" << Quote(AcceleratorKindToString(caps.accelerator_kind)) << ',';
+  out << "\"backend_kind\":" << Quote(BackendKindToString(caps.backend_kind)) << ',';
+  out << "\"available\":" << Bool(caps.available) << ',';
+  out << "\"hardware\":" << Bool(caps.hardware) << ',';
+  out << "\"cpu\":" << Bool(caps.cpu) << ',';
+  out << "\"d3d12\":" << Bool(caps.d3d12) << ',';
+  out << "\"compute\":" << Bool(caps.compute) << ',';
+  out << "\"ray_tracing\":" << Bool(caps.ray_tracing) << ',';
+  out << "\"presentation\":" << Bool(caps.presentation) << ',';
+  out << "\"warp\":" << Bool(caps.warp) << ',';
+  out << "\"unified_memory\":" << Bool(caps.unified_memory) << ',';
+  out << "\"cache_coherent_uma\":" << Bool(caps.cache_coherent_uma) << ',';
+  out << "\"selected_by_default\":" << Bool(caps.selected_by_default) << ',';
+  out << "\"node_count\":" << caps.node_count << ',';
+  out << "\"vendor_id\":" << caps.vendor_id << ',';
+  out << "\"device_id\":" << caps.device_id << ',';
+  out << "\"dedicated_video_memory_bytes\":" << caps.dedicated_video_memory_bytes << ',';
+  out << "\"shared_system_memory_bytes\":" << caps.shared_system_memory_bytes << ',';
+  out << "\"current_budget_bytes\":" << caps.current_budget_bytes << ',';
+  out << "\"current_usage_bytes\":" << caps.current_usage_bytes << ',';
+  out << "\"estimated_rays_per_ms\":" << caps.estimated_rays_per_ms << ',';
+  out << "\"adapter_luid\":" << Quote(caps.adapter_luid) << ',';
+  out << "\"notes\":" << Quote(caps.notes) << ',';
+  out << "\"backend_capabilities\":" << SerializeBackendCapabilities(caps.backend_caps);
+  out << '}';
+  return out.str();
+}
+
+std::string SerializeRayBudgetRequest(const RayBudgetRequest& request) {
+  std::ostringstream out;
+  out << '{';
+  out << "\"polygon_frame_budget_ms\":" << request.polygon_frame_budget_ms << ',';
+  out << "\"reserved_polygon_ms\":" << request.reserved_polygon_ms << ',';
+  out << "\"merge_budget_ms\":" << request.merge_budget_ms << ',';
+  out << "\"width\":" << request.width << ',';
+  out << "\"height\":" << request.height << ',';
+  out << "\"max_bounces\":" << request.max_bounces << ',';
+  out << "\"min_rays_per_batch\":" << request.min_rays_per_batch << ',';
+  out << "\"include_cpu\":" << Bool(request.include_cpu) << ',';
+  out << "\"include_integrated_gpu\":" << Bool(request.include_integrated_gpu) << ',';
+  out << "\"include_warp\":" << Bool(request.include_warp) << ',';
+  out << "\"require_ray_tracing\":" << Bool(request.require_ray_tracing);
+  out << '}';
+  return out.str();
+}
+
+std::string SerializeRayBudgetAssignment(const RayBudgetAssignment& assignment) {
+  std::ostringstream out;
+  out << '{';
+  out << "\"accelerator_id\":" << Quote(assignment.accelerator_id) << ',';
+  out << "\"accelerator_name\":" << Quote(assignment.accelerator_name) << ',';
+  out << "\"accelerator_kind\":" << Quote(AcceleratorKindToString(assignment.accelerator_kind)) << ',';
+  out << "\"backend_kind\":" << Quote(BackendKindToString(assignment.backend_kind)) << ',';
+  out << "\"backend_name\":" << Quote(assignment.backend_name) << ',';
+  out << "\"active\":" << Bool(assignment.active) << ',';
+  out << "\"uses_dxr\":" << Bool(assignment.uses_dxr) << ',';
+  out << "\"worker_threads\":" << assignment.worker_threads << ',';
+  out << "\"target_rays\":" << assignment.target_rays << ',';
+  out << "\"budget_ms\":" << assignment.budget_ms << ',';
+  out << "\"estimated_rays_per_ms\":" << assignment.estimated_rays_per_ms << ',';
+  out << "\"reason\":" << Quote(assignment.reason);
+  out << '}';
+  return out.str();
+}
+
+std::string SerializeRayBudgetPlan(const RayBudgetPlan& plan) {
+  std::ostringstream out;
+  out << '{';
+  out << "\"polygon_frame_budget_ms\":" << plan.polygon_frame_budget_ms << ',';
+  out << "\"reserved_polygon_ms\":" << plan.reserved_polygon_ms << ',';
+  out << "\"merge_budget_ms\":" << plan.merge_budget_ms << ',';
+  out << "\"ray_budget_ms\":" << plan.ray_budget_ms << ',';
+  out << "\"width\":" << plan.width << ',';
+  out << "\"height\":" << plan.height << ',';
+  out << "\"total_target_rays\":" << plan.total_target_rays << ',';
+  out << "\"estimated_samples_per_pixel\":" << plan.estimated_samples_per_pixel << ',';
+  out << "\"diagnostics\":" << SerializeStringArray(plan.diagnostics) << ',';
+  out << "\"assignments\":[";
+  for (std::size_t i = 0; i < plan.assignments.size(); ++i) {
+    if (i > 0u) {
+      out << ',';
+    }
+    out << SerializeRayBudgetAssignment(plan.assignments[i]);
+  }
+  out << "]}";
   return out.str();
 }
 

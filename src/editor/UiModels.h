@@ -24,10 +24,19 @@ enum class UiPanelId {
   BenchmarkHistory,
   ScriptPanel,
   MaterialEditor,
+  LightsPanel,
+  CameraPanel,
+  RenderSettings,
+  Diagnostics,
+  Performance,
+  DebugViews,
+  Timeline,
+  Physics,
   Console,
   StatusBar,
   Viewport,
   MenuBar,
+  Toolbar,
   Unknown,
 };
 
@@ -62,6 +71,16 @@ enum class CameraControllerMode {
   Fps,
   Turntable,
   ScriptedBenchmarkPath,
+};
+
+enum class UiDockArea {
+  Top,
+  Left,
+  Right,
+  Bottom,
+  Center,
+  Status,
+  Floating,
 };
 
 struct CameraOrbitState {
@@ -150,6 +169,7 @@ const char* ToString(UiPanelId id);
 const char* ToString(SelectionSource source);
 const char* ToString(GizmoMode mode);
 const char* ToString(ViewportTool tool);
+const char* ToString(UiDockArea area);
 std::string_view ToString(LayoutPreset preset);
 std::string_view ParseLayoutName(LayoutPreset preset);
 
@@ -600,19 +620,39 @@ struct UiPanelDefinition {
   bool can_close = true;
   float default_width = 320.0f;
   float default_height = 240.0f;
+  UiDockArea default_area = UiDockArea::Left;
+  std::string tab_group;
+  std::uint32_t sort_order = 0;
+  std::string property_group_id;
+  std::string status_hint;
 };
 
 struct SceneTreeRow {
   vkpt::core::StableId entity_id = 0;
   vkpt::core::StableId parent_id = 0;
+  std::uint32_t depth = 0;
+  std::uint32_t sibling_order = 0;
   std::string label;
   std::string icon;
+  std::vector<std::string> component_badges;
   bool expanded = false;
   bool selected = false;
   bool hovered = false;
   bool hidden = false;
   bool locked = false;
   bool has_warning = false;
+  bool has_children = false;
+};
+
+struct SceneTreeEntityModel {
+  vkpt::core::StableId entity_id = 0;
+  vkpt::core::StableId parent_id = 0;
+  std::uint32_t sibling_order = 0;
+  std::string name;
+  std::vector<std::string> component_badges;
+  bool expanded = true;
+  bool visible = true;
+  bool locked = false;
 };
 
 enum class InspectorControlKind {
@@ -638,6 +678,14 @@ struct InspectorFieldSchema {
   float max_value = 1.0f;
   float step = 0.01f;
   std::vector<std::string> enum_values;
+};
+
+struct UiPanelPropertyGroup {
+  std::string panel_id;
+  std::string group_id;
+  std::string title;
+  std::string description;
+  std::vector<InspectorFieldSchema> fields;
 };
 
 struct GizmoSettings {
@@ -924,6 +972,8 @@ bool DetectShortcutConflicts(const std::vector<UiShortcut>& shortcuts);
 bool DetectShortcutConflicts(const std::vector<UiShortcutAction>& shortcuts);
 std::vector<UiPanelDefinition> BuildDefaultPanelDefinitions();
 std::vector<InspectorFieldSchema> BuildDefaultInspectorSchemas();
+std::vector<InspectorFieldSchema> BuildInspectorSchemasForPanel(std::string_view panel_id);
+std::vector<UiPanelPropertyGroup> BuildDefaultPanelPropertyGroups();
 std::vector<ScriptLifecycleHookState> BuildDefaultScriptLifecycleHooks();
 std::vector<UiReleaseGateItem> BuildDefaultUiReleaseGateChecklist();
 ShortcutResolution ResolveShortcut(const std::vector<UiShortcut>& shortcuts,
@@ -958,6 +1008,10 @@ BenchmarkPanelModel BuildBenchmarkPanelModel(const vkpt::benchmark::BenchmarkRun
 StatusBarModel BuildStatusBarModel(const UiRuntimeState& runtime,
                                    const SelectionState& selection,
                                    const BenchmarkScoreModel* score = nullptr);
+std::vector<SceneTreeRow> BuildSceneTreeRows(const std::vector<SceneTreeEntityModel>& entities,
+                                             const SelectionState& selection,
+                                             vkpt::core::StableId hovered_entity = 0,
+                                             std::size_t max_rows = 0);
 
 // ----- Serialization -------------------------------------------------------
 
@@ -965,6 +1019,9 @@ std::string SerializeUiRuntimeState(const UiRuntimeState& state);
 std::string SerializeSelectionState(const SelectionState& state);
 std::string SerializeLayoutDocument(const UiLayoutDocument& layout);
 std::string SerializeMenuBar(const MenuBar& menu);
+std::string SerializePanelDefinitions(const std::vector<UiPanelDefinition>& panels);
+std::string SerializeInspectorSchemas(const std::vector<InspectorFieldSchema>& schemas);
+std::string SerializePanelPropertyGroups(const std::vector<UiPanelPropertyGroup>& groups);
 std::string SerializeBenchmarkPanelModel(const BenchmarkPanelModel& model);
 std::string SerializeUiReleaseGateChecklist(const std::vector<UiReleaseGateItem>& checklist);
 std::string SerializeEditorCommand(const EditorCommand& command);

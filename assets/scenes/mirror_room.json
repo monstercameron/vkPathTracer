@@ -8,13 +8,21 @@
     {
       "id": 51,
       "name": "mirror",
-      "albedo": [0.95, 0.95, 0.95],
+      "albedo": [
+        0.95,
+        0.95,
+        0.95
+      ],
       "roughness": 0.01
     },
     {
       "id": 52,
       "name": "fill",
-      "albedo": [0.5, 0.65, 0.8],
+      "albedo": [
+        0.5,
+        0.65,
+        0.8
+      ],
       "roughness": 1.0
     }
   ],
@@ -24,25 +32,89 @@
       "primitive": "triangle",
       "material_id": 51,
       "vertices": [
-        [-0.5, 0.0, 0.0],
-        [0.5, 0.0, 0.0],
-        [0.0, 1.0, 0.0]
+        [
+          -0.5,
+          0.0,
+          0.0
+        ],
+        [
+          0.5,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0,
+          0.0
+        ]
       ],
-      "indices": [0, 1, 2]
+      "indices": [
+        0,
+        1,
+        2
+      ]
     },
     {
       "id": 52,
       "primitive": "triangle",
       "material_id": 52,
       "vertices": [
-        [-0.5, 0.0, -0.5],
-        [0.5, 0.0, -0.5],
-        [0.0, 1.0, -0.5]
+        [
+          -0.5,
+          0.0,
+          -0.5
+        ],
+        [
+          0.5,
+          0.0,
+          -0.5
+        ],
+        [
+          0.0,
+          1.0,
+          -0.5
+        ]
       ],
-      "indices": [0, 1, 2]
+      "indices": [
+        0,
+        1,
+        2
+      ]
     }
   ],
   "entities": [
+    {
+      "id": 505,
+      "name": "Scene Root",
+      "hierarchy": {
+        "parent": 0,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 506,
+      "name": "Cameras",
+      "hierarchy": {
+        "parent": 505,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 507,
+      "name": "Lights",
+      "hierarchy": {
+        "parent": 505,
+        "sibling_order": 1
+      }
+    },
+    {
+      "id": 508,
+      "name": "Geometry",
+      "hierarchy": {
+        "parent": 505,
+        "sibling_order": 2
+      }
+    },
     {
       "id": 501,
       "name": "camera",
@@ -50,6 +122,10 @@
         "fov": 64.0,
         "near_plane": 0.05,
         "far_plane": 100.0
+      },
+      "hierarchy": {
+        "parent": 506,
+        "sibling_order": 0
       }
     },
     {
@@ -58,6 +134,10 @@
       "mesh": {
         "mesh_id": 51,
         "material_id": 51
+      },
+      "hierarchy": {
+        "parent": 508,
+        "sibling_order": 0
       }
     },
     {
@@ -66,6 +146,10 @@
       "mesh": {
         "mesh_id": 52,
         "material_id": 52
+      },
+      "hierarchy": {
+        "parent": 508,
+        "sibling_order": 1
       }
     },
     {
@@ -73,27 +157,18 @@
       "name": "light",
       "light": {
         "type": "environment sky",
-        "color": [0.2, 0.2, 0.35],
+        "color": [
+          0.2,
+          0.2,
+          0.35
+        ],
         "intensity": 0.25,
         "radius": 0.0
+      },
+      "hierarchy": {
+        "parent": 507,
+        "sibling_order": 0
       }
-    }
-  ],
-  "cameras": [
-    {
-      "id": 501,
-      "fov": 64.0,
-      "near_plane": 0.05,
-      "far_plane": 100.0
-    }
-  ],
-  "lights": [
-    {
-      "id": 504,
-      "type": "environment sky",
-      "color": [0.2, 0.2, 0.35],
-      "intensity": 0.25,
-      "radius": 0.0
     }
   ],
   "benchmark": {
