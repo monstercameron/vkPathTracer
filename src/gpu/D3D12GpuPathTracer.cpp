@@ -1052,7 +1052,7 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
       std::vector<float> localBvh(std::max(1u, 2u * packed.triangle_count) * 8u, 0.0f);
       uint32_t nodeCount = 0u;
       bvh_build(refs, 0u, packed.triangle_count, localOrigIdx, localTriMat,
-                localBvh, reorderedIdx, reorderedTriMat, nodeCount);
+                bvhConfig, localBvh, reorderedIdx, reorderedTriMat, nodeCount);
       localBvh.resize(static_cast<std::size_t>(nodeCount) * 8u);
       if (reorderedIdx.size() == indexCount && nodeCount > 0u) {
         std::copy(reorderedIdx.begin(), reorderedIdx.end(),
@@ -1232,7 +1232,7 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
     reord_idx.reserve(m_gpuIdx.size());
     uint32_t node_count = 0u;
     bvh_build(refs, 0u, total_tris, orig_idx_copy, staticTriMat,
-              m_gpuBvh, reord_idx, m_gpuTriMat, node_count);
+              bvhConfig, m_gpuBvh, reord_idx, m_gpuTriMat, node_count);
 
     // Trim to actual node count, replace the static triangle segment with the
     // BVH order, then append dynamic triangles exactly as packed for instances.
@@ -1245,7 +1245,10 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
 
     std::ostringstream bvhLog;
     bvhLog << "BVH built nodes=" << node_count << " tris=" << total_tris
-           << " reord_idx=" << m_gpuIdx.size();
+           << " reord_idx=" << m_gpuIdx.size()
+           << " leaf_size=" << m_bvhLeafSize
+           << " buckets=" << m_bvhBucketCount
+           << " split=" << m_bvhSplitMode;
     LogDebug(bvhLog.str());
   }
   if (m_gpuBvh.empty())   StoreEmptyBvh(m_gpuBvh);   // dummy empty root leaf
