@@ -196,6 +196,23 @@ bool SelectPackedTriangleBuffer() {
   return ParseEnvBool("PT_D3D12_PACKED_TRIANGLES", true);
 }
 
+D3D12_COMMAND_LIST_TYPE SelectComputeCommandListType() {
+  const std::string valueText = ReadEnvString("PT_D3D12_COMMAND_QUEUE");
+  if (valueText.empty() || valueText == "compute") {
+    return D3D12_COMMAND_LIST_TYPE_COMPUTE;
+  }
+  if (valueText == "direct" || valueText == "graphics") {
+    return D3D12_COMMAND_LIST_TYPE_DIRECT;
+  }
+  LogError("ignoring invalid PT_D3D12_COMMAND_QUEUE=" + valueText +
+           " (expected compute or direct)");
+  return D3D12_COMMAND_LIST_TYPE_COMPUTE;
+}
+
+const char* CommandListTypeName(D3D12_COMMAND_LIST_TYPE type) {
+  return type == D3D12_COMMAND_LIST_TYPE_DIRECT ? "direct" : "compute";
+}
+
 const char* BoolDefine(bool value) {
   return value ? "1" : "0";
 }
@@ -2040,8 +2057,10 @@ bool D3D12GpuPathTracer::init_device() {
   }
 
   // Command queue
+  const D3D12_COMMAND_LIST_TYPE commandListType = SelectComputeCommandListType();
+  LogInfo(std::string("compute command queue type=") + CommandListTypeName(commandListType));
   D3D12_COMMAND_QUEUE_DESC qd{};
-  qd.Type     = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+  qd.Type     = commandListType;
   qd.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
   const HRESULT createQueueHr = m_device->CreateCommandQueue(&qd, IID_PPV_ARGS(&m_cmdQueue));
   if (FAILED(createQueueHr)) {
@@ -2051,14 +2070,14 @@ bool D3D12GpuPathTracer::init_device() {
   }
 
   // Command allocator + list
-  const HRESULT createAllocHr = m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE,
+  const HRESULT createAllocHr = m_device->CreateCommandAllocator(commandListType,
       IID_PPV_ARGS(&m_cmdAllocator));
   if (FAILED(createAllocHr)) {
     m_error = "CreateCommandAllocator hr=" + FormatHr(createAllocHr);
     LogError("init_device: " + m_error);
     return false;
   }
-  const HRESULT createListHr = m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE,
+  const HRESULT createListHr = m_device->CreateCommandList(0, commandListType,
       m_cmdAllocator.Get(), nullptr, IID_PPV_ARGS(&m_cmdList));
   if (FAILED(createListHr)) {
     m_error = "CreateCommandList hr=" + FormatHr(createListHr);
