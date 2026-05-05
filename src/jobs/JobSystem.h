@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -31,7 +32,9 @@ class IJobSystem {
                                                         std::size_t step,
                                                         IndexedRangeJobFunction job) = 0;
   virtual bool wait(vkpt::core::JobHandle id) = 0;
+  virtual bool wait(vkpt::core::JobHandle id, std::stop_token stop) = 0;
   virtual bool wait_group(const std::vector<vkpt::core::JobHandle>& ids) = 0;
+  virtual bool wait_group(const std::vector<vkpt::core::JobHandle>& ids, std::stop_token stop) = 0;
   virtual std::size_t worker_count() const = 0;
   virtual void pump_main_thread() = 0;
   virtual bool deterministic() const = 0;
@@ -52,7 +55,9 @@ class JobSystem final : public IJobSystem {
                                                  std::size_t step,
                                                  IndexedRangeJobFunction job) override;
   bool wait(vkpt::core::JobHandle id) override;
+  bool wait(vkpt::core::JobHandle id, std::stop_token stop) override;
   bool wait_group(const std::vector<vkpt::core::JobHandle>& ids) override;
+  bool wait_group(const std::vector<vkpt::core::JobHandle>& ids, std::stop_token stop) override;
   std::size_t worker_count() const override;
   void pump_main_thread() override;
   bool deterministic() const override;
@@ -67,6 +72,7 @@ class JobSystem final : public IJobSystem {
   vkpt::core::JobHandle create_group(std::size_t pending_count);
   vkpt::core::JobHandle create_completed_job();
   std::shared_ptr<JobState> find_job(vkpt::core::JobHandle id) const;
+  void retire_job_tree(vkpt::core::JobHandle id);
   bool try_run_one_queued_job();
   void run_job(const std::shared_ptr<JobState>& state);
   void complete_job(const std::shared_ptr<JobState>& state, std::exception_ptr failure = {});

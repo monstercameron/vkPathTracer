@@ -2,6 +2,7 @@
 
 #include "cpu/ParallelBvhBuilder.h"
 #include "cpu/SimdKernelDispatch.h"
+#include "jobs/JobSystem.h"
 
 #include <algorithm>
 #include <array>
@@ -13,7 +14,6 @@
 #include <fstream>
 #include <limits>
 #include <optional>
-#include <thread>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -42,6 +42,11 @@ uint64_t splitmix64(uint64_t x) {
   x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
   x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
   return x ^ (x >> 31);
+}
+
+vkpt::jobs::JobSystem& scalar_render_jobs() {
+  static vkpt::jobs::JobSystem jobs(0u);
+  return jobs;
 }
 
 uint64_t mix_cache_key(uint64_t key, uint64_t value) {
@@ -1066,7 +1071,9 @@ bool ScalarCpuPathTracer::configure(const RenderSettings& settings) {
   m_film.set_resolve_settings(m_settings.film_resolve);
   m_film.clear();
   m_counters = {};
-  m_worker_count = std::max(1u, std::thread::hardware_concurrency());
+  m_worker_count = std::max<std::uint32_t>(
+      1u,
+      static_cast<std::uint32_t>(scalar_render_jobs().worker_count()));
   const auto features = vkpt::cpu::QueryCpuFeatures();
   m_simd_dispatch = vkpt::cpu::BuildSimdDispatchInfo(features);
   const auto kernel_info = vkpt::cpu::SelectSimdKernel(features).info();
@@ -1859,7 +1866,11 @@ bool ScalarCpuPathTracer::render_sample_pixels(const uint32_t* pixel_indices,
     m_film.add_sample(x, y, sample);
   };
 
-  const uint32_t threadCount = std::max(1u, std::min(m_worker_count, pixel_count));
+  auto& jobs = scalar_render_jobs();
+  jobs.set_deterministic(m_settings.deterministic);
+  const uint32_t threadCount = m_settings.deterministic
+      ? 1u
+      : std::max(1u, std::min(m_worker_count, pixel_count));
   std::vector<LocalAccum> locals(static_cast<std::size_t>(threadCount));
 
   if (threadCount == 1u) {
@@ -1867,9 +1878,6 @@ bool ScalarCpuPathTracer::render_sample_pixels(const uint32_t* pixel_indices,
       shade_one(pixel_indices[i], locals[0]);
     }
   } else {
-    std::vector<std::thread> workers;
-    workers.reserve(threadCount - 1u);
-
     auto run_worker = [&](uint32_t workerIndex) {
       LocalAccum& local = locals[workerIndex];
       for (uint32_t i = workerIndex; i < pixel_count; i += threadCount) {
@@ -1877,14 +1885,15 @@ bool ScalarCpuPathTracer::render_sample_pixels(const uint32_t* pixel_indices,
       }
     };
 
-    for (uint32_t t = 1u; t < threadCount; ++t) {
-      workers.emplace_back(run_worker, t);
+    std::vector<vkpt::core::JobHandle> handles;
+    handles.reserve(threadCount);
+    for (uint32_t t = 0u; t < threadCount; ++t) {
+      handles.push_back(jobs.submit_job([&, t]() {
+        run_worker(t);
+      }));
     }
-    run_worker(0u);
-    for (auto& worker : workers) {
-      if (worker.joinable()) {
-        worker.join();
-      }
+    if (!jobs.wait_group(handles)) {
+      return false;
     }
   }
 

@@ -37,6 +37,11 @@ class TiledCpuPathTracer final : public vkpt::pathtracer::IPathTracer, public vk
                      const vkpt::pathtracer::Vec3& up,
                      float fov_deg) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
+  bool render_sample_batch_cancellable(uint32_t start_y,
+                                       uint32_t end_y,
+                                       uint32_t sample_index,
+                                       uint32_t frame_index,
+                                       std::stop_token stop) override;
   std::string_view name() const override { return "tiled-cpu"; }
   bool set_accelerator(vkpt::pathtracer::IRayAccelerator* accelerator) override;
   vkpt::pathtracer::FilmLdr resolve_ldr() const override;
