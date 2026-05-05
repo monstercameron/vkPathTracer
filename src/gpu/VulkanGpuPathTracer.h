@@ -19,8 +19,11 @@ struct PathTracePushConstants {
     uint32_t num_lights;  uint32_t width;       // 80
     uint32_t height;      uint32_t base_seed;   // 88
     float env_color[3];   float max_depth_f;    // 104
+    float aperture_radius; float focus_distance; // 112
+    uint32_t iris_blade_count; float iris_rotation_radians; // 120
+    float iris_roundness; float anamorphic_squeeze; // 128
 };
-static_assert(sizeof(PathTracePushConstants) == 104,
+static_assert(sizeof(PathTracePushConstants) == 128,
               "PathTracePushConstants size mismatch");
 
 // Real Vulkan compute path tracer implementing IPathTracer.

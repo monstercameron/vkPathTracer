@@ -33,9 +33,13 @@ struct PathTraceConstants {
     float  env_b;         float  max_depth_f;
     uint32_t rays_per_pixel;
     float  exposure; // tonemap exposure (replaces unused _pad1)
+    float  aperture_radius; float focus_distance; uint32_t iris_blade_count; float iris_rotation_radians;
+    float  iris_roundness; float anamorphic_squeeze; uint32_t tone_map; uint32_t output_transform;
+    float  gamma; uint32_t clamp_output; float white_balance_r; float white_balance_g;
+    float  white_balance_b; float _pad0; float _pad1; float _pad2;
 };
-static_assert(sizeof(PathTraceConstants) == 112,
-              "PathTraceConstants size mismatch (expected 112)");
+static_assert(sizeof(PathTraceConstants) == 176,
+              "PathTraceConstants size mismatch (expected 176)");
 
 class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
  public:
@@ -78,6 +82,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   uint32_t    bvh_bucket_count() const { return m_bvhBucketCount; }
   std::string bvh_split_mode() const { return m_bvhSplitMode; }
   std::string shader_traversal_mode() const { return m_shaderTraversalMode; }
+  bool        packed_triangle_buffer_enabled() const { return m_packedTriangleBufferEnabled; }
 
  private:
   bool init_device();
@@ -133,6 +138,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   Microsoft::WRL::ComPtr<ID3D12Resource> m_ltBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_bvhBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_triMatBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_triDataBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_dynamicBvhBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_localBvhBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_sdfBuf;
@@ -194,10 +200,11 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool m_forceReadbackEverySample = false;
   bool m_dynamicInstanceTransformsAllowed = true;
   std::string m_dxrBuildMode = "fast_trace";
-  uint32_t m_bvhLeafSize = 4;
-  uint32_t m_bvhBucketCount = 8;
+  uint32_t m_bvhLeafSize = 16;
+  uint32_t m_bvhBucketCount = 16;
   std::string m_bvhSplitMode = "sah";
   std::string m_shaderTraversalMode = "baseline";
+  bool m_packedTriangleBufferEnabled = true;
 
   std::vector<float>    m_gpuVerts;
   std::vector<uint32_t> m_gpuIdx;
@@ -206,6 +213,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::vector<float>    m_gpuLights;
   std::vector<float>    m_gpuBvh;
   std::vector<uint32_t> m_gpuTriMat;
+  std::vector<float>    m_gpuTriData;
   std::vector<float>    m_gpuDynamicBvh;
   std::vector<float>    m_gpuLocalBvh;
   std::vector<float>    m_gpuSdfs;

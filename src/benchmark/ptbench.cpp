@@ -49,6 +49,21 @@
 
 #if defined(PT_ENABLE_D3D12)
 #include "gpu/D3D12GpuPathTracer.h"
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <wrl/client.h>
+#include <dxgidebug.h>
+#include <DXProgrammableCapture.h>
+#if defined(PT_HAS_WINPIX_EVENT_RUNTIME)
+#include <pix3.h>
+#endif
+#endif
 #endif
 
 #if !defined(PT_SHADER_SPV_PATH)
@@ -78,6 +93,206 @@ std::string ReadProcessEnvRaw(const char* name) {
   }
 #endif
   return valueText;
+}
+
+bool ReadProcessEnvBool(const char* name) {
+  std::string value = ReadProcessEnvRaw(name);
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+std::string ReadProcessEnvOr(const char* name, const char* fallback) {
+  const std::string value = ReadProcessEnvRaw(name);
+  return value.empty() ? std::string(fallback) : value;
+}
+
+void SetProcessEnvVar(const char* name, const std::string& value) {
+  if (value.empty()) {
+    return;
+  }
+#if defined(_WIN32)
+  (void)_putenv_s(name, value.c_str());
+#else
+  (void)setenv(name, value.c_str(), 1);
+#endif
+}
+
+std::string TrimText(std::string_view text) {
+  const auto first = text.find_first_not_of(" \t\r\n");
+  if (first == std::string_view::npos) {
+    return {};
+  }
+  const auto last = text.find_last_not_of(" \t\r\n");
+  return std::string(text.substr(first, last - first + 1u));
+}
+
+std::vector<std::string> BuildPixAutorunArgs(const Path& configPath = {}) {
+  std::string scene = ReadProcessEnvOr("PTBENCH_SCENE", "assets/scenes/cornell_native.json");
+  std::string backend = ReadProcessEnvOr("PTBENCH_BACKEND", "d3d12");
+  std::string rendererPath = ReadProcessEnvOr("PTBENCH_RENDERER_PATH", "d3d12-compute");
+  std::string resolution = ReadProcessEnvOr("PTBENCH_RESOLUTION", "512x512");
+  std::string spp = ReadProcessEnvOr("PTBENCH_SPP", "8");
+  std::string maxDepth = ReadProcessEnvOr("PTBENCH_MAX_DEPTH", "6");
+  std::string output = ReadProcessEnvOr("PTBENCH_OUTPUT", "artifacts/pix_probe/autocapture/bench");
+  std::string d3d12RaysPerPixel = ReadProcessEnvRaw("PT_D3D12_RAYS_PER_PIXEL");
+  std::string d3d12ShaderTraversal = ReadProcessEnvRaw("PT_D3D12_SHADER_TRAVERSAL");
+  std::string d3d12PackedTriangles = ReadProcessEnvRaw("PT_D3D12_PACKED_TRIANGLES");
+  std::string d3d12ReadbackInterval = ReadProcessEnvRaw("PT_D3D12_READBACK_INTERVAL");
+  std::string pixProgrammaticCapture = ReadProcessEnvRaw("PTBENCH_PIX_PROGRAMMATIC_CAPTURE");
+  std::string pixCapturePath = ReadProcessEnvRaw("PTBENCH_PIX_CAPTURE_PATH");
+
+  if (!configPath.empty()) {
+    std::ifstream in(configPath);
+    std::string line;
+    while (std::getline(in, line)) {
+      const auto comment = line.find('#');
+      if (comment != std::string::npos) {
+        line = line.substr(0, comment);
+      }
+      const auto eq = line.find('=');
+      if (eq == std::string::npos) {
+        continue;
+      }
+      const std::string key = TrimText(std::string_view(line).substr(0, eq));
+      const std::string value = TrimText(std::string_view(line).substr(eq + 1u));
+      if (value.empty()) {
+        continue;
+      }
+      if (key == "scene") scene = value;
+      else if (key == "backend") backend = value;
+      else if (key == "renderer_path") rendererPath = value;
+      else if (key == "resolution") resolution = value;
+      else if (key == "spp") spp = value;
+      else if (key == "max_depth") maxDepth = value;
+      else if (key == "output") output = value;
+      else if (key == "d3d12_rays_per_pixel") d3d12RaysPerPixel = value;
+      else if (key == "d3d12_shader_traversal") d3d12ShaderTraversal = value;
+      else if (key == "d3d12_packed_triangles") d3d12PackedTriangles = value;
+      else if (key == "d3d12_readback_interval") d3d12ReadbackInterval = value;
+      else if (key == "pix_programmatic_capture") pixProgrammaticCapture = value;
+      else if (key == "pix_capture_path") pixCapturePath = value;
+    }
+  }
+
+  SetProcessEnvVar("PT_D3D12_RAYS_PER_PIXEL", d3d12RaysPerPixel);
+  SetProcessEnvVar("PT_D3D12_SHADER_TRAVERSAL", d3d12ShaderTraversal);
+  SetProcessEnvVar("PT_D3D12_PACKED_TRIANGLES", d3d12PackedTriangles);
+  SetProcessEnvVar("PT_D3D12_READBACK_INTERVAL", d3d12ReadbackInterval);
+  SetProcessEnvVar("PTBENCH_PIX_PROGRAMMATIC_CAPTURE", pixProgrammaticCapture);
+  SetProcessEnvVar("PTBENCH_PIX_CAPTURE_PATH", pixCapturePath);
+
+  std::vector<std::string> args;
+  args.reserve(18);
+  args.push_back("ptbench");
+  args.push_back("run");
+  args.push_back("--scene");
+  args.push_back(scene);
+  args.push_back("--backend");
+  args.push_back(backend);
+  args.push_back("--renderer-path");
+  args.push_back(rendererPath);
+  args.push_back("--resolution");
+  args.push_back(resolution);
+  args.push_back("--spp");
+  args.push_back(spp);
+  args.push_back("--max-depth");
+  args.push_back(maxDepth);
+  args.push_back("--output");
+  args.push_back(output);
+  args.push_back("--json");
+  return args;
+}
+
+std::vector<std::string_view> MakeArgViews(const std::vector<std::string>& args) {
+  std::vector<std::string_view> views;
+  views.reserve(args.size());
+  for (const auto& arg : args) {
+    views.emplace_back(arg);
+  }
+  return views;
+}
+
+class ScopedPixProgrammaticCapture {
+ public:
+  explicit ScopedPixProgrammaticCapture(bool enabled) {
+#if defined(_WIN32) && defined(PT_ENABLE_D3D12) && defined(PT_HAS_WINPIX_EVENT_RUNTIME)
+    if (!enabled) {
+      return;
+    }
+    const std::string capturePath = ReadProcessEnvRaw("PTBENCH_PIX_CAPTURE_PATH");
+    PIXCaptureParameters params = {};
+    PIXCaptureParameters* paramsPtr = nullptr;
+    if (!capturePath.empty()) {
+      m_capturePath = Path(capturePath).wstring();
+      params.GpuCaptureParameters.FileName = m_capturePath.c_str();
+      paramsPtr = &params;
+    }
+    const HRESULT beginHr = PIXBeginCapture(PIX_CAPTURE_GPU, paramsPtr);
+    if (ReadProcessEnvBool("PTBENCH_PIX_VERBOSE")) {
+      std::cerr << "PIXBeginCapture hr=0x" << std::hex
+                << static_cast<unsigned long>(beginHr) << std::dec
+                << " path=" << capturePath << "\n";
+    }
+    if (SUCCEEDED(beginHr)) {
+      m_active = true;
+    }
+#elif defined(_WIN32) && defined(PT_ENABLE_D3D12)
+    if (!enabled) {
+      return;
+    }
+    if (SUCCEEDED(DXGIGetDebugInterface1(0, IID_PPV_ARGS(&m_analysis))) && m_analysis) {
+      m_analysis->BeginCapture();
+      m_active = true;
+    }
+#else
+    (void)enabled;
+#endif
+  }
+
+  ~ScopedPixProgrammaticCapture() {
+#if defined(_WIN32) && defined(PT_ENABLE_D3D12) && defined(PT_HAS_WINPIX_EVENT_RUNTIME)
+    if (m_active) {
+      const HRESULT endHr = PIXEndCapture(false);
+      if (ReadProcessEnvBool("PTBENCH_PIX_VERBOSE")) {
+        std::cerr << "PIXEndCapture hr=0x" << std::hex
+                  << static_cast<unsigned long>(endHr) << std::dec << "\n";
+      }
+    }
+#elif defined(_WIN32) && defined(PT_ENABLE_D3D12)
+    if (m_active && m_analysis) {
+      m_analysis->EndCapture();
+    }
+#endif
+  }
+
+  ScopedPixProgrammaticCapture(const ScopedPixProgrammaticCapture&) = delete;
+  ScopedPixProgrammaticCapture& operator=(const ScopedPixProgrammaticCapture&) = delete;
+
+ private:
+  bool m_active = false;
+#if defined(_WIN32) && defined(PT_ENABLE_D3D12) && defined(PT_HAS_WINPIX_EVENT_RUNTIME)
+  std::wstring m_capturePath;
+#endif
+#if defined(_WIN32) && defined(PT_ENABLE_D3D12)
+  Microsoft::WRL::ComPtr<IDXGraphicsAnalysis> m_analysis;
+#endif
+};
+
+void LoadPixGpuCapturerForProgrammaticCapture(bool enabled) {
+#if defined(_WIN32) && defined(PT_ENABLE_D3D12) && defined(PT_HAS_WINPIX_EVENT_RUNTIME)
+  static HMODULE pixGpuCapturer = nullptr;
+  if (enabled && pixGpuCapturer == nullptr) {
+    pixGpuCapturer = PIXLoadLatestWinPixGpuCapturerLibrary();
+    if (ReadProcessEnvBool("PTBENCH_PIX_VERBOSE")) {
+      std::cerr << "PIXLoadLatestWinPixGpuCapturerLibrary module="
+                << reinterpret_cast<void*>(pixGpuCapturer)
+                << " last_error=" << GetLastError() << "\n";
+    }
+  }
+#else
+  (void)enabled;
+#endif
 }
 
 class TraceProfiler final : public vkpt::benchmark::IProfiler {
@@ -1304,6 +1519,14 @@ int RunCommand(const std::vector<std::string_view>& args) {
       ((normalizedBackend == "d3d12" || normalizedBackend == "d3d12-dxr") &&
        (normalizedRenderer == "dxr" || normalizedRenderer == "d3d12-dxr"));
   const bool isTiledPath = (std::string(ToLower(opts.rendererPath)) == "cpu-tiled");
+  const bool wantsPixProgrammaticCapture =
+      ReadProcessEnvBool("PTBENCH_PIX_PROGRAMMATIC_CAPTURE") &&
+      (isD3D12ComputePath || isD3D12DxrPath);
+  LoadPixGpuCapturerForProgrammaticCapture(wantsPixProgrammaticCapture);
+  std::optional<ScopedPixProgrammaticCapture> pixCapture;
+  if (wantsPixProgrammaticCapture) {
+    pixCapture.emplace(true);
+  }
   std::unique_ptr<vkpt::render::IRenderBackend> backend;
   if (isVulkanPath) {
     backend = vkpt::render::CreateBackend(normalizedBackend);
@@ -1504,6 +1727,7 @@ int RunCommand(const std::vector<std::string_view>& args) {
   }
   profiler.end_event(renderProfile);
   const auto renderEnd = std::chrono::high_resolution_clock::now();
+  pixCapture.reset();
   const auto resolveStart = std::chrono::high_resolution_clock::now();
   const auto resolveProfile = profiler.begin_event(vkpt::benchmark::ProfilerEventKind::CpuZone, "resolve_and_write", "io", 0u);
 
@@ -1637,6 +1861,13 @@ int RunCommand(const std::vector<std::string_view>& args) {
       result.diagnostics.push_back("bvh_bucket_count=" + std::to_string(d3d12->bvh_bucket_count()));
       result.diagnostics.push_back("bvh_split_mode=" + d3d12->bvh_split_mode());
       result.diagnostics.push_back("shader_traversal_mode=" + d3d12->shader_traversal_mode());
+      result.diagnostics.push_back("packed_triangle_buffer=" +
+                                   std::string(d3d12->packed_triangle_buffer_enabled() ? "true" : "false"));
+      result.diagnostics.push_back("compute_packed_triangle_intersections=" +
+                                   std::string(d3d12->packed_triangle_buffer_enabled() ? "true" : "false"));
+      if (d3d12->using_dxr_dispatch()) {
+        result.diagnostics.push_back("dxr_packed_triangle_closest_hit=true");
+      }
     }
   }
 #endif
@@ -3443,6 +3674,14 @@ int RunExperimentsCommand(const std::vector<std::string_view>& args) {
 
 int main(int argc, char** argv) {
   if (argc < 2) {
+    const Path pixAutorunConfig =
+        (argc > 0 && argv[0] != nullptr) ? Path(argv[0]).parent_path() / "ptbench_pix_autorun.cfg"
+                                         : Path("ptbench_pix_autorun.cfg");
+    if (ReadProcessEnvBool("PTBENCH_PIX_AUTORUN") || std::filesystem::exists(pixAutorunConfig)) {
+      const auto ownedArgs = BuildPixAutorunArgs(pixAutorunConfig);
+      const auto args = MakeArgViews(ownedArgs);
+      return RunCommand(args);
+    }
     PrintHelp();
     return 1;
   }

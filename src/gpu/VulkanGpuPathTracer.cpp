@@ -68,6 +68,7 @@ bool VulkanGpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   std::memset(m_filmPtr, 0, static_cast<std::size_t>(filmBytes));
 
   m_film.resize(s.width, s.height);
+  m_film.set_resolve_settings(s.film_resolve);
   m_film.clear();
   m_counters      = {};
   m_hasScene      = false;
@@ -85,6 +86,8 @@ bool VulkanGpuPathTracer::load_scene_snapshot(
     const vkpt::pathtracer::RTSceneData& scene) {
   if (!m_configured) return false;
   m_sceneData     = scene;
+  m_film.set_resolve_settings(
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
   m_hasScene      = true;
   m_sceneUploaded = false;
   return true;
@@ -231,6 +234,18 @@ bool VulkanGpuPathTracer::render_sample_batch(
   pc.env_color[1]  = sc.environment_color.y;
   pc.env_color[2]  = sc.environment_color.z;
   pc.max_depth_f   = static_cast<float>(std::max(1u, m_settings.max_depth));
+  pc.aperture_radius = sc.camera_aperture_radius > 0.0f
+      ? sc.camera_aperture_radius
+      : m_settings.camera_aperture_radius;
+  pc.focus_distance = sc.camera_focus_distance > 0.0f
+      ? sc.camera_focus_distance
+      : m_settings.camera_focus_distance;
+  pc.iris_blade_count = std::min(sc.camera_iris_blade_count, 64u);
+  pc.iris_rotation_radians = sc.camera_iris_rotation_degrees * (3.14159265f / 180.0f);
+  pc.iris_roundness = std::clamp(sc.camera_iris_roundness, 0.0f, 1.0f);
+  pc.anamorphic_squeeze = std::isfinite(sc.camera_anamorphic_squeeze)
+      ? std::max(0.01f, sc.camera_anamorphic_squeeze)
+      : 1.0f;
 
   // Record command buffer
   VK_CHK(vkResetCommandBuffer(m_cmdBuf, 0));
