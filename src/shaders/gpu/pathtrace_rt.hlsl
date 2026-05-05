@@ -2,6 +2,10 @@
 // Iterative path tracer: raygen loops over depth, no shader recursion needed.
 // Resource layout mirrors pathtrace_cs.hlsl so the same CPU constant buffer works.
 
+#ifndef PT_D3D12_DXR_SHADOW_RAYS
+#define PT_D3D12_DXR_SHADOW_RAYS 1
+#endif
+
 // ---- Constants (matches PathTraceConstants in D3D12GpuPathTracer.h) --------
 cbuffer PCBuf : register(b0) {
     float  camera_pos_x;  float camera_pos_y;  float camera_pos_z;  float fov_tan_half;
@@ -14,7 +18,7 @@ cbuffer PCBuf : register(b0) {
     float  aperture_radius; float focus_distance; uint iris_blade_count; float iris_rotation_radians;
     float  iris_roundness; float anamorphic_squeeze; uint tone_map; uint output_transform;
     float  gamma; uint clamp_output; float white_balance_r; float white_balance_g;
-    float  white_balance_b; float _pad0; float _pad1; float _pad2;
+    float  white_balance_b; uint denoiser_enabled; float denoiser_strength; float denoiser_color_sigma;
 };
 
 // ---- Resources -------------------------------------------------------------
@@ -26,24 +30,56 @@ Buffer<uint>     InstBuf   : register(t4, space0);   // kept for binding compat
 Buffer<float>    LightBuf  : register(t5, space0);   // reserved for NEE
 Buffer<uint>     TriMatBuf : register(t6, space0);
 Buffer<float>    TriDataBuf : register(t7, space0);
+Buffer<uint>     TexelBuf : register(t8, space0);
+Buffer<uint>     TexMetaBuf : register(t9, space0);
 RWByteAddressBuffer FilmBuf : register(u0, space0);
 
-// ---- Payload (64 bytes — must match MaxPayloadSizeInBytes in PSO) -----------
+// ---- Payload (56 bytes; must match MaxPayloadSizeInBytes in PSO) ------------
 struct PathPayload {
     float3 radiance;     // 12
-    uint   done;         //  4  → 16
+    uint   state;        //  4  -> 16
     float3 throughput;   // 12
-    uint   depth;        //  4  → 32
+    uint   rng;          //  4  -> 32
     float3 next_origin;  // 12
-    uint   rng;          //  4  → 48
     float3 next_dir;     // 12
-    float  _pad;         //  4  → 64
 };
 
 static const uint kMatStride = 16u;
 static const uint kInstStride = 24u;
-static const uint kPackedTriStride = 12u;
+static const uint kPackedTriStride = 18u;
 static const uint kStaticInstanceId = 0x00FFFFFFu;
+static const uint kInvalidTextureIndex = 0xFFFFFFFFu;
+static const uint kPayloadDone = 1u;
+static const uint kPayloadSpecularMiss = 2u;
+static const uint kPayloadShadowRay = 4u;
+static const uint kPayloadDepthShift = 8u;
+static const uint kPayloadDepthMask = 0xFFu;
+
+bool PayloadIsDone(PathPayload payload) {
+    return (payload.state & kPayloadDone) != 0u;
+}
+
+uint PayloadDepth(PathPayload payload) {
+    return (payload.state >> kPayloadDepthShift) & kPayloadDepthMask;
+}
+
+bool PayloadHasSpecularMiss(PathPayload payload) {
+    return (payload.state & kPayloadSpecularMiss) != 0u;
+}
+
+bool PayloadIsShadowRay(PathPayload payload) {
+    return (payload.state & kPayloadShadowRay) != 0u;
+}
+
+void PayloadSetDone(inout PathPayload payload) {
+    payload.state |= kPayloadDone;
+}
+
+void PayloadSetBounceState(inout PathPayload payload, uint depth, bool specularMiss) {
+    payload.state = (min(depth, kPayloadDepthMask) << kPayloadDepthShift) |
+                    (specularMiss ? kPayloadSpecularMiss : 0u);
+}
+
 float3 MatAlbedo(uint idx)   { uint b=idx*kMatStride; return float3(MatBuf[b], MatBuf[b+1u], MatBuf[b+2u]); }
 float3 MatEmissive(uint idx) { uint b=idx*kMatStride; return float3(MatBuf[b+3u], MatBuf[b+4u], MatBuf[b+5u]); }
 float  MatRoughness(uint idx){ return MatBuf[idx*kMatStride + 6u]; }
@@ -57,6 +93,88 @@ float  MatAlpha(uint idx)    { return MatBuf[idx*kMatStride + 14u]; }
 uint   MatEffectRaw(uint idx){ return uint(MatBuf[idx*kMatStride + 15u] + 0.5); }
 uint   MatEffect(uint idx)   { return MatEffectRaw(idx) & 1023u; }
 bool   MatDoubleSided(uint idx) { return (MatEffectRaw(idx) & 1024u) != 0u; }
+uint   MatBaseColorTextureIndex(uint idx) {
+    uint encoded = MatEffectRaw(idx) >> 11u;
+    return encoded == 0u ? kInvalidTextureIndex : encoded - 1u;
+}
+uint   MatNormalTextureIndex(uint idx) {
+    uint encoded = uint(MatBuf[idx*kMatStride + 13u] + 0.5);
+    return encoded == 0u ? kInvalidTextureIndex : encoded - 1u;
+}
+
+uint WrapTexelCoord(int value, uint size) {
+    int wrapped = value % int(size);
+    if (wrapped < 0) wrapped += int(size);
+    return uint(wrapped);
+}
+
+float3 DecodeRgba8(uint packed) {
+    return float3(float(packed & 255u),
+                  float((packed >> 8u) & 255u),
+                  float((packed >> 16u) & 255u)) * (1.0 / 255.0);
+}
+
+float3 DecodeRgba8Raw(uint packed) {
+    return float3(float(packed & 255u),
+                  float((packed >> 8u) & 255u),
+                  float((packed >> 16u) & 255u)) * (1.0 / 255.0);
+}
+
+float3 LoadTextureTexel(uint textureIndex, int x, int y) {
+    uint mb = textureIndex * 4u;
+    uint offset = TexMetaBuf[mb + 0u];
+    uint width = max(1u, TexMetaBuf[mb + 1u]);
+    uint height = max(1u, TexMetaBuf[mb + 2u]);
+    uint ix = WrapTexelCoord(x, width);
+    uint iy = WrapTexelCoord(y, height);
+    return DecodeRgba8(TexelBuf[offset + iy * width + ix]);
+}
+
+float3 LoadTextureTexelRaw(uint textureIndex, int x, int y) {
+    uint mb = textureIndex * 4u;
+    uint offset = TexMetaBuf[mb + 0u];
+    uint width = max(1u, TexMetaBuf[mb + 1u]);
+    uint height = max(1u, TexMetaBuf[mb + 2u]);
+    uint ix = WrapTexelCoord(x, width);
+    uint iy = WrapTexelCoord(y, height);
+    return DecodeRgba8Raw(TexelBuf[offset + iy * width + ix]);
+}
+
+float3 SampleBaseColorTexture(uint textureIndex, float2 uv) {
+    uint mb = textureIndex * 4u;
+    uint width = max(1u, TexMetaBuf[mb + 1u]);
+    uint height = max(1u, TexMetaBuf[mb + 2u]);
+    float2 wrapped = frac(uv);
+    float x = wrapped.x * float(width) - 0.5;
+    float y = (1.0 - wrapped.y) * float(height) - 0.5;
+    int x0 = int(floor(x));
+    int y0 = int(floor(y));
+    float tx = frac(x);
+    float ty = frac(y);
+    float3 c00 = LoadTextureTexel(textureIndex, x0, y0);
+    float3 c10 = LoadTextureTexel(textureIndex, x0 + 1, y0);
+    float3 c01 = LoadTextureTexel(textureIndex, x0, y0 + 1);
+    float3 c11 = LoadTextureTexel(textureIndex, x0 + 1, y0 + 1);
+    return lerp(lerp(c00, c10, tx), lerp(c01, c11, tx), ty);
+}
+
+float3 SampleTextureRaw(uint textureIndex, float2 uv) {
+    uint mb = textureIndex * 4u;
+    uint width = max(1u, TexMetaBuf[mb + 1u]);
+    uint height = max(1u, TexMetaBuf[mb + 2u]);
+    float2 wrapped = frac(uv);
+    float x = wrapped.x * float(width) - 0.5;
+    float y = (1.0 - wrapped.y) * float(height) - 0.5;
+    int x0 = int(floor(x));
+    int y0 = int(floor(y));
+    float tx = frac(x);
+    float ty = frac(y);
+    float3 c00 = LoadTextureTexelRaw(textureIndex, x0, y0);
+    float3 c10 = LoadTextureTexelRaw(textureIndex, x0 + 1, y0);
+    float3 c01 = LoadTextureTexelRaw(textureIndex, x0, y0 + 1);
+    float3 c11 = LoadTextureTexelRaw(textureIndex, x0 + 1, y0 + 1);
+    return lerp(lerp(c00, c10, tx), lerp(c01, c11, tx), ty);
+}
 
 float Pow2Fast(float x) {
     return x * x;
@@ -177,22 +295,20 @@ void RayGen() {
         PathPayload payload;
         payload.radiance    = (float3)0;
         payload.throughput  = (float3)1;
-        payload.done        = 0u;
-        payload.depth       = 0u;
+        payload.state       = 0u;
         payload.rng         = rng;
         payload.next_origin = origin;
         payload.next_dir    = dir;
-        payload._pad        = 0.0f;
 
         uint maxD = (uint)max(1.0f, max_depth_f);
-        for (uint d = 0u; d < maxD && payload.done == 0u; ++d) {
+        for (uint d = 0u; d < maxD && !PayloadIsDone(payload); ++d) {
             RayDesc ray;
             ray.Origin    = payload.next_origin;
             ray.Direction = payload.next_dir;
             ray.TMin      = 1e-4f;
             ray.TMax      = 1e30f;
             TraceRay(SceneTLAS,
-                     RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
+                     RAY_FLAG_FORCE_OPAQUE,
                      /*InstanceMask*/ 0xFF,
                      /*HitGroup offset*/ 0,
                      /*Geometry multiplier*/ 1,
@@ -209,13 +325,19 @@ void RayGen() {
 // ---- Miss ------------------------------------------------------------------
 [shader("miss")]
 void Miss(inout PathPayload payload) {
+#if PT_D3D12_DXR_SHADOW_RAYS
+    if (PayloadIsShadowRay(payload)) {
+        payload.state &= ~kPayloadDone;
+        return;
+    }
+#endif
     float3 env = float3(env_r, env_g, env_b);
     float envLuma = max(env.x, max(env.y, env.z));
-    float3 missEnv = (payload._pad > 0.5 && envLuma <= 1.0e-5)
+    float3 missEnv = (PayloadHasSpecularMiss(payload) && envLuma <= 1.0e-5)
         ? PreviewReflectionEnvironment(WorldRayDirection())
         : env;
     payload.radiance += payload.throughput * missEnv;
-    payload.done = 1u;
+    PayloadSetDone(payload);
 }
 
 // ---- ClosestHit ------------------------------------------------------------
@@ -231,13 +353,44 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
     uint matIdx = uint(TriDataBuf[tb + 3u] + 0.5f);
     float3 e1 = float3(TriDataBuf[tb + 4u], TriDataBuf[tb + 5u], TriDataBuf[tb + 6u]);
     float3 e2 = float3(TriDataBuf[tb + 8u], TriDataBuf[tb + 9u], TriDataBuf[tb + 10u]);
+    float2 uv0 = float2(TriDataBuf[tb + 12u], TriDataBuf[tb + 13u]);
+    float2 uv1 = float2(TriDataBuf[tb + 14u], TriDataBuf[tb + 15u]);
+    float2 uv2 = float2(TriDataBuf[tb + 16u], TriDataBuf[tb + 17u]);
+    float baryZ = 1.0f - attr.barycentrics.x - attr.barycentrics.y;
+    float2 uv = uv0 * baryZ + uv1 * attr.barycentrics.x + uv2 * attr.barycentrics.y;
     float3x4 o2w = ObjectToWorld3x4();
     float3 we1 = float3(dot(o2w[0].xyz, e1), dot(o2w[1].xyz, e1), dot(o2w[2].xyz, e1));
     float3 we2 = float3(dot(o2w[0].xyz, e2), dot(o2w[1].xyz, e2), dot(o2w[2].xyz, e2));
     float3 n = normalize(cross(we1, we2));
     if (dot(n, WorldRayDirection()) > 0.0f) n = -n;
     float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+    uint normalTexture = MatNormalTextureIndex(matIdx);
+    if (normalTexture != kInvalidTextureIndex) {
+        float2 duv1 = uv1 - uv0;
+        float2 duv2 = uv2 - uv0;
+        float det = duv1.x * duv2.y - duv1.y * duv2.x;
+        if (abs(det) > 1.0e-8f) {
+            float invDet = 1.0f / det;
+            float3 tangent = normalize((we1 * duv2.y - we2 * duv1.y) * invDet);
+            float3 bitangent = normalize((-we1 * duv2.x + we2 * duv1.x) * invDet);
+            tangent = normalize(tangent - n * dot(n, tangent));
+            bitangent = normalize(cross(n, tangent) * (det < 0.0f ? -1.0f : 1.0f));
+            float3 encodedNormal = SampleTextureRaw(normalTexture, uv);
+            float2 normalXY = encodedNormal.xy * 2.0f - 1.0f;
+            normalXY = clamp(normalXY, float2(-1.0f, -1.0f), float2(1.0f, 1.0f));
+            float normalZ = sqrt(saturate(1.0f - dot(normalXY, normalXY)));
+            float3 mappedNormal = normalize(tangent * normalXY.x + bitangent * normalXY.y + n * normalZ);
+            if (dot(mappedNormal, n) > 0.0f) {
+                n = normalize(lerp(n, mappedNormal, 0.85f));
+            }
+        }
+    }
     float3 albedo   = MatSurfaceAlbedo(matIdx, hitPos, n, WorldRayDirection());
+    uint baseColorTexture = MatBaseColorTextureIndex(matIdx);
+    if (baseColorTexture != kInvalidTextureIndex) {
+        float3 textureAlbedo = SampleBaseColorTexture(baseColorTexture, uv);
+        albedo = textureAlbedo * lerp(float3(1.0, 1.0, 1.0), albedo, 0.25);
+    }
     float3 emissive = MatEmissive(matIdx);
     payload.radiance  += payload.throughput * emissive;
     float roughness = MatRoughness(matIdx);
@@ -253,18 +406,65 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
     if (num_lights > 0u) {
         uint li = uint(RandF(rng) * float(num_lights));
         li = min(li, num_lights - 1u);
-        uint lb = li * 8u;
+        uint lb = li * 16u;
         float3 lpos = float3(LightBuf[lb], LightBuf[lb + 1u], LightBuf[lb + 2u]);
         float3 lcol = float3(LightBuf[lb + 3u], LightBuf[lb + 4u], LightBuf[lb + 5u]);
         float lint = LightBuf[lb + 6u];
+        float lrad = max(0.0f, LightBuf[lb + 7u]);
+        float3 spotDir = normalize(float3(LightBuf[lb + 8u], LightBuf[lb + 9u], LightBuf[lb + 10u]));
+        float spotInner = LightBuf[lb + 11u];
+        float spotOuter = LightBuf[lb + 12u];
+
+        if (lrad > 1.0e-5f) {
+            float uz = 1.0f - 2.0f * RandF(rng);
+            float upr = sqrt(max(0.0f, 1.0f - uz * uz));
+            float phi = 6.28318530718f * RandF(rng);
+            lpos += float3(upr * cos(phi), uz, upr * sin(phi)) * lrad;
+        }
+
         float3 toLight = lpos - hitPos;
         float dist2 = dot(toLight, toLight);
         float dist = sqrt(dist2);
         if (dist > 1.0e-4) {
             float3 ldir = toLight / dist;
             float cosL = dot(n, ldir);
-            if (cosL > 0.0) {
-                float3 irrad = lcol * (lint / (dist2 + 1.0e-4));
+            float spotFactor = 1.0f;
+            if (spotInner > -0.999f) {
+                float cone = dot(-ldir, spotDir);
+                if (cone <= spotOuter) {
+                    spotFactor = 0.0f;
+                } else if (cone < spotInner && spotInner > spotOuter) {
+                    float t = saturate((cone - spotOuter) / (spotInner - spotOuter));
+                    spotFactor = t * t * (3.0f - 2.0f * t);
+                }
+            }
+            if (cosL > 0.0 && spotFactor > 0.0f) {
+#if PT_D3D12_DXR_SHADOW_RAYS
+                PathPayload shadowPayload;
+                shadowPayload.radiance = (float3)0;
+                shadowPayload.throughput = (float3)0;
+                shadowPayload.state = kPayloadShadowRay | kPayloadDone;
+                shadowPayload.rng = 0u;
+                shadowPayload.next_origin = (float3)0;
+                shadowPayload.next_dir = (float3)0;
+                RayDesc shadowRay;
+                shadowRay.Origin = hitPos + n * 0.002f;
+                shadowRay.Direction = ldir;
+                shadowRay.TMin = 0.0f;
+                shadowRay.TMax = max(0.0f, dist - 0.004f);
+                TraceRay(SceneTLAS,
+                         RAY_FLAG_FORCE_OPAQUE |
+                         RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
+                         RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
+                         0xFF,
+                         0,
+                         1,
+                         0,
+                         shadowRay,
+                         shadowPayload);
+                if (!PayloadIsDone(shadowPayload)) {
+#endif
+                float3 irrad = lcol * ((lint * spotFactor) / (dist2 + 1.0e-4));
                 float3 direct = float3(0.0, 0.0, 0.0);
                 if (!isMirror && !isTransmissive) {
                     direct += albedo * (1.0 / 3.14159265) * irrad * cosL * float(num_lights);
@@ -293,13 +493,17 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
                     direct += albedo * irrad * cosL * float(num_lights) * (0.08 + 0.22 * MatAlpha(matIdx));
                 }
                 payload.radiance += payload.throughput * direct;
+#if PT_D3D12_DXR_SHADOW_RAYS
+                }
+#endif
             }
         }
     }
-    if (payload.depth >= 2u) {
+    uint depth = PayloadDepth(payload);
+    if (depth >= 2u) {
         float q = max(payload.throughput.x, max(payload.throughput.y, payload.throughput.z));
         q = clamp(q, 0.05f, 0.95f);
-        if (RandF(rng) > q) { payload.rng = rng; payload.done = 1u; return; }
+        if (RandF(rng) > q) { payload.rng = rng; PayloadSetDone(payload); return; }
         payload.throughput /= q;
     }
     float3 nextDir;
@@ -357,11 +561,11 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
         bounceWeight *= (dot(nextDir, n) > 0.55) ? 1.0 : 0.45;
     }
     payload.throughput *= bounceWeight;
-    payload._pad = (isMirror || isMetallic || isTransmissive || isClearcoat || roughness < 0.65) ? 1.0 : 0.0;
     payload.rng = rng;
     payload.next_origin = hitPos + n * 1e-4f;
     payload.next_dir    = normalize(nextDir);
-    payload.depth++;
+    PayloadSetBounceState(payload, depth + 1u,
+                          isMirror || isMetallic || isTransmissive || isClearcoat || roughness < 0.65);
 }
 
 // ---- PCG hash / sampling helpers -------------------------------------------

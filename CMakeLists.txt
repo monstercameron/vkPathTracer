@@ -411,7 +411,7 @@ if(PT_ENABLE_VULKAN)
 endif()
 
 if(PT_ENABLE_D3D12)
-  target_link_libraries(ptapp PRIVATE d3d12 dxgi d3dcompiler)
+  target_link_libraries(ptapp PRIVATE d3d12 dxgi d3dcompiler windowscodecs ole32)
   target_compile_definitions(ptapp PRIVATE
     PT_SHADER_HLSL_PATH=\"${CMAKE_SOURCE_DIR}/src/shaders/gpu/pathtrace_cs.hlsl\")
 endif()

@@ -324,6 +324,140 @@ For your case, especially on Intel B580, I would start with **PIX Timing Capture
 [3]: https://devblogs.microsoft.com/pix/timing-captures-new/?utm_source=chatgpt.com "Timing Captures - PIX on Windows"
 [4]: https://devblogs.microsoft.com/pix/gpu-captures/?utm_source=chatgpt.com "GPU Captures - PIX on Windows"
 [5]: https://github.com/wolfpld/tracy?utm_source=chatgpt.com "wolfpld/tracy: Frame profiler"
+
+## Repo PIX run notes, 2026-05-05
+
+PIX was installed with `winget` and the working CLI was:
+
+```text
+C:\Program Files\Microsoft PIX\2603.25\pixtool.exe
+```
+
+Developer Mode had to be enabled before PIX counter playback was useful. After that, `pixtool open-capture <capture>.wpix list-counters` exposed Intel B580 counters such as `GPU Time Elapsed`, `CS Invocations`, `XVE Inst Executed ...`, `XVE Threads Occupancy All`, and RT traversal counters.
+
+The headless `ptbench` D3D12 compute path needed two capture-specific changes:
+
+```text
+1. Add programmatic capture around the benchmark with WinPixEventRuntime / pix3.h.
+2. Run the capture on a Direct queue via PT_D3D12_COMMAND_QUEUE=direct.
+```
+
+The default D3D12 compute queue did produce `.wpix` files, but `save-event-list` failed with `PIXTOOL4 - No context`. A Direct queue can still execute compute dispatches, and PIX exported the event list reliably from that capture.
+
+Useful command shape:
+
+```powershell
+cmake --build --preset windows-clangcl-d3d12-debug --target ptbench --config Debug
+
+& 'C:\Program Files\Microsoft PIX\2603.25\pixtool.exe' `
+  open-capture 'artifacts\pix_probe\gpu_capture_compute\d3d12_compute_pix3.wpix' `
+  save-event-list 'artifacts\pix_probe\gpu_capture_compute\event_list_pix3_xve_clean.csv' `
+  --counters='*GPU*Time*' `
+  --counters='*CS*Invocation*' `
+  --counters='*XVE*Inst*Executed*CS*' `
+  --counters='*XVE*Inst*Executed*Send*' `
+  --counters='*XVE*Stall*' `
+  --counters='*XVE*Threads*Occupancy*' `
+  --counters='*L3*'
+```
+
+The local autorun config used for repeatable PIX captures is:
+
+```text
+build/presets/windows-clangcl-d3d12-debug/bin/ptbench_pix_autorun.cfg
+```
+
+Key compute-path result on `assets/scenes/cornell_native.json`, 512x512, spp 8, max depth 6, `PT_D3D12_RAYS_PER_PIXEL=8`, `PT_D3D12_READBACK_INTERVAL=8`:
+
+| Metric | Unpacked triangles | Packed triangles | Change |
+| --- | ---: | ---: | ---: |
+| Avg path-trace dispatch GPU time | 20149.875 | 14888.25 | -26.11% |
+| XVE ALU0 CS instructions | 1403290113.875 | 1254658708.125 | -10.59% |
+| XVE ALU1 CS instructions | 1170631864 | 1008592279.625 | -13.84% |
+| XVE Send instructions | 412961694.375 | 306888338 | -25.69% |
+| XVE occupancy | 95.875 | 95.5 | -0.39% |
+
+Interpretation: packed triangles are a real shader optimization. The improvement comes mostly from fewer send/load-style instructions and fewer ALU instructions, not from fixing occupancy. Tonemap is not the bottleneck; PIX reported the tonemap dispatch at about 9-10 GPU-time units versus about 14.9k for each path-trace dispatch.
+
+## Current DXR status
+
+Measured on the same scene and settings with `PT_D3D12_COMMAND_QUEUE=direct`, `PT_D3D12_RAYS_PER_PIXEL=8`, and `PT_D3D12_READBACK_INTERVAL=8`:
+
+```text
+D3D12 compute packed path:
+  image_hash = baa3711a10205e30
+  render_ms  = 92.296 ms after quiet-log cleanup
+  render_ms  = 694.906 ms at spp 64
+
+D3D12 DXR path, no hardware shadow rays:
+  image_hash = b78ab8d693f7c10a
+  render_ms  = 29.016 ms
+  render_ms  = 183.726 ms at spp 64
+
+D3D12 DXR path, hardware shadow rays enabled:
+  render_ms  = 20.719 ms
+  render_ms  = 107.458 ms at spp 64
+  render_ms  = 49.793 ms during programmatic PIX capture
+```
+
+The current DXR default enables hardware shadow rays. Disable for A/B testing with `PT_D3D12_DXR_SHADOW_RAYS=0`.
+
+Implementation changes from this optimization pass:
+
+```text
+1. Gated D3D12 first-dispatch probe logging and DXR InfoQueue draining behind PT_D3D12_VERBOSE_LOG.
+2. Delayed DXR runtime object creation until set_prefer_dxr(true), so the compute path does not create unused DXR objects.
+3. Reduced the DXR payload from 64 bytes to 56 bytes by packing done/depth/specular flags into one uint state.
+4. Compiled out shadow-ray checks when PT_D3D12_DXR_SHADOW_RAYS=0.
+5. Added hardware shadow rays with ACCEPT_FIRST_HIT_AND_END_SEARCH and SKIP_CLOSEST_HIT_SHADER, then made them the default because the measured Cornell path improved and compute already performs shadow occlusion.
+```
+
+PIX DXR event-list export with focused RT counters worked with:
+
+```powershell
+& 'C:\Program Files\Microsoft PIX\2603.25\pixtool.exe' `
+  open-capture 'artifacts\dxr_opt\pix_default_shadow_final\d3d12_dxr_default_shadow_final.wpix' `
+  save-event-list 'artifacts\dxr_opt\pix_default_shadow_final\event_list_dxr_default_shadow_final.csv' `
+  --counters='*GPU*Time*' `
+  --counters='*RT*Ray*Count*' `
+  --counters='*RT*Traversal*' `
+  --counters='*RT*Hit*Thread*' `
+  --counters='*RT*Miss*Thread*'
+```
+
+The broad `*RT*`, `*XVE*`, and `*L3*` DXR export caused `pixtool` to return `0x8000ffff`, so keep DXR counter exports narrow.
+
+DXR event-list observations:
+
+```text
+Older no-shadow DispatchRays GPU time per sample dispatch: about 3524-3625
+Current default-shadow DispatchRays count: 8
+Current default-shadow avg DispatchRays GPU time: 1843
+Current default-shadow avg RT input/traversal rays: 5.175 million
+Current default-shadow avg closest-hit dispatches: 3.004 million
+Current default-shadow avg any-hit dispatches: 2.788 million
+Current default-shadow avg miss dispatches: 2.171 million
+Current default-shadow avg traversal stall: 18.625
+Current default-shadow avg traversal step rays: 24.662 million
+DXR tonemap dispatch: about 9
+```
+
+This says the DXR dispatch itself is substantially faster than the software BVH compute shader on this scene. The shadow-ray path is also closer to the compute renderer's direct-light occlusion behavior, but the DXR image hash still differs from compute. Validate material behavior, culling, SDF/procedural coverage, double-sided/alpha expectations, and sample ordering before treating DXR as fully interchangeable with compute.
+
+DXR optimization surface still open:
+
+```text
+1. Correctness parity first: compare DXR and compute outputs scene-by-scene before tuning.
+2. Profile build/setup separately: ptbench build_ms is high for DXR, while PIX GPU AS build events are small, so CPU-side shader compile, PSO creation, upload, or scene prep likely dominate startup.
+3. Keep static BLAS/TLAS persistent and update/refit only dynamic instances when possible.
+4. Consider AS compaction after static BLAS builds if VRAM pressure or cache behavior becomes visible.
+5. Move BLAS build source geometry out of upload heaps for production profiling; upload heaps are convenient but not the intended fast GPU-local source path.
+6. Audit RAY_FLAG_CULL_BACK_FACING_TRIANGLES. It is fast, but it changes behavior for double-sided materials or scenes that expect backface hits.
+7. Split closest-hit shader tables by material class if PIX later shows hit-shader divergence as the dominant cost.
+8. Tune PT_D3D12_RAYS_PER_PIXEL for DXR separately from compute. The best batch size may differ because DispatchRays uses RT hardware traversal.
+9. For compute, the next meaningful surface is BVH traversal/data layout, such as a wider BVH or fewer stack/global-memory operations. PIX already showed tonemap is not the problem.
+10. For DXR, the next meaningful render-time surface is reducing closest-hit work and validating whether any-hit/shadow statistics remain favorable across non-Cornell scenes.
+```
 [6]: https://www.intel.com/content/www/us/en/products/sku/241598/intel-arc-b580-graphics/specifications.html?utm_source=chatgpt.com "Intel® Arc™ B580 Graphics - Product Specifications"
 [7]: https://old.chipsandcheese.com/2025/01/07/digging-into-driver-overhead-on-intels-b580/?utm_source=chatgpt.com "Digging into Driver Overhead on Intel's B580"
 [8]: https://www.intel.com/content/www/us/en/developer/tools/graphics-performance-analyzers/download.html?utm_source=chatgpt.com "Download Intel® Graphics Performance Analyzers"

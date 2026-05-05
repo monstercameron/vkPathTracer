@@ -51,7 +51,7 @@ const std::vector<ShaderFamilyDescriptor>& GetShaderFamilyManifest() {
     {ShaderFamily::ShadowRayTesting,     "shadow_ray_testing",    "Shadow Ray Testing",    ShaderStage::AnyHit,     false, "Shadow rays cast by NEE; piggy-backs intersect_scene"},
     {ShaderFamily::FilmAccumulation,     "film_accumulation",     "Film Accumulation",     ShaderStage::Compute,    true,  "CPU scalar: FilmBuffer::add_sample()"},
     {ShaderFamily::Resolve,              "resolve",               "Resolve",               ShaderStage::Compute,    true,  "CPU scalar: ApplyFilmResolve() tone-map + gamma"},
-    {ShaderFamily::Denoise,              "denoise",               "Denoise",               ShaderStage::Compute,    false, "Not yet implemented"},
+    {ShaderFamily::Denoise,              "denoise",               "Denoise",               ShaderStage::Compute,    true,  "D3D12 GPU spatial denoise with albedo/normal/depth guides"},
     {ShaderFamily::DebugVisualization,   "debug_visualization",   "Debug Visualization",   ShaderStage::Fragment,   false, "Not yet implemented"},
     {ShaderFamily::EditorOverlay,        "editor_overlay",        "Editor Overlay",        ShaderStage::Vertex,     false, "Not yet implemented"},
   };

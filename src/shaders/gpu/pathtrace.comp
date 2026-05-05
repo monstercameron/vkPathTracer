@@ -304,22 +304,35 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
         if (pc.num_lights > 0u) {
             uint  li    = uint(rand_f(rng) * float(pc.num_lights));
             li = min(li, pc.num_lights - 1u);
-            uint  lb    = li * 8u;
+            uint  lb    = li * 16u;
             vec3  lpos  = vec3(lights[lb], lights[lb+1u], lights[lb+2u]);
             vec3  lcol  = vec3(lights[lb+3u], lights[lb+4u], lights[lb+5u]);
             float lint  = lights[lb+6u];
+            vec3  spot_dir = normalize(vec3(lights[lb+8u], lights[lb+9u], lights[lb+10u]));
+            float spot_inner = lights[lb+11u];
+            float spot_outer = lights[lb+12u];
 
             vec3  to_l  = lpos - hit.pos;
             float dist2 = dot(to_l, to_l);
             float dist  = sqrt(dist2);
             vec3  ldir  = to_l / dist;
             float cos_t = dot(n, ldir);
+            float spot_factor = 1.0;
+            if (spot_inner > -0.999) {
+                float cone = dot(-ldir, spot_dir);
+                if (cone <= spot_outer) {
+                    spot_factor = 0.0;
+                } else if (cone < spot_inner && spot_inner > spot_outer) {
+                    float t = clamp((cone - spot_outer) / (spot_inner - spot_outer), 0.0, 1.0);
+                    spot_factor = t * t * (3.0 - 2.0 * t);
+                }
+            }
 
-            if (cos_t > 0.0 && dist > 1e-4) {
+            if (cos_t > 0.0 && dist > 1e-4 && spot_factor > 0.0) {
                 Hit shadow = intersect_scene(hit.pos + n * 0.002, ldir);
                 bool occ   = shadow.ok && shadow.t < dist - 0.004;
                 if (!occ) {
-                    vec3 irrad  = lcol * (lint / (dist2 + 1e-4));
+                    vec3 irrad  = lcol * ((lint * spot_factor) / (dist2 + 1e-4));
                     vec3 direct = vec3(0.0);
                     if (!is_mirror && !is_transmissive) {
                         direct += albedo * (1.0 / 3.14159265) * irrad * cos_t
