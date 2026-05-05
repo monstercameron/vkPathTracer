@@ -312,6 +312,15 @@ struct SceneMaterialDefinition {
   float emission_intensity = 0.0f;
 };
 
+enum class SceneMaterialPresetPolicy : std::uint8_t {
+  Override,
+  FillGenericDefaults,
+};
+
+std::string NormalizeMaterialFamilyId(std::string_view text);
+void ApplyMaterialFamilyPreset(SceneMaterialDefinition& material,
+                               SceneMaterialPresetPolicy policy = SceneMaterialPresetPolicy::Override);
+
 struct SceneGeometryDefinition {
   vkpt::core::StableId id = 0;
   std::string primitive;

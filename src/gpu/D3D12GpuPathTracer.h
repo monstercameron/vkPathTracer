@@ -69,6 +69,14 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   void        set_prefer_dxr(bool enabled);
   bool        prefer_dxr() const { return m_preferDxr; }
   bool        using_dxr_dispatch() const { return m_usingDxrDispatch; }
+  uint32_t    rays_per_pixel_per_dispatch() const { return m_raysPerPixelPerDispatch; }
+  uint32_t    readback_interval() const { return m_readbackInterval; }
+  bool        force_readback_every_sample() const { return m_forceReadbackEverySample; }
+  bool        dynamic_instance_transforms_allowed() const { return m_dynamicInstanceTransformsAllowed; }
+  std::string dxr_build_mode() const { return m_dxrBuildMode; }
+  uint32_t    bvh_leaf_size() const { return m_bvhLeafSize; }
+  uint32_t    bvh_bucket_count() const { return m_bvhBucketCount; }
+  std::string bvh_split_mode() const { return m_bvhSplitMode; }
 
  private:
   bool init_device();
@@ -182,6 +190,12 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   uint32_t m_filmPixels = 0;
   uint32_t m_raysPerPixelPerDispatch = 1;
   uint32_t m_readbackInterval = 4;
+  bool m_forceReadbackEverySample = false;
+  bool m_dynamicInstanceTransformsAllowed = true;
+  std::string m_dxrBuildMode = "fast_trace";
+  uint32_t m_bvhLeafSize = 4;
+  uint32_t m_bvhBucketCount = 8;
+  std::string m_bvhSplitMode = "sah";
 
   std::vector<float>    m_gpuVerts;
   std::vector<uint32_t> m_gpuIdx;

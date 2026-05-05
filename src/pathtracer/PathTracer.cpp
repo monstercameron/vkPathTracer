@@ -231,6 +231,15 @@ float luminance(const vkpt::pathtracer::Vec3& value) {
   return 0.2126f * value.x + 0.7152f * value.y + 0.0722f * value.z;
 }
 
+vkpt::pathtracer::Vec3 preview_reflection_environment(const vkpt::pathtracer::Vec3& direction) {
+  const float t = std::clamp(direction.y * 0.5f + 0.5f, 0.0f, 1.0f);
+  const float horizon = std::pow(std::clamp(1.0f - std::fabs(direction.y), 0.0f, 1.0f), 2.0f);
+  const vkpt::pathtracer::Vec3 floorColor{0.08f, 0.075f, 0.065f};
+  const vkpt::pathtracer::Vec3 skyColor{0.34f, 0.42f, 0.58f};
+  return floorColor * (1.0f - t) + skyColor * t +
+         vkpt::pathtracer::Vec3{0.55f, 0.48f, 0.36f} * (horizon * 0.18f);
+}
+
 vkpt::pathtracer::Vec3 normalize(const vkpt::pathtracer::Vec3& value) {
   const float l = length(value);
   if (l <= kEpsilon) {
@@ -345,7 +354,7 @@ bool is_texture_asset_uri(std::string_view uri) {
   std::string ext(uri.substr(dot));
   std::transform(ext.begin(), ext.end(), ext.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".exr";
+  return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".exr" || ext == ".hdr";
 }
 
 std::string normalize_material_id(std::string_view name) {
@@ -367,6 +376,17 @@ std::string normalize_material_id(std::string_view name) {
   return out;
 }
 
+bool is_environment_light_type(std::string_view type) {
+  const std::string id = normalize_material_id(type);
+  return id == "environment" || id == "environment_sky" || id == "environment_hdri" ||
+         id == "hdri" || id == "hdri_sky" || id == "open_sky" || id == "sky";
+}
+
+vkpt::pathtracer::Vec3 environment_color_from_light(const vkpt::scene::LightComponent& light) {
+  const float intensity = std::max(0.0f, light.intensity);
+  return {light.color.x * intensity, light.color.y * intensity, light.color.z * intensity};
+}
+
 uint32_t material_model_from_family(std::string_view family) {
   const std::string id = normalize_material_id(family);
   if (id == "emissive" || id == "environment_emissive" || id == "blackbody_emission" ||
@@ -377,7 +397,8 @@ uint32_t material_model_from_family(std::string_view family) {
   if (id == "mirror") {
     return 2u;
   }
-  if (id == "specular" || id == "glossy") {
+  if (id == "specular" || id == "glossy" || id == "normal_mapped_pbr" ||
+      id == "plastic" || id == "rubber") {
     return 3u;
   }
   if (id == "ggx_rough_conductor" || id == "metallic_pbr" || id == "anisotropic_ggx" ||
@@ -387,14 +408,17 @@ uint32_t material_model_from_family(std::string_view family) {
   if (id == "ggx_rough_dielectric" || id == "dielectric_glass" || id == "spectral_glass_approx" ||
       id == "frosted_glass" || id == "dirty_glass" || id == "water_fluid_surface" ||
       id == "ice_crystal" || id == "resin" || id == "epoxy" || id == "gemstone" ||
-      id == "frosted_acrylic" || id == "translucent_polymer" || id == "rubber") {
+      id == "frosted_acrylic" || id == "translucent_polymer") {
     return 5u;
   }
   if (id == "velvet" || id == "fabric_cloth" || id == "hair_fur_lobes" || id == "pearl_lustre") {
     return 6u;
   }
   if (id == "clearcoat" || id == "car_paint" || id == "paint" || id == "porcelain_ceramic" ||
-      id == "wet_surface" || id == "energy_conserving_layered") {
+      id == "wet_surface" || id == "energy_conserving_layered" ||
+      id == "thin_film_iridescent" || id == "diffraction_grating" ||
+      id == "holographic_coating" || id == "retroreflector" ||
+      id == "caustics_inspired_response") {
     return 7u;
   }
   if (id == "toon_surface" || id == "stylized_diffuse" || id == "xray") {
@@ -424,6 +448,7 @@ uint32_t material_effect_from_family(std::string_view family) {
   if (id == "retroreflector" || id == "caustics_inspired_response" || id == "bokeh_motion_blur_stress") return 12u;
   if (id == "normal_mapped_pbr") return 13u;
   if (id == "xray") return 14u;
+  if (id == "volumetric_medium" || id == "volumetric_shafts" || id == "smoke") return 15u;
   return 0u;
 }
 
@@ -504,6 +529,12 @@ vkpt::pathtracer::Vec3 apply_material_effect(const vkpt::pathtracer::RTMaterial&
       color = Vec3{0.15f, 0.75f, 1.0f} * (0.2f + 0.8f * rim);
       break;
     }
+    case 15u: {  // volumetric/smoke proxy: soft layered density bands
+      const float bands = 0.5f + 0.5f * std::sin(position.y * 11.0f + position.x * 3.0f + h * 7.0f);
+      const float rim = std::pow(std::max(0.0f, 1.0f - std::fabs(dot(normal, -incoming))), 1.5f);
+      color = color * (0.25f + 0.45f * bands) + Vec3{0.48f, 0.56f, 0.68f} * (0.18f + 0.32f * rim);
+      break;
+    }
     default:
       break;
   }
@@ -538,58 +569,40 @@ float radians(float deg) {
   return deg * (kPi / 180.0f);
 }
 
-bool intersect_triangle_local(const vkpt::pathtracer::RTTriangle& tri,
-                              const std::vector<vkpt::pathtracer::Vec3>& vertices,
-                              const vkpt::pathtracer::Ray& ray,
-                              float& t,
-                              float& u,
-                              float& v) {
-  if (tri.i0 >= vertices.size() || tri.i1 >= vertices.size() || tri.i2 >= vertices.size()) {
-    return false;
+struct RayAabbQuery {
+  float origin[3]{};
+  float inv_direction[3]{};
+  bool parallel[3]{};
+};
+
+RayAabbQuery make_ray_aabb_query(const vkpt::pathtracer::Ray& ray) {
+  RayAabbQuery query{};
+  query.origin[0] = ray.origin.x;
+  query.origin[1] = ray.origin.y;
+  query.origin[2] = ray.origin.z;
+  const float direction[3] = {ray.direction.x, ray.direction.y, ray.direction.z};
+  for (int axis = 0; axis < 3; ++axis) {
+    query.parallel[axis] = std::fabs(direction[axis]) <= kEpsilon;
+    query.inv_direction[axis] = query.parallel[axis] ? 0.0f : 1.0f / direction[axis];
   }
-  const vkpt::pathtracer::Vec3 p0 = vertices[tri.i0];
-  const vkpt::pathtracer::Vec3 p1 = vertices[tri.i1];
-  const vkpt::pathtracer::Vec3 p2 = vertices[tri.i2];
-  const vkpt::pathtracer::Vec3 e1 = p1 - p0;
-  const vkpt::pathtracer::Vec3 e2 = p2 - p0;
-  const vkpt::pathtracer::Vec3 h = cross(ray.direction, e2);
-  const float det = dot(e1, h);
-  if (std::fabs(det) < kEpsilon) {
-    return false;
-  }
-  const float inv_det = 1.0f / det;
-  const vkpt::pathtracer::Vec3 s = ray.origin - p0;
-  u = dot(s, h) * inv_det;
-  if (u < 0.0f || u > 1.0f) {
-    return false;
-  }
-  const vkpt::pathtracer::Vec3 q = cross(s, e1);
-  v = dot(ray.direction, q) * inv_det;
-  if (v < 0.0f || u + v > 1.0f) {
-    return false;
-  }
-  t = dot(e2, q) * inv_det;
-  return t > kEpsilon;
+  return query;
 }
 
 bool intersect_aabb(const vkpt::cpu::BvhAabb& aabb,
-                    const vkpt::pathtracer::Ray& ray,
+                    const RayAabbQuery& ray,
                     float max_t,
                     float& t_near) {
   float t_min = kEpsilon;
   float t_max = max_t;
-  const float origin[3] = {ray.origin.x, ray.origin.y, ray.origin.z};
-  const float direction[3] = {ray.direction.x, ray.direction.y, ray.direction.z};
   for (int axis = 0; axis < 3; ++axis) {
-    if (std::fabs(direction[axis]) <= kEpsilon) {
-      if (origin[axis] < aabb.min[axis] || origin[axis] > aabb.max[axis]) {
+    if (ray.parallel[axis]) {
+      if (ray.origin[axis] < aabb.min[axis] || ray.origin[axis] > aabb.max[axis]) {
         return false;
       }
       continue;
     }
-    const float inv_d = 1.0f / direction[axis];
-    float t0 = (aabb.min[axis] - origin[axis]) * inv_d;
-    float t1 = (aabb.max[axis] - origin[axis]) * inv_d;
+    float t0 = (aabb.min[axis] - ray.origin[axis]) * ray.inv_direction[axis];
+    float t1 = (aabb.max[axis] - ray.origin[axis]) * ray.inv_direction[axis];
     if (t0 > t1) {
       std::swap(t0, t1);
     }
@@ -642,6 +655,9 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
         m_primitives.push_back({tri,
                                 instance.material_index,
                                 static_cast<uint32_t>(m_primitives.size()),
+                                v0,
+                                e1,
+                                e2,
                                 normalize(cross(e1, e2))});
         primitive_aabbs.push_back(aabb);
       }
@@ -671,6 +687,7 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
     }
 
     float best_t = std::numeric_limits<float>::infinity();
+    const RayAabbQuery aabb_ray = make_ray_aabb_query(ray);
     std::vector<int32_t> stack;
     stack.reserve(64u);
     stack.push_back(0);
@@ -687,7 +704,7 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
         ++stats->bvh_node_visits;
       }
       float node_t = 0.0f;
-      if (!intersect_aabb(node.aabb, ray, best_t, node_t)) {
+      if (!intersect_aabb(node.aabb, aabb_ray, best_t, node_t)) {
         continue;
       }
 
@@ -711,7 +728,24 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
           float t = best_t;
           float u = 0.0f;
           float v = 0.0f;
-          if (!intersect_triangle_local(primitive.triangle, m_vertices, ray, t, u, v) || t >= best_t) {
+          const vkpt::pathtracer::Vec3 h = cross(ray.direction, primitive.e2);
+          const float det = dot(primitive.e1, h);
+          if (std::fabs(det) < kEpsilon) {
+            continue;
+          }
+          const float inv_det = 1.0f / det;
+          const vkpt::pathtracer::Vec3 s = ray.origin - primitive.v0;
+          u = dot(s, h) * inv_det;
+          if (u < 0.0f || u > 1.0f) {
+            continue;
+          }
+          const vkpt::pathtracer::Vec3 q = cross(s, primitive.e1);
+          v = dot(ray.direction, q) * inv_det;
+          if (v < 0.0f || u + v > 1.0f) {
+            continue;
+          }
+          t = dot(primitive.e2, q) * inv_det;
+          if (t <= kEpsilon || t >= best_t) {
             continue;
           }
           if (stats) {
@@ -731,9 +765,9 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
       float left_t = 0.0f;
       float right_t = 0.0f;
       const bool hit_left = node.left_child >= 0 &&
-          intersect_aabb(m_bvh.nodes[static_cast<std::size_t>(node.left_child)].aabb, ray, best_t, left_t);
+          intersect_aabb(m_bvh.nodes[static_cast<std::size_t>(node.left_child)].aabb, aabb_ray, best_t, left_t);
       const bool hit_right = node.right_child >= 0 &&
-          intersect_aabb(m_bvh.nodes[static_cast<std::size_t>(node.right_child)].aabb, ray, best_t, right_t);
+          intersect_aabb(m_bvh.nodes[static_cast<std::size_t>(node.right_child)].aabb, aabb_ray, best_t, right_t);
       if (hit_left && hit_right) {
         if (left_t <= right_t) {
           stack.push_back(node.right_child);
@@ -768,6 +802,9 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
     vkpt::pathtracer::RTTriangle triangle{};
     uint32_t material_index = 0;
     uint32_t primitive_index = 0;
+    vkpt::pathtracer::Vec3 v0{};
+    vkpt::pathtracer::Vec3 e1{};
+    vkpt::pathtracer::Vec3 e2{};
     vkpt::pathtracer::Vec3 normal{};
   };
 
@@ -1454,7 +1491,7 @@ Vec3 ScalarCpuPathTracer::sample_phong_lobe(Rng& rng, const Vec3& refl_dir,
   return out;
 }
 
-NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit, Rng& rng) const {
+NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit, const Vec3& view_dir, Rng& rng) const {
   if (m_scene.lights.empty()) {
     return {};
   }
@@ -1491,11 +1528,45 @@ NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit, Rng& rng) con
     return {};  // occluded
   }
 
-  // Lambert direct contribution.
   const auto mat_index = std::min(hit.material_index, static_cast<uint32_t>(m_scene.materials.size() - 1));
-  const Vec3 albedo = apply_material_effect(m_scene.materials[mat_index], hit.position, hit.normal, -light_dir);
+  const auto& material = m_scene.materials[mat_index];
+  const Vec3 albedo = apply_material_effect(material, hit.position, hit.normal, -light_dir);
   const Vec3 irradiance = light.color * (light.intensity / (dist_sq + kEpsilon));
-  const Vec3 direct = albedo * kInvPi * irradiance * cos_theta * static_cast<float>(num_lights);
+  const float roughness = clamp01(material.roughness);
+  const bool isMirror = material.material_model == 2u || roughness <= 0.001f;
+  const bool isMetallic = material.material_model == 4u || material.metallic > 0.65f;
+  const bool isTransmissive = material.material_model == 5u || material.transmission > 0.05f;
+  const bool isClearcoat = material.material_model == 7u || material.clearcoat > 0.05f;
+
+  Vec3 direct{};
+  if (!isMirror && !isTransmissive) {
+    direct += albedo * kInvPi * irradiance * cos_theta * static_cast<float>(num_lights);
+  }
+  if (isMirror || isMetallic || isClearcoat || isTransmissive || roughness < 0.65f) {
+    const Vec3 half_dir = normalize(light_dir + normalize(view_dir));
+    const float effectiveRoughness = std::max(0.025f, roughness * (isMetallic ? 0.65f : 1.0f));
+    const float a2 = effectiveRoughness * effectiveRoughness;
+    const float specPower = std::clamp(2.0f / std::max(0.0005f, a2 * a2) - 2.0f, 4.0f, 96.0f);
+    const float spec = std::pow(std::max(0.0f, dot(hit.normal, half_dir)), specPower);
+    const float cosView = std::max(0.0f, dot(hit.normal, normalize(view_dir)));
+    float f0 = (1.0f - material.ior) / (1.0f + material.ior);
+    f0 *= f0;
+    const float fresnel = f0 + (1.0f - f0) * std::pow(1.0f - cosView, 5.0f);
+    const float specStrength = clamp01((1.0f - roughness) * 0.8f +
+                                       material.metallic * 0.45f +
+                                       material.clearcoat * 0.35f +
+                                       (isMirror ? 0.75f : 0.0f) +
+                                       (isTransmissive ? fresnel : 0.0f));
+    const Vec3 white{1.0f, 1.0f, 1.0f};
+    const Vec3 specTint = white * (isMetallic ? 0.15f : 0.88f) +
+                          albedo * (isMetallic ? 0.85f : 0.12f);
+    direct += specTint * irradiance * (spec * cos_theta * static_cast<float>(num_lights) *
+                                       std::max(0.15f, specStrength));
+  }
+  if (isTransmissive) {
+    direct += albedo * irradiance * (cos_theta * static_cast<float>(num_lights) *
+                                     (0.08f + 0.22f * material.alpha));
+  }
 
   return NeeResult{direct, true};
 }
@@ -1538,11 +1609,16 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
   Vec3 radiance{0.0f, 0.0f, 0.0f};
   Vec3 throughput{1.0f, 1.0f, 1.0f};
   Ray ray = input;
+  bool previewReflectionEnvironment = false;
   for (uint32_t depth = 0; depth < m_settings.max_depth; ++depth) {
     ++ray_counter;
     Hit hit;
     if (!intersect_scene(ray, hit)) {
-      radiance += throughput * m_scene.environment_color;
+      Vec3 missEnvironment = m_scene.environment_color;
+      if (previewReflectionEnvironment && std::max({missEnvironment.x, missEnvironment.y, missEnvironment.z}) <= 1.0e-5f) {
+        missEnvironment = preview_reflection_environment(ray.direction);
+      }
+      radiance += throughput * missEnvironment;
       break;
     }
 
@@ -1575,10 +1651,10 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
     }
 
     // NEE direct light sampling — skip for perfect mirrors (delta BSDF)
-    if (m_settings.enable_nee && !isMirror && !isTransmissive && depth < m_settings.max_depth - 1u) {
+    if (m_settings.enable_nee && depth < m_settings.max_depth - 1u) {
       Hit lightSampleHit = hit;
       lightSampleHit.normal = shadingNormal;
-      const NeeResult nee = sample_direct_light(lightSampleHit, rng);
+      const NeeResult nee = sample_direct_light(lightSampleHit, -ray.direction, rng);
       if (nee.valid) {
         if (m_settings.enable_mis) {
           const Vec3 to_approx_light = (m_scene.lights.empty()) ? Vec3{} :
@@ -1639,6 +1715,7 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
     if (isToon) {
       bounceWeight = bounceWeight * (dot(outDir, shadingNormal) > 0.55f ? 1.0f : 0.45f);
     }
+    previewReflectionEnvironment = isMirror || isMetallic || isTransmissive || isClearcoat || roughness < 0.65f;
     throughput = throughput * bounceWeight;
 
     if (std::max(throughput.x, std::max(throughput.y, throughput.z)) < 0.001f) {
@@ -1898,23 +1975,29 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   }
   std::unordered_map<vkpt::core::StableId, uint32_t> materialLookup;
   for (const auto& material : materials) {
+    auto runtimeMaterial = material;
+    vkpt::scene::ApplyMaterialFamilyPreset(runtimeMaterial,
+                                           vkpt::scene::SceneMaterialPresetPolicy::FillGenericDefaults);
     const uint32_t index = static_cast<uint32_t>(scene.materials.size());
-    materialLookup[material.id] = index;
+    materialLookup[runtimeMaterial.id] = index;
     RTMaterial outMaterial;
-    outMaterial.albedo = {material.albedo.x, material.albedo.y, material.albedo.z};
-    outMaterial.emissive = {material.emission.x * material.emission_intensity, material.emission.y * material.emission_intensity,
-                            material.emission.z * material.emission_intensity};
-    outMaterial.roughness = clamp01(material.roughness);
-    outMaterial.metallic = clamp01(material.metallic);
-    outMaterial.ior = std::max(1.01f, material.ior);
-    outMaterial.transmission = clamp01(material.transmission);
-    outMaterial.clearcoat = clamp01(material.clearcoat);
-    outMaterial.sheen = clamp01(material.sheen);
-    outMaterial.anisotropy = std::min(1.0f, std::max(-1.0f, material.anisotropy));
-    outMaterial.alpha = clamp01(material.alpha);
-    outMaterial.material_model = material_model_from_family(material.family.empty() ? material.name : material.family);
-    outMaterial.material_effect = material_effect_from_family(material.family.empty() ? material.name : material.family);
-    outMaterial.material_flags = material.double_sided ? 1u : 0u;
+    outMaterial.albedo = {runtimeMaterial.albedo.x, runtimeMaterial.albedo.y, runtimeMaterial.albedo.z};
+    outMaterial.emissive = {runtimeMaterial.emission.x * runtimeMaterial.emission_intensity,
+                            runtimeMaterial.emission.y * runtimeMaterial.emission_intensity,
+                            runtimeMaterial.emission.z * runtimeMaterial.emission_intensity};
+    outMaterial.roughness = clamp01(runtimeMaterial.roughness);
+    outMaterial.metallic = clamp01(runtimeMaterial.metallic);
+    outMaterial.ior = std::max(1.01f, runtimeMaterial.ior);
+    outMaterial.transmission = clamp01(runtimeMaterial.transmission);
+    outMaterial.clearcoat = clamp01(runtimeMaterial.clearcoat);
+    outMaterial.sheen = clamp01(runtimeMaterial.sheen);
+    outMaterial.anisotropy = std::min(1.0f, std::max(-1.0f, runtimeMaterial.anisotropy));
+    outMaterial.alpha = clamp01(runtimeMaterial.alpha);
+    outMaterial.material_model = material_model_from_family(
+        runtimeMaterial.family.empty() ? runtimeMaterial.name : runtimeMaterial.family);
+    outMaterial.material_effect = material_effect_from_family(
+        runtimeMaterial.family.empty() ? runtimeMaterial.name : runtimeMaterial.family);
+    outMaterial.material_flags = runtimeMaterial.double_sided ? 1u : 0u;
     scene.materials.push_back(outMaterial);
   }
 
@@ -2101,6 +2184,14 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
 
   auto add_light = [&](vkpt::core::StableId id, const vkpt::scene::LightComponent& light) {
     if (light.intensity <= 0.0f) {
+      return;
+    }
+    if (is_environment_light_type(light.type)) {
+      const Vec3 env = environment_color_from_light(light);
+      scene.environment_color = {
+          scene.environment_color.x + env.x,
+          scene.environment_color.y + env.y,
+          scene.environment_color.z + env.z};
       return;
     }
     bool hasTransform = false;

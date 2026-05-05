@@ -769,6 +769,191 @@ std::uint64_t allocate_id(const std::unordered_set<vkpt::core::StableId>& used) 
 
 }  // namespace
 
+std::string NormalizeMaterialFamilyId(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  for (const char c : text) {
+    const unsigned char uc = static_cast<unsigned char>(c);
+    if ((uc >= 'A' && uc <= 'Z') || (uc >= 'a' && uc <= 'z') || (uc >= '0' && uc <= '9')) {
+      out.push_back(static_cast<char>(std::tolower(uc)));
+    } else if (uc == '_' || uc == '-' || std::isspace(uc) != 0) {
+      if (!out.empty() && out.back() != '_') {
+        out.push_back('_');
+      }
+    }
+  }
+  while (!out.empty() && out.back() == '_') {
+    out.pop_back();
+  }
+  return out.empty() ? "diffuse" : out;
+}
+
+void ApplyMaterialFamilyPreset(SceneMaterialDefinition& material,
+                               SceneMaterialPresetPolicy policy) {
+  const std::string family = NormalizeMaterialFamilyId(
+      material.family.empty() ? material.name : material.family);
+  material.family = family;
+
+  const bool force = policy == SceneMaterialPresetPolicy::Override;
+  auto near_value = [](float a, float b) {
+    return std::fabs(a - b) <= 1.0e-5f;
+  };
+  auto set_if_generic = [&](float& target, float value, float generic) {
+    if (force || !std::isfinite(target) || near_value(target, generic)) {
+      target = value;
+    }
+  };
+  auto set_color_if_dark = [&](Vec3& target, Vec3 value) {
+    if (force || (target.x <= 0.0f && target.y <= 0.0f && target.z <= 0.0f)) {
+      target = value;
+    }
+  };
+
+  set_if_generic(material.alpha, 1.0f, 1.0f);
+  set_if_generic(material.transmission, 0.0f, 0.0f);
+  set_if_generic(material.clearcoat, 0.0f, 0.0f);
+  set_if_generic(material.sheen, 0.0f, 0.0f);
+  set_if_generic(material.anisotropy, 0.0f, 0.0f);
+
+  if (family == "mirror") {
+    set_if_generic(material.roughness, 0.0f, 1.0f);
+    set_if_generic(material.metallic, 1.0f, 0.0f);
+  } else if (family == "glossy" || family == "specular" ||
+             family == "normal_mapped_pbr" || family == "plastic") {
+    set_if_generic(material.roughness, 0.18f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+  } else if (family == "metallic_pbr" ||
+             family == "ggx_rough_conductor" ||
+             family == "anisotropic_ggx" ||
+             family == "brushed_metal" ||
+             family == "ground_metal") {
+    set_if_generic(material.roughness, family == "ggx_rough_conductor" ? 0.35f : 0.24f, 1.0f);
+    set_if_generic(material.metallic, 1.0f, 0.0f);
+    set_if_generic(material.anisotropy, family == "brushed_metal" ? 0.65f : 0.0f, 0.0f);
+  } else if (family == "dielectric_glass" ||
+             family == "ggx_rough_dielectric" ||
+             family == "spectral_glass_approx" ||
+             family == "resin" ||
+             family == "epoxy" ||
+             family == "gemstone" ||
+             family == "ice_crystal" ||
+             family == "frosted_acrylic" ||
+             family == "translucent_polymer") {
+    set_if_generic(material.roughness, 0.02f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.ior,
+                   family == "gemstone" ? 1.75f : (family == "ice_crystal" ? 1.31f : 1.5f),
+                   1.5f);
+    set_if_generic(material.transmission, 1.0f, 0.0f);
+    set_if_generic(material.alpha, 0.35f, 1.0f);
+  } else if (family == "frosted_glass" || family == "dirty_glass") {
+    set_if_generic(material.roughness, 0.48f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.ior, 1.45f, 1.5f);
+    set_if_generic(material.transmission, 0.85f, 0.0f);
+    set_if_generic(material.alpha, 0.5f, 1.0f);
+  } else if (family == "clearcoat" ||
+             family == "paint" ||
+             family == "car_paint" ||
+             family == "porcelain_ceramic" ||
+             family == "energy_conserving_layered") {
+    set_if_generic(material.roughness, 0.22f, 1.0f);
+    set_if_generic(material.metallic, family == "car_paint" ? 0.25f : 0.0f, 0.0f);
+    set_if_generic(material.clearcoat, 1.0f, 0.0f);
+  } else if (family == "velvet" || family == "fabric_cloth" || family == "hair_fur_lobes") {
+    set_if_generic(material.roughness, 0.86f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.sheen, family == "velvet" ? 0.85f : 0.62f, 0.0f);
+  } else if (family == "toon_surface" || family == "stylized_diffuse" || family == "xray") {
+    set_if_generic(material.roughness, 1.0f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+  } else if (family == "subsurface_approx" ||
+             family == "skin" ||
+             family == "wax" ||
+             family == "marble_scattering") {
+    set_if_generic(material.roughness, family == "marble_scattering" ? 0.72f : 0.62f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.sheen, family == "skin" ? 0.2f : 0.12f, 0.0f);
+    set_if_generic(material.alpha, 0.92f, 1.0f);
+  } else if (family == "volumetric_shafts" ||
+             family == "volumetric_medium" ||
+             family == "smoke" ||
+             family == "chromatic_dust") {
+    set_if_generic(material.roughness, 1.0f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.alpha, 0.45f, 1.0f);
+    set_if_generic(material.transmission, 0.12f, 0.0f);
+  } else if (family == "emissive" ||
+             family == "environment_emissive" ||
+             family == "blackbody_emission" ||
+             family == "fire_plasma" ||
+             family == "fire_sparkle_emission" ||
+             family == "light_emitting_textile" ||
+             family == "bokeh_motion_blur_stress") {
+    set_if_generic(material.roughness, 1.0f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_color_if_dark(material.emission,
+                      {std::max(0.2f, material.albedo.x),
+                       std::max(0.2f, material.albedo.y),
+                       std::max(0.2f, material.albedo.z)});
+    set_if_generic(material.emission_intensity,
+                   family == "blackbody_emission" ? 5.0f : 3.0f,
+                   0.0f);
+  } else if (family == "thin_film_iridescent" ||
+             family == "holographic_coating" ||
+             family == "pearl_lustre" ||
+             family == "diffraction_grating") {
+    set_if_generic(material.roughness, 0.2f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.clearcoat, 0.8f, 0.0f);
+    set_if_generic(material.sheen, 0.35f, 0.0f);
+  } else if (family == "alpha_mask") {
+    set_if_generic(material.roughness, 0.8f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.alpha, 0.5f, 1.0f);
+  } else if (family == "wet_surface" || family == "water_fluid_surface") {
+    set_if_generic(material.roughness, 0.08f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.clearcoat, 0.9f, 0.0f);
+    set_if_generic(material.transmission, family == "water_fluid_surface" ? 0.55f : 0.0f, 0.0f);
+  } else if (family == "retroreflector" || family == "caustics_inspired_response") {
+    set_if_generic(material.roughness, 0.12f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.clearcoat, 0.75f, 0.0f);
+  } else if (family == "plastic" || family == "rubber") {
+    set_if_generic(material.roughness, family == "rubber" ? 0.55f : 0.38f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.ior, family == "rubber" ? 1.35f : 1.5f, 1.5f);
+  } else if (family == "stone" ||
+             family == "concrete" ||
+             family == "plaster" ||
+             family == "sand" ||
+             family == "mud" ||
+             family == "terra_earth" ||
+             family == "charcoal" ||
+             family == "cardboard" ||
+             family == "paper") {
+    set_if_generic(material.roughness, 0.82f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+  } else {
+    set_if_generic(material.roughness, 0.85f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+  }
+
+  const bool emissiveFamily =
+      family == "emissive" ||
+      family == "environment_emissive" ||
+      family == "blackbody_emission" ||
+      family == "fire_plasma" ||
+      family == "fire_sparkle_emission" ||
+      family == "light_emitting_textile" ||
+      family == "bokeh_motion_blur_stress";
+  if (force && !emissiveFamily) {
+    material.emission = {0.0f, 0.0f, 0.0f};
+    material.emission_intensity = 0.0f;
+  }
+}
+
 std::string_view to_string(ComponentKind kind) {
   switch (kind) {
     case ComponentKind::Identity:
@@ -2015,6 +2200,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         material.id = allocate_id(usedIds);
       }
       usedIds.insert(material.id);
+      ApplyMaterialFamilyPreset(material, SceneMaterialPresetPolicy::Override);
       if (item.object.contains("albedo")) {
         read_vec3(item, "albedo", material.albedo);
       }
