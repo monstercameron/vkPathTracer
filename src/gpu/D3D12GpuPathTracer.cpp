@@ -319,6 +319,26 @@ bool D3D12GpuPathTracer::load_scene_snapshot(
   return true;
 }
 
+bool D3D12GpuPathTracer::update_camera(
+    const vkpt::pathtracer::Vec3& pos,
+    const vkpt::pathtracer::Vec3& target,
+    const vkpt::pathtracer::Vec3& up,
+    float fov_deg) {
+  if (!m_sceneUploaded) {
+    // Geometry hasn't been uploaded yet — can't update camera independently.
+    return false;
+  }
+  m_sceneData.camera_position = pos;
+  m_sceneData.camera_target   = target;
+  m_sceneData.camera_up       = up;
+  m_sceneData.camera_fov_deg  = fov_deg;
+  std::ostringstream ss;
+  ss << "update_camera pos=(" << pos.x << "," << pos.y << "," << pos.z
+     << ") target=(" << target.x << "," << target.y << "," << target.z << ")";
+  LogDebug(ss.str());
+  return true;
+}
+
 bool D3D12GpuPathTracer::build_or_update_acceleration() {
   if (!m_hasScene) {
     m_error = "build_or_update_acceleration before snapshot";

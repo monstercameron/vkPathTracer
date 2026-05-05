@@ -2503,6 +2503,40 @@ int main(int argc, char** argv) {
     UpdateCrashArtifactsFromUiState(ui_runtime_state, ui_selection_state, ui_layout_state,
                                    ui_event_log, ui_command_history);
 
+    // ---- Camera orbit state ---------------------------------------------------
+    // Orbit center = bounding-box center of scene geometry so the camera always
+    // looks at the actual scene content regardless of the camera_target stored
+    // in the scene file (which may just be "1 unit in front of camera").
+    const float kOrbitDegPerSec = 7.5f;
+    const float kOrbitMinStepDeg = 0.1f;  // min angle change before reset
+    vkpt::pathtracer::Vec3 orbitCenter{};
+    {
+      float bminX = FLT_MAX, bminZ = FLT_MAX;
+      float bmaxX = -FLT_MAX, bmaxZ = -FLT_MAX;
+      float bminY = FLT_MAX, bmaxY = -FLT_MAX;
+      for (const auto& v : previewScene.vertices) {
+        bminX = std::min(bminX, v.x); bmaxX = std::max(bmaxX, v.x);
+        bminY = std::min(bminY, v.y); bmaxY = std::max(bmaxY, v.y);
+        bminZ = std::min(bminZ, v.z); bmaxZ = std::max(bmaxZ, v.z);
+      }
+      if (bminX < bmaxX) {
+        orbitCenter.x = (bminX + bmaxX) * 0.5f;
+        orbitCenter.y = (bminY + bmaxY) * 0.5f;
+        orbitCenter.z = (bminZ + bmaxZ) * 0.5f;
+      } else {
+        orbitCenter = previewScene.camera_target;
+      }
+    }
+    const float orbitDx = previewScene.camera_position.x - orbitCenter.x;
+    const float orbitDz = previewScene.camera_position.z - orbitCenter.z;
+    const float kOrbitRadius = std::sqrt(orbitDx * orbitDx + orbitDz * orbitDz);
+    const float orbitInitialAngleDeg = std::atan2(orbitDx, orbitDz) * (180.0f / 3.14159265f);
+    float orbitLastAngleDeg = orbitInitialAngleDeg;
+    const auto orbitStartTime = std::chrono::steady_clock::now();
+    std::cout << "[orbit] setup: center=(" << orbitCenter.x << "," << orbitCenter.y << "," << orbitCenter.z
+              << ") radius=" << kOrbitRadius
+              << " initial_angle=" << orbitInitialAngleDeg << "\n";
+
     auto frame = static_cast<vkpt::core::FrameIndex>(0);
     bool running = true;
     std::size_t loggedStartupFrames = 0;
@@ -2514,6 +2548,44 @@ int main(int argc, char** argv) {
     constexpr double kRpsBenchmarkTarget = 30.0e6;
     std::string titlePerfText = "rays/s: 0";
     while (running && window->is_open()) {
+      const auto frameStart = std::chrono::steady_clock::now();
+
+      // ---- Camera orbit update -------------------------------------------
+      if (previewTracerReady && previewTracer && kOrbitRadius > 1e-4f) {
+        const float elapsedSec = std::chrono::duration<float>(
+            frameStart - orbitStartTime).count();
+        const float rawAngleDeg = orbitInitialAngleDeg + elapsedSec * kOrbitDegPerSec;
+        const float angleDeg = std::fmod(rawAngleDeg, 360.0f);
+        const float angleDiff = std::fabs(angleDeg - orbitLastAngleDeg);
+        const float wrappedDiff = std::min(angleDiff, 360.0f - angleDiff);
+        if (wrappedDiff >= kOrbitMinStepDeg) {
+          const float rad = angleDeg * (3.14159265f / 180.0f);
+          previewScene.camera_position.x = orbitCenter.x + kOrbitRadius * std::sin(rad);
+          previewScene.camera_position.z = orbitCenter.z + kOrbitRadius * std::cos(rad);
+          // Camera always looks at the orbit center.
+          previewScene.camera_target = orbitCenter;
+          // Use lightweight camera update so geometry upload state is preserved.
+          // Fall back to full load_scene_snapshot only if update_camera is unsupported.
+          const bool camOk = previewTracer->update_camera(
+              previewScene.camera_position,
+              previewScene.camera_target,
+              previewScene.camera_up,
+              previewScene.camera_fov_deg);
+          if (!camOk) {
+            previewTracer->load_scene_snapshot(previewScene);
+            previewTracer->build_or_update_acceleration();
+          }
+          previewTracer->reset_accumulation();
+          previewSampleIndex = 0u;
+          orbitLastAngleDeg = angleDeg;
+          std::cout << "[orbit] angle=" << angleDeg
+                    << " pos=(" << previewScene.camera_position.x
+                    << "," << previewScene.camera_position.y
+                    << "," << previewScene.camera_position.z
+                    << ") elapsed=" << elapsedSec << "s\n";
+        }
+      }
+
       // ---- Render dispatch -----------------------------------------------
       // TiledCpuPathTracer runs on a background thread (bgRenderThread) to
       // keep the Win32 message pump unblocked.  The main loop just picks up
@@ -2968,7 +3040,13 @@ int main(int argc, char** argv) {
         running = false;
       } else {
         ++frame;
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        // Sleep only the remaining time to hit the 60fps (16ms) frame budget.
+        const auto frameEnd = std::chrono::steady_clock::now();
+        const auto frameDuration = frameEnd - frameStart;
+        const auto frameTarget = std::chrono::milliseconds(16);
+        if (frameDuration < frameTarget) {
+          std::this_thread::sleep_for(frameTarget - frameDuration);
+        }
       }
     }
 

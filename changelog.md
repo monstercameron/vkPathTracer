@@ -1,5 +1,17 @@
 ﻿# Changelog
 
+## 2026-05-04 (session 13)
+
+### Camera orbit, backface culling, and Cornell box face winding fixes
+
+- Added camera orbit animation: camera rotates 7.5°/sec around the scene bounding-box centroid at a fixed radius. Orbit state is computed from elapsed time each frame; orbit center derived from the vertex bounding box of the loaded scene.
+- Added `update_camera()` fast path to `IPathTracer` and `D3D12GpuPathTracer`: updates camera position/target without invalidating uploaded geometry, avoiding a full scene reload on every orbit step.
+- Added backface culling to `pathtrace_cs.hlsl` `IntersectTri()`: changed `if (abs(a) < 1e-5)` to `if (a < 1e-5)` so back-facing triangles are skipped.
+- Fixed face winding order for all 6 Cornell box room surfaces in `cornell_native.json` (floor, ceiling, back_wall, left_wall, right_wall, ceiling_light_mesh): indices changed from `[0,1,2, 0,2,3]` to `[0,2,1, 0,3,2]` so normals face inward toward the room interior.
+- Fixed face winding order for the bottom and z-min faces of all 3 cuboid objects (diffuse, mirror, glossy): bottom indices changed from `[0,4,5, 0,5,1]` to `[0,5,4, 0,1,5]`; z-min from `[0,1,2, 0,2,3]` to `[0,2,1, 0,3,2]`.
+- Added 60fps frame pacing (`sleep_for(16ms - frame_work_time)`) to the window render loop.
+- Hardened CPU fallback guard: if an explicit non-CPU backend is requested and unavailable, the application exits with an error rather than silently falling back to CPU.
+
 ## 2026-05-04 (session 12)
 
 ### D3D12 reliability, backend selection hardening, and material-color parsing fix
