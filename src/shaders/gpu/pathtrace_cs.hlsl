@@ -311,6 +311,17 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
             float3 lpos = float3(LightBuf[lb], LightBuf[lb+1u], LightBuf[lb+2u]);
             float3 lcol = float3(LightBuf[lb+3u], LightBuf[lb+4u], LightBuf[lb+5u]);
             float  lint = LightBuf[lb+6u];
+            float  lrad = max(0.0f, LightBuf[lb+7u]);
+
+            // Radius-based area approximation for softer shadows.
+            // radius=0 preserves point-light behavior.
+            if (lrad > 1e-5f) {
+                float uz  = 1.0f - 2.0f * RandF(rng);
+                float upr = sqrt(max(0.0f, 1.0f - uz * uz));
+                float phi = 6.28318530718f * RandF(rng);
+                float3 ofs = float3(upr * cos(phi), uz, upr * sin(phi)) * lrad;
+                lpos += ofs;
+            }
 
             float3 to_l  = lpos - hit.pos;
             float  dist2 = dot(to_l, to_l);

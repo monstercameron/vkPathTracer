@@ -1,5 +1,27 @@
 ﻿# Changelog
 
+## 2026-05-05 (session 15)
+
+### Tonemap exposure tuning and soft-shadow light radius sampling
+
+**Image/lighting tuning:**
+- Reduced GPU tonemap exposure from `1.0` to `0.6` in D3D12 constant setup to correct over-bright preview output.
+- Increased Cornell scene point light `radius` to `0.65` for clearly visible penumbra.
+
+**Soft-shadow implementation:**
+- Added `radius` to runtime `RTHitLight` and wired light radius through scene conversion from JSON/light entities.
+- Updated D3D12 and Vulkan light packing to upload `radius` in the 8th float of each light record (instead of hardcoded zero).
+- Updated D3D12 HLSL direct-light sampling to jitter finite-radius lights (radius=0 keeps point-light behavior).
+- Updated CPU scalar direct-light sampling to use the same radius-based light position sampling for cross-backend consistency.
+
+**Files touched:**
+- `src/pathtracer/PathTracer.h`
+- `src/pathtracer/PathTracer.cpp`
+- `src/gpu/D3D12GpuPathTracer.cpp`
+- `src/gpu/VulkanGpuPathTracer.cpp`
+- `src/shaders/gpu/pathtrace_cs.hlsl`
+- `assets/scenes/cornell_native.json`
+
 ## 2026-05-05 (session 14)
 
 ### GPU tonemapping and D3D12 path performance optimizations

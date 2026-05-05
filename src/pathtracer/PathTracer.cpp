@@ -763,7 +763,15 @@ NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit, Rng& rng) con
   const std::size_t clamped_idx = std::min(light_idx, num_lights - 1u);
   const RTHitLight& light = m_scene.lights[clamped_idx];
 
-  const Vec3 to_light = light.position - hit.position;
+  Vec3 sampled_light_pos = light.position;
+  if (light.radius > 1.0e-5f) {
+    const float uz = 1.0f - 2.0f * rng.next01();
+    const float upr = std::sqrt(std::max(0.0f, 1.0f - uz * uz));
+    const float phi = 6.28318530718f * rng.next01();
+    sampled_light_pos += Vec3{upr * std::cos(phi), uz, upr * std::sin(phi)} * light.radius;
+  }
+
+  const Vec3 to_light = sampled_light_pos - hit.position;
   const float dist_sq = length_sq(to_light);
   const float dist = std::sqrt(dist_sq);
   if (dist < kEpsilon) {
@@ -1227,7 +1235,11 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     if (!hasTransform) {
       pos = {0.0f, 1.8f, 0.0f};
     }
-    scene.lights.push_back(RTHitLight{pos, {light.light.color.x, light.light.color.y, light.light.color.z}, light.light.intensity});
+    scene.lights.push_back(RTHitLight{
+      pos,
+      {light.light.color.x, light.light.color.y, light.light.color.z},
+      light.light.intensity,
+      std::max(0.0f, light.light.radius)});
   }
 
   for (const auto& entity : doc.entities) {
@@ -1268,10 +1280,11 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     scene.camera_position = center + Vec3{0.0f, std::max(0.6f, 0.4f * radius), std::max(2.0f, 2.2f * radius)};
 
     if (scene.lights.empty()) {
-      scene.lights.push_back(RTHitLight{
+        scene.lights.push_back(RTHitLight{
           center + Vec3{0.0f, std::max(1.0f, 1.2f * radius), 0.0f},
           {6.0f, 6.0f, 6.0f},
-          10.0f});
+          10.0f,
+          0.2f});
     }
   }
 
@@ -1298,7 +1311,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
                               {1.0f, 1.0f, 1.0f}});
     scene.sdf_primitives.push_back(
         RTSdfPrimitive{SdfShape::Sphere, {0.0f, 1.8f, 0.0f}, {0.35f, 0.35f, 0.35f}, {0.0f, 0.0f, 0.0f}, 3u, 0.35f, 0.0f, 0.0f});
-    scene.lights.push_back(RTHitLight{{0.0f, 1.8f, 0.0f}, {6.0f, 6.0f, 6.0f}, 10.0f});
+    scene.lights.push_back(RTHitLight{{0.0f, 1.8f, 0.0f}, {6.0f, 6.0f, 6.0f}, 10.0f, 0.2f});
   }
 
   vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,

@@ -378,7 +378,7 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
     m_gpuLights.push_back(lt.position.z);
     m_gpuLights.push_back(lt.color.x); m_gpuLights.push_back(lt.color.y);
     m_gpuLights.push_back(lt.color.z);
-    m_gpuLights.push_back(lt.intensity); m_gpuLights.push_back(0.0f);
+    m_gpuLights.push_back(lt.intensity); m_gpuLights.push_back(std::max(0.0f, lt.radius));
   }
   if (m_gpuLights.empty()) m_gpuLights.assign(8, 0.0f);
   std::ostringstream us;
@@ -782,7 +782,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   }
   D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
   pc.rays_per_pixel = 4u;
-  pc.exposure       = 1.0f; // Reinhard exposure; GPU tonemap: c*exp / (1 + c*exp)
+  pc.exposure       = 0.6f; // Additional brightness drop per user feedback.
 
   ID3D12DescriptorHeap* heaps[] = {m_srvUavHeap.Get()};
   m_cmdList->SetDescriptorHeaps(1, heaps);
