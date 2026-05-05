@@ -4,7 +4,7 @@ param(
   [string]$Resolution = "96x96",
   [int]$Spp = 2,
   [int]$Repeats = 3,
-  [string]$OutDir = "examples\d3d12_dxr_optimization_graph\results"
+  [string]$OutDir = "experiments\d3d12_dxr_optimization_graph\results"
 )
 
 $ErrorActionPreference = "Stop"

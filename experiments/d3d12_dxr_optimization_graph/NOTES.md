@@ -48,8 +48,8 @@ Analysis scratch, current median run:
 ptbench=C:\Users\Cam\Desktop\vkPathTracer\build\d3d12-optimization\bin\ptbench.exe
 scene=C:\Users\Cam\Desktop\vkPathTracer\assets\scenes\cornell_native.json resolution=64x64 spp=2
 
-summary=C:\Users\Cam\Desktop\vkPathTracer\examples\d3d12_dxr_optimization_graph\results\graph_summary.json
-dot=C:\Users\Cam\Desktop\vkPathTracer\examples\d3d12_dxr_optimization_graph\results\graph.dot
+summary=C:\Users\Cam\Desktop\vkPathTracer\experiments\d3d12_dxr_optimization_graph\results\graph_summary.json
+dot=C:\Users\Cam\Desktop\vkPathTracer\experiments\d3d12_dxr_optimization_graph\results\graph.dot
 all_declared_edges_explored=True edge_count=14
 run cpu_scalar status=failed mode=scalar build_ms=0.141800 render_ms=6.108100 paths_per_sec=5,337,830.094
 run d3d12_compute_dynamic_off status=failed mode=d3d12-compute build_ms=3,125.540500 render_ms=2.411400 paths_per_sec=3,397,196.649
@@ -81,8 +81,8 @@ edge edge_shader_small_int_pow_scan status=ok decision=already_applied speedup=0
 ptbench=C:\Users\Cam\Desktop\vkPathTracer\build\d3d12-optimization\bin\ptbench.exe
 scene=C:\Users\Cam\Desktop\vkPathTracer\assets\scenes\cornell_native.json resolution=64x64 spp=2
 
-summary=C:\Users\Cam\Desktop\vkPathTracer\examples\d3d12_dxr_optimization_graph\results\graph_summary.json
-dot=C:\Users\Cam\Desktop\vkPathTracer\examples\d3d12_dxr_optimization_graph\results\graph.dot
+summary=C:\Users\Cam\Desktop\vkPathTracer\experiments\d3d12_dxr_optimization_graph\results\graph_summary.json
+dot=C:\Users\Cam\Desktop\vkPathTracer\experiments\d3d12_dxr_optimization_graph\results\graph.dot
 all_declared_edges_explored=True edge_count=14
 run cpu_scalar status=ok mode=scalar build_ms=0.114500 render_ms=6.518700 paths_per_sec=5,001,610.751
 run d3d12_compute_dynamic_off status=ok mode=d3d12-compute build_ms=2,754.778300 render_ms=2.053700 paths_per_sec=3,988,898.086
@@ -114,8 +114,8 @@ edge edge_shader_small_int_pow_scan status=ok decision=already_applied speedup=0
 ptbench=C:\Users\Cam\Desktop\vkPathTracer\build\d3d12-optimization\bin\ptbench.exe
 scene=C:\Users\Cam\Desktop\vkPathTracer\assets\scenes\cornell_native.json resolution=64x64 spp=2
 
-summary=C:\Users\Cam\Desktop\vkPathTracer\examples\d3d12_dxr_optimization_graph\results\graph_summary.json
-dot=C:\Users\Cam\Desktop\vkPathTracer\examples\d3d12_dxr_optimization_graph\results\graph.dot
+summary=C:\Users\Cam\Desktop\vkPathTracer\experiments\d3d12_dxr_optimization_graph\results\graph_summary.json
+dot=C:\Users\Cam\Desktop\vkPathTracer\experiments\d3d12_dxr_optimization_graph\results\graph.dot
 all_declared_edges_explored=True edge_count=14
 run cpu_scalar status=ok mode=scalar build_ms=0.125000 render_ms=5.911900 paths_per_sec=5,514,978.264
 run d3d12_compute_dynamic_off status=ok mode=d3d12-compute build_ms=2,851.193400 render_ms=1.650200 paths_per_sec=4,964,246.758
@@ -147,8 +147,8 @@ edge edge_shader_small_int_pow_scan status=ok decision=already_applied speedup=0
 ptbench=C:\Users\Cam\Desktop\vkPathTracer\build\d3d12-optimization\bin\ptbench.exe
 scene=C:\Users\Cam\Desktop\vkPathTracer\assets\scenes\cornell_native.json resolution=64x64 spp=2
 
-summary=C:\Users\Cam\Desktop\vkPathTracer\examples\d3d12_dxr_optimization_graph\results\graph_summary.json
-dot=C:\Users\Cam\Desktop\vkPathTracer\examples\d3d12_dxr_optimization_graph\results\graph.dot
+summary=C:\Users\Cam\Desktop\vkPathTracer\experiments\d3d12_dxr_optimization_graph\results\graph_summary.json
+dot=C:\Users\Cam\Desktop\vkPathTracer\experiments\d3d12_dxr_optimization_graph\results\graph.dot
 all_declared_edges_explored=True edge_count=14
 run cpu_scalar status=ok mode=scalar build_ms=0.117400 render_ms=5.545000 paths_per_sec=5,879,891.794
 run d3d12_compute_dynamic_off status=ok mode=d3d12-compute build_ms=3,026.134400 render_ms=15.388500 paths_per_sec=532,345.583
@@ -180,8 +180,8 @@ edge edge_shader_small_int_pow_scan status=ok decision=already_applied speedup=0
 ptbench=C:\Users\Cam\Desktop\vkPathTracer\build\d3d12-optimization\bin\ptbench.exe
 scene=C:\Users\Cam\Desktop\vkPathTracer\assets\scenes\cornell_native.json resolution=64x64 spp=2 repeats=3
 
-summary=C:\Users\Cam\Desktop\vkPathTracer\examples\d3d12_dxr_optimization_graph\results\graph_summary.json
-dot=C:\Users\Cam\Desktop\vkPathTracer\examples\d3d12_dxr_optimization_graph\results\graph.dot
+summary=C:\Users\Cam\Desktop\vkPathTracer\experiments\d3d12_dxr_optimization_graph\results\graph_summary.json
+dot=C:\Users\Cam\Desktop\vkPathTracer\experiments\d3d12_dxr_optimization_graph\results\graph.dot
 all_declared_edges_explored=True edge_count=14
 run cpu_scalar status=ok mode=scalar build_ms=0.157300 render_ms=6.091700 paths_per_sec=5,569,810.547
 run d3d12_compute_dynamic_off status=ok mode=d3d12-compute build_ms=3,063.046900 render_ms=1.924600 paths_per_sec=4,689,718.342
