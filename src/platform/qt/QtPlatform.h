@@ -28,12 +28,107 @@ struct QtFramebufferStats {
 };
 
 struct QtSelectionOverlayBox {
+  struct Line {
+    float x0 = 0.0f;
+    float y0 = 0.0f;
+    float x1 = 0.0f;
+    float y1 = 0.0f;
+    std::uint8_t r = 255u;
+    std::uint8_t g = 255u;
+    std::uint8_t b = 255u;
+    std::uint8_t a = 255u;
+    float width = 1.5f;
+  };
+
+  struct Point {
+    float x = 0.0f;
+    float y = 0.0f;
+    float radius = 5.0f;
+    std::uint8_t r = 255u;
+    std::uint8_t g = 255u;
+    std::uint8_t b = 255u;
+    std::uint8_t a = 255u;
+    std::string label;
+  };
+
   float x = 0.0f;
   float y = 0.0f;
   float width = 0.0f;
   float height = 0.0f;
   std::string label;
   bool primary = false;
+  std::vector<Line> lines;
+  std::vector<Point> points;
+};
+
+struct QtMenuItem {
+  std::uint32_t command_id = 0u;
+  std::string label;
+  bool enabled = true;
+  std::vector<QtMenuItem> children;
+};
+
+enum class QtDockArea {
+  Left,
+  Right,
+  Bottom,
+  Top,
+};
+
+enum class QtDockPanelContent {
+  Tree,
+  Properties,
+  Text,
+};
+
+struct QtDockRow {
+  std::string label;
+  std::string value;
+  std::vector<QtDockRow> children;
+};
+
+struct QtDockProperty {
+  std::string group;
+  std::string name;
+  std::string value;
+  std::string unit;
+  bool editable = false;
+  bool enabled = true;
+};
+
+struct QtDockPanel {
+  std::string id;
+  std::string title;
+  QtDockArea area = QtDockArea::Right;
+  QtDockPanelContent content = QtDockPanelContent::Tree;
+  bool visible = true;
+  bool enabled = true;
+  bool closable = true;
+  bool movable = true;
+  bool floatable = true;
+  std::vector<std::string> rows;
+  std::vector<QtDockRow> tree_rows;
+  std::vector<QtDockProperty> properties;
+  std::string text;
+};
+
+struct QtStatusBarField {
+  std::string id;
+  std::string text;
+  int stretch = 0;
+};
+
+struct QtStatusBarText {
+  std::string message;
+  int timeout_ms = 0;
+  std::vector<QtStatusBarField> fields;
+};
+
+enum class QtViewportCursor {
+  Default,
+  Translate,
+  Rotate,
+  Scale,
 };
 
 class QtWindow final : public IWindow {
@@ -49,6 +144,11 @@ class QtWindow final : public IWindow {
   void set_title(std::string_view title);
   void set_overlay_text(std::string_view text);
   void set_selection_overlay_boxes(const std::vector<QtSelectionOverlayBox>& boxes);
+  void set_viewport_cursor(QtViewportCursor cursor);
+  void set_menu_bar(const std::vector<QtMenuItem>& menus);
+  void set_dock_panels(const std::vector<QtDockPanel>& panels);
+  void set_status_bar_text(std::string_view text);
+  void set_status_bar_text(const QtStatusBarText& status);
 
   void set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba,
                             std::size_t width, std::size_t height);
@@ -62,6 +162,7 @@ class QtWindow final : public IWindow {
   void emit_mouse_move(int x, int y);
   void emit_mouse_button(std::int32_t button, bool pressed, int x, int y);
   void emit_mouse_wheel(float delta_x, float delta_y, int x, int y);
+  void emit_menu_command(std::uint32_t command_id);
   std::vector<InputEvent> drain_events();
   void mark_closed();
   void destroy();
@@ -103,6 +204,9 @@ class QtWindow final : public IWindow {
   WindowMetrics m_metrics{1280, 720, 1.0f};
   std::string m_title;
   std::string m_overlayText;
+  std::string m_statusBarText;
+  std::string m_menuBarSignature;
+  QWidget* m_shell = nullptr;
   QWidget* m_widget = nullptr;
   std::deque<InputEvent> m_events;
   int m_lastMouseX = 0;
