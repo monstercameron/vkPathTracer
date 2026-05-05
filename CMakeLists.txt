@@ -30,6 +30,7 @@ option(PT_ENABLE_QT_EDITOR "Enable Qt editor widgets" OFF)
 option(PT_ENABLE_QT_RHI "Enable experimental Qt QRhi viewport" OFF)
 option(PT_ENABLE_RAW_DESKTOP "Enable raw native desktop platform" ON)
 set(PT_WINDEPLOYQT_EXECUTABLE "" CACHE FILEPATH "Path to windeployqt for Windows Qt runtime deployment")
+set(PT_JOLT_GIT_TAG "v5.5.0" CACHE STRING "Jolt Physics git tag used when PT_ENABLE_JOLT=ON")
 set(PT_SANITIZER "disabled" CACHE STRING "Sanitizer flavor")
 set_property(CACHE PT_SANITIZER PROPERTY STRINGS disabled address thread)
 
@@ -217,6 +218,7 @@ function(pt_deploy_qt_runtime target_name)
       COMMAND "${PT_WINDEPLOYQT_EXECUTABLE}"
               $<IF:$<CONFIG:Debug>,--debug,--release>
               --no-translations
+              --include-plugins qoffscreen
               "$<TARGET_FILE:${target_name}>"
       COMMENT "Deploying Qt runtime for ${target_name}"
       VERBATIM)
@@ -232,6 +234,36 @@ if(PT_ENABLE_QT_RHI)
 endif()
 
 list(JOIN PT_PLATFORM_SHELLS "," PT_PLATFORM_SHELLS_CSV)
+
+# ---- Jolt Physics -----------------------------------------------------------
+set(PT_JOLT_TARGET "")
+if(PT_ENABLE_JOLT)
+  include(FetchContent)
+
+  set(ENABLE_ALL_WARNINGS OFF CACHE BOOL "Disable Jolt warning-as-error policy for vendored builds" FORCE)
+  set(ENABLE_INSTALL OFF CACHE BOOL "Disable Jolt install rules for vendored builds" FORCE)
+  set(OVERRIDE_CXX_FLAGS OFF CACHE BOOL "Preserve parent project compiler flags for Jolt" FORCE)
+  set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "Disable Jolt LTO unless the parent enables it explicitly" FORCE)
+  set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "Use the same dynamic MSVC runtime as vkPathTracer" FORCE)
+  set(CROSS_PLATFORM_DETERMINISTIC ${PT_STRICT_DETERMINISM} CACHE BOOL "Match vkPathTracer strict deterministic physics policy" FORCE)
+  set(USE_AVX ${PT_ENABLE_AVX} CACHE BOOL "Match vkPathTracer AVX policy for Jolt" FORCE)
+  set(USE_AVX2 ${PT_ENABLE_AVX2} CACHE BOOL "Match vkPathTracer AVX2 policy for Jolt" FORCE)
+  set(USE_AVX512 ${PT_ENABLE_AVX512} CACHE BOOL "Match vkPathTracer AVX-512 policy for Jolt" FORCE)
+
+  FetchContent_Declare(JoltPhysics
+    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+    GIT_TAG ${PT_JOLT_GIT_TAG}
+    SOURCE_SUBDIR Build
+  )
+  FetchContent_MakeAvailable(JoltPhysics)
+
+  if(TARGET Jolt)
+    set(PT_JOLT_TARGET Jolt)
+    message(STATUS "Jolt Physics enabled: ${PT_JOLT_GIT_TAG}")
+  else()
+    message(FATAL_ERROR "PT_ENABLE_JOLT=ON but vendored Jolt target was not created")
+  endif()
+endif()
 
 # ---- Vulkan SDK --------------------------------------------------------------
 if(PT_ENABLE_VULKAN)
@@ -271,6 +303,7 @@ configure_file(
 
 set(PT_CPU_SOURCES
   src/core/Assert.cpp
+  src/editor/QtPanelModels.cpp
   src/editor/UiModels.cpp
   src/core/Config.cpp
   src/cpu/CpuFeatures.cpp
@@ -282,6 +315,7 @@ set(PT_CPU_SOURCES
   src/jobs/JobSystem.cpp
   src/platform/PlatformFactory.cpp
   src/platform/HeadlessPlatform.cpp
+  src/physics/PhysicsWorld.cpp
   src/scene/Scene.cpp
   src/pathtracer/PathTracer.cpp
   src/materials/MaterialInterface.cpp
@@ -383,6 +417,12 @@ if(PT_ENABLE_QT)
   endif()
 endif()
 
+if(PT_ENABLE_JOLT)
+  target_link_libraries(ptapp PRIVATE ${PT_JOLT_TARGET})
+  target_compile_definitions(ptapp PRIVATE
+    PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
+endif()
+
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(ptapp PRIVATE ${feature})
 endforeach()
@@ -414,6 +454,12 @@ endif()
 
 if(PT_ENABLE_QT)
   target_link_libraries(ptbench PRIVATE pt_platform_qt)
+endif()
+
+if(PT_ENABLE_JOLT)
+  target_link_libraries(ptbench PRIVATE ${PT_JOLT_TARGET})
+  target_compile_definitions(ptbench PRIVATE
+    PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
 endif()
 
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)

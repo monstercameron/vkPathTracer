@@ -111,6 +111,7 @@ struct WorldTransform : TransformComponent {
 
 struct HierarchyComponent {
   vkpt::core::StableId parent = 0;
+  std::uint32_t sibling_order = 0;
 };
 
 struct CameraComponent {
@@ -143,8 +144,17 @@ struct MaterialOverrideComponent {
 };
 
 struct PhysicsBodyComponent {
+  bool enabled = true;
   float mass = 1.0f;
   bool dynamic = false;
+  std::string body_type = "static";
+  std::string shape = "box";
+  float friction = 0.5f;
+  float restitution = 0.0f;
+  float gravity_scale = 1.0f;
+  bool trigger = false;
+  bool allow_sleeping = true;
+  bool continuous_collision = false;
 };
 
 struct ScriptComponent {
@@ -261,12 +271,18 @@ struct SceneEntityDefinition {
   bool has_camera = false;
   bool has_light = false;
   bool has_mesh = false;
+  bool has_hierarchy = false;
+  bool has_benchmark_tag = false;
+  bool has_sdf_primitive = false;
+  bool has_physics_body = false;
   TransformComponent transform;
   CameraComponent camera;
   LightComponent light;
   MeshRendererComponent mesh;
+  SdfPrimitiveComponent sdf_primitive;
   MaterialOverrideComponent material;
   HierarchyComponent hierarchy;
+  PhysicsBodyComponent physics_body;
   AnimationComponent animation;
   ScriptComponent script;
   BenchmarkTagComponent benchmark_tag;
@@ -281,8 +297,17 @@ struct SceneAssetDefinition {
 struct SceneMaterialDefinition {
   vkpt::core::StableId id = 0;
   std::string name;
+  std::string family = "diffuse";
   Vec3 albedo{1.0f, 1.0f, 1.0f};
   float roughness = 1.0f;
+  float metallic = 0.0f;
+  float ior = 1.5f;
+  float transmission = 0.0f;
+  float clearcoat = 0.0f;
+  float sheen = 0.0f;
+  float anisotropy = 0.0f;
+  float alpha = 1.0f;
+  bool double_sided = false;
   Vec3 emission{0.0f, 0.0f, 0.0f};
   float emission_intensity = 0.0f;
 };
@@ -444,7 +469,14 @@ class IEcsWorld {
                              TransformAuthority authority = TransformAuthority::Authored,
                              std::string_view writer = "scene",
                              vkpt::core::FrameIndex frame = 0) = 0;
+  virtual bool reparent_entity(vkpt::core::StableEntityId child,
+                               vkpt::core::StableEntityId parent,
+                               bool preserve_world_transform = true) = 0;
+  virtual bool reorder_entity(vkpt::core::StableEntityId moved,
+                              vkpt::core::StableEntityId sibling_before,
+                              vkpt::core::StableEntityId sibling_after) = 0;
   virtual const std::vector<vkpt::core::StableEntityId>& all_entities() const = 0;
+  virtual std::vector<vkpt::core::StableEntityId> children_of(vkpt::core::StableEntityId parent) const = 0;
   virtual std::vector<vkpt::core::StableEntityId> query(ComponentKind kind) const = 0;
   virtual void recompute_world_transforms() = 0;
   virtual const WorldTransform* world_transform(vkpt::core::StableEntityId id) const = 0;
@@ -488,11 +520,21 @@ class SceneWorld : public IEcsWorld {
   bool assign_material(vkpt::core::StableEntityId id, vkpt::core::MaterialId material_id);
   bool assign_light(vkpt::core::StableEntityId id, const LightComponent& light);
   bool assign_camera(vkpt::core::StableEntityId id, const CameraComponent& camera);
-  bool set_hierarchy_parent(vkpt::core::StableEntityId child, vkpt::core::StableEntityId parent);
+  bool set_hierarchy_parent(vkpt::core::StableEntityId child,
+                            vkpt::core::StableEntityId parent,
+                            std::uint32_t sibling_order = UINT32_MAX);
+  bool reparent_entity(vkpt::core::StableEntityId child,
+                       vkpt::core::StableEntityId parent,
+                       bool preserve_world_transform = true) override;
+  bool reorder_entity(vkpt::core::StableEntityId moved,
+                      vkpt::core::StableEntityId sibling_before,
+                      vkpt::core::StableEntityId sibling_after) override;
+  bool destroy_subtree(vkpt::core::StableEntityId id);
 
   const EntityRecord* get_entity(vkpt::core::StableEntityId id) const;
   EntityRecord* get_entity(vkpt::core::StableEntityId id);
   const std::vector<vkpt::core::StableEntityId>& all_entities() const override;
+  std::vector<vkpt::core::StableEntityId> children_of(vkpt::core::StableEntityId parent) const override;
   std::vector<vkpt::core::StableEntityId> query(ComponentKind kind) const override;
 
   void recompute_world_transforms() override;
@@ -516,6 +558,8 @@ class SceneWorld : public IEcsWorld {
 
   void mark_dirty_recursive(vkpt::core::StableEntityId id);
   bool is_ancestor(vkpt::core::StableEntityId ancestor, vkpt::core::StableEntityId candidate) const;
+  vkpt::core::StableEntityId parent_of(vkpt::core::StableEntityId id) const;
+  void normalize_sibling_order(vkpt::core::StableEntityId parent);
   WorldTransform compute_world_transform_unchecked(const EntityRecord* entity) const;
   bool has_authority(vkpt::core::StableEntityId id, TransformAuthority authority, std::string_view writer, vkpt::core::FrameIndex frame) const;
   std::uint32_t kind_mask(ComponentKind kind) const;
@@ -525,11 +569,13 @@ class WorldCommandBuffer {
  public:
   struct CreateEntityCommand {
     vkpt::core::StableId requested_id = 0;
+    vkpt::core::StableId requested_parent = 0;
     std::string name;
   };
 
   struct DestroyEntityCommand {
     vkpt::core::StableId id = 0;
+    bool destroy_children = false;
   };
 
   struct SetComponentCommand {
@@ -557,6 +603,18 @@ class WorldCommandBuffer {
     vkpt::core::FrameIndex frame = 0;
   };
 
+  struct ReparentEntityCommand {
+    vkpt::core::StableId child = 0;
+    vkpt::core::StableId parent = 0;
+    bool preserve_world_transform = true;
+  };
+
+  struct ReorderSiblingCommand {
+    vkpt::core::StableId moved = 0;
+    vkpt::core::StableId sibling_before = 0;
+    vkpt::core::StableId sibling_after = 0;
+  };
+
   struct AssignMaterialCommand {
     vkpt::core::StableId id = 0;
     vkpt::core::StableId material_id = 0;
@@ -579,6 +637,8 @@ class WorldCommandBuffer {
     AddComponent,
     RemoveComponent,
     SetTransform,
+    ReparentEntity,
+    ReorderSibling,
     AssignMaterial,
     AssignLight,
     AssignCamera,
@@ -593,13 +653,18 @@ class WorldCommandBuffer {
         AddComponentCommand,
         RemoveComponentCommand,
         SetTransformCommand,
+        ReparentEntityCommand,
+        ReorderSiblingCommand,
         AssignMaterialCommand,
         AssignLightCommand,
         AssignCameraCommand> payload;
   };
 
-  void add_create_entity(std::string_view name = {}, vkpt::core::StableId stable_hint = 0);
+  void add_create_entity(std::string_view name = {},
+                         vkpt::core::StableId stable_hint = 0,
+                         vkpt::core::StableId requested_parent = 0);
   void add_destroy_entity(vkpt::core::StableId id);
+  void add_destroy_subtree(vkpt::core::StableId id);
   void add_set_component(vkpt::core::StableId id, ComponentKind kind, ComponentVariant component);
   void add_add_component(vkpt::core::StableId id, ComponentKind kind, ComponentVariant component);
   void add_remove_component(vkpt::core::StableId id, ComponentKind kind);
@@ -607,6 +672,12 @@ class WorldCommandBuffer {
                         TransformAuthority authority,
                         std::string_view writer,
                         vkpt::core::FrameIndex frame);
+  void add_reparent_entity(vkpt::core::StableId child,
+                           vkpt::core::StableId parent,
+                           bool preserve_world_transform = true);
+  void add_reorder_sibling(vkpt::core::StableId moved,
+                           vkpt::core::StableId sibling_before,
+                           vkpt::core::StableId sibling_after);
   void add_assign_material(vkpt::core::StableId id, vkpt::core::StableId material_id);
   void add_assign_light(vkpt::core::StableId id, const LightComponent& light);
   void add_assign_camera(vkpt::core::StableId id, const CameraComponent& camera);

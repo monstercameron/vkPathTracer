@@ -74,6 +74,8 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool create_root_sig_and_pso();
   bool create_tonemap_pso(const std::string& src);
   bool create_film_buffer();
+  bool ensure_compute_srv_uav_heap();
+  bool should_readback_sample(uint32_t sample_idx) const;
   bool upload_scene_buffers();
   void destroy_scene_buffers();
   void destroy_film_buffer();
@@ -125,6 +127,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   Microsoft::WRL::ComPtr<ID3D12Resource> m_ldrReadbackBuf;  // CPU-readable copy of ldrBuf
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_clearHeap; // persistent heap for reset_accumulation
+  Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_clearCpuHeap; // CPU-only clear descriptor
   void* m_filmReadbackPtr = nullptr;
   void* m_ldrReadbackPtr  = nullptr;
 
@@ -167,6 +170,8 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool m_hasScene       = false;
   bool m_sceneUploaded  = false;
   uint32_t m_filmPixels = 0;
+  uint32_t m_raysPerPixelPerDispatch = 1;
+  uint32_t m_readbackInterval = 4;
 
   std::vector<float>    m_gpuVerts;
   std::vector<uint32_t> m_gpuIdx;

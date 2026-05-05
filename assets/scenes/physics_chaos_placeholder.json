@@ -8,13 +8,48 @@
     {
       "id": 81,
       "name": "placeholder",
-      "albedo": [0.3, 0.3, 0.3],
+      "albedo": [
+        0.3,
+        0.3,
+        0.3
+      ],
       "roughness": 1.0
     }
   ],
   "geometry": [],
-  "sdf_primitives": [],
   "entities": [
+    {
+      "id": 803,
+      "name": "Scene Root",
+      "hierarchy": {
+        "parent": 0,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 804,
+      "name": "Cameras",
+      "hierarchy": {
+        "parent": 803,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 805,
+      "name": "Lights",
+      "hierarchy": {
+        "parent": 803,
+        "sibling_order": 1
+      }
+    },
+    {
+      "id": 806,
+      "name": "Physics Bodies",
+      "hierarchy": {
+        "parent": 803,
+        "sibling_order": 2
+      }
+    },
     {
       "id": 801,
       "name": "camera",
@@ -22,6 +57,10 @@
         "fov": 65.0,
         "near_plane": 0.05,
         "far_plane": 500.0
+      },
+      "hierarchy": {
+        "parent": 804,
+        "sibling_order": 0
       }
     },
     {
@@ -29,27 +68,57 @@
       "name": "placeholder_light",
       "light": {
         "type": "visible emissive object",
-        "color": [0.2, 0.4, 0.9],
+        "color": [
+          0.2,
+          0.4,
+          0.9
+        ],
         "intensity": 2.0,
         "radius": 0.0
+      },
+      "hierarchy": {
+        "parent": 805,
+        "sibling_order": 0
       }
-    }
-  ],
-  "cameras": [
+    },
     {
-      "id": 801,
-      "fov": 65.0,
-      "near_plane": 0.05,
-      "far_plane": 500.0
-    }
-  ],
-  "lights": [
-    {
-      "id": 802,
-      "type": "visible emissive object",
-      "color": [0.2, 0.4, 0.9],
-      "intensity": 2.0,
-      "radius": 0.0
+      "id": 807,
+      "name": "dynamic_physics_body",
+      "transform": {
+        "translation": [
+          0.0,
+          2.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "dynamic",
+        "dynamic": true,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.5,
+        "restitution": 0.1,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      },
+      "hierarchy": {
+        "parent": 806,
+        "sibling_order": 0
+      }
     }
   ],
   "benchmark": {

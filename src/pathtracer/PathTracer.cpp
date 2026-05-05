@@ -6,13 +6,16 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <thread>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -204,8 +207,30 @@ vkpt::pathtracer::Vec3 rotate_euler_inv(const vkpt::pathtracer::Vec3& value, con
 
 vkpt::pathtracer::Vec3 transform_point(const vkpt::pathtracer::Vec3& point,
                                        const vkpt::pathtracer::Vec3& translation,
+                                       const vkpt::scene::Quat& rotation,
                                        const vkpt::pathtracer::Vec3& scale) {
-  return {point.x * scale.x + translation.x, point.y * scale.y + translation.y, point.z * scale.z + translation.z};
+  const vkpt::pathtracer::Vec3 scaled{point.x * scale.x, point.y * scale.y, point.z * scale.z};
+  float x = rotation.x;
+  float y = rotation.y;
+  float z = rotation.z;
+  float w = rotation.w;
+  const float len = std::sqrt(x * x + y * y + z * z + w * w);
+  if (len > 1.0e-6f) {
+    const float inv = 1.0f / len;
+    x *= inv;
+    y *= inv;
+    z *= inv;
+    w *= inv;
+  } else {
+    x = 0.0f;
+    y = 0.0f;
+    z = 0.0f;
+    w = 1.0f;
+  }
+  const vkpt::pathtracer::Vec3 qv{x, y, z};
+  const auto t = cross(qv, scaled) * 2.0f;
+  const auto rotated = scaled + t * w + cross(qv, t);
+  return {rotated.x + translation.x, rotated.y + translation.y, rotated.z + translation.z};
 }
 
 vkpt::pathtracer::Vec3 divide_by_scale(const vkpt::pathtracer::Vec3& value, const vkpt::pathtracer::Vec3& scale) {
@@ -235,6 +260,199 @@ vkpt::pathtracer::SdfShape parse_sdf_shape(std::string_view name) {
   if (name == "torus") return vkpt::pathtracer::SdfShape::Torus;
   if (name == "capsule") return vkpt::pathtracer::SdfShape::Capsule;
   return vkpt::pathtracer::SdfShape::Unknown;
+}
+
+float clamp01(float v) {
+  if (!std::isfinite(v)) {
+    return 0.0f;
+  }
+  return std::min(1.0f, std::max(0.0f, v));
+}
+
+std::string normalize_material_id(std::string_view name) {
+  std::string out;
+  out.reserve(name.size());
+  for (const char c : name) {
+    const unsigned char uc = static_cast<unsigned char>(c);
+    if ((uc >= 'A' && uc <= 'Z') || (uc >= 'a' && uc <= 'z') || (uc >= '0' && uc <= '9')) {
+      out.push_back(static_cast<char>(std::tolower(uc)));
+    } else if (uc == '_' || uc == '-' || uc == ' ') {
+      if (!out.empty() && out.back() != '_') {
+        out.push_back('_');
+      }
+    }
+  }
+  while (!out.empty() && out.back() == '_') {
+    out.pop_back();
+  }
+  return out;
+}
+
+uint32_t material_model_from_family(std::string_view family) {
+  const std::string id = normalize_material_id(family);
+  if (id == "emissive" || id == "environment_emissive" || id == "blackbody_emission" ||
+      id == "fire_plasma" || id == "fire_sparkle_emission" || id == "light_emitting_textile" ||
+      id == "bokeh_motion_blur_stress") {
+    return 1u;
+  }
+  if (id == "mirror") {
+    return 2u;
+  }
+  if (id == "specular" || id == "glossy") {
+    return 3u;
+  }
+  if (id == "ggx_rough_conductor" || id == "metallic_pbr" || id == "anisotropic_ggx" ||
+      id == "brushed_metal" || id == "ground_metal") {
+    return 4u;
+  }
+  if (id == "ggx_rough_dielectric" || id == "dielectric_glass" || id == "spectral_glass_approx" ||
+      id == "frosted_glass" || id == "dirty_glass" || id == "water_fluid_surface" ||
+      id == "ice_crystal" || id == "resin" || id == "epoxy" || id == "gemstone" ||
+      id == "frosted_acrylic" || id == "translucent_polymer" || id == "rubber") {
+    return 5u;
+  }
+  if (id == "velvet" || id == "fabric_cloth" || id == "hair_fur_lobes" || id == "pearl_lustre") {
+    return 6u;
+  }
+  if (id == "clearcoat" || id == "car_paint" || id == "paint" || id == "porcelain_ceramic" ||
+      id == "wet_surface" || id == "energy_conserving_layered") {
+    return 7u;
+  }
+  if (id == "toon_surface" || id == "stylized_diffuse" || id == "xray") {
+    return 8u;
+  }
+  if (id == "volumetric_medium" || id == "volumetric_shafts" || id == "smoke" ||
+      id == "chromatic_dust") {
+    return 9u;
+  }
+  return 0u;
+}
+
+uint32_t material_effect_from_family(std::string_view family) {
+  const std::string id = normalize_material_id(family);
+  if (id == "velvet" || id == "fabric_cloth" || id == "hair_fur_lobes") return 1u;
+  if (id == "procedural_material" || id == "sdf_fractal_material") return 2u;
+  if (id == "voronoi_cracks" || id == "charcoal" || id == "cardboard") return 3u;
+  if (id == "marble_scattering" || id == "porcelain_ceramic" || id == "ice_crystal") return 4u;
+  if (id == "corrosion_oxidation" || id == "rust_progression" || id == "terra_earth" || id == "mud") return 5u;
+  if (id == "chromatic_dust" || id == "sand" || id == "stone" || id == "concrete" || id == "plaster") return 6u;
+  if (id == "skin" || id == "wax" || id == "subsurface_approx" || id == "paper") return 7u;
+  if (id == "thin_film_iridescent" || id == "diffraction_grating" || id == "holographic_coating" ||
+      id == "pearl_lustre" || id == "gemstone" || id == "spectral_glass_approx") return 8u;
+  if (id == "alpha_mask") return 9u;
+  if (id == "blackbody_emission" || id == "fire_plasma" || id == "fire_sparkle_emission") return 10u;
+  if (id == "wet_surface" || id == "water_fluid_surface" || id == "dirty_glass") return 11u;
+  if (id == "retroreflector" || id == "caustics_inspired_response" || id == "bokeh_motion_blur_stress") return 12u;
+  if (id == "normal_mapped_pbr") return 13u;
+  if (id == "xray") return 14u;
+  return 0u;
+}
+
+float hash01(float x, float y, float z, float seed) {
+  const float v = std::sin(x * 12.9898f + y * 78.233f + z * 37.719f + seed * 19.19f) * 43758.5453f;
+  return v - std::floor(v);
+}
+
+vkpt::pathtracer::Vec3 apply_material_effect(const vkpt::pathtracer::RTMaterial& material,
+                                             const vkpt::pathtracer::Vec3& position,
+                                             const vkpt::pathtracer::Vec3& normal,
+                                             const vkpt::pathtracer::Vec3& incoming) {
+  using vkpt::pathtracer::Vec3;
+  Vec3 color = material.albedo;
+  const float h = hash01(position.x, position.y, position.z, static_cast<float>(material.material_effect));
+  switch (material.material_effect) {
+    case 1u: {  // cloth/velvet fibers
+      const float rim = std::pow(std::max(0.0f, 1.0f - std::fabs(dot(normal, -incoming))), 2.0f);
+      color = color * (0.65f + 0.25f * h) + Vec3{0.25f, 0.22f, 0.28f} * (rim * (0.4f + material.sheen));
+      break;
+    }
+    case 2u: {  // procedural cells
+      const float stripes = 0.5f + 0.5f * std::sin(position.x * 7.0f + position.z * 5.0f + h * 6.0f);
+      color = color * (0.45f + 0.55f * stripes);
+      break;
+    }
+    case 3u: {  // cracks/charcoal/cardboard
+      const float crack = h > 0.72f ? 0.18f : 1.0f;
+      color = color * crack;
+      break;
+    }
+    case 4u: {  // marble/ice veins
+      const float vein = 0.5f + 0.5f * std::sin((position.x + position.y * 0.4f + position.z * 0.7f) * 9.0f + h * 3.0f);
+      color = color * (0.55f + 0.45f * vein) + Vec3{0.18f, 0.20f, 0.23f} * (1.0f - vein);
+      break;
+    }
+    case 5u: {  // rust/earth oxidation
+      color = color * (0.55f + 0.35f * h) + Vec3{0.45f, 0.16f, 0.04f} * (0.25f + 0.25f * h);
+      break;
+    }
+    case 6u: {  // granular dust/stone/sand
+      color = color * (0.65f + 0.35f * h);
+      break;
+    }
+    case 7u: {  // skin/wax/paper subsurface hint
+      color = color * 0.78f + Vec3{1.0f, 0.62f, 0.42f} * 0.16f;
+      break;
+    }
+    case 8u: {  // thin film / holographic spectral tint
+      color = color * 0.55f + Vec3{0.35f + 0.45f * h, 0.25f + 0.35f * (1.0f - h), 0.85f} * 0.45f;
+      break;
+    }
+    case 9u: {  // alpha mask represented as a visible check pattern
+      const float check = std::fmod(std::floor(position.x * 4.0f) + std::floor(position.z * 4.0f), 2.0f);
+      color = color * (check < 0.5f ? 1.0f : 0.28f);
+      break;
+    }
+    case 10u: {  // hot emission families keep a brighter warm surface
+      color = color * 0.45f + Vec3{1.0f, 0.35f + 0.3f * h, 0.08f} * 0.55f;
+      break;
+    }
+    case 11u: {  // wet/dirty streaks
+      const float streak = 0.5f + 0.5f * std::sin(position.y * 18.0f + h * 5.0f);
+      color = color * (0.55f + 0.45f * streak);
+      break;
+    }
+    case 12u: {  // retro/caustic sparkle
+      const float retro = std::pow(std::max(0.0f, dot(normal, -incoming)), 6.0f);
+      color = color + Vec3{0.55f, 0.65f, 0.95f} * retro;
+      break;
+    }
+    case 13u: {  // normal-map placeholder: color shows tangent-like waves
+      color = color * (0.65f + 0.35f * std::fabs(std::sin(position.x * 10.0f) * std::cos(position.z * 10.0f)));
+      break;
+    }
+    case 14u: {  // x-ray silhouette
+      const float rim = std::pow(std::max(0.0f, 1.0f - std::fabs(dot(normal, -incoming))), 0.8f);
+      color = Vec3{0.15f, 0.75f, 1.0f} * (0.2f + 0.8f * rim);
+      break;
+    }
+    default:
+      break;
+  }
+  return {std::min(1.5f, std::max(0.0f, color.x)),
+          std::min(1.5f, std::max(0.0f, color.y)),
+          std::min(1.5f, std::max(0.0f, color.z))};
+}
+
+float schlick_fresnel(float cosTheta, float ior) {
+  const float safeIor = std::max(1.01f, ior);
+  float r0 = (1.0f - safeIor) / (1.0f + safeIor);
+  r0 *= r0;
+  const float m = 1.0f - std::min(1.0f, std::max(0.0f, cosTheta));
+  return r0 + (1.0f - r0) * m * m * m * m * m;
+}
+
+vkpt::pathtracer::Vec3 refract_dir(const vkpt::pathtracer::Vec3& incoming,
+                                   const vkpt::pathtracer::Vec3& normal,
+                                   float eta,
+                                   bool& tir) {
+  const float cosi = std::min(1.0f, std::max(-1.0f, dot(incoming, normal)));
+  const float k = 1.0f - eta * eta * (1.0f - cosi * cosi);
+  if (k < 0.0f) {
+    tir = true;
+    return {};
+  }
+  tir = false;
+  return normalize(incoming * eta - normal * (eta * cosi + std::sqrt(k)));
 }
 
 float radians(float deg) {
@@ -1156,7 +1374,7 @@ NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit, Rng& rng) con
 
   // Lambert direct contribution.
   const auto mat_index = std::min(hit.material_index, static_cast<uint32_t>(m_scene.materials.size() - 1));
-  const Vec3 albedo = m_scene.materials[mat_index].albedo;
+  const Vec3 albedo = apply_material_effect(m_scene.materials[mat_index], hit.position, hit.normal, -light_dir);
   const Vec3 irradiance = light.color * (light.intensity / (dist_sq + kEpsilon));
   const Vec3 direct = albedo * kInvPi * irradiance * cos_theta * static_cast<float>(num_lights);
 
@@ -1216,22 +1434,29 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
 
     const auto index = std::min(hit.material_index, static_cast<uint32_t>(m_scene.materials.size() - 1));
     const auto& material = m_scene.materials[index];
+    const Vec3 materialAlbedo = apply_material_effect(material, hit.position, shadingNormal, ray.direction);
+    const float roughness = clamp01(material.roughness);
+    const bool isEmissiveModel = material.material_model == 1u || material.is_emissive();
+    const bool isMirror = material.material_model == 2u || roughness <= 0.001f;
+    const bool isMetallic = material.material_model == 4u || material.metallic > 0.65f;
+    const bool isTransmissive = material.material_model == 5u || material.transmission > 0.05f;
+    const bool isDiffuse = roughness >= 0.999f && !isMirror && !isMetallic && !isTransmissive;
+    const bool isSheen = material.material_model == 6u;
+    const bool isClearcoat = material.material_model == 7u || material.clearcoat > 0.05f;
+    const bool isToon = material.material_model == 8u;
 
     // Emissive: only add if NEE is off, or this is the first bounce, or MIS weights it.
     if (!m_settings.enable_nee || depth == 0) {
       radiance += throughput * material.emissive;
-    } else if (m_settings.enable_mis && material.is_emissive()) {
+    } else if (m_settings.enable_mis && isEmissiveModel) {
       const float bsdf_pdf = std::max(0.0f, dot(shadingNormal, -ray.direction)) * kInvPi;
       const float l_pdf = light_pdf_for_direction(ray.origin, ray.direction);
       const float w = MisWeight(bsdf_pdf, l_pdf);
       radiance += throughput * material.emissive * w;
     }
 
-    const bool isMirror  = (material.roughness <= 0.001f);
-    const bool isDiffuse = (material.roughness >= 0.999f);
-
     // NEE direct light sampling — skip for perfect mirrors (delta BSDF)
-    if (m_settings.enable_nee && !isMirror && depth < m_settings.max_depth - 1u) {
+    if (m_settings.enable_nee && !isMirror && !isTransmissive && depth < m_settings.max_depth - 1u) {
       Hit lightSampleHit = hit;
       lightSampleHit.normal = shadingNormal;
       const NeeResult nee = sample_direct_light(lightSampleHit, rng);
@@ -1257,20 +1482,45 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
     if (isMirror) {
       // Perfect specular reflection: r = d - 2*(d·n)*n
       outDir = ray.direction - 2.0f * dot(shadingNormal, ray.direction) * shadingNormal;
-    } else if (isDiffuse) {
+    } else if (isTransmissive) {
+      const float cosTheta = std::max(0.0f, dot(shadingNormal, -ray.direction));
+      const float fresnel = schlick_fresnel(cosTheta, material.ior);
+      if (rng.next01() < std::min(0.98f, fresnel + material.clearcoat * 0.15f)) {
+        outDir = ray.direction - 2.0f * dot(shadingNormal, ray.direction) * shadingNormal;
+      } else {
+        bool tir = false;
+        outDir = refract_dir(ray.direction, shadingNormal, 1.0f / std::max(1.01f, material.ior), tir);
+        if (tir || length_sq(outDir) <= 1.0e-8f) {
+          outDir = ray.direction - 2.0f * dot(shadingNormal, ray.direction) * shadingNormal;
+        }
+      }
+    } else if (isDiffuse || isToon) {
       outDir = sample_hemisphere(rng, shadingNormal);
     } else {
       // Glossy: Phong lobe around mirror direction
       // exponent = 2/alpha^4 - 2, alpha = roughness^2  (GGX-inspired mapping)
-      const float a2   = material.roughness * material.roughness;
+      const float effectiveRoughness = std::max(0.025f, roughness * (isMetallic ? 0.75f : 1.0f) * (isClearcoat ? 0.65f : 1.0f));
+      const float a2   = effectiveRoughness * effectiveRoughness;
       const float expt = std::max(0.0f, 2.0f / (a2 * a2) - 2.0f);
       const Vec3 refl = ray.direction - 2.0f * dot(shadingNormal, ray.direction) * shadingNormal;
       outDir = sample_phong_lobe(rng, refl, expt, shadingNormal);
+      if (isSheen && rng.next01() < material.sheen * 0.35f) {
+        outDir = sample_hemisphere(rng, shadingNormal);
+      }
     }
 
-    if (dot(outDir, shadingNormal) <= 0.0f) break;
+    if (!isTransmissive && dot(outDir, shadingNormal) <= 0.0f) break;
     // Throughput weight = albedo for all three cases (energy-conserving approx)
-    throughput = throughput * material.albedo;
+    Vec3 bounceWeight = materialAlbedo;
+    if (isMetallic || isMirror) {
+      bounceWeight = materialAlbedo * (0.65f + 0.35f * material.metallic);
+    } else if (isTransmissive) {
+      bounceWeight = materialAlbedo * (0.25f + 0.55f * material.alpha) + Vec3{0.2f, 0.2f, 0.2f};
+    }
+    if (isToon) {
+      bounceWeight = bounceWeight * (dot(outDir, shadingNormal) > 0.55f ? 1.0f : 0.45f);
+    }
+    throughput = throughput * bounceWeight;
 
     if (std::max(throughput.x, std::max(throughput.y, throughput.z)) < 0.001f) {
       break;
@@ -1533,16 +1783,56 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     outMaterial.albedo = {material.albedo.x, material.albedo.y, material.albedo.z};
     outMaterial.emissive = {material.emission.x * material.emission_intensity, material.emission.y * material.emission_intensity,
                             material.emission.z * material.emission_intensity};
-    outMaterial.roughness = material.roughness;
+    outMaterial.roughness = clamp01(material.roughness);
+    outMaterial.metallic = clamp01(material.metallic);
+    outMaterial.ior = std::max(1.01f, material.ior);
+    outMaterial.transmission = clamp01(material.transmission);
+    outMaterial.clearcoat = clamp01(material.clearcoat);
+    outMaterial.sheen = clamp01(material.sheen);
+    outMaterial.anisotropy = std::min(1.0f, std::max(-1.0f, material.anisotropy));
+    outMaterial.alpha = clamp01(material.alpha);
+    outMaterial.material_model = material_model_from_family(material.family.empty() ? material.name : material.family);
+    outMaterial.material_effect = material_effect_from_family(material.family.empty() ? material.name : material.family);
+    outMaterial.material_flags = material.double_sided ? 1u : 0u;
     scene.materials.push_back(outMaterial);
   }
 
-  std::unordered_map<vkpt::core::StableId, vkpt::scene::TransformComponent> entityTransforms;
-  for (const auto& entity : doc.entities) {
-    if (entity.has_transform) {
-      entityTransforms[entity.id] = entity.transform;
-    }
+  std::optional<vkpt::scene::SceneWorld> ecsWorld;
+  if (auto worldResult = doc.to_world()) {
+    ecsWorld = std::move(worldResult.value());
+    ecsWorld->recompute_world_transforms();
   }
+
+  std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneEntityDefinition*> entityById;
+  entityById.reserve(doc.entities.size());
+  for (const auto& entity : doc.entities) {
+    entityById[entity.id] = &entity;
+  }
+
+  auto resolve_entity_transform = [&](vkpt::core::StableId id,
+                                      const vkpt::scene::TransformComponent* local_transform,
+                                      bool* has_transform) {
+    if (ecsWorld.has_value()) {
+      if (const auto* worldTransform = ecsWorld->world_transform(id)) {
+        if (has_transform) {
+          *has_transform = true;
+        }
+        vkpt::scene::TransformComponent transform = *worldTransform;
+        transform.dirty = false;
+        return transform;
+      }
+    }
+    if (local_transform != nullptr) {
+      if (has_transform) {
+        *has_transform = true;
+      }
+      return *local_transform;
+    }
+    if (has_transform) {
+      *has_transform = false;
+    }
+    return vkpt::scene::TransformComponent{};
+  };
 
   std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneGeometryDefinition*> geometryById;
   for (const auto& geometry : doc.geometry) {
@@ -1562,18 +1852,24 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       continue;
     }
 
-    const uint32_t materialId = entity.mesh.material_id != 0 ? entity.mesh.material_id : geometry->material_id;
+    const vkpt::core::StableId materialId = entity.mesh.material_id != 0 ? entity.mesh.material_id : geometry->material_id;
     uint32_t materialIndex = 0;
     if (auto mi = materialLookup.find(materialId); mi != materialLookup.end()) {
       materialIndex = mi->second;
     }
 
-    const auto translation = entity.has_transform ? entity.transform.translation : vkpt::scene::TransformComponent{}.translation;
-    const auto scale = entity.has_transform ? entity.transform.scale : vkpt::scene::TransformComponent{}.scale;
+    const auto transform = resolve_entity_transform(
+        entity.id, entity.has_transform ? &entity.transform : nullptr, nullptr);
+    const auto translation = transform.translation;
+    const auto rotation = transform.rotation;
+    const auto scale = transform.scale;
     const uint32_t firstVertex = static_cast<uint32_t>(scene.vertices.size());
     for (const auto& vertex : geometry->vertices) {
       scene.vertices.push_back(transform_point(
-          Vec3{vertex.x, vertex.y, vertex.z}, Vec3{translation.x, translation.y, translation.z}, Vec3{scale.x, scale.y, scale.z}));
+          Vec3{vertex.x, vertex.y, vertex.z},
+          Vec3{translation.x, translation.y, translation.z},
+          rotation,
+          Vec3{scale.x, scale.y, scale.z}));
     }
 
     const uint32_t firstTriangle = static_cast<uint32_t>(scene.indices.size() / 3u);
@@ -1590,7 +1886,37 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     scene.instances.push_back(instance);
   }
 
+  std::unordered_set<vkpt::core::StableId> ecsSdfIds;
+  for (const auto& entity : doc.entities) {
+    if (!entity.has_sdf_primitive) {
+      continue;
+    }
+    const auto transform = resolve_entity_transform(
+        entity.id, entity.has_transform ? &entity.transform : nullptr, nullptr);
+    RTSdfPrimitive out{};
+    out.shape = parse_sdf_shape(entity.sdf_primitive.shape);
+    out.position = parse_shape_position(transform.translation);
+    out.rotation = parse_shape_rotation(transform.rotation);
+    out.scale = parse_shape_scale(transform.scale);
+    out.radius = std::max(0.01f, entity.sdf_primitive.radius);
+    out.param_a = entity.sdf_primitive.param_a;
+    out.param_b = entity.sdf_primitive.param_b;
+    out.material_index = 0u;
+    if (entity.material.material_id != 0) {
+      if (auto mi = materialLookup.find(entity.material.material_id); mi != materialLookup.end()) {
+        out.material_index = mi->second;
+      }
+    }
+    if (out.shape != SdfShape::Unknown) {
+      scene.sdf_primitives.push_back(out);
+      ecsSdfIds.insert(entity.id);
+    }
+  }
+
   for (const auto& prim : doc.sdf_primitives) {
+    if (ecsSdfIds.contains(prim.id)) {
+      continue;
+    }
     RTSdfPrimitive out{};
     out.shape = parse_sdf_shape(prim.shape);
     out.position = parse_shape_position(prim.transform.translation);
@@ -1605,44 +1931,77 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     }
   }
 
-  for (const auto& light : doc.lights) {
-    if (light.light.intensity <= 0.0f) {
-      continue;
+  auto add_light = [&](vkpt::core::StableId id, const vkpt::scene::LightComponent& light) {
+    if (light.intensity <= 0.0f) {
+      return;
     }
-    Vec3 pos{};
     bool hasTransform = false;
-    if (auto it = entityTransforms.find(light.id); it != entityTransforms.end()) {
-      pos = {it->second.translation.x, it->second.translation.y, it->second.translation.z};
-      hasTransform = true;
+    const auto* entity = entityById.contains(id) ? entityById[id] : nullptr;
+    const auto transform = resolve_entity_transform(
+        id,
+        entity != nullptr && entity->has_transform ? &entity->transform : nullptr,
+        &hasTransform);
+    Vec3 pos{};
+    if (hasTransform) {
+      pos = {transform.translation.x, transform.translation.y, transform.translation.z};
     }
     if (!hasTransform) {
       pos = {0.0f, 1.8f, 0.0f};
     }
     scene.lights.push_back(RTHitLight{
       pos,
-      {light.light.color.x, light.light.color.y, light.light.color.z},
-      light.light.intensity,
-      std::max(0.0f, light.light.radius)});
-  }
+      {light.color.x, light.color.y, light.color.z},
+      light.intensity,
+      std::max(0.0f, light.radius)});
+  };
 
+  std::unordered_set<vkpt::core::StableId> ecsLightIds;
   for (const auto& entity : doc.entities) {
-    if (entity.has_camera) {
-      const auto& transform = entity.has_transform ? entity.transform : vkpt::scene::TransformComponent{};
-      scene.camera_position = {transform.translation.x, transform.translation.y, transform.translation.z};
-      scene.camera_fov_deg = entity.camera.fov;
-      scene.camera_target = scene.camera_position + Vec3{0.0f, 0.0f, -1.0f};
-      break;
+    if (entity.has_light) {
+      add_light(entity.id, entity.light);
+      ecsLightIds.insert(entity.id);
     }
   }
+
+  for (const auto& light : doc.lights) {
+    if (!ecsLightIds.contains(light.id)) {
+      add_light(light.id, light.light);
+    }
+  }
+
+  auto apply_camera = [&](vkpt::core::StableId id,
+                          const vkpt::scene::CameraComponent& camera,
+                          bool* has_transform) {
+    bool cameraTransform = false;
+    const auto* entity = entityById.contains(id) ? entityById[id] : nullptr;
+    const auto transform = resolve_entity_transform(
+        id,
+        entity != nullptr && entity->has_transform ? &entity->transform : nullptr,
+        &cameraTransform);
+    scene.camera_fov_deg = camera.fov;
+    if (cameraTransform) {
+      scene.camera_position = {transform.translation.x, transform.translation.y, transform.translation.z};
+      scene.camera_target = scene.camera_position + Vec3{0.0f, 0.0f, -1.0f};
+    }
+    if (has_transform) {
+      *has_transform = cameraTransform;
+    }
+  };
 
   bool hasCameraEntity = false;
   bool hasCameraTransform = false;
   for (const auto& entity : doc.entities) {
     if (entity.has_camera) {
       hasCameraEntity = true;
-      hasCameraTransform = entity.has_transform;
+      apply_camera(entity.id, entity.camera, &hasCameraTransform);
       break;
     }
+  }
+
+  if (!hasCameraEntity && !doc.cameras.empty()) {
+    const auto& camera = doc.cameras.front();
+    hasCameraEntity = true;
+    apply_camera(camera.id, camera.camera, &hasCameraTransform);
   }
 
   if (hasCameraEntity && !hasCameraTransform && !scene.vertices.empty()) {

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <d3dcompiler.h>
 #include <fstream>
@@ -61,17 +62,45 @@ std::string FormatFirstN(const T* values, size_t count, size_t max_values = 4u) 
   return ss.str();
 }
 
-std::string FormatBytes(const void* ptr, size_t bytes) {
-  const auto* bytesPtr = static_cast<const uint8_t*>(ptr);
-  std::ostringstream ss;
-  const size_t shown = std::min<size_t>(bytes, 32u);
-  for (size_t i = 0; i < shown; ++i) {
-    if (i) ss << " ";
-    ss << std::hex << std::setw(2) << std::setfill('0')
-       << static_cast<uint32_t>(bytesPtr[i]);
+uint32_t ParseEnvU32(const char* name, uint32_t fallback, uint32_t minValue, uint32_t maxValue) {
+  std::string valueText;
+#if defined(_WIN32)
+  char* valueBuffer = nullptr;
+  size_t valueLength = 0u;
+  if (_dupenv_s(&valueBuffer, &valueLength, name) == 0 && valueBuffer != nullptr) {
+    valueText.assign(valueBuffer, valueLength > 0u ? valueLength - 1u : 0u);
+    std::free(valueBuffer);
   }
-  if (bytes > shown) ss << " ...";
-  return ss.str();
+#else
+  if (const char* value = std::getenv(name)) {
+    valueText = value;
+  }
+#endif
+  if (valueText.empty()) {
+    return fallback;
+  }
+  char* end = nullptr;
+  const unsigned long parsed = std::strtoul(valueText.c_str(), &end, 10);
+  if (end == valueText.c_str() || *end != '\0' || parsed < minValue || parsed > maxValue) {
+    LogError(std::string("ignoring invalid ") + name + "=" + valueText +
+             " (expected " + std::to_string(minValue) + ".." + std::to_string(maxValue) + ")");
+    return fallback;
+  }
+  return static_cast<uint32_t>(parsed);
+}
+
+uint32_t SelectRaysPerPixelPerDispatch(const vkpt::pathtracer::RenderSettings& settings) {
+  // Finite/offline renders should preserve the public --spp contract. Interactive
+  // preview uses an unlimited spp sentinel and can batch more rays per GPU submit.
+  const bool interactivePreview = settings.spp == std::numeric_limits<uint32_t>::max();
+  const uint32_t fallback = interactivePreview ? 8u : 1u;
+  return ParseEnvU32("PT_D3D12_RAYS_PER_PIXEL", fallback, 1u, 64u);
+}
+
+uint32_t SelectReadbackInterval(const vkpt::pathtracer::RenderSettings& settings) {
+  const bool interactivePreview = settings.spp == std::numeric_limits<uint32_t>::max();
+  const uint32_t fallback = interactivePreview ? 4u : 1u;
+  return ParseEnvU32("PT_D3D12_READBACK_INTERVAL", fallback, 1u, 64u);
 }
 
 D3D12_UNORDERED_ACCESS_VIEW_DESC MakeRawBufferUavDesc(UINT64 byteSize) {
@@ -299,10 +328,14 @@ bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   m_counters          = {};
   m_hasScene          = false;
   m_sceneUploaded     = false;
+  m_raysPerPixelPerDispatch = SelectRaysPerPixelPerDispatch(s);
+  m_readbackInterval = SelectReadbackInterval(s);
   std::ostringstream cfg;
   cfg << "configure width=" << s.width << " height=" << s.height
       << " spp=" << s.spp
-      << " max_depth=" << s.max_depth << " seed=" << s.seed;
+      << " max_depth=" << s.max_depth << " seed=" << s.seed
+      << " rays_per_pixel_per_dispatch=" << m_raysPerPixelPerDispatch
+      << " readback_interval=" << m_readbackInterval;
   LogDebug(cfg.str());
   destroy_film_buffer();
   return create_film_buffer();
@@ -368,9 +401,14 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
     m_gpuMats.push_back(m.albedo.z);
     m_gpuMats.push_back(m.emissive.x); m_gpuMats.push_back(m.emissive.y);
     m_gpuMats.push_back(m.emissive.z);
-    m_gpuMats.push_back(m.roughness); m_gpuMats.push_back(0.0f);
+    m_gpuMats.push_back(m.roughness); m_gpuMats.push_back(static_cast<float>(m.material_model));
+    m_gpuMats.push_back(m.metallic); m_gpuMats.push_back(m.ior);
+    m_gpuMats.push_back(m.transmission); m_gpuMats.push_back(m.clearcoat);
+    m_gpuMats.push_back(m.sheen); m_gpuMats.push_back(m.anisotropy);
+    const uint32_t packed_effect = (m.material_effect & 1023u) | ((m.material_flags & 1u) ? 1024u : 0u);
+    m_gpuMats.push_back(m.alpha); m_gpuMats.push_back(static_cast<float>(packed_effect));
   }
-  if (m_gpuMats.empty()) m_gpuMats.assign(8, 0.0f);
+  if (m_gpuMats.empty()) m_gpuMats.assign(16, 0.0f);
 
   m_gpuInsts.clear();
   for (const auto& inst : m_sceneData.instances) {
@@ -393,7 +431,7 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
   std::ostringstream us;
   us << "packed scene verts=" << (m_gpuVerts.size() / 3u)
      << " idx=" << m_gpuIdx.size()
-     << " mats=" << (m_gpuMats.size() / 8u)
+     << " mats=" << (m_gpuMats.size() / 16u)
      << " inst=" << (m_gpuInsts.size() / 4u)
      << " lights=" << (m_gpuLights.size() / 8u)
      << " bytes="
@@ -474,7 +512,7 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
 }
 
 bool D3D12GpuPathTracer::reset_accumulation() {
-  if (!m_configured || !m_filmBuf || !m_clearHeap) return false;
+  if (!m_configured || !m_filmBuf || !m_clearHeap || !m_clearCpuHeap) return false;
   // Zero the film on GPU using the persistent clear heap (avoids per-frame allocation).
   if (!wait_for_gpu()) {
     m_error = "reset wait_for_gpu";
@@ -500,7 +538,7 @@ bool D3D12GpuPathTracer::reset_accumulation() {
   }
 
   // Reuse the persistent clear heap created in create_film_buffer().
-  D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_clearHeap->GetCPUDescriptorHandleForHeapStart();
+  D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_clearCpuHeap->GetCPUDescriptorHandleForHeapStart();
   D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_clearHeap->GetGPUDescriptorHandleForHeapStart();
 
   // Transition film to unordered-access
@@ -542,6 +580,76 @@ bool D3D12GpuPathTracer::reset_accumulation() {
   m_counters = {};
   LogDebug("reset_accumulation complete");
   return true;
+}
+
+bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
+  if (m_srvUavHeap) return true;
+
+  // Slots: t0-t6 (7 SRVs), u0 = FilmBuf (RGBA32F), u1 = LdrBuf (RGBA8).
+  D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
+  heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+  heapDesc.NumDescriptors = 9;
+  heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  if (FAILED(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvUavHeap)))) {
+    m_error = "srv heap";
+    LogError("ensure_compute_srv_uav_heap: " + m_error);
+    return false;
+  }
+
+  const UINT inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_srvUavHeap->GetCPUDescriptorHandleForHeapStart();
+
+  auto makeSrv = [&](int slot, ID3D12Resource* buf, UINT64 size, DXGI_FORMAT fmt) {
+    if (!buf || size == 0u) {
+      std::ostringstream st;
+      st << "makeSrv slot=" << slot << " missing resource or empty size";
+      LogError(st.str());
+    }
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+    srv.Format                  = fmt;
+    srv.ViewDimension           = D3D12_SRV_DIMENSION_BUFFER;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Buffer.NumElements      = static_cast<UINT>(size / 4u);
+    D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
+    h.ptr += static_cast<SIZE_T>(slot) * inc;
+    m_device->CreateShaderResourceView(buf, &srv, h);
+  };
+
+  makeSrv(0, m_vertBuf.Get(),   m_gpuVerts.size()   * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+  makeSrv(1, m_idxBuf.Get(),    m_gpuIdx.size()     * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+  makeSrv(2, m_matBuf.Get(),    m_gpuMats.size()    * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+  makeSrv(3, m_instBuf.Get(),   m_gpuInsts.size()   * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+  makeSrv(4, m_ltBuf.Get(),     m_gpuLights.size()  * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+  makeSrv(5, m_bvhBuf.Get(),    m_gpuBvh.size()     * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+  makeSrv(6, m_triMatBuf.Get(), m_gpuTriMat.size()  * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+
+  {
+    const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(filmSize);
+    D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
+    h.ptr += static_cast<SIZE_T>(7) * inc;
+    m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h);
+  }
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+    uav.Format             = DXGI_FORMAT_R32_UINT;
+    uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
+    uav.Buffer.NumElements = static_cast<UINT>(m_filmPixels);
+    D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
+    h.ptr += static_cast<SIZE_T>(8) * inc;
+    m_device->CreateUnorderedAccessView(m_ldrBuf.Get(), nullptr, &uav, h);
+  }
+
+  return true;
+}
+
+bool D3D12GpuPathTracer::should_readback_sample(uint32_t sample_idx) const {
+  const bool finiteSpp = m_settings.spp != std::numeric_limits<uint32_t>::max();
+  if (finiteSpp) {
+    return sample_idx + 1u >= m_settings.spp;
+  }
+  const uint32_t interval = std::max(1u, m_readbackInterval);
+  return sample_idx < 4u || (sample_idx % interval) == 0u;
 }
 
 bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
@@ -612,10 +720,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     if (m_dxrPipelineReady && m_dxrAccelReady) {
       // Route to hardware DXR dispatch
       m_usingDxrDispatch = true;
-      const bool finiteSpp2 = m_settings.spp != std::numeric_limits<uint32_t>::max();
-      const bool doRb = (finiteSpp2 && (sample_idx + 1u >= m_settings.spp))
-                     || (!finiteSpp2 && ((sample_idx & 3u) == 0u));
-      return dispatch_dxr_rays(sample_idx, frame_idx, doRb);
+      return dispatch_dxr_rays(sample_idx, frame_idx, should_readback_sample(sample_idx));
     }
     if (!m_loggedDxrFallback) {
       LogInfo("DXR mode requested; DispatchRays path not wired yet, using compute fallback");
@@ -703,7 +808,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
       const float camTarget[3] = {sc.camera_target.x, sc.camera_target.y, sc.camera_target.z};
       sampleVals << "camera_pos=(" << camPos[0] << "," << camPos[1] << "," << camPos[2] << ")"
                  << " camera_target=(" << camTarget[0] << "," << camTarget[1] << "," << camTarget[2] << ")"
-                 << " material0=" << FormatFirstN(m_gpuMats.data(), 8u, 8u)
+                 << " material0=" << FormatFirstN(m_gpuMats.data(), 16u, 16u)
                  << " first_inst=" << FormatFirstN(m_gpuInsts.data(), 4u, 4u)
                  << " first_light=" << FormatFirstN(m_gpuLights.data(), 8u, 8u);
       LogDebug(sampleVals.str());
@@ -729,67 +834,11 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
 
   // Create descriptor heap for SRVs/UAVs lazily and reuse across samples.
   // Slots: t0-t6 (7 SRVs), u0 = FilmBuf (RGBA32F), u1 = LdrBuf (RGBA8).
-  if (!m_srvUavHeap) {
-    D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
-    heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDesc.NumDescriptors = 9; // 7 SRVs + 2 UAVs
-    heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    if (FAILED(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvUavHeap)))) {
-      m_error = "srv heap";
-      LogError("render_sample_batch: " + m_error);
-      return false;
-    }
-    if (verbose) {
-      LogDebug("render_sample_batch created persistent descriptor heap descriptors=8");
-    }
-    const UINT inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_srvUavHeap->GetCPUDescriptorHandleForHeapStart();
-
-    auto makeSrv = [&](int slot, ID3D12Resource* buf, UINT64 size, DXGI_FORMAT fmt) {
-      if (!buf || size == 0u) {
-        std::ostringstream st;
-        st << "makeSrv slot=" << slot << " missing resource or empty size";
-        LogError(st.str());
-      }
-      D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-      srv.Format                  = fmt;
-      srv.ViewDimension           = D3D12_SRV_DIMENSION_BUFFER;
-      srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-      srv.Buffer.NumElements      = static_cast<UINT>(size / 4u);
-      D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-      h.ptr += static_cast<SIZE_T>(slot) * inc;
-      m_device->CreateShaderResourceView(buf, &srv, h);
-    };
-    makeSrv(0, m_vertBuf.Get(),   m_gpuVerts.size()   * sizeof(float), DXGI_FORMAT_R32_FLOAT);
-    makeSrv(1, m_idxBuf.Get(),    m_gpuIdx.size()     * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
-    makeSrv(2, m_matBuf.Get(),    m_gpuMats.size()    * sizeof(float), DXGI_FORMAT_R32_FLOAT);
-    makeSrv(3, m_instBuf.Get(),   m_gpuInsts.size()   * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
-    makeSrv(4, m_ltBuf.Get(),     m_gpuLights.size()  * sizeof(float), DXGI_FORMAT_R32_FLOAT);
-    makeSrv(5, m_bvhBuf.Get(),    m_gpuBvh.size()     * sizeof(float), DXGI_FORMAT_R32_FLOAT);
-    makeSrv(6, m_triMatBuf.Get(), m_gpuTriMat.size()  * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
-
-    // Slot 7: u0 — FilmBuf (RGBA32F accumulation)
-    {
-      const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
-      D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(filmSize);
-      D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-      h.ptr += static_cast<SIZE_T>(7) * inc;
-      m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h);
-    }
-    // Slot 8: u1 — LdrBuf (RGBA8 tonemap output, one uint per pixel)
-    {
-      D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-      uav.Format             = DXGI_FORMAT_R32_UINT;
-      uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
-      uav.Buffer.NumElements = static_cast<UINT>(m_filmPixels);
-      D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-      h.ptr += static_cast<SIZE_T>(8) * inc;
-      m_device->CreateUnorderedAccessView(m_ldrBuf.Get(), nullptr, &uav, h);
-    }
-  }
+  if (!ensure_compute_srv_uav_heap()) return false;
   D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
-  pc.rays_per_pixel = 4u;
+  pc.rays_per_pixel = std::max(1u, m_raysPerPixelPerDispatch);
   pc.exposure       = 0.6f; // Additional brightness drop per user feedback.
+  const bool doReadback = should_readback_sample(sample_idx);
 
   ID3D12DescriptorHeap* heaps[] = {m_srvUavHeap.Get()};
   m_cmdList->SetDescriptorHeaps(1, heaps);
@@ -812,7 +861,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   ldrBarrier.Transition.StateBefore      = D3D12_RESOURCE_STATE_COMMON;
   ldrBarrier.Transition.StateAfter       = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   ldrBarrier.Transition.Subresource      = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  m_cmdList->ResourceBarrier(2, barriers);
+  m_cmdList->ResourceBarrier(doReadback ? 2u : 1u, barriers);
 
   // --- Path trace dispatch --------------------------------------------------
   const UINT groupsX = (m_settings.width + 7u) / 8u;
@@ -825,6 +874,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   m_cmdList->SetPipelineState(m_pso.Get());
   m_cmdList->Dispatch(groupsX, groupsY, 1u);
 
+  if (doReadback) {
   // UAV barrier on FilmBuf: ensure path trace writes are visible before tonemap reads.
   D3D12_RESOURCE_BARRIER uavBarrier{};
   uavBarrier.Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
@@ -856,6 +906,11 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   ldrBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
   ldrBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
   m_cmdList->ResourceBarrier(1, &ldrBarrier);
+  } else {
+    filmBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    filmBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    m_cmdList->ResourceBarrier(1, &filmBarrier);
+  }
 
   const auto closeRes = m_cmdList->Close();
   if (FAILED(closeRes)) {
@@ -882,7 +937,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   }
 
   // Store GPU-tonemapped LDR result for resolve_ldr() — zero CPU work needed.
-  if (m_ldrReadbackPtr && m_filmPixels > 0u) {
+  if (doReadback && m_ldrReadbackPtr && m_filmPixels > 0u) {
     m_ldrResolve.width  = m_settings.width;
     m_ldrResolve.height = m_settings.height;
     m_ldrResolve.rgba8.resize(static_cast<size_t>(m_filmPixels) * 4u);
@@ -900,10 +955,11 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
                + " non_black=" + (nonBlack ? "yes" : "no"));
     }
   }
-  const uint64_t sampleInc = static_cast<uint64_t>(m_settings.width) * m_settings.height;
+  const uint64_t rpp = static_cast<uint64_t>(std::max(1u, m_raysPerPixelPerDispatch));
+  const uint64_t sampleInc = static_cast<uint64_t>(m_settings.width) * m_settings.height * rpp;
   m_counters.samples += sampleInc;
-  m_counters.rays    += sampleInc * 4u;
-  m_lastSampleIdx     = sample_idx;
+  m_counters.rays    += sampleInc;
+  m_lastSampleIdx     = sample_idx * m_raysPerPixelPerDispatch + (m_raysPerPixelPerDispatch - 1u);
   if (verbose) {
     std::ostringstream en;
     en << "render_sample_batch complete frame=" << frame_idx << " sample=" << sample_idx
@@ -1261,7 +1317,10 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
 
   UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
 #if defined(_DEBUG)
-  compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+  // Keep shader optimization enabled in debug builds. The Qt/D3D12 preview is
+  // commonly launched from a debug preset, and unoptimized HLSL dominates ray
+  // throughput far more than CPU-side debug symbols help here.
+  compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #else
   compileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
@@ -1298,7 +1357,7 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
 bool D3D12GpuPathTracer::create_tonemap_pso(const std::string& src) {
   UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
 #if defined(_DEBUG)
-  compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+  compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #else
   compileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
@@ -1430,10 +1489,19 @@ bool D3D12GpuPathTracer::create_film_buffer() {
     LogError("create_film_buffer: " + m_error);
     return false;
   }
+  D3D12_DESCRIPTOR_HEAP_DESC cpuChd = chd;
+  cpuChd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+  if (FAILED(m_device->CreateDescriptorHeap(&cpuChd, IID_PPV_ARGS(&m_clearCpuHeap)))) {
+    m_error = "clear CPU heap create failed";
+    LogError("create_film_buffer: " + m_error);
+    return false;
+  }
   {
     D3D12_UNORDERED_ACCESS_VIEW_DESC clearUav = MakeRawBufferUavDesc(filmSize);
     m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &clearUav,
         m_clearHeap->GetCPUDescriptorHandleForHeapStart());
+    m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &clearUav,
+        m_clearCpuHeap->GetCPUDescriptorHandleForHeapStart());
   }
 
   return true;
@@ -1571,6 +1639,7 @@ void D3D12GpuPathTracer::destroy_film_buffer() {
   m_ldrReadbackBuf.Reset();
   m_ldrBuf.Reset();
   m_clearHeap.Reset();
+  m_clearCpuHeap.Reset();
   m_srvUavHeap.Reset();
 }
 
@@ -1696,7 +1765,7 @@ bool D3D12GpuPathTracer::compile_dxil(const std::string& path, std::vector<uint8
   src.Size     = sourceBlob->GetBufferSize();
   src.Encoding = DXC_CP_ACP;
 
-  LPCWSTR args[] = { L"-T", L"lib_6_3", L"-HV", L"2021" };
+  LPCWSTR args[] = { L"-T", L"lib_6_3", L"-HV", L"2021", L"-O3" };
   Microsoft::WRL::ComPtr<IDxcResult> result;
   HRESULT hr = compiler->Compile(&src, args, ARRAYSIZE(args), nullptr, IID_PPV_ARGS(&result));
 
@@ -2049,7 +2118,7 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
   instDesc.InstanceID = 0;
   instDesc.InstanceMask = 0xFF;
   instDesc.InstanceContributionToHitGroupIndex = 0;
-  instDesc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE;
+  instDesc.Flags = 0;
   instDesc.AccelerationStructure = m_blasBuffer->GetGPUVirtualAddress();
 
   // Instance upload buffer
@@ -2225,7 +2294,13 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   pc.env_g = sc.environment_color.y;
   pc.env_b = sc.environment_color.z;
   pc.max_depth_f  = static_cast<float>(std::max(1u, m_settings.max_depth));
-  pc.rays_per_pixel = 4u;
+  pc.rays_per_pixel = std::max(1u, m_raysPerPixelPerDispatch);
+  pc.exposure = 0.6f;
+  if (doReadback && (!m_ldrBuf || !m_ldrReadbackBuf || !m_ldrReadbackPtr || !ensure_compute_srv_uav_heap())) {
+    m_error = "DXR LDR readback resources unavailable";
+    LogError("dispatch_dxr_rays: " + m_error);
+    return false;
+  }
 
   // Set global root signature and bind resources
   cl4->SetComputeRootSignature(m_dxrGlobalRootSig.Get());
@@ -2235,14 +2310,14 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   cl4->SetDescriptorHeaps(1, heaps);
   cl4->SetComputeRootDescriptorTable(2, m_dxrDescHeap->GetGPUDescriptorHandleForHeapStart());
 
-  // Transition film to UAV
-  D3D12_RESOURCE_BARRIER rb{};
-  rb.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  rb.Transition.pResource   = m_filmBuf.Get();
-  rb.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-  rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  rb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  cl4->ResourceBarrier(1, &rb);
+  // Transition film to UAV for DXR accumulation.
+  D3D12_RESOURCE_BARRIER filmBarrier{};
+  filmBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  filmBarrier.Transition.pResource   = m_filmBuf.Get();
+  filmBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+  filmBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  filmBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  cl4->ResourceBarrier(1, &filmBarrier);
 
   // Set pipeline state and dispatch
   cl4->SetPipelineState1(m_rtPso.Get());
@@ -2273,19 +2348,48 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   drd.Depth  = 1;
   cl4->DispatchRays(&drd);
 
-  const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
   if (doReadback) {
-    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    cl4->ResourceBarrier(1, &rb);
-    cl4->CopyBufferRegion(m_filmReadbackBuf.Get(), 0, m_filmBuf.Get(), 0, filmSize);
-    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
-    cl4->ResourceBarrier(1, &rb);
+    D3D12_RESOURCE_BARRIER uavBarrier{};
+    uavBarrier.Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    uavBarrier.UAV.pResource = m_filmBuf.Get();
+    cl4->ResourceBarrier(1, &uavBarrier);
+
+    D3D12_RESOURCE_BARRIER ldrBarrier{};
+    ldrBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    ldrBarrier.Transition.pResource   = m_ldrBuf.Get();
+    ldrBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    ldrBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    ldrBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cl4->ResourceBarrier(1, &ldrBarrier);
+
+    ID3D12DescriptorHeap* tonemapHeaps[] = {m_srvUavHeap.Get()};
+    cl4->SetDescriptorHeaps(1, tonemapHeaps);
+    cl4->SetComputeRootSignature(m_rootSig.Get());
+    cl4->SetComputeRootDescriptorTable(1, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+    cl4->SetComputeRoot32BitConstants(0, kPathTraceRoot32BitValues, &pc, 0);
+    cl4->SetPipelineState(m_tonemapPso.Get());
+    cl4->Dispatch((m_settings.width + 7u) / 8u, (m_settings.height + 7u) / 8u, 1u);
+
+    uavBarrier.UAV.pResource = m_ldrBuf.Get();
+    cl4->ResourceBarrier(1, &uavBarrier);
+
+    filmBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    filmBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    ldrBarrier.Transition.StateBefore  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    ldrBarrier.Transition.StateAfter   = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    D3D12_RESOURCE_BARRIER readbackBarriers[2] = {filmBarrier, ldrBarrier};
+    cl4->ResourceBarrier(2, readbackBarriers);
+
+    const UINT64 ldrSize = static_cast<UINT64>(m_filmPixels) * sizeof(uint32_t);
+    cl4->CopyBufferRegion(m_ldrReadbackBuf.Get(), 0, m_ldrBuf.Get(), 0, ldrSize);
+
+    ldrBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    ldrBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    cl4->ResourceBarrier(1, &ldrBarrier);
   } else {
-    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
-    cl4->ResourceBarrier(1, &rb);
+    filmBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    filmBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    cl4->ResourceBarrier(1, &filmBarrier);
   }
 
   cl4->Close();
@@ -2327,36 +2431,17 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   }
 
   if (doReadback) {
-    const float* src = reinterpret_cast<const float*>(m_filmReadbackPtr);
-    // Probe first few pixels to diagnose black frame
-    {
-      float maxVal = 0.0f;
-      uint32_t nonZero = 0u;
-      for (uint32_t p = 0u; p < std::min(m_filmPixels, 4096u) * 4u; p += 4u) {
-        float ch = std::max({src[p], src[p+1], src[p+2], std::abs(src[p+3])});
-        if (ch > 0.0f) { ++nonZero; maxVal = std::max(maxVal, ch); }
-      }
-      std::ostringstream ds;
-      ds << "dispatch_dxr_rays readback probe: nonZero=" << nonZero
-         << "/" << std::min(m_filmPixels, 4096u)
-         << " maxVal=" << maxVal
-         << " px0=(" << src[0] << "," << src[1] << "," << src[2] << "," << src[3] << ")";
-      LogDebug(ds.str());
-    }
-    m_film.resize(m_settings.width, m_settings.height);
-    m_film.clear();
-    for (uint32_t y = 0; y < m_settings.height; ++y) {
-      for (uint32_t x = 0; x < m_settings.width; ++x) {
-        const uint32_t p   = (y * m_settings.width + x) * 4u;
-        const float    cnt = std::max(1.0f, src[p + 3u]);
-        m_film.add_sample(x, y, {src[p]/cnt, src[p+1]/cnt, src[p+2]/cnt});
-      }
-    }
+    m_ldrResolve.width  = m_settings.width;
+    m_ldrResolve.height = m_settings.height;
+    m_ldrResolve.rgba8.resize(static_cast<size_t>(m_filmPixels) * 4u);
+    std::memcpy(m_ldrResolve.rgba8.data(), m_ldrReadbackPtr,
+                static_cast<size_t>(m_filmPixels) * 4u);
   }
-  const uint64_t inc = static_cast<uint64_t>(m_settings.width) * m_settings.height;
+  const uint64_t rpp = static_cast<uint64_t>(std::max(1u, m_raysPerPixelPerDispatch));
+  const uint64_t inc = static_cast<uint64_t>(m_settings.width) * m_settings.height * rpp;
   m_counters.samples += inc;
-  m_counters.rays    += inc * 4u;
-  m_lastSampleIdx     = sample_idx;
+  m_counters.rays    += inc;
+  m_lastSampleIdx     = sample_idx * m_raysPerPixelPerDispatch + (m_raysPerPixelPerDispatch - 1u);
   return true;
 }
 

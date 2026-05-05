@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <cmath>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "scene/Scene.h"
 
@@ -247,6 +249,22 @@ const char* ToString(UiPanelId id) {
       return "script_panel";
     case UiPanelId::MaterialEditor:
       return "material_editor";
+    case UiPanelId::LightsPanel:
+      return "lights_panel";
+    case UiPanelId::CameraPanel:
+      return "camera_panel";
+    case UiPanelId::RenderSettings:
+      return "render_settings";
+    case UiPanelId::Diagnostics:
+      return "diagnostics";
+    case UiPanelId::Performance:
+      return "performance";
+    case UiPanelId::DebugViews:
+      return "debug_views";
+    case UiPanelId::Timeline:
+      return "timeline";
+    case UiPanelId::Physics:
+      return "physics";
     case UiPanelId::Console:
       return "console";
     case UiPanelId::StatusBar:
@@ -255,6 +273,8 @@ const char* ToString(UiPanelId id) {
       return "viewport";
     case UiPanelId::MenuBar:
       return "menu_bar";
+    case UiPanelId::Toolbar:
+      return "toolbar";
     case UiPanelId::Unknown:
       return "unknown";
     default:
@@ -311,6 +331,27 @@ const char* ToString(ViewportTool tool) {
     case ViewportTool::None:
     default:
       return "none";
+  }
+}
+
+const char* ToString(UiDockArea area) {
+  switch (area) {
+    case UiDockArea::Top:
+      return "top";
+    case UiDockArea::Left:
+      return "left";
+    case UiDockArea::Right:
+      return "right";
+    case UiDockArea::Bottom:
+      return "bottom";
+    case UiDockArea::Center:
+      return "center";
+    case UiDockArea::Status:
+      return "status";
+    case UiDockArea::Floating:
+      return "floating";
+    default:
+      return "left";
   }
 }
 
@@ -790,6 +831,68 @@ void ApplyEditSelectionRules(MenuItem& edit_menu, const SelectionState& selectio
   }
 }
 
+UiPanelState MakePanelStateFromDefinition(const UiPanelDefinition& definition) {
+  UiPanelState state;
+  state.id = definition.id;
+  state.visible = definition.default_visible;
+  state.docked = definition.default_area != UiDockArea::Floating;
+  state.floating = definition.default_area == UiDockArea::Floating;
+  state.closable = definition.can_close;
+  state.collapsible = definition.can_dock;
+  state.collapsed = false;
+  state.focused = definition.default_area == UiDockArea::Center;
+  state.resized = true;
+  state.movable = definition.can_dock || definition.can_float;
+  state.width = definition.default_width;
+  state.height = definition.default_height;
+  return state;
+}
+
+UiPanelState* FindPanelById(std::vector<UiPanelState>& panels, std::string_view panel_id) {
+  const auto it = std::find_if(panels.begin(), panels.end(),
+                               [panel_id](const UiPanelState& panel) {
+                                 return panel.id == panel_id;
+                               });
+  if (it == panels.end()) {
+    return nullptr;
+  }
+  return &(*it);
+}
+
+void PlacePanel(std::vector<UiPanelState>& panels,
+                std::string_view panel_id,
+                bool visible,
+                float x,
+                float y,
+                float width,
+                float height,
+                bool collapsed = false) {
+  if (auto* panel = FindPanelById(panels, panel_id)) {
+    panel->visible = visible;
+    panel->x = x;
+    panel->y = y;
+    panel->width = width;
+    panel->height = height;
+    panel->collapsed = collapsed;
+  }
+}
+
+void SetPanelVisibleIfPresent(std::vector<UiPanelState>& panels, std::string_view panel_id, bool visible) {
+  if (auto* panel = FindPanelById(panels, panel_id)) {
+    panel->visible = visible;
+  }
+}
+
+std::vector<UiPanelState> BuildAllPanelStates() {
+  const auto definitions = BuildDefaultPanelDefinitions();
+  std::vector<UiPanelState> panels;
+  panels.reserve(definitions.size());
+  for (const auto& definition : definitions) {
+    panels.push_back(MakePanelStateFromDefinition(definition));
+  }
+  return panels;
+}
+
 }  // namespace
 
 UiLayoutDocument CreateDefaultLayout() {
@@ -797,80 +900,95 @@ UiLayoutDocument CreateDefaultLayout() {
 }
 
 std::vector<UiPanelState> BuildDefaultPanelStates(LayoutPreset preset) {
+  auto panels = BuildAllPanelStates();
+  for (auto& panel : panels) {
+    panel.visible = false;
+    panel.collapsed = false;
+    panel.focused = false;
+  }
+
+  auto placeShell = [&](bool chromeVisible) {
+    PlacePanel(panels, "menu_bar", chromeVisible, 0.0f, 0.0f, 1280.0f, 28.0f);
+    PlacePanel(panels, "toolbar", chromeVisible, 0.0f, 28.0f, 1280.0f, 36.0f);
+    PlacePanel(panels, "status_bar", chromeVisible, 0.0f, 1048.0f, 1280.0f, 32.0f);
+  };
+
   switch (preset) {
     case LayoutPreset::Benchmark:
-      return {
-        {"scene_tree", true, true, false, false, true, true, false, true, true, 0.0f, 0.0f, 260.0f, 360.0f},
-        {"inspector", true, true, true, true, true, false, false, true, true, 0.0f, 360.0f, 260.0f, 360.0f},
-        {"asset_browser", false, true, true, true, true, false, false, true, true, 0.0f, 720.0f, 260.0f, 280.0f},
-        {"benchmark_panel", true, true, true, true, true, false, false, true, true, 260.0f, 0.0f, 1020.0f, 360.0f},
-        {"console", true, true, true, true, true, false, false, true, true, 260.0f, 720.0f, 500.0f, 220.0f},
-        {"status_bar", false, true, false, false, false, false, false, false, false, 0.0f, 0.0f, 1280.0f, 26.0f},
-        {"viewport", true, true, false, false, false, false, true, true, true, 0.0f, 0.0f, 1020.0f, 1080.0f}
-      };
+      placeShell(true);
+      PlacePanel(panels, "scene_tree", true, 0.0f, 64.0f, 260.0f, 360.0f);
+      PlacePanel(panels, "inspector", true, 0.0f, 424.0f, 260.0f, 300.0f);
+      PlacePanel(panels, "viewport", true, 260.0f, 64.0f, 620.0f, 660.0f);
+      PlacePanel(panels, "benchmark_panel", true, 880.0f, 64.0f, 400.0f, 330.0f);
+      PlacePanel(panels, "benchmark_history", true, 880.0f, 394.0f, 400.0f, 330.0f);
+      PlacePanel(panels, "performance", true, 260.0f, 724.0f, 500.0f, 324.0f);
+      PlacePanel(panels, "diagnostics", true, 760.0f, 724.0f, 520.0f, 324.0f);
+      break;
     case LayoutPreset::MaterialAuthoring:
-      return {
-        {"scene_tree", true, true, false, false, true, true, false, true, true, 0.0f, 0.0f, 260.0f, 360.0f},
-        {"inspector", true, true, true, true, true, false, false, true, true, 0.0f, 360.0f, 260.0f, 360.0f},
-        {"material_editor", true, true, true, true, true, false, false, true, true, 260.0f, 0.0f, 220.0f, 480.0f},
-        {"asset_browser", false, true, true, true, true, false, false, true, true, 260.0f, 480.0f, 220.0f, 240.0f},
-        {"console", true, true, true, true, true, false, false, true, true, 480.0f, 720.0f, 260.0f, 220.0f},
-        {"status_bar", false, true, false, false, false, false, false, false, false, 0.0f, 0.0f, 1280.0f, 26.0f},
-        {"viewport", true, true, false, false, false, false, true, true, true, 0.0f, 0.0f, 760.0f, 1080.0f}
-      };
+      placeShell(true);
+      PlacePanel(panels, "scene_tree", true, 0.0f, 64.0f, 260.0f, 360.0f);
+      PlacePanel(panels, "inspector", true, 0.0f, 424.0f, 260.0f, 300.0f);
+      PlacePanel(panels, "viewport", true, 260.0f, 64.0f, 560.0f, 660.0f);
+      PlacePanel(panels, "material_editor", true, 820.0f, 64.0f, 460.0f, 250.0f);
+      PlacePanel(panels, "lights_panel", true, 820.0f, 314.0f, 230.0f, 220.0f);
+      PlacePanel(panels, "camera_panel", true, 1050.0f, 314.0f, 230.0f, 220.0f);
+      PlacePanel(panels, "render_settings", true, 820.0f, 534.0f, 460.0f, 190.0f);
+      PlacePanel(panels, "asset_browser", true, 260.0f, 724.0f, 660.0f, 324.0f);
+      PlacePanel(panels, "console", true, 920.0f, 724.0f, 360.0f, 324.0f);
+      break;
     case LayoutPreset::Scripting:
-      return {
-        {"scene_tree", true, true, false, false, true, true, false, true, true, 0.0f, 0.0f, 260.0f, 360.0f},
-        {"inspector", true, true, true, true, true, false, false, true, true, 0.0f, 360.0f, 260.0f, 360.0f},
-        {"asset_browser", false, true, true, true, true, false, false, true, true, 0.0f, 720.0f, 260.0f, 200.0f},
-        {"script_panel", true, true, true, true, true, false, false, true, true, 260.0f, 0.0f, 300.0f, 720.0f},
-        {"console", true, true, true, true, true, false, false, true, true, 560.0f, 720.0f, 380.0f, 200.0f},
-        {"status_bar", false, true, false, false, false, false, false, false, false, 0.0f, 0.0f, 1280.0f, 26.0f},
-        {"viewport", true, true, false, false, false, false, true, true, true, 0.0f, 0.0f, 760.0f, 1080.0f}
-      };
+      placeShell(true);
+      PlacePanel(panels, "scene_tree", true, 0.0f, 64.0f, 260.0f, 360.0f);
+      PlacePanel(panels, "inspector", true, 0.0f, 424.0f, 260.0f, 300.0f);
+      PlacePanel(panels, "script_panel", true, 260.0f, 64.0f, 420.0f, 660.0f);
+      PlacePanel(panels, "diagnostics", true, 680.0f, 64.0f, 300.0f, 320.0f);
+      PlacePanel(panels, "asset_browser", true, 680.0f, 384.0f, 300.0f, 340.0f);
+      PlacePanel(panels, "console", true, 260.0f, 724.0f, 1020.0f, 324.0f);
+      PlacePanel(panels, "viewport", true, 980.0f, 64.0f, 300.0f, 660.0f);
+      break;
     case LayoutPreset::AssetManagement:
-      return {
-        {"scene_tree", true, true, false, false, true, true, false, true, true, 0.0f, 0.0f, 260.0f, 360.0f},
-        {"asset_browser", true, true, true, true, true, false, false, true, true, 0.0f, 360.0f, 260.0f, 360.0f},
-        {"inspector", false, true, true, true, true, false, false, true, true, 0.0f, 720.0f, 260.0f, 280.0f},
-        {"status_bar", false, true, false, false, false, false, false, false, false, 0.0f, 0.0f, 1280.0f, 26.0f},
-        {"console", true, true, true, true, true, false, false, true, true, 260.0f, 720.0f, 500.0f, 220.0f},
-        {"viewport", true, true, false, false, false, false, true, true, true, 0.0f, 0.0f, 1020.0f, 1080.0f}
-      };
+      placeShell(true);
+      PlacePanel(panels, "scene_tree", true, 0.0f, 64.0f, 260.0f, 360.0f);
+      PlacePanel(panels, "asset_browser", true, 260.0f, 64.0f, 700.0f, 660.0f);
+      PlacePanel(panels, "inspector", true, 960.0f, 64.0f, 320.0f, 360.0f);
+      PlacePanel(panels, "diagnostics", true, 960.0f, 424.0f, 320.0f, 300.0f);
+      PlacePanel(panels, "console", true, 260.0f, 724.0f, 1020.0f, 324.0f);
+      PlacePanel(panels, "viewport", true, 0.0f, 424.0f, 260.0f, 300.0f);
+      break;
     case LayoutPreset::DebugProfiler:
-      return {
-        {"scene_tree", true, true, false, false, true, true, false, true, true, 0.0f, 0.0f, 260.0f, 360.0f},
-        {"inspector", true, true, true, true, true, false, false, true, true, 0.0f, 360.0f, 260.0f, 360.0f},
-        {"console", true, true, true, true, true, false, false, true, true, 260.0f, 0.0f, 420.0f, 480.0f},
-        {"benchmark_panel", true, true, true, true, true, false, false, true, true, 680.0f, 0.0f, 360.0f, 480.0f},
-        {"status_bar", false, true, false, false, false, false, false, false, false, 0.0f, 0.0f, 1280.0f, 26.0f},
-        {"viewport", true, true, false, false, false, false, true, true, true, 0.0f, 0.0f, 1040.0f, 1080.0f}
-      };
+      placeShell(true);
+      PlacePanel(panels, "scene_tree", true, 0.0f, 64.0f, 260.0f, 320.0f);
+      PlacePanel(panels, "inspector", true, 0.0f, 384.0f, 260.0f, 340.0f);
+      PlacePanel(panels, "diagnostics", true, 260.0f, 64.0f, 340.0f, 330.0f);
+      PlacePanel(panels, "performance", true, 600.0f, 64.0f, 340.0f, 330.0f);
+      PlacePanel(panels, "debug_views", true, 940.0f, 64.0f, 340.0f, 330.0f);
+      PlacePanel(panels, "render_settings", true, 940.0f, 394.0f, 340.0f, 330.0f);
+      PlacePanel(panels, "console", true, 260.0f, 724.0f, 1020.0f, 324.0f);
+      PlacePanel(panels, "viewport", true, 260.0f, 394.0f, 680.0f, 330.0f);
+      break;
     case LayoutPreset::MinimalViewport:
-      return {
-        {"status_bar", false, true, false, false, false, false, false, false, false, 0.0f, 0.0f, 1280.0f, 26.0f},
-        {"viewport", true, true, false, false, false, false, true, true, true, 0.0f, 0.0f, 1280.0f, 1054.0f},
-        {"scene_tree", false, true, true, true, true, false, false, true, true, 0.0f, 0.0f, 260.0f, 360.0f}
-      };
+      PlacePanel(panels, "viewport", true, 0.0f, 0.0f, 1280.0f, 1080.0f);
+      SetPanelVisibleIfPresent(panels, "status_bar", false);
+      break;
     case LayoutPreset::FullscreenViewportWithOverlay:
-      return {
-        {"viewport", true, true, false, false, false, false, true, true, true, 0.0f, 0.0f, 1280.0f, 1080.0f},
-        {"status_bar", false, true, false, false, false, false, false, false, false, 0.0f, 0.0f, 1280.0f, 26.0f},
-        {"console", false, true, true, true, true, false, false, true, true, 0.0f, 1054.0f, 1280.0f, 26.0f},
-        {"inspector", false, true, true, true, true, false, false, true, true, 1020.0f, 0.0f, 260.0f, 360.0f}
-      };
+      PlacePanel(panels, "viewport", true, 0.0f, 0.0f, 1280.0f, 1080.0f);
+      PlacePanel(panels, "status_bar", false, 0.0f, 1048.0f, 1280.0f, 32.0f);
+      PlacePanel(panels, "console", false, 0.0f, 844.0f, 1280.0f, 204.0f);
+      PlacePanel(panels, "inspector", false, 960.0f, 64.0f, 320.0f, 480.0f);
+      break;
     case LayoutPreset::Default:
     default:
-      return {
-        {"scene_tree", true, true, false, false, true, true, false, true, true, 0.0f, 0.0f, 280.0f, 360.0f},
-        {"inspector", true, true, true, true, true, false, false, true, true, 0.0f, 360.0f, 280.0f, 360.0f},
-        {"asset_browser", true, true, true, true, true, false, false, true, true, 0.0f, 720.0f, 280.0f, 360.0f},
-        {"benchmark_panel", false, true, true, true, true, false, false, true, true, 280.0f, 720.0f, 320.0f, 360.0f},
-        {"console", true, true, true, true, true, false, false, true, true, 280.0f, 1080.0f, 280.0f, 220.0f},
-        {"status_bar", false, true, false, false, false, false, false, false, false, 0.0f, 0.0f, 1280.0f, 26.0f},
-        {"viewport", true, true, false, false, false, false, true, true, true, 280.0f, 0.0f, 1000.0f, 720.0f}
-      };
+      placeShell(true);
+      PlacePanel(panels, "scene_tree", true, 0.0f, 64.0f, 280.0f, 500.0f);
+      PlacePanel(panels, "asset_browser", true, 0.0f, 564.0f, 280.0f, 484.0f);
+      PlacePanel(panels, "inspector", true, 960.0f, 64.0f, 320.0f, 360.0f);
+      PlacePanel(panels, "render_settings", true, 960.0f, 424.0f, 320.0f, 300.0f);
+      PlacePanel(panels, "console", true, 280.0f, 724.0f, 1000.0f, 324.0f);
+      PlacePanel(panels, "viewport", true, 280.0f, 64.0f, 680.0f, 660.0f);
+      break;
   }
+
+  return panels;
 }
 
 UiLayoutDocument CreateLayoutPreset(LayoutPreset preset) {
@@ -930,8 +1048,23 @@ MenuBar BuildDefaultMenuBar() {
   top.back().children.push_back(MenuItemNode("edit.command_history", "Command History"));
 
   top.push_back(MenuItemNode("view", "View"));
-  top.back().children.push_back(MenuItemNode("view.panels", "Panels"));
-  top.back().children.push_back(MenuItemNode("view.layouts", "Layouts"));
+  MenuItem panelsMenu = MenuItemNode("view.panels", "Panels");
+  for (const auto& panel : BuildDefaultPanelDefinitions()) {
+    if (panel.can_close || panel.default_area == UiDockArea::Bottom || panel.default_area == UiDockArea::Right ||
+        panel.default_area == UiDockArea::Left) {
+      panelsMenu.children.push_back(MenuItemNode(panel.menu_action_id, panel.title));
+    }
+  }
+  top.back().children.push_back(std::move(panelsMenu));
+  MenuItem layoutsMenu = MenuItemNode("view.layouts", "Layouts");
+  layoutsMenu.children.push_back(MenuItemNode("view.layout.default", "Default"));
+  layoutsMenu.children.push_back(MenuItemNode("view.layout.benchmark", "Benchmark"));
+  layoutsMenu.children.push_back(MenuItemNode("view.layout.material_authoring", "Material Authoring"));
+  layoutsMenu.children.push_back(MenuItemNode("view.layout.scripting", "Scripting"));
+  layoutsMenu.children.push_back(MenuItemNode("view.layout.asset_management", "Asset Management"));
+  layoutsMenu.children.push_back(MenuItemNode("view.layout.debug_profiler", "Debug/Profiler"));
+  layoutsMenu.children.push_back(MenuItemNode("view.layout.minimal_viewport", "Minimal Viewport"));
+  top.back().children.push_back(std::move(layoutsMenu));
   top.back().children.push_back(MenuItemNode("view.overlays", "Overlays"));
   top.back().children.push_back(MenuItemNode("view.debug_views", "Debug Views"));
   top.back().children.push_back(MenuItemNode("view.fullscreen", "Fullscreen"));
@@ -1431,16 +1564,46 @@ bool DetectShortcutConflicts(const std::vector<UiShortcutAction>& shortcuts) {
 
 std::vector<UiPanelDefinition> BuildDefaultPanelDefinitions() {
   return {
-    {"viewport", "Viewport", "view.panel.viewport", true, true, false, false, 960.0f, 540.0f},
-    {"scene_tree", "Scene Tree", "view.panel.scene_tree", true, true, true, true, 280.0f, 600.0f},
-    {"inspector", "Inspector", "view.panel.inspector", true, true, true, true, 360.0f, 600.0f},
-    {"asset_browser", "Asset Browser", "view.panel.asset_browser", true, true, true, true, 720.0f, 260.0f},
-    {"material_editor", "Material Editor", "view.panel.material_editor", false, true, true, true, 520.0f, 420.0f},
-    {"script_panel", "Scripts", "view.panel.script_panel", false, true, true, true, 520.0f, 420.0f},
-    {"benchmark_panel", "Benchmark", "view.panel.benchmark", false, true, true, true, 560.0f, 480.0f},
-    {"benchmark_history", "Benchmark History", "view.panel.benchmark_history", false, true, true, true, 680.0f, 360.0f},
-    {"console", "Console", "view.panel.console", true, true, true, true, 720.0f, 260.0f},
-    {"status_bar", "Status Bar", "view.panel.status_bar", true, false, false, false, 1280.0f, 28.0f},
+    {"menu_bar", "Menu Bar", "view.panel.menu_bar", true, false, false, false, 1280.0f, 28.0f,
+     UiDockArea::Top, "chrome", 0, "chrome", "Application menus and command routing."},
+    {"toolbar", "Toolbar", "view.panel.toolbar", true, false, false, false, 1280.0f, 36.0f,
+     UiDockArea::Top, "chrome", 1, "chrome", "Primary viewport and editing commands."},
+    {"viewport", "Viewport", "view.panel.viewport", true, true, false, false, 960.0f, 540.0f,
+     UiDockArea::Center, "center", 10, "viewport", "Interactive render viewport."},
+    {"scene_tree", "Scene Graph", "view.panel.scene_tree", true, true, true, true, 280.0f, 600.0f,
+     UiDockArea::Left, "scene", 20, "scene_tree", "Hierarchy, visibility, lock, and selection state."},
+    {"inspector", "Inspector", "view.panel.inspector", true, true, true, true, 360.0f, 600.0f,
+     UiDockArea::Right, "properties", 30, "inspector", "Selected entity and component properties."},
+    {"material_editor", "Materials", "view.panel.material_editor", false, true, true, true, 520.0f, 420.0f,
+     UiDockArea::Right, "properties", 40, "materials", "Material assignment and shader parameters."},
+    {"lights_panel", "Lights", "view.panel.lights", false, true, true, true, 360.0f, 360.0f,
+     UiDockArea::Right, "properties", 50, "lights", "Light list and selected light controls."},
+    {"camera_panel", "Camera", "view.panel.camera", false, true, true, true, 360.0f, 320.0f,
+     UiDockArea::Right, "properties", 60, "camera", "Camera pose, lens, and navigation settings."},
+    {"render_settings", "Render Settings", "view.panel.render_settings", true, true, true, true, 380.0f, 420.0f,
+     UiDockArea::Right, "properties", 70, "render_settings", "Renderer backend, quality, accumulation, and tone mapping."},
+    {"benchmark_panel", "Benchmark", "view.panel.benchmark", false, true, true, true, 560.0f, 480.0f,
+     UiDockArea::Right, "benchmark", 80, "benchmark", "Benchmark descriptor and run controls."},
+    {"benchmark_history", "Benchmark History", "view.panel.benchmark_history", false, true, true, true, 680.0f, 360.0f,
+     UiDockArea::Bottom, "benchmark", 90, "benchmark_history", "Stored benchmark runs, artifacts, and regressions."},
+    {"diagnostics", "Diagnostics", "view.panel.diagnostics", false, true, true, true, 520.0f, 300.0f,
+     UiDockArea::Bottom, "debug", 100, "diagnostics", "Warnings, errors, import diagnostics, and event log filters."},
+    {"performance", "Performance", "view.panel.performance", false, true, true, true, 520.0f, 300.0f,
+     UiDockArea::Bottom, "debug", 110, "performance", "Frame timing, job pressure, memory, and UI budget."},
+    {"debug_views", "Debug Views", "view.panel.debug_views", false, true, true, true, 420.0f, 320.0f,
+     UiDockArea::Right, "debug", 120, "debug_views", "Renderer debug channels and visualization toggles."},
+    {"asset_browser", "Asset Browser", "view.panel.asset_browser", true, true, true, true, 720.0f, 260.0f,
+     UiDockArea::Bottom, "assets", 130, "asset_browser", "Asset search, validation, import, and assignment."},
+    {"timeline", "Timeline", "view.panel.timeline", false, true, true, true, 720.0f, 220.0f,
+     UiDockArea::Bottom, "animation", 140, "timeline", "Animation timeline and keyframe controls."},
+    {"script_panel", "Scripts", "view.panel.script_panel", false, true, true, true, 520.0f, 420.0f,
+     UiDockArea::Right, "scripting", 150, "scripts", "Script attachment, lifecycle events, and sandbox settings."},
+    {"physics", "Physics", "view.panel.physics", false, true, true, true, 420.0f, 360.0f,
+     UiDockArea::Right, "simulation", 160, "physics", "Physics bodies, colliders, and simulation properties."},
+    {"console", "Console", "view.panel.console", true, true, true, true, 720.0f, 260.0f,
+     UiDockArea::Bottom, "debug", 170, "console", "Command log and textual diagnostics."},
+    {"status_bar", "Status Bar", "view.panel.status_bar", true, false, false, false, 1280.0f, 28.0f,
+     UiDockArea::Status, "chrome", 180, "status", "Scene, renderer, performance, and selection summary."},
   };
 }
 
@@ -1449,18 +1612,126 @@ std::vector<InspectorFieldSchema> BuildDefaultInspectorSchemas() {
     {"transform.position", "Position", "Transform", InspectorControlKind::Vector3, true, true, -100000.0f, 100000.0f, 0.01f, {}},
     {"transform.rotation", "Rotation", "Transform", InspectorControlKind::Vector3, true, true, -360.0f, 360.0f, 0.1f, {}},
     {"transform.scale", "Scale", "Transform", InspectorControlKind::Vector3, true, true, 0.0001f, 10000.0f, 0.01f, {}},
+    {"transform.visible", "Visible", "Transform", InspectorControlKind::Toggle, true, true, 0.0f, 1.0f, 1.0f, {}},
+    {"transform.locked", "Locked", "Transform", InspectorControlKind::Toggle, true, true, 0.0f, 1.0f, 1.0f, {}},
     {"material.id", "Material", "Material", InspectorControlKind::AssetPicker, true, true, 0.0f, 0.0f, 0.0f, {}},
     {"material.base_color", "Base Color", "Material", InspectorControlKind::Color, true, true, 0.0f, 1.0f, 0.01f, {}},
+    {"material.opacity", "Opacity", "Material", InspectorControlKind::Slider, true, true, 0.0f, 1.0f, 0.01f, {}},
     {"material.roughness", "Roughness", "Material", InspectorControlKind::Slider, true, true, 0.0f, 1.0f, 0.01f, {}},
     {"material.metallic", "Metallic", "Material", InspectorControlKind::Slider, true, true, 0.0f, 1.0f, 0.01f, {}},
+    {"material.transmission", "Transmission", "Material", InspectorControlKind::Slider, true, true, 0.0f, 1.0f, 0.01f, {}},
+    {"material.ior", "Index of Refraction", "Material", InspectorControlKind::Number, true, true, 1.0f, 3.0f, 0.01f, {}},
+    {"material.emission_color", "Emission Color", "Material", InspectorControlKind::Color, true, true, 0.0f, 1.0f, 0.01f, {}},
+    {"material.emission_strength", "Emission Strength", "Material", InspectorControlKind::Number, true, true, 0.0f, 100000.0f, 0.1f, {}},
     {"light.type", "Type", "Light", InspectorControlKind::Enum, true, false, 0.0f, 0.0f, 0.0f, {"point", "sphere", "directional", "environment"}},
     {"light.intensity", "Intensity", "Light", InspectorControlKind::Number, true, true, 0.0f, 100000.0f, 0.1f, {}},
     {"light.color", "Color", "Light", InspectorControlKind::Color, true, true, 0.0f, 1.0f, 0.01f, {}},
+    {"light.radius", "Radius", "Light", InspectorControlKind::Number, true, true, 0.0f, 10000.0f, 0.01f, {}},
+    {"light.direction", "Direction", "Light", InspectorControlKind::Vector3, true, true, -1.0f, 1.0f, 0.01f, {}},
+    {"light.enabled", "Enabled", "Light", InspectorControlKind::Toggle, true, true, 0.0f, 1.0f, 1.0f, {}},
     {"camera.fov_y", "Vertical FOV", "Camera", InspectorControlKind::Slider, true, false, 1.0f, 179.0f, 0.1f, {}},
     {"camera.aperture", "Aperture", "Camera", InspectorControlKind::Number, true, false, 0.0f, 64.0f, 0.01f, {}},
     {"camera.focus_distance", "Focus Distance", "Camera", InspectorControlKind::Number, true, false, 0.001f, 100000.0f, 0.01f, {}},
+    {"camera.controller", "Controller", "Camera", InspectorControlKind::Enum, true, false, 0.0f, 0.0f, 0.0f, {"orbit", "fps", "turntable", "scripted_benchmark_path"}},
+    {"camera.exposure", "Exposure", "Camera", InspectorControlKind::Number, true, false, -16.0f, 16.0f, 0.1f, {}},
+    {"camera.white_balance", "White Balance", "Camera", InspectorControlKind::Number, true, false, 1000.0f, 40000.0f, 50.0f, {}},
+    {"render.backend", "Backend", "Render", InspectorControlKind::Enum, true, false, 0.0f, 0.0f, 0.0f, {"cpu_scalar", "cpu_simd", "vulkan", "d3d12"}},
+    {"render.renderer_path", "Renderer Path", "Render", InspectorControlKind::Enum, true, false, 0.0f, 0.0f, 0.0f, {"pathtracer", "hybrid", "reference"}},
+    {"render.samples_per_pixel", "Samples Per Pixel", "Render", InspectorControlKind::Number, true, false, 1.0f, 65536.0f, 1.0f, {}},
+    {"render.max_depth", "Max Bounces", "Render", InspectorControlKind::Number, true, false, 1.0f, 256.0f, 1.0f, {}},
+    {"render.accumulation", "Accumulate", "Render", InspectorControlKind::Toggle, true, false, 0.0f, 1.0f, 1.0f, {}},
+    {"render.denoiser", "Denoiser", "Render", InspectorControlKind::Toggle, true, false, 0.0f, 1.0f, 1.0f, {}},
+    {"render.tone_mapping", "Tone Mapping", "Render", InspectorControlKind::Enum, true, false, 0.0f, 0.0f, 0.0f, {"filmic", "aces", "linear", "reinhard"}},
+    {"render.debug_channel", "Debug Channel", "Debug", InspectorControlKind::Enum, true, false, 0.0f, 0.0f, 0.0f, {"beauty", "albedo", "normal", "depth", "variance", "heatmap"}},
+    {"render.reset_accumulation", "Reset Accumulation", "Render", InspectorControlKind::Toggle, true, false, 0.0f, 1.0f, 1.0f, {}},
+    {"benchmark.scene", "Scene", "Benchmark", InspectorControlKind::AssetPicker, true, false, 0.0f, 0.0f, 0.0f, {}},
+    {"benchmark.duration", "Duration", "Benchmark", InspectorControlKind::Number, true, false, 1.0f, 3600.0f, 1.0f, {}},
+    {"benchmark.warmup_frames", "Warmup Frames", "Benchmark", InspectorControlKind::Number, true, false, 0.0f, 10000.0f, 1.0f, {}},
+    {"benchmark.seed", "Seed", "Benchmark", InspectorControlKind::Number, true, false, 0.0f, 4294967295.0f, 1.0f, {}},
+    {"diagnostics.severity", "Severity", "Diagnostics", InspectorControlKind::Enum, true, false, 0.0f, 0.0f, 0.0f, {"trace", "info", "warning", "error"}},
+    {"diagnostics.subsystem", "Subsystem", "Diagnostics", InspectorControlKind::Enum, true, false, 0.0f, 0.0f, 0.0f, {"all", "render", "scene", "assets", "ui", "scripts"}},
+    {"diagnostics.auto_scroll", "Auto Scroll", "Diagnostics", InspectorControlKind::Toggle, true, false, 0.0f, 1.0f, 1.0f, {}},
+    {"performance.ui_frame_budget_ms", "UI Frame Budget", "Performance", InspectorControlKind::Number, true, false, 0.1f, 33.0f, 0.1f, {}},
+    {"performance.panel_build_budget_ms", "Panel Build Budget", "Performance", InspectorControlKind::Number, true, false, 0.1f, 16.0f, 0.1f, {}},
+    {"performance.thumbnail_jobs", "Thumbnail Jobs", "Performance", InspectorControlKind::Number, true, false, 0.0f, 64.0f, 1.0f, {}},
+    {"asset.query", "Search", "Asset", InspectorControlKind::Text, true, false, 0.0f, 0.0f, 0.0f, {}},
+    {"asset.category", "Category", "Asset", InspectorControlKind::Enum, true, false, 0.0f, 0.0f, 0.0f, {"all", "mesh", "texture", "material", "script", "scene"}},
+    {"asset.show_missing", "Show Missing", "Asset", InspectorControlKind::Toggle, true, false, 0.0f, 1.0f, 1.0f, {}},
     {"script.path", "Script", "Script", InspectorControlKind::AssetPicker, true, true, 0.0f, 0.0f, 0.0f, {}},
+    {"script.enabled", "Enabled", "Script", InspectorControlKind::Toggle, true, true, 0.0f, 1.0f, 1.0f, {}},
+    {"script.reload_on_save", "Reload on Save", "Script", InspectorControlKind::Toggle, true, true, 0.0f, 1.0f, 1.0f, {}},
+    {"timeline.current_frame", "Current Frame", "Timeline", InspectorControlKind::Number, true, false, 0.0f, 1000000.0f, 1.0f, {}},
+    {"timeline.playback_rate", "Playback Rate", "Timeline", InspectorControlKind::Number, true, false, 0.01f, 8.0f, 0.01f, {}},
+    {"physics.enabled", "Physics Enabled", "Physics", InspectorControlKind::Toggle, true, true, 0.0f, 1.0f, 1.0f, {}},
+    {"physics.body_type", "Body Type", "Physics", InspectorControlKind::Enum, true, true, 0.0f, 0.0f, 0.0f, {"static", "dynamic", "kinematic"}},
+    {"physics.mass", "Mass", "Physics", InspectorControlKind::Number, true, true, 0.0f, 100000.0f, 0.01f, {}},
+    {"physics.collision_shape", "Collision Shape", "Physics", InspectorControlKind::Enum, true, true, 0.0f, 0.0f, 0.0f, {"box", "sphere", "capsule", "mesh"}},
   };
+}
+
+std::vector<InspectorFieldSchema> BuildInspectorSchemasForPanel(std::string_view panel_id) {
+  const auto schemas = BuildDefaultInspectorSchemas();
+  if (panel_id == "inspector") {
+    return schemas;
+  }
+
+  std::vector<std::string_view> components;
+  if (panel_id == "material_editor") {
+    components = {"Material"};
+  } else if (panel_id == "lights_panel") {
+    components = {"Light"};
+  } else if (panel_id == "camera_panel") {
+    components = {"Camera"};
+  } else if (panel_id == "render_settings") {
+    components = {"Render"};
+  } else if (panel_id == "benchmark_panel" || panel_id == "benchmark_history") {
+    components = {"Benchmark"};
+  } else if (panel_id == "diagnostics" || panel_id == "console") {
+    components = {"Diagnostics"};
+  } else if (panel_id == "performance") {
+    components = {"Performance"};
+  } else if (panel_id == "debug_views") {
+    components = {"Debug"};
+  } else if (panel_id == "asset_browser") {
+    components = {"Asset"};
+  } else if (panel_id == "script_panel") {
+    components = {"Script"};
+  } else if (panel_id == "timeline") {
+    components = {"Timeline"};
+  } else if (panel_id == "physics") {
+    components = {"Physics"};
+  } else if (panel_id == "scene_tree" || panel_id == "viewport") {
+    components = {"Transform"};
+  }
+
+  std::vector<InspectorFieldSchema> filtered;
+  for (const auto& schema : schemas) {
+    const std::string_view component(schema.component.data(), schema.component.size());
+    if (std::find(components.begin(), components.end(), component) != components.end()) {
+      filtered.push_back(schema);
+    }
+  }
+  return filtered;
+}
+
+std::vector<UiPanelPropertyGroup> BuildDefaultPanelPropertyGroups() {
+  const auto definitions = BuildDefaultPanelDefinitions();
+  std::vector<UiPanelPropertyGroup> groups;
+  groups.reserve(definitions.size());
+  for (const auto& definition : definitions) {
+    auto fields = BuildInspectorSchemasForPanel(definition.id);
+    if (fields.empty()) {
+      continue;
+    }
+    UiPanelPropertyGroup group;
+    group.panel_id = definition.id;
+    group.group_id = definition.property_group_id.empty() ? definition.id : definition.property_group_id;
+    group.title = definition.title;
+    group.description = definition.status_hint;
+    group.fields = std::move(fields);
+    groups.push_back(std::move(group));
+  }
+  return groups;
 }
 
 std::vector<ScriptLifecycleHookState> BuildDefaultScriptLifecycleHooks() {
@@ -1512,6 +1783,134 @@ std::vector<UiReleaseGateItem> BuildDefaultUiReleaseGateChecklist() {
     checklist.push_back(std::move(item));
   }
   return checklist;
+}
+
+std::vector<SceneTreeRow> BuildSceneTreeRows(const std::vector<SceneTreeEntityModel>& entities,
+                                             const SelectionState& selection,
+                                             vkpt::core::StableId hovered_entity,
+                                             std::size_t max_rows) {
+  std::unordered_set<vkpt::core::StableId> known_ids;
+  known_ids.reserve(entities.size());
+  for (const auto& entity : entities) {
+    if (entity.entity_id != 0) {
+      known_ids.insert(entity.entity_id);
+    }
+  }
+
+  std::unordered_map<vkpt::core::StableId, const SceneTreeEntityModel*> by_id;
+  std::unordered_map<vkpt::core::StableId, std::vector<const SceneTreeEntityModel*>> children;
+  by_id.reserve(entities.size());
+  children.reserve(entities.size());
+  std::vector<const SceneTreeEntityModel*> roots;
+  roots.reserve(entities.size());
+  for (const auto& entity : entities) {
+    if (entity.entity_id == 0) {
+      continue;
+    }
+    by_id[entity.entity_id] = &entity;
+  }
+  for (const auto& entity : entities) {
+    if (entity.entity_id == 0) {
+      continue;
+    }
+    if (entity.parent_id == 0 || !known_ids.contains(entity.parent_id) || entity.parent_id == entity.entity_id) {
+      roots.push_back(&entity);
+    } else {
+      children[entity.parent_id].push_back(&entity);
+    }
+  }
+
+  auto sort_rows = [](std::vector<const SceneTreeEntityModel*>& rows) {
+    std::stable_sort(rows.begin(), rows.end(),
+                     [](const SceneTreeEntityModel* lhs, const SceneTreeEntityModel* rhs) {
+                       if (lhs->sibling_order != rhs->sibling_order) {
+                         return lhs->sibling_order < rhs->sibling_order;
+                       }
+                       return lhs->entity_id < rhs->entity_id;
+                     });
+  };
+  sort_rows(roots);
+  for (auto& entry : children) {
+    sort_rows(entry.second);
+  }
+
+  std::vector<SceneTreeRow> rows;
+  rows.reserve(max_rows == 0 ? entities.size() : std::min(max_rows, entities.size()));
+  const auto is_selected = [&](vkpt::core::StableId id) {
+    return std::find(selection.selected_entity_ids.begin(), selection.selected_entity_ids.end(), id) !=
+           selection.selected_entity_ids.end();
+  };
+  const auto is_hovered = [&](vkpt::core::StableId id) {
+    if (hovered_entity != 0 && hovered_entity == id) {
+      return true;
+    }
+    if (selection.hovered_entity == id) {
+      return true;
+    }
+    return std::find(selection.hovered_entity_ids.begin(), selection.hovered_entity_ids.end(), id) !=
+           selection.hovered_entity_ids.end();
+  };
+
+  std::unordered_set<vkpt::core::StableId> visiting;
+  auto append_tree = [&](auto&& self, const SceneTreeEntityModel* entity, std::uint32_t depth) -> void {
+    if (!entity || (max_rows != 0 && rows.size() >= max_rows)) {
+      return;
+    }
+    const bool cycle = !visiting.insert(entity->entity_id).second;
+    const auto childIt = children.find(entity->entity_id);
+    const bool hasChildren = childIt != children.end() && !childIt->second.empty();
+    SceneTreeRow row;
+    row.entity_id = entity->entity_id;
+    row.parent_id = entity->parent_id;
+    row.depth = depth;
+    row.sibling_order = entity->sibling_order;
+    row.label = entity->name.empty()
+        ? std::string("Entity ") + std::to_string(entity->entity_id)
+        : entity->name;
+    row.component_badges = entity->component_badges;
+    if (std::find(entity->component_badges.begin(), entity->component_badges.end(), "camera") !=
+        entity->component_badges.end()) {
+      row.icon = "camera";
+    } else if (std::find(entity->component_badges.begin(), entity->component_badges.end(), "light") !=
+               entity->component_badges.end()) {
+      row.icon = "light";
+    } else if (std::find(entity->component_badges.begin(), entity->component_badges.end(), "mesh") !=
+               entity->component_badges.end()) {
+      row.icon = "mesh";
+    } else if (std::find(entity->component_badges.begin(), entity->component_badges.end(), "sdf") !=
+               entity->component_badges.end()) {
+      row.icon = "sdf";
+    } else {
+      row.icon = "entity";
+    }
+    row.expanded = entity->expanded;
+    row.selected = is_selected(entity->entity_id);
+    row.hovered = is_hovered(entity->entity_id);
+    row.hidden = !entity->visible;
+    row.locked = entity->locked;
+    row.has_warning = cycle ||
+                      (entity->parent_id != 0 && !known_ids.contains(entity->parent_id)) ||
+                      entity->parent_id == entity->entity_id;
+    row.has_children = hasChildren;
+    rows.push_back(std::move(row));
+    if (!cycle && entity->expanded && hasChildren) {
+      for (const auto* child : childIt->second) {
+        self(self, child, depth + 1u);
+        if (max_rows != 0 && rows.size() >= max_rows) {
+          break;
+        }
+      }
+    }
+    visiting.erase(entity->entity_id);
+  };
+
+  for (const auto* root : roots) {
+    append_tree(append_tree, root, 0u);
+    if (max_rows != 0 && rows.size() >= max_rows) {
+      break;
+    }
+  }
+  return rows;
 }
 
 ShortcutResolution ResolveShortcut(const std::vector<UiShortcut>& shortcuts,
@@ -1766,6 +2165,130 @@ std::string SerializeMenuBar(const MenuBar& menu) {
   for (std::size_t i = 0; i < menu.top_level_menus.size(); ++i) {
     if (i > 0) out << ",";
     serialize_item(menu.top_level_menus[i], serialize_item, 0, out);
+  }
+  out << "]}";
+  return out.str();
+}
+
+namespace {
+
+const char* InspectorControlKindName(InspectorControlKind kind) {
+  switch (kind) {
+    case InspectorControlKind::Text:
+      return "text";
+    case InspectorControlKind::Number:
+      return "number";
+    case InspectorControlKind::Slider:
+      return "slider";
+    case InspectorControlKind::Toggle:
+      return "toggle";
+    case InspectorControlKind::Vector3:
+      return "vector3";
+    case InspectorControlKind::Color:
+      return "color";
+    case InspectorControlKind::EntityPicker:
+      return "entity_picker";
+    case InspectorControlKind::AssetPicker:
+      return "asset_picker";
+    case InspectorControlKind::Enum:
+      return "enum";
+    default:
+      return "text";
+  }
+}
+
+void WriteStringArrayJson(std::ostringstream& out, const std::vector<std::string>& values) {
+  out << "[";
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (i > 0) {
+      out << ",";
+    }
+    out << "\"" << EscapeJson(values[i]) << "\"";
+  }
+  out << "]";
+}
+
+void WriteInspectorFieldSchemaJson(std::ostringstream& out, const InspectorFieldSchema& schema) {
+  out << "{";
+  out << "\"field_id\":\"" << EscapeJson(schema.field_id) << "\",";
+  out << "\"label\":\"" << EscapeJson(schema.label) << "\",";
+  out << "\"component\":\"" << EscapeJson(schema.component) << "\",";
+  out << "\"control\":\"" << InspectorControlKindName(schema.control) << "\",";
+  out << "\"editable\":" << (schema.editable ? "true" : "false") << ",";
+  out << "\"supports_mixed_values\":" << (schema.supports_mixed_values ? "true" : "false") << ",";
+  out << "\"min_value\":" << schema.min_value << ",";
+  out << "\"max_value\":" << schema.max_value << ",";
+  out << "\"step\":" << schema.step << ",";
+  out << "\"enum_values\":";
+  WriteStringArrayJson(out, schema.enum_values);
+  out << "}";
+}
+
+}  // namespace
+
+std::string SerializePanelDefinitions(const std::vector<UiPanelDefinition>& panels) {
+  std::ostringstream out;
+  out << "{\"panels\":[";
+  for (std::size_t i = 0; i < panels.size(); ++i) {
+    const auto& panel = panels[i];
+    if (i > 0) {
+      out << ",";
+    }
+    out << "{";
+    out << "\"id\":\"" << EscapeJson(panel.id) << "\",";
+    out << "\"title\":\"" << EscapeJson(panel.title) << "\",";
+    out << "\"menu_action_id\":\"" << EscapeJson(panel.menu_action_id) << "\",";
+    out << "\"default_visible\":" << (panel.default_visible ? "true" : "false") << ",";
+    out << "\"can_dock\":" << (panel.can_dock ? "true" : "false") << ",";
+    out << "\"can_float\":" << (panel.can_float ? "true" : "false") << ",";
+    out << "\"can_close\":" << (panel.can_close ? "true" : "false") << ",";
+    out << "\"default_width\":" << panel.default_width << ",";
+    out << "\"default_height\":" << panel.default_height << ",";
+    out << "\"default_area\":\"" << ToString(panel.default_area) << "\",";
+    out << "\"tab_group\":\"" << EscapeJson(panel.tab_group) << "\",";
+    out << "\"sort_order\":" << panel.sort_order << ",";
+    out << "\"property_group_id\":\"" << EscapeJson(panel.property_group_id) << "\",";
+    out << "\"status_hint\":\"" << EscapeJson(panel.status_hint) << "\"";
+    out << "}";
+  }
+  out << "]}";
+  return out.str();
+}
+
+std::string SerializeInspectorSchemas(const std::vector<InspectorFieldSchema>& schemas) {
+  std::ostringstream out;
+  out << "{\"fields\":[";
+  for (std::size_t i = 0; i < schemas.size(); ++i) {
+    if (i > 0) {
+      out << ",";
+    }
+    WriteInspectorFieldSchemaJson(out, schemas[i]);
+  }
+  out << "]}";
+  return out.str();
+}
+
+std::string SerializePanelPropertyGroups(const std::vector<UiPanelPropertyGroup>& groups) {
+  std::ostringstream out;
+  out << "{\"groups\":[";
+  for (std::size_t i = 0; i < groups.size(); ++i) {
+    const auto& group = groups[i];
+    if (i > 0) {
+      out << ",";
+    }
+    out << "{";
+    out << "\"panel_id\":\"" << EscapeJson(group.panel_id) << "\",";
+    out << "\"group_id\":\"" << EscapeJson(group.group_id) << "\",";
+    out << "\"title\":\"" << EscapeJson(group.title) << "\",";
+    out << "\"description\":\"" << EscapeJson(group.description) << "\",";
+    out << "\"fields\":[";
+    for (std::size_t field_index = 0; field_index < group.fields.size(); ++field_index) {
+      if (field_index > 0) {
+        out << ",";
+      }
+      WriteInspectorFieldSchemaJson(out, group.fields[field_index]);
+    }
+    out << "]}";
   }
   out << "]}";
   return out.str();
@@ -2069,6 +2592,34 @@ bool LoadLayoutFromFile(const std::string& path, UiLayoutDocument* out_layout) {
   }
   if (layout.panels.empty()) {
     layout = CreateLayoutPreset(layout.preset);
+  } else {
+    const auto default_panels = BuildDefaultPanelStates(layout.preset);
+    for (const auto& default_panel : default_panels) {
+      const auto exists = std::find_if(layout.panels.begin(), layout.panels.end(),
+                                       [&](const UiPanelState& panel) {
+                                         return panel.id == default_panel.id;
+                                       });
+      if (exists == layout.panels.end()) {
+        layout.panels.push_back(default_panel);
+      }
+    }
+    if (layout.panel_order.empty()) {
+      for (const auto& panel : layout.panels) {
+        if (panel.visible) {
+          layout.panel_order.push_back(panel.id);
+        }
+      }
+    } else {
+      for (const auto& panel : layout.panels) {
+        if (!panel.visible) {
+          continue;
+        }
+        const auto in_order = std::find(layout.panel_order.begin(), layout.panel_order.end(), panel.id);
+        if (in_order == layout.panel_order.end()) {
+          layout.panel_order.push_back(panel.id);
+        }
+      }
+    }
   }
   *out_layout = layout;
   return true;

@@ -618,6 +618,116 @@ Vec3 matrix_translation(const Mat4& matrix) {
   return {matrix.values[12], matrix.values[13], matrix.values[14]};
 }
 
+std::optional<Mat4> inverse_affine_matrix(const Mat4& matrix) {
+  const float a00 = matrix.values[0];
+  const float a01 = matrix.values[4];
+  const float a02 = matrix.values[8];
+  const float a10 = matrix.values[1];
+  const float a11 = matrix.values[5];
+  const float a12 = matrix.values[9];
+  const float a20 = matrix.values[2];
+  const float a21 = matrix.values[6];
+  const float a22 = matrix.values[10];
+
+  const float c00 = a11 * a22 - a12 * a21;
+  const float c01 = a02 * a21 - a01 * a22;
+  const float c02 = a01 * a12 - a02 * a11;
+  const float det = a00 * c00 + a10 * c01 + a20 * c02;
+  if (!std::isfinite(det) || std::abs(det) <= 1.0e-8f) {
+    return std::nullopt;
+  }
+  const float inv_det = 1.0f / det;
+
+  Mat4 out = identity_matrix();
+  out.values[0] = c00 * inv_det;
+  out.values[4] = c01 * inv_det;
+  out.values[8] = c02 * inv_det;
+  out.values[1] = (a12 * a20 - a10 * a22) * inv_det;
+  out.values[5] = (a00 * a22 - a02 * a20) * inv_det;
+  out.values[9] = (a02 * a10 - a00 * a12) * inv_det;
+  out.values[2] = (a10 * a21 - a11 * a20) * inv_det;
+  out.values[6] = (a01 * a20 - a00 * a21) * inv_det;
+  out.values[10] = (a00 * a11 - a01 * a10) * inv_det;
+
+  const Vec3 t = matrix_translation(matrix);
+  out.values[12] = -(out.values[0] * t.x + out.values[4] * t.y + out.values[8] * t.z);
+  out.values[13] = -(out.values[1] * t.x + out.values[5] * t.y + out.values[9] * t.z);
+  out.values[14] = -(out.values[2] * t.x + out.values[6] * t.y + out.values[10] * t.z);
+  return out;
+}
+
+float column_length(const Mat4& matrix, std::size_t column) {
+  const std::size_t base = column * 4u;
+  return std::sqrt(matrix.values[base + 0u] * matrix.values[base + 0u] +
+                   matrix.values[base + 1u] * matrix.values[base + 1u] +
+                   matrix.values[base + 2u] * matrix.values[base + 2u]);
+}
+
+Quat quat_from_rotation_matrix(const Mat4& matrix) {
+  const float m00 = matrix.values[0];
+  const float m01 = matrix.values[4];
+  const float m02 = matrix.values[8];
+  const float m10 = matrix.values[1];
+  const float m11 = matrix.values[5];
+  const float m12 = matrix.values[9];
+  const float m20 = matrix.values[2];
+  const float m21 = matrix.values[6];
+  const float m22 = matrix.values[10];
+  const float trace = m00 + m11 + m22;
+  Quat q{};
+  if (trace > 0.0f) {
+    const float s = std::sqrt(trace + 1.0f) * 2.0f;
+    q.w = 0.25f * s;
+    q.x = (m21 - m12) / s;
+    q.y = (m02 - m20) / s;
+    q.z = (m10 - m01) / s;
+  } else if (m00 > m11 && m00 > m22) {
+    const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+    q.w = (m21 - m12) / s;
+    q.x = 0.25f * s;
+    q.y = (m01 + m10) / s;
+    q.z = (m02 + m20) / s;
+  } else if (m11 > m22) {
+    const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+    q.w = (m02 - m20) / s;
+    q.x = (m01 + m10) / s;
+    q.y = 0.25f * s;
+    q.z = (m12 + m21) / s;
+  } else {
+    const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+    q.w = (m10 - m01) / s;
+    q.x = (m02 + m20) / s;
+    q.y = (m12 + m21) / s;
+    q.z = 0.25f * s;
+  }
+  return normalize_quat(q);
+}
+
+TransformComponent transform_from_matrix(const Mat4& matrix) {
+  TransformComponent out;
+  out.translation = matrix_translation(matrix);
+  out.scale = {
+      column_length(matrix, 0u),
+      column_length(matrix, 1u),
+      column_length(matrix, 2u)};
+  Mat4 rotation = matrix;
+  for (std::size_t column = 0u; column < 3u; ++column) {
+    const float scale = column == 0u ? out.scale.x : (column == 1u ? out.scale.y : out.scale.z);
+    if (scale > 1.0e-8f && std::isfinite(scale)) {
+      const std::size_t base = column * 4u;
+      rotation.values[base + 0u] /= scale;
+      rotation.values[base + 1u] /= scale;
+      rotation.values[base + 2u] /= scale;
+    }
+  }
+  rotation.values[12] = 0.0f;
+  rotation.values[13] = 0.0f;
+  rotation.values[14] = 0.0f;
+  out.rotation = quat_from_rotation_matrix(rotation);
+  out.dirty = true;
+  return out;
+}
+
 bool finite_vec3(const Vec3& value) {
   return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
 }
@@ -941,6 +1051,7 @@ bool SceneWorld::destroy_entity(vkpt::core::StableId id) {
   for (auto& parentChildren : m_children) {
     parentChildren.second.erase(std::remove(parentChildren.second.begin(), parentChildren.second.end(), id),
                                parentChildren.second.end());
+    normalize_sibling_order(parentChildren.first);
   }
   m_transformAuthority.erase(id);
   m_worldTransforms.erase(id);
@@ -1025,7 +1136,9 @@ bool SceneWorld::assign_camera(vkpt::core::StableId id, const CameraComponent& c
   return true;
 }
 
-bool SceneWorld::set_hierarchy_parent(vkpt::core::StableId child, vkpt::core::StableId parent) {
+bool SceneWorld::set_hierarchy_parent(vkpt::core::StableId child,
+                                      vkpt::core::StableId parent,
+                                      std::uint32_t sibling_order) {
   auto* childRecord = get_entity(child);
   if (!childRecord) {
     return false;
@@ -1037,24 +1150,134 @@ bool SceneWorld::set_hierarchy_parent(vkpt::core::StableId child, vkpt::core::St
     return false;
   }
   const vkpt::core::StableId previous = childRecord->hierarchy ? childRecord->hierarchy->parent : 0;
+  if (previous == parent && sibling_order == UINT32_MAX) {
+    return true;
+  }
   if (previous != 0) {
     auto prev = m_children.find(previous);
     if (prev != m_children.end()) {
       prev->second.erase(std::remove(prev->second.begin(), prev->second.end(), child), prev->second.end());
+      normalize_sibling_order(previous);
     }
   }
   if (parent == 0) {
     childRecord->hierarchy.reset();
   } else {
-    childRecord->hierarchy = HierarchyComponent{parent};
+    childRecord->hierarchy = HierarchyComponent{parent, 0};
     auto& list = m_children[parent];
-    if (std::find(list.begin(), list.end(), child) == list.end()) {
-      list.push_back(child);
-      std::sort(list.begin(), list.end());
-    }
+    list.erase(std::remove(list.begin(), list.end(), child), list.end());
+    const auto insert_index = sibling_order == UINT32_MAX
+        ? list.size()
+        : std::min<std::size_t>(list.size(), sibling_order);
+    list.insert(list.begin() + static_cast<std::ptrdiff_t>(insert_index), child);
+    normalize_sibling_order(parent);
   }
   mark_dirty_recursive(child);
   return true;
+}
+
+bool SceneWorld::reparent_entity(vkpt::core::StableId child,
+                                 vkpt::core::StableId parent,
+                                 bool preserve_world_transform) {
+  auto* childRecord = get_entity(child);
+  if (!childRecord) {
+    return false;
+  }
+
+  std::optional<TransformComponent> preservedLocalTransform;
+  if (preserve_world_transform && childRecord->transform.has_value()) {
+    const auto before = compute_world_transform_unchecked(childRecord);
+    Mat4 localMatrix = before.world_matrix;
+    if (parent != 0) {
+      const auto* parentRecord = get_entity(parent);
+      if (!parentRecord) {
+        return false;
+      }
+      const auto parentWorld = compute_world_transform_unchecked(parentRecord);
+      const auto parentInverse = inverse_affine_matrix(parentWorld.world_matrix);
+      if (!parentInverse.has_value()) {
+        return false;
+      }
+      localMatrix = multiply_matrix(parentInverse.value(), before.world_matrix);
+    }
+    preservedLocalTransform = transform_from_matrix(localMatrix);
+  }
+
+  if (!set_hierarchy_parent(child, parent)) {
+    return false;
+  }
+  if (preservedLocalTransform.has_value()) {
+    if (auto* updated = get_entity(child)) {
+      updated->transform = preservedLocalTransform.value();
+      mark_dirty_recursive(child);
+    }
+  }
+  return true;
+}
+
+bool SceneWorld::reorder_entity(vkpt::core::StableId moved,
+                                vkpt::core::StableId sibling_before,
+                                vkpt::core::StableId sibling_after) {
+  if (!entity_exists(moved) || sibling_before == moved || sibling_after == moved ||
+      (sibling_before != 0 && !entity_exists(sibling_before)) ||
+      (sibling_after != 0 && !entity_exists(sibling_after))) {
+    return false;
+  }
+  const auto parent = parent_of(moved);
+  if ((sibling_before != 0 && parent_of(sibling_before) != parent) ||
+      (sibling_after != 0 && parent_of(sibling_after) != parent)) {
+    return false;
+  }
+
+  auto reorder_in_list = [&](std::vector<vkpt::core::StableId>& list) {
+    auto movedIt = std::find(list.begin(), list.end(), moved);
+    if (movedIt == list.end()) {
+      list.push_back(moved);
+      movedIt = std::prev(list.end());
+    }
+    list.erase(movedIt);
+    auto insertIt = list.end();
+    if (sibling_before != 0) {
+      const auto beforeIt = std::find(list.begin(), list.end(), sibling_before);
+      if (beforeIt == list.end()) {
+        return false;
+      }
+      insertIt = std::next(beforeIt);
+    } else if (sibling_after != 0) {
+      insertIt = std::find(list.begin(), list.end(), sibling_after);
+      if (insertIt == list.end()) {
+        return false;
+      }
+    }
+    list.insert(insertIt, moved);
+    return true;
+  };
+
+  if (parent == 0) {
+    if (!reorder_in_list(m_entities_order)) {
+      return false;
+    }
+  } else {
+    auto& siblings = m_children[parent];
+    if (!reorder_in_list(siblings)) {
+      return false;
+    }
+    normalize_sibling_order(parent);
+  }
+  return true;
+}
+
+bool SceneWorld::destroy_subtree(vkpt::core::StableId id) {
+  if (!entity_exists(id)) {
+    return false;
+  }
+  auto children = children_of(id);
+  for (const auto child : children) {
+    if (!destroy_subtree(child)) {
+      return false;
+    }
+  }
+  return destroy_entity(id);
 }
 
 bool SceneWorld::set_component(vkpt::core::StableId id, ComponentKind kind, const ComponentVariant& component) {
@@ -1081,7 +1304,7 @@ bool SceneWorld::add_component(vkpt::core::StableId id, ComponentKind kind, cons
       return false;
     case ComponentKind::Hierarchy:
       if (const auto* value = std::get_if<HierarchyComponent>(&component)) {
-        return set_hierarchy_parent(id, value->parent);
+        return set_hierarchy_parent(id, value->parent, value->sibling_order);
       }
       return false;
     case ComponentKind::Camera:
@@ -1163,6 +1386,7 @@ bool SceneWorld::remove_component(vkpt::core::StableId id, ComponentKind kind) {
         if (parentIt != m_children.end()) {
           parentIt->second.erase(std::remove(parentIt->second.begin(), parentIt->second.end(), id),
                                  parentIt->second.end());
+          normalize_sibling_order(record->hierarchy->parent);
         }
       }
       record->hierarchy.reset();
@@ -1218,6 +1442,32 @@ SceneWorld::EntityRecord* SceneWorld::get_entity(vkpt::core::StableId id) {
 
 const std::vector<vkpt::core::StableId>& SceneWorld::all_entities() const {
   return m_entities_order;
+}
+
+std::vector<vkpt::core::StableId> SceneWorld::children_of(vkpt::core::StableId parent) const {
+  std::vector<vkpt::core::StableId> out;
+  if (parent == 0) {
+    out.reserve(m_entities_order.size());
+    for (const auto id : m_entities_order) {
+      const auto* entity = get_entity(id);
+      if (entity && (!entity->hierarchy.has_value() || entity->hierarchy->parent == 0)) {
+        out.push_back(id);
+      }
+    }
+    return out;
+  }
+
+  const auto it = m_children.find(parent);
+  if (it == m_children.end()) {
+    return out;
+  }
+  out.reserve(it->second.size());
+  for (const auto child : it->second) {
+    if (entity_exists(child)) {
+      out.push_back(child);
+    }
+  }
+  return out;
 }
 
 std::vector<vkpt::core::StableId> SceneWorld::query(ComponentKind kind) const {
@@ -1366,6 +1616,32 @@ bool SceneWorld::is_ancestor(vkpt::core::StableId ancestor, vkpt::core::StableId
     it = m_entities.find(parent);
   }
   return false;
+}
+
+vkpt::core::StableId SceneWorld::parent_of(vkpt::core::StableId id) const {
+  const auto* entity = get_entity(id);
+  if (!entity || !entity->hierarchy.has_value()) {
+    return 0;
+  }
+  return entity->hierarchy->parent;
+}
+
+void SceneWorld::normalize_sibling_order(vkpt::core::StableId parent) {
+  auto it = m_children.find(parent);
+  if (it == m_children.end()) {
+    return;
+  }
+  auto& children = it->second;
+  children.erase(std::remove_if(children.begin(), children.end(),
+                                [&](vkpt::core::StableId child) {
+                                  return !entity_exists(child) || parent_of(child) != parent;
+                                }),
+                 children.end());
+  for (std::size_t i = 0; i < children.size(); ++i) {
+    if (auto* child = get_entity(children[i]); child && child->hierarchy.has_value()) {
+      child->hierarchy->sibling_order = static_cast<std::uint32_t>(i);
+    }
+  }
 }
 
 void SceneWorld::recompute_world_transforms() {
@@ -1558,15 +1834,22 @@ void SceneWorld::clear() {
   m_nextHandle = 1;
 }
 
-void WorldCommandBuffer::add_create_entity(std::string_view name, vkpt::core::StableId stable_hint) {
+void WorldCommandBuffer::add_create_entity(std::string_view name,
+                                           vkpt::core::StableId stable_hint,
+                                           vkpt::core::StableId requested_parent) {
   CreateEntityCommand cmd;
   cmd.name = std::string(name);
   cmd.requested_id = stable_hint;
+  cmd.requested_parent = requested_parent;
   m_commands.push_back({CommandType::CreateEntity, cmd});
 }
 
 void WorldCommandBuffer::add_destroy_entity(vkpt::core::StableId id) {
-  m_commands.push_back({CommandType::DestroyEntity, DestroyEntityCommand{id}});
+  m_commands.push_back({CommandType::DestroyEntity, DestroyEntityCommand{id, false}});
+}
+
+void WorldCommandBuffer::add_destroy_subtree(vkpt::core::StableId id) {
+  m_commands.push_back({CommandType::DestroyEntity, DestroyEntityCommand{id, true}});
 }
 
 void WorldCommandBuffer::add_set_component(vkpt::core::StableId id, ComponentKind kind, ComponentVariant component) {
@@ -1595,6 +1878,18 @@ void WorldCommandBuffer::add_set_transform(vkpt::core::StableId id,
   m_commands.push_back({CommandType::SetTransform, cmd});
 }
 
+void WorldCommandBuffer::add_reparent_entity(vkpt::core::StableId child,
+                                             vkpt::core::StableId parent,
+                                             bool preserve_world_transform) {
+  m_commands.push_back({CommandType::ReparentEntity, ReparentEntityCommand{child, parent, preserve_world_transform}});
+}
+
+void WorldCommandBuffer::add_reorder_sibling(vkpt::core::StableId moved,
+                                             vkpt::core::StableId sibling_before,
+                                             vkpt::core::StableId sibling_after) {
+  m_commands.push_back({CommandType::ReorderSibling, ReorderSiblingCommand{moved, sibling_before, sibling_after}});
+}
+
 void WorldCommandBuffer::add_assign_material(vkpt::core::StableId id, vkpt::core::StableId material_id) {
   m_commands.push_back({CommandType::AssignMaterial, AssignMaterialCommand{id, material_id}});
 }
@@ -1612,9 +1907,11 @@ vkpt::core::Result<void> WorldCommandBuffer::replay(SceneWorld& world) const {
     bool ok = std::visit([&](const auto& payload) -> bool {
       using T = std::decay_t<decltype(payload)>;
       if constexpr (std::is_same_v<T, CreateEntityCommand>) {
-        return world.create_entity(payload.name, payload.requested_id) != 0;
+        const auto created = world.create_entity(payload.name, payload.requested_id);
+        return created != 0 && (payload.requested_parent == 0 ||
+                                world.set_hierarchy_parent(created, payload.requested_parent));
       } else if constexpr (std::is_same_v<T, DestroyEntityCommand>) {
-        return world.destroy_entity(payload.id);
+        return payload.destroy_children ? world.destroy_subtree(payload.id) : world.destroy_entity(payload.id);
       } else if constexpr (std::is_same_v<T, SetComponentCommand>) {
         return world.set_component(payload.id, payload.kind, payload.component);
       } else if constexpr (std::is_same_v<T, AddComponentCommand>) {
@@ -1623,6 +1920,10 @@ vkpt::core::Result<void> WorldCommandBuffer::replay(SceneWorld& world) const {
         return world.remove_component(payload.id, payload.kind);
       } else if constexpr (std::is_same_v<T, SetTransformCommand>) {
         return world.set_transform(payload.id, payload.transform, payload.authority, payload.writer, payload.frame);
+      } else if constexpr (std::is_same_v<T, ReparentEntityCommand>) {
+        return world.reparent_entity(payload.child, payload.parent, payload.preserve_world_transform);
+      } else if constexpr (std::is_same_v<T, ReorderSiblingCommand>) {
+        return world.reorder_entity(payload.moved, payload.sibling_before, payload.sibling_after);
       } else if constexpr (std::is_same_v<T, AssignMaterialCommand>) {
         return world.assign_material(payload.id, payload.material_id);
       } else if constexpr (std::is_same_v<T, AssignLightCommand>) {
@@ -1706,6 +2007,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       SceneMaterialDefinition material;
       read_u64(item, "id", material.id);
       read_string(item, "name", material.name);
+      read_string(item, "family", material.family);
       if (material.id == 0) {
         material.id = allocate_id(usedIds);
       }
@@ -1720,6 +2022,14 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         read_float(item, "emission_intensity", material.emission_intensity);
       }
       read_float(item, "roughness", material.roughness);
+      read_float(item, "metallic", material.metallic);
+      read_float(item, "ior", material.ior);
+      read_float(item, "transmission", material.transmission);
+      read_float(item, "clearcoat", material.clearcoat);
+      read_float(item, "sheen", material.sheen);
+      read_float(item, "anisotropy", material.anisotropy);
+      read_float(item, "alpha", material.alpha);
+      read_bool(item, "double_sided", material.double_sided);
       doc.materials.push_back(std::move(material));
     }
   }
@@ -1803,11 +2113,41 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         read_u64(meshNode->second, "mesh_id", entity.mesh.mesh_id);
         read_u64(meshNode->second, "material_id", entity.mesh.material_id);
       }
+      if (const auto sdfNode = item.object.find("sdf_primitive"); sdfNode != item.object.end()) {
+        entity.has_sdf_primitive = true;
+        read_string(sdfNode->second, "shape", entity.sdf_primitive.shape);
+        read_float(sdfNode->second, "radius", entity.sdf_primitive.radius);
+        read_float(sdfNode->second, "param_a", entity.sdf_primitive.param_a);
+        read_float(sdfNode->second, "param_b", entity.sdf_primitive.param_b);
+      }
       if (const auto hierarchyNode = item.object.find("hierarchy"); hierarchyNode != item.object.end()) {
+        entity.has_hierarchy = true;
         read_u64(hierarchyNode->second, "parent", entity.hierarchy.parent);
+        read_u32(hierarchyNode->second, "sibling_order", entity.hierarchy.sibling_order);
       }
       if (const auto materialNode = item.object.find("material"); materialNode != item.object.end()) {
         read_u64(materialNode->second, "id", entity.material.material_id);
+      }
+      if (const auto physicsNode = item.object.find("physics"); physicsNode != item.object.end()) {
+        entity.has_physics_body = true;
+        read_bool(physicsNode->second, "enabled", entity.physics_body.enabled);
+        read_float(physicsNode->second, "mass", entity.physics_body.mass);
+        read_bool(physicsNode->second, "dynamic", entity.physics_body.dynamic);
+        read_string(physicsNode->second, "body_type", entity.physics_body.body_type);
+        read_string(physicsNode->second, "shape", entity.physics_body.shape);
+        read_float(physicsNode->second, "friction", entity.physics_body.friction);
+        read_float(physicsNode->second, "restitution", entity.physics_body.restitution);
+        read_float(physicsNode->second, "gravity_scale", entity.physics_body.gravity_scale);
+        read_bool(physicsNode->second, "trigger", entity.physics_body.trigger);
+        read_bool(physicsNode->second, "allow_sleeping", entity.physics_body.allow_sleeping);
+        read_bool(physicsNode->second, "continuous_collision", entity.physics_body.continuous_collision);
+        if (entity.physics_body.body_type == "dynamic") {
+          entity.physics_body.dynamic = true;
+        } else if (entity.physics_body.body_type == "static" || entity.physics_body.body_type == "kinematic") {
+          entity.physics_body.dynamic = false;
+        } else {
+          entity.physics_body.body_type = entity.physics_body.dynamic ? "dynamic" : "static";
+        }
       }
       if (const auto animNode = item.object.find("animation"); animNode != item.object.end()) {
         read_string(animNode->second, "clip", entity.animation.clip);
@@ -1817,6 +2157,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         read_string(scriptNode->second, "source", entity.script.script);
       }
       if (const auto benchmarkNode = item.object.find("benchmark"); benchmarkNode != item.object.end()) {
+        entity.has_benchmark_tag = true;
         read_bool(benchmarkNode->second, "enabled", entity.benchmark_tag.enabled);
       }
       doc.entities.push_back(std::move(entity));
@@ -1931,8 +2272,32 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
     if (!finite_vec3(material.albedo) || !finite_vec3(material.emission)) {
       report("material contains non-finite color " + std::to_string(material.id));
     }
+    if (material.family.empty()) {
+      report("material family is empty " + std::to_string(material.id));
+    }
     if (!std::isfinite(material.roughness) || material.roughness < 0.0f || material.roughness > 1.0f) {
       report("material roughness out of range " + std::to_string(material.id));
+    }
+    if (!std::isfinite(material.metallic) || material.metallic < 0.0f || material.metallic > 1.0f) {
+      report("material metallic out of range " + std::to_string(material.id));
+    }
+    if (!std::isfinite(material.ior) || material.ior <= 0.0f) {
+      report("material ior out of range " + std::to_string(material.id));
+    }
+    if (!std::isfinite(material.transmission) || material.transmission < 0.0f || material.transmission > 1.0f) {
+      report("material transmission out of range " + std::to_string(material.id));
+    }
+    if (!std::isfinite(material.clearcoat) || material.clearcoat < 0.0f || material.clearcoat > 1.0f) {
+      report("material clearcoat out of range " + std::to_string(material.id));
+    }
+    if (!std::isfinite(material.sheen) || material.sheen < 0.0f || material.sheen > 1.0f) {
+      report("material sheen out of range " + std::to_string(material.id));
+    }
+    if (!std::isfinite(material.anisotropy) || material.anisotropy < -1.0f || material.anisotropy > 1.0f) {
+      report("material anisotropy out of range " + std::to_string(material.id));
+    }
+    if (!std::isfinite(material.alpha) || material.alpha < 0.0f || material.alpha > 1.0f) {
+      report("material alpha out of range " + std::to_string(material.id));
     }
     if (!std::isfinite(material.emission_intensity) || material.emission_intensity < 0.0f) {
       report("material emission intensity out of range " + std::to_string(material.id));
@@ -2016,8 +2381,33 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
         report("entity references missing material " + std::to_string(entity.mesh.material_id));
       }
     }
+    if (entity.has_sdf_primitive) {
+      if (entity.sdf_primitive.shape.empty()) {
+        report("entity sdf primitive shape is empty " + std::to_string(entity.id));
+      }
+      if (!std::isfinite(entity.sdf_primitive.radius) || entity.sdf_primitive.radius < 0.0f) {
+        report("entity sdf primitive radius is invalid " + std::to_string(entity.id));
+      }
+    }
     if (entity.material.material_id != 0 && !materialIds.empty() && !materialIds.contains(entity.material.material_id)) {
       report("entity material override references missing material " + std::to_string(entity.material.material_id));
+    }
+    if (entity.has_physics_body) {
+      if (entity.physics_body.shape.empty()) {
+        report("entity physics shape is empty " + std::to_string(entity.id));
+      }
+      if (!std::isfinite(entity.physics_body.mass) || entity.physics_body.mass <= 0.0f) {
+        report("entity physics mass is invalid " + std::to_string(entity.id));
+      }
+      if (!std::isfinite(entity.physics_body.friction) || entity.physics_body.friction < 0.0f) {
+        report("entity physics friction is invalid " + std::to_string(entity.id));
+      }
+      if (!std::isfinite(entity.physics_body.restitution) || entity.physics_body.restitution < 0.0f) {
+        report("entity physics restitution is invalid " + std::to_string(entity.id));
+      }
+      if (!std::isfinite(entity.physics_body.gravity_scale)) {
+        report("entity physics gravity scale is invalid " + std::to_string(entity.id));
+      }
     }
     if (entity.has_camera &&
         (!std::isfinite(entity.camera.fov) || entity.camera.fov <= 0.0f ||
@@ -2100,6 +2490,9 @@ vkpt::core::Result<SceneWorld> SceneDocument::to_world() const {
     if (!id) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
+  }
+  for (const auto& entity : entities) {
+    const auto id = entity.id;
     if (entity.has_transform && !world.set_component(id, ComponentKind::Transform, entity.transform)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
@@ -2112,18 +2505,25 @@ vkpt::core::Result<SceneWorld> SceneDocument::to_world() const {
     if (entity.has_mesh && !world.set_component(id, ComponentKind::MeshRenderer, entity.mesh)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
+    if (entity.has_sdf_primitive && !world.set_component(id, ComponentKind::SdfPrimitive, entity.sdf_primitive)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
+    }
     if (entity.material.material_id != 0 && !world.set_component(id, ComponentKind::MaterialOverride, entity.material)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
-    if (entity.hierarchy.parent != 0 && !world.set_hierarchy_parent(id, entity.hierarchy.parent)) {
+    if (entity.has_hierarchy && !world.set_hierarchy_parent(id, entity.hierarchy.parent, entity.hierarchy.sibling_order)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::InvalidArgument);
+    }
+    if (entity.has_physics_body && !world.set_component(id, ComponentKind::PhysicsBody, entity.physics_body)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
     if (!entity.animation.clip.empty() && !world.set_component(id, ComponentKind::Animation, entity.animation)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
-    if (!entity.script.script.empty() &&
-        (!world.set_component(id, ComponentKind::Script, entity.script) ||
-         !world.set_component(id, ComponentKind::BenchmarkTag, entity.benchmark_tag))) {
+    if (!entity.script.script.empty() && !world.set_component(id, ComponentKind::Script, entity.script)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
+    }
+    if (entity.has_benchmark_tag && !world.set_component(id, ComponentKind::BenchmarkTag, entity.benchmark_tag)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
   }
@@ -2163,32 +2563,265 @@ vkpt::core::Result<void> SceneDocument::apply_to_world(SceneWorld& world) const 
 }
 
 std::string SceneDocument::to_json(bool pretty) const {
+  auto bool_value = [](bool v) {
+    JsonValue value;
+    value.kind = JsonValue::Kind::Boolean;
+    value.boolean = v;
+    return value;
+  };
+  auto number_value = [](double v) {
+    JsonValue value;
+    value.kind = JsonValue::Kind::Number;
+    value.number = v;
+    return value;
+  };
+  auto string_value = [](std::string_view v) {
+    JsonValue value;
+    value.kind = JsonValue::Kind::String;
+    value.string = std::string(v);
+    return value;
+  };
+  auto array_value = []() {
+    JsonValue value;
+    value.kind = JsonValue::Kind::Array;
+    return value;
+  };
+  auto object_value = []() {
+    JsonValue value;
+    value.kind = JsonValue::Kind::Object;
+    return value;
+  };
+  auto vec3_value = [&](const Vec3& v) {
+    JsonValue value = array_value();
+    value.array.push_back(number_value(v.x));
+    value.array.push_back(number_value(v.y));
+    value.array.push_back(number_value(v.z));
+    return value;
+  };
+  auto quat_value = [&](const Quat& v) {
+    JsonValue value = array_value();
+    value.array.push_back(number_value(v.x));
+    value.array.push_back(number_value(v.y));
+    value.array.push_back(number_value(v.z));
+    value.array.push_back(number_value(v.w));
+    return value;
+  };
+  auto transform_value = [&](const TransformComponent& transform) {
+    JsonValue value = object_value();
+    value.object["translation"] = vec3_value(transform.translation);
+    value.object["rotation"] = quat_value(transform.rotation);
+    value.object["scale"] = vec3_value(transform.scale);
+    return value;
+  };
+
   JsonValue root;
   root.kind = JsonValue::Kind::Object;
-  root.object["schema"] = JsonValue{JsonValue::Kind::String, false, 0.0, "1.0", {}, {}};
+  root.object["schema"] = string_value("1.0");
 
   JsonValue metadataNode;
   metadataNode.kind = JsonValue::Kind::Object;
-  metadataNode.object["schema"] = JsonValue{JsonValue::Kind::String, false, 0.0, metadata.schema, {}, {}};
-  metadataNode.object["scene_name"] = JsonValue{JsonValue::Kind::String, false, 0.0, metadata.scene_name, {}, {}};
-  metadataNode.object["author"] = JsonValue{JsonValue::Kind::String, false, 0.0, metadata.author, {}, {}};
-  metadataNode.object["created"] = JsonValue{JsonValue::Kind::String, false, 0.0, metadata.created, {}, {}};
+  metadataNode.object["schema"] = string_value(metadata.schema);
+  metadataNode.object["scene_name"] = string_value(metadata.scene_name);
+  metadataNode.object["author"] = string_value(metadata.author);
+  metadataNode.object["created"] = string_value(metadata.created);
   root.object["metadata"] = metadataNode;
 
-  root.object["assets"] = JsonValue{JsonValue::Kind::Array, false, 0.0, "", {}, {}};
-  root.object["materials"] = JsonValue{JsonValue::Kind::Array, false, 0.0, "", {}, {}};
-  root.object["geometry"] = JsonValue{JsonValue::Kind::Array, false, 0.0, "", {}, {}};
-  root.object["sdf_primitives"] = JsonValue{JsonValue::Kind::Array, false, 0.0, "", {}, {}};
-  root.object["entities"] = JsonValue{JsonValue::Kind::Array, false, 0.0, "", {}, {}};
-  root.object["transforms"] = JsonValue{JsonValue::Kind::Array, false, 0.0, "", {}, {}};
-  root.object["cameras"] = JsonValue{JsonValue::Kind::Array, false, 0.0, "", {}, {}};
-  root.object["lights"] = JsonValue{JsonValue::Kind::Array, false, 0.0, "", {}, {}};
+  JsonValue assetsNode = array_value();
+  for (const auto& asset : assets) {
+    JsonValue item = object_value();
+    item.object["id"] = number_value(static_cast<double>(asset.id));
+    item.object["type"] = string_value(asset.type);
+    item.object["uri"] = string_value(asset.uri);
+    assetsNode.array.push_back(std::move(item));
+  }
+  root.object["assets"] = std::move(assetsNode);
+
+  JsonValue materialsNode = array_value();
+  for (const auto& material : materials) {
+    JsonValue item = object_value();
+    item.object["id"] = number_value(static_cast<double>(material.id));
+    item.object["name"] = string_value(material.name);
+    item.object["family"] = string_value(material.family);
+    item.object["albedo"] = vec3_value(material.albedo);
+    item.object["roughness"] = number_value(material.roughness);
+    item.object["metallic"] = number_value(material.metallic);
+    item.object["ior"] = number_value(material.ior);
+    item.object["transmission"] = number_value(material.transmission);
+    item.object["clearcoat"] = number_value(material.clearcoat);
+    item.object["sheen"] = number_value(material.sheen);
+    item.object["anisotropy"] = number_value(material.anisotropy);
+    item.object["alpha"] = number_value(material.alpha);
+    item.object["double_sided"] = bool_value(material.double_sided);
+    item.object["emission"] = vec3_value(material.emission);
+    item.object["emission_intensity"] = number_value(material.emission_intensity);
+    materialsNode.array.push_back(std::move(item));
+  }
+  root.object["materials"] = std::move(materialsNode);
+
+  JsonValue geometryNode = array_value();
+  for (const auto& geometry_entry : geometry) {
+    JsonValue item = object_value();
+    item.object["id"] = number_value(static_cast<double>(geometry_entry.id));
+    item.object["primitive"] = string_value(geometry_entry.primitive);
+    item.object["material_id"] = number_value(static_cast<double>(geometry_entry.material_id));
+    JsonValue tagsNode = array_value();
+    for (const auto& tag : geometry_entry.tags) {
+      tagsNode.array.push_back(string_value(tag));
+    }
+    item.object["tags"] = std::move(tagsNode);
+    JsonValue verticesNode = array_value();
+    for (const auto& vertex : geometry_entry.vertices) {
+      verticesNode.array.push_back(vec3_value(vertex));
+    }
+    item.object["vertices"] = std::move(verticesNode);
+    JsonValue indicesNode = array_value();
+    for (const auto index : geometry_entry.indices) {
+      indicesNode.array.push_back(number_value(static_cast<double>(index)));
+    }
+    item.object["indices"] = std::move(indicesNode);
+    geometryNode.array.push_back(std::move(item));
+  }
+  root.object["geometry"] = std::move(geometryNode);
+
+  JsonValue sdfNode = array_value();
+  for (const auto& sdf : sdf_primitives) {
+    JsonValue item = object_value();
+    item.object["id"] = number_value(static_cast<double>(sdf.id));
+    item.object["shape"] = string_value(sdf.shape);
+    item.object["transform"] = transform_value(sdf.transform);
+    JsonValue primitiveNode = object_value();
+    primitiveNode.object["shape"] = string_value(sdf.primitive.shape);
+    primitiveNode.object["radius"] = number_value(sdf.primitive.radius);
+    primitiveNode.object["param_a"] = number_value(sdf.primitive.param_a);
+    primitiveNode.object["param_b"] = number_value(sdf.primitive.param_b);
+    item.object["primitive"] = std::move(primitiveNode);
+    sdfNode.array.push_back(std::move(item));
+  }
+  if (!sdfNode.array.empty()) {
+    root.object["sdf_primitives"] = std::move(sdfNode);
+  }
+
+  JsonValue entitiesNode = array_value();
+  for (const auto& entity : entities) {
+    JsonValue item = object_value();
+    item.object["id"] = number_value(static_cast<double>(entity.id));
+    item.object["name"] = string_value(entity.name);
+    if (entity.has_transform) {
+      item.object["transform"] = transform_value(entity.transform);
+    }
+    if (entity.has_camera) {
+      JsonValue cameraNode = object_value();
+      cameraNode.object["fov"] = number_value(entity.camera.fov);
+      cameraNode.object["near_plane"] = number_value(entity.camera.near_plane);
+      cameraNode.object["far_plane"] = number_value(entity.camera.far_plane);
+      item.object["camera"] = std::move(cameraNode);
+    }
+    if (entity.has_light) {
+      JsonValue lightNode = object_value();
+      lightNode.object["type"] = string_value(entity.light.type);
+      lightNode.object["color"] = vec3_value(entity.light.color);
+      lightNode.object["intensity"] = number_value(entity.light.intensity);
+      lightNode.object["radius"] = number_value(entity.light.radius);
+      item.object["light"] = std::move(lightNode);
+    }
+    if (entity.has_mesh) {
+      JsonValue meshNode = object_value();
+      meshNode.object["mesh_id"] = number_value(static_cast<double>(entity.mesh.mesh_id));
+      meshNode.object["material_id"] = number_value(static_cast<double>(entity.mesh.material_id));
+      item.object["mesh"] = std::move(meshNode);
+    }
+    if (entity.has_sdf_primitive) {
+      JsonValue sdfPrimitiveNode = object_value();
+      sdfPrimitiveNode.object["shape"] = string_value(entity.sdf_primitive.shape);
+      sdfPrimitiveNode.object["radius"] = number_value(entity.sdf_primitive.radius);
+      sdfPrimitiveNode.object["param_a"] = number_value(entity.sdf_primitive.param_a);
+      sdfPrimitiveNode.object["param_b"] = number_value(entity.sdf_primitive.param_b);
+      item.object["sdf_primitive"] = std::move(sdfPrimitiveNode);
+    }
+    if (entity.has_hierarchy || entity.hierarchy.parent != 0 || entity.hierarchy.sibling_order != 0) {
+      JsonValue hierarchyNode = object_value();
+      hierarchyNode.object["parent"] = number_value(static_cast<double>(entity.hierarchy.parent));
+      hierarchyNode.object["sibling_order"] = number_value(static_cast<double>(entity.hierarchy.sibling_order));
+      item.object["hierarchy"] = std::move(hierarchyNode);
+    }
+    if (entity.material.material_id != 0) {
+      JsonValue materialNode = object_value();
+      materialNode.object["id"] = number_value(static_cast<double>(entity.material.material_id));
+      item.object["material"] = std::move(materialNode);
+    }
+    if (entity.has_physics_body) {
+      JsonValue physicsNode = object_value();
+      physicsNode.object["enabled"] = bool_value(entity.physics_body.enabled);
+      physicsNode.object["mass"] = number_value(entity.physics_body.mass);
+      physicsNode.object["dynamic"] = bool_value(entity.physics_body.dynamic);
+      physicsNode.object["body_type"] = string_value(entity.physics_body.dynamic ? "dynamic" : entity.physics_body.body_type);
+      physicsNode.object["shape"] = string_value(entity.physics_body.shape);
+      physicsNode.object["friction"] = number_value(entity.physics_body.friction);
+      physicsNode.object["restitution"] = number_value(entity.physics_body.restitution);
+      physicsNode.object["gravity_scale"] = number_value(entity.physics_body.gravity_scale);
+      physicsNode.object["trigger"] = bool_value(entity.physics_body.trigger);
+      physicsNode.object["allow_sleeping"] = bool_value(entity.physics_body.allow_sleeping);
+      physicsNode.object["continuous_collision"] = bool_value(entity.physics_body.continuous_collision);
+      item.object["physics"] = std::move(physicsNode);
+    }
+    if (!entity.animation.clip.empty()) {
+      JsonValue animNode = object_value();
+      animNode.object["clip"] = string_value(entity.animation.clip);
+      animNode.object["looping"] = bool_value(entity.animation.looping);
+      item.object["animation"] = std::move(animNode);
+    }
+    if (!entity.script.script.empty()) {
+      JsonValue scriptNode = object_value();
+      scriptNode.object["source"] = string_value(entity.script.script);
+      item.object["script"] = std::move(scriptNode);
+    }
+    if (entity.has_benchmark_tag) {
+      JsonValue benchmarkTagNode = object_value();
+      benchmarkTagNode.object["enabled"] = bool_value(entity.benchmark_tag.enabled);
+      item.object["benchmark"] = std::move(benchmarkTagNode);
+    }
+    entitiesNode.array.push_back(std::move(item));
+  }
+  root.object["entities"] = std::move(entitiesNode);
+
+  JsonValue transformsNode = array_value();
+  for (const auto& transform : transforms) {
+    JsonValue item = object_value();
+    item.object["id"] = number_value(static_cast<double>(transform.id));
+    item.object["parent"] = number_value(static_cast<double>(transform.parent));
+    item.object["transform"] = transform_value(transform.transform);
+    transformsNode.array.push_back(std::move(item));
+  }
+  root.object["transforms"] = std::move(transformsNode);
+
+  JsonValue camerasNode = array_value();
+  for (const auto& camera : cameras) {
+    JsonValue item = object_value();
+    item.object["id"] = number_value(static_cast<double>(camera.id));
+    item.object["fov"] = number_value(camera.camera.fov);
+    item.object["near_plane"] = number_value(camera.camera.near_plane);
+    item.object["far_plane"] = number_value(camera.camera.far_plane);
+    camerasNode.array.push_back(std::move(item));
+  }
+  root.object["cameras"] = std::move(camerasNode);
+
+  JsonValue lightsNode = array_value();
+  for (const auto& light : lights) {
+    JsonValue item = object_value();
+    item.object["id"] = number_value(static_cast<double>(light.id));
+    item.object["type"] = string_value(light.light.type);
+    item.object["color"] = vec3_value(light.light.color);
+    item.object["intensity"] = number_value(light.light.intensity);
+    item.object["radius"] = number_value(light.light.radius);
+    lightsNode.array.push_back(std::move(item));
+  }
+  root.object["lights"] = std::move(lightsNode);
 
   JsonValue benchmarkNode;
   benchmarkNode.kind = JsonValue::Kind::Object;
-  benchmarkNode.object["enabled"] = JsonValue{JsonValue::Kind::Boolean, benchmark.enabled, 0.0, "", {}, {}};
-  benchmarkNode.object["frame_target"] = JsonValue{JsonValue::Kind::Number, false, static_cast<double>(benchmark.frame_target), "", {}, {}};
-  benchmarkNode.object["warmup_frames"] = JsonValue{JsonValue::Kind::Number, false, static_cast<double>(benchmark.warmup_frames), "", {}, {}};
+  benchmarkNode.object["enabled"] = bool_value(benchmark.enabled);
+  benchmarkNode.object["frame_target"] = number_value(static_cast<double>(benchmark.frame_target));
+  benchmarkNode.object["warmup_frames"] = number_value(static_cast<double>(benchmark.warmup_frames));
   root.object["benchmark"] = benchmarkNode;
 
   return stringify(root, pretty);
@@ -2227,15 +2860,30 @@ SceneSnapshot SceneDocument::snapshot() const {
       out.lights.push_back({entity.id, entity.light, entity.transform});
       blob += "l" + entity.light.type + ":" + std::to_string(entity.light.intensity) + ";";
     }
+    if (entity.has_sdf_primitive) {
+      blob += "sdfEntity" + std::to_string(entity.id) + ":" + entity.sdf_primitive.shape + ":" +
+              std::to_string(entity.sdf_primitive.radius) + ";";
+    }
     if (entity.has_camera && !out.camera) {
       out.camera = SceneCameraDefinition{entity.id, entity.camera};
+    }
+    if (entity.has_physics_body) {
+      blob += "p" + std::to_string(entity.id) + ":" +
+              (entity.physics_body.enabled ? "1" : "0") + ":" +
+              (entity.physics_body.dynamic ? "dynamic" : "static") + ":" +
+              entity.physics_body.shape + ":" +
+              std::to_string(entity.physics_body.mass) + ";";
     }
   }
   out.materials.clear();
   for (const auto& material : materials) {
     out.materials.push_back({material.id, material});
     blob += "mat" + std::to_string(material.id) + ":" + material.name + ":" +
-            std::to_string(material.roughness) + ";";
+            material.family + ":" + std::to_string(material.roughness) + ":" +
+            std::to_string(material.metallic) + ":" + std::to_string(material.transmission) + ":" +
+            std::to_string(material.clearcoat) + ":" + std::to_string(material.sheen) + ":" +
+            std::to_string(material.anisotropy) + ":" + std::to_string(material.alpha) + ":" +
+            (material.double_sided ? "2s" : "1s") + ";";
   }
   out.asset_refs.clear();
   for (const auto& asset : assets) {

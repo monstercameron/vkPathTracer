@@ -1,13 +1,492 @@
 #include "render/backends/D3D12Backend.h"
 
+#include "cpu/CpuFeatures.h"
+
 #include <array>
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <cstdint>
-#include <random>
+#include <iomanip>
+#include <limits>
 #include <cmath>
+#include <random>
+#include <sstream>
+#include <thread>
+#include <utility>
+
+#if defined(_WIN32) && defined(PT_ENABLE_D3D12)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <wrl/client.h>
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#endif
 
 namespace vkpt::render {
+
+namespace {
+
+std::uint32_t DetectLogicalCores() {
+  const auto count = std::thread::hardware_concurrency();
+  return count == 0u ? 1u : count;
+}
+
+std::string SimdName(const vkpt::cpu::CpuFeatureSet& features) {
+  const auto dispatch = vkpt::cpu::BuildSimdDispatchInfo(features);
+  return vkpt::cpu::ToString(dispatch.preferred);
+}
+
+RenderBackendCapabilities MakeCpuBackendCaps(const vkpt::cpu::CpuFeatureSet& features,
+                                             std::uint32_t logical_cores) {
+  RenderBackendCapabilities caps;
+  caps.backend_name = SimdName(features) == "scalar" ? "cpu-scalar" : "cpu-simd";
+  caps.compute = true;
+  caps.storage_buffers = true;
+  caps.storage_textures = false;
+  caps.timestamp_queries = true;
+  caps.subgroups = false;
+  caps.descriptor_indexing = false;
+  caps.bindless_like_resources = false;
+  caps.texture_formats = true;
+  caps.ray_tracing = false;
+  caps.presentation = false;
+  caps.readback = true;
+  caps.is_simulated = false;
+  caps.supports_present = false;
+  caps.supports_multiqueue = logical_cores > 1u;
+  caps.max_workgroup_size_x = logical_cores;
+  caps.max_workgroup_size_y = 1u;
+  caps.max_workgroup_size_z = 1u;
+  caps.memory_model = "system-memory";
+  caps.notes = "CPU ray generation path; not a D3D12 device.";
+  caps.platform.platform_name = "cpu";
+  caps.platform.headless = true;
+  caps.cpu.logical_cores = logical_cores;
+  caps.cpu.fma = features.fma;
+  caps.cpu.notes = "Runtime CPU capability probe.";
+  caps.simd.sse2 = features.sse2;
+  caps.simd.sse42 = features.sse4_2;
+  caps.simd.avx = features.avx;
+  caps.simd.avx2 = features.avx2;
+  caps.simd.avx512 = features.avx512f;
+  caps.simd.neon = features.neon;
+  caps.simd.sve = features.sve;
+  caps.simd.best_mode = SimdName(features);
+  caps.shader.supported_source_formats = {"cpp"};
+  caps.shader.notes = "Native CPU kernels.";
+  caps.texture_formats_caps.rgba8_unorm = true;
+  caps.texture_formats_caps.rgba16_float = true;
+  caps.texture_formats_caps.rgba32_float = true;
+  caps.texture_formats_caps.guaranteed_formats = {"RGBA8", "RGBA16F", "RGBA32F"};
+  caps.memory_budget.budget_query = false;
+  caps.memory_budget.shared_system_memory_bytes = 0u;
+  caps.memory_budget.budget_unavailable_reason = "No process-wide RAM budget probe is wired into the render contracts.";
+  return caps;
+}
+
+double EstimateCpuRaysPerMs(const vkpt::cpu::CpuFeatureSet& features, std::uint32_t logical_cores) {
+  double vector_weight = 1.0;
+  if (features.avx512f) {
+    vector_weight = 6.0;
+  } else if (features.avx2) {
+    vector_weight = 4.0;
+  } else if (features.avx) {
+    vector_weight = 2.5;
+  } else if (features.sse4_2 || features.neon) {
+    vector_weight = 1.75;
+  }
+  return static_cast<double>(std::max<std::uint32_t>(1u, logical_cores)) * vector_weight * 5500.0;
+}
+
+AcceleratorCapabilities MakeCpuAccelerator() {
+  const auto features = vkpt::cpu::QueryCpuFeatures();
+  const auto logical_cores = DetectLogicalCores();
+  AcceleratorCapabilities accel;
+  accel.id = "cpu:process";
+  accel.name = "CPU";
+  accel.accelerator_kind = AcceleratorKind::Cpu;
+  accel.backend_kind = BackendKind::Unknown;
+  accel.available = true;
+  accel.hardware = true;
+  accel.cpu = true;
+  accel.compute = true;
+  accel.ray_tracing = false;
+  accel.presentation = false;
+  accel.node_count = logical_cores;
+  accel.shared_system_memory_bytes = 0u;
+  accel.estimated_rays_per_ms = EstimateCpuRaysPerMs(features, logical_cores);
+  accel.notes = "CPU path tracer worker candidate; keep thread count capped so polygon/raster work keeps cores.";
+  accel.backend_caps = MakeCpuBackendCaps(features, logical_cores);
+  return accel;
+}
+
+#if defined(_WIN32) && defined(PT_ENABLE_D3D12)
+double EstimateD3D12RaysPerMs(const AcceleratorCapabilities& accel) {
+  if (!accel.available || !accel.compute) {
+    return 0.0;
+  }
+  if (accel.warp) {
+    return 25000.0;
+  }
+  double base = 180000.0;
+  if (accel.accelerator_kind == AcceleratorKind::DiscreteGpu) {
+    base = 850000.0;
+    const double vram_gb =
+        static_cast<double>(accel.dedicated_video_memory_bytes) / static_cast<double>(1024ull * 1024ull * 1024ull);
+    base *= 1.0 + std::min(0.65, std::max(0.0, vram_gb) / 32.0);
+  } else if (accel.accelerator_kind == AcceleratorKind::IntegratedGpu) {
+    base = accel.cache_coherent_uma ? 260000.0 : 210000.0;
+  } else if (accel.accelerator_kind == AcceleratorKind::VirtualGpu) {
+    base = 120000.0;
+  }
+  if (accel.ray_tracing) {
+    base *= 1.45;
+  }
+  if (accel.backend_caps.subgroups) {
+    base *= 1.08;
+  }
+  return base;
+}
+#endif
+
+std::uint32_t SelectPlannerWorkerThreads(const AcceleratorCapabilities& accel) {
+  if (!accel.cpu) {
+    return 1u;
+  }
+  const auto logical = std::max<std::uint32_t>(1u, accel.node_count);
+  if (logical <= 4u) {
+    return 1u;
+  }
+  return std::max<std::uint32_t>(1u, std::min(logical / 2u, logical - 2u));
+}
+
+double EstimatePlannerRaysPerMs(const AcceleratorCapabilities& accel) {
+  if (!accel.cpu) {
+    return accel.estimated_rays_per_ms;
+  }
+  const auto logical = std::max<std::uint32_t>(1u, accel.node_count);
+  const auto workers = SelectPlannerWorkerThreads(accel);
+  return accel.estimated_rays_per_ms * (static_cast<double>(workers) / static_cast<double>(logical));
+}
+
+std::uint64_t RoundDownToBatch(std::uint64_t rays, std::uint64_t batch) {
+  if (batch == 0u) {
+    return rays;
+  }
+  return (rays / batch) * batch;
+}
+
+#if defined(_WIN32) && defined(PT_ENABLE_D3D12)
+
+std::string WStringToUtf8(const wchar_t* src) {
+  if (!src) {
+    return {};
+  }
+  const int len = WideCharToMultiByte(CP_UTF8, 0, src, -1, nullptr, 0, nullptr, nullptr);
+  if (len <= 0) {
+    return {};
+  }
+  std::string out(static_cast<std::size_t>(len > 0 ? len - 1 : 0), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, src, -1, out.data(), len, nullptr, nullptr);
+  return out;
+}
+
+std::string FormatHr(HRESULT hr) {
+  std::ostringstream ss;
+  ss << "0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
+     << static_cast<std::uint32_t>(hr);
+  return ss.str();
+}
+
+std::string FormatLuid(LUID luid) {
+  std::ostringstream ss;
+  ss << std::hex << std::nouppercase << static_cast<std::uint32_t>(luid.HighPart) << ':'
+     << static_cast<std::uint32_t>(luid.LowPart);
+  return ss.str();
+}
+
+std::string DxrTierName(D3D12_RAYTRACING_TIER tier) {
+  if (tier == D3D12_RAYTRACING_TIER_NOT_SUPPORTED) {
+    return "none";
+  }
+  if (tier > D3D12_RAYTRACING_TIER_1_0) {
+    return "1.1+";
+  }
+  if (tier == D3D12_RAYTRACING_TIER_1_0) {
+    return "1.0";
+  }
+  return "unknown";
+}
+
+bool IsMicrosoftBasicAdapter(const DXGI_ADAPTER_DESC1& desc) {
+  if (desc.VendorId == 0x1414u) {
+    return true;
+  }
+  const auto name = WStringToUtf8(desc.Description);
+  return name.find("Microsoft Basic Render Driver") != std::string::npos;
+}
+
+bool QueryD3D12Adapter(IDXGIAdapter1* adapter,
+                       std::uint32_t ordinal,
+                       bool warp,
+                       AcceleratorCapabilities& out) {
+  if (!adapter) {
+    return false;
+  }
+
+  DXGI_ADAPTER_DESC1 desc{};
+  if (FAILED(adapter->GetDesc1(&desc))) {
+    return false;
+  }
+
+  const bool software = ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) || IsMicrosoftBasicAdapter(desc);
+  const std::string luid = FormatLuid(desc.AdapterLuid);
+  out.id = (warp ? "d3d12:warp:" : "d3d12:") + luid;
+  out.name = WStringToUtf8(desc.Description);
+  out.backend_kind = BackendKind::D3d12;
+  out.d3d12 = true;
+  out.warp = warp || software;
+  out.vendor_id = desc.VendorId;
+  out.device_id = desc.DeviceId;
+  out.adapter_luid = luid;
+  out.dedicated_video_memory_bytes = static_cast<std::uint64_t>(desc.DedicatedVideoMemory);
+  out.shared_system_memory_bytes = static_cast<std::uint64_t>(desc.SharedSystemMemory);
+  out.notes = "DXGI adapter ordinal " + std::to_string(ordinal);
+
+  Microsoft::WRL::ComPtr<ID3D12Device> device;
+  const HRESULT create_hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
+  if (FAILED(create_hr) || !device) {
+    out.available = false;
+    out.hardware = !out.warp;
+    out.compute = false;
+    out.ray_tracing = false;
+    out.accelerator_kind = out.warp ? AcceleratorKind::Warp : AcceleratorKind::Unknown;
+    out.notes += "; D3D12CreateDevice failed hr=" + FormatHr(create_hr);
+    return true;
+  }
+
+  out.available = true;
+  out.hardware = !out.warp;
+  out.compute = true;
+  out.presentation = false;
+  out.node_count = std::max<UINT>(1u, device->GetNodeCount());
+
+  D3D12_FEATURE_DATA_ARCHITECTURE architecture{};
+  architecture.NodeIndex = 0u;
+  if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &architecture, sizeof(architecture)))) {
+    out.unified_memory = architecture.UMA != FALSE;
+    out.cache_coherent_uma = architecture.CacheCoherentUMA != FALSE;
+  }
+
+  if (out.warp) {
+    out.accelerator_kind = AcceleratorKind::Warp;
+  } else if (out.unified_memory || desc.DedicatedVideoMemory == 0u) {
+    out.accelerator_kind = AcceleratorKind::IntegratedGpu;
+  } else {
+    out.accelerator_kind = AcceleratorKind::DiscreteGpu;
+  }
+
+  D3D12_FEATURE_DATA_D3D12_OPTIONS options{};
+  const bool options_ok =
+      SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)));
+  D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1{};
+  const bool options1_ok =
+      SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1)));
+  D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};
+  const bool options5_ok =
+      SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5)));
+
+  out.ray_tracing = options5_ok && options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
+
+  Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter3;
+  if (SUCCEEDED(adapter->QueryInterface(IID_PPV_ARGS(&adapter3)))) {
+    DXGI_QUERY_VIDEO_MEMORY_INFO memory_info{};
+    if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0u, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memory_info))) {
+      out.current_budget_bytes = static_cast<std::uint64_t>(memory_info.Budget);
+      out.current_usage_bytes = static_cast<std::uint64_t>(memory_info.CurrentUsage);
+    }
+  }
+
+  RenderBackendCapabilities caps;
+  caps.backend_name = out.ray_tracing ? "d3d12-dxr" : "d3d12-compute";
+  if (out.warp) {
+    caps.backend_name = "d3d12-warp";
+  }
+  caps.compute = true;
+  caps.storage_buffers = true;
+  caps.storage_textures = true;
+  caps.timestamp_queries = true;
+  caps.subgroups = options1_ok && options1.WaveOps != FALSE;
+  caps.descriptor_indexing = options_ok && options.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_2;
+  caps.bindless_like_resources = options_ok && options.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3;
+  caps.texture_formats = true;
+  caps.ray_tracing = out.ray_tracing;
+  caps.ray_query = out.ray_tracing && options5.RaytracingTier > D3D12_RAYTRACING_TIER_1_0;
+  caps.ray_query_supported = caps.ray_query;
+  caps.acceleration_structure_supported = out.ray_tracing;
+  caps.shader_group_handle_size = out.ray_tracing ? D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES : 0u;
+  caps.max_as_size = out.ray_tracing ? std::numeric_limits<std::uint64_t>::max() : 0u;
+  caps.presentation = false;
+  caps.readback = true;
+  caps.is_simulated = false;
+  caps.supports_present = false;
+  caps.supports_multiqueue = true;
+  caps.max_workgroup_size_x = 1024u;
+  caps.max_workgroup_size_y = 1024u;
+  caps.max_workgroup_size_z = 64u;
+  caps.max_buffer_alignment = 256u;
+  caps.memory_model = out.unified_memory ? "uma" : "dedicated-vram";
+  caps.notes = "Native D3D12 capability probe for multi-accelerator ray planning.";
+  caps.platform.platform_name = "d3d12";
+  caps.platform.headless = true;
+  caps.ray_tracing_caps.hardware_pipeline = out.ray_tracing;
+  caps.ray_tracing_caps.acceleration_structures = out.ray_tracing;
+  caps.ray_tracing_caps.inline_ray_tracing = caps.ray_query;
+  caps.ray_tracing_caps.ray_query = caps.ray_query;
+  caps.ray_tracing_caps.shader_group_handle_size = caps.shader_group_handle_size;
+  caps.ray_tracing_caps.max_acceleration_structure_size = caps.max_as_size;
+  caps.ray_tracing_caps.max_recursion_depth = out.ray_tracing ? 31u : 0u;
+  caps.ray_tracing_caps.tier = options5_ok ? DxrTierName(options5.RaytracingTier) : "not-probed";
+  if (!out.ray_tracing) {
+    caps.ray_tracing_caps.unsupported_reason =
+        options5_ok ? "D3D12_OPTIONS5 reports no DXR tier" : "D3D12_OPTIONS5 probe failed";
+  }
+  caps.shader.hlsl = true;
+  caps.shader.dxil = true;
+  caps.shader.subgroups = caps.subgroups;
+  caps.shader.shader_model = "sm6";
+  caps.shader.supported_source_formats = {"hlsl", "dxil"};
+  caps.texture_formats_caps.rgba8_unorm = true;
+  caps.texture_formats_caps.bgra8_unorm = true;
+  caps.texture_formats_caps.rgba16_float = true;
+  caps.texture_formats_caps.rgba32_float = true;
+  caps.texture_formats_caps.depth32_float = true;
+  caps.texture_formats_caps.storage_texture_formats = true;
+  caps.texture_formats_caps.sampled_texture_formats = true;
+  caps.texture_formats_caps.guaranteed_formats = {"RGBA8", "BGRA8", "RGBA16F", "RGBA32F", "D32F"};
+  caps.memory_budget.budget_query = out.current_budget_bytes > 0u;
+  caps.memory_budget.dedicated_video_memory_bytes = out.dedicated_video_memory_bytes;
+  caps.memory_budget.shared_system_memory_bytes = out.shared_system_memory_bytes;
+  caps.memory_budget.current_budget_bytes = out.current_budget_bytes;
+  caps.memory_budget.current_usage_bytes = out.current_usage_bytes;
+  caps.memory_budget.max_buffer_size_bytes = std::numeric_limits<std::uint64_t>::max();
+  caps.memory_budget.upload_alignment_bytes = 256u;
+  caps.memory_budget.readback_alignment_bytes = 256u;
+  if (!caps.memory_budget.budget_query) {
+    caps.memory_budget.budget_unavailable_reason = "IDXGIAdapter3 memory budget query unavailable or returned zero.";
+  }
+
+  out.backend_caps = std::move(caps);
+  out.estimated_rays_per_ms = EstimateD3D12RaysPerMs(out);
+  return true;
+}
+
+void PushUniqueD3D12Accelerator(std::vector<AcceleratorCapabilities>& out, AcceleratorCapabilities accel) {
+  const auto duplicate = std::any_of(out.begin(), out.end(), [&](const AcceleratorCapabilities& existing) {
+    return existing.d3d12 && accel.d3d12 &&
+           existing.adapter_luid == accel.adapter_luid &&
+           existing.accelerator_kind == accel.accelerator_kind;
+  });
+  if (!duplicate) {
+    out.push_back(std::move(accel));
+  }
+}
+
+void EnumerateNativeD3D12(std::vector<AcceleratorCapabilities>& out, bool include_warp) {
+  UINT factory_flags = 0u;
+#if defined(_DEBUG)
+  factory_flags |= DXGI_CREATE_FACTORY_DEBUG;
+#endif
+
+  Microsoft::WRL::ComPtr<IDXGIFactory4> factory4;
+  const HRESULT factory_hr = CreateDXGIFactory2(factory_flags, IID_PPV_ARGS(&factory4));
+  if (FAILED(factory_hr) || !factory4) {
+    return;
+  }
+
+  Microsoft::WRL::ComPtr<IDXGIFactory6> factory6;
+  factory4.As(&factory6);
+
+  std::uint32_t ordinal = 0u;
+  if (factory6) {
+    for (UINT i = 0u;; ++i) {
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+      const HRESULT hr = factory6->EnumAdapterByGpuPreference(
+          i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter));
+      if (hr == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+      if (FAILED(hr)) {
+        continue;
+      }
+      AcceleratorCapabilities accel;
+      if (QueryD3D12Adapter(adapter.Get(), ordinal++, false, accel)) {
+        if (!accel.warp || include_warp) {
+          PushUniqueD3D12Accelerator(out, std::move(accel));
+        }
+      }
+    }
+  } else {
+    for (UINT i = 0u;; ++i) {
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+      const HRESULT hr = factory4->EnumAdapters1(i, &adapter);
+      if (hr == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+      if (FAILED(hr)) {
+        continue;
+      }
+      AcceleratorCapabilities accel;
+      if (QueryD3D12Adapter(adapter.Get(), ordinal++, false, accel)) {
+        if (!accel.warp || include_warp) {
+          PushUniqueD3D12Accelerator(out, std::move(accel));
+        }
+      }
+    }
+  }
+
+  if (include_warp) {
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> warp_adapter;
+    if (SUCCEEDED(factory4->EnumWarpAdapter(IID_PPV_ARGS(&warp_adapter)))) {
+      AcceleratorCapabilities accel;
+      if (QueryD3D12Adapter(warp_adapter.Get(), ordinal, true, accel)) {
+        PushUniqueD3D12Accelerator(out, std::move(accel));
+      }
+    }
+  }
+}
+
+#endif  // defined(_WIN32) && defined(PT_ENABLE_D3D12)
+
+void MarkDefaultAccelerator(std::vector<AcceleratorCapabilities>& accelerators) {
+  auto mark_first = [&](AcceleratorKind kind) -> bool {
+    for (auto& accel : accelerators) {
+      if (accel.available && accel.compute && accel.accelerator_kind == kind) {
+        accel.selected_by_default = true;
+        return true;
+      }
+    }
+    return false;
+  };
+  if (mark_first(AcceleratorKind::DiscreteGpu)) {
+    return;
+  }
+  if (mark_first(AcceleratorKind::IntegratedGpu)) {
+    return;
+  }
+  if (mark_first(AcceleratorKind::Cpu)) {
+    return;
+  }
+  mark_first(AcceleratorKind::Warp);
+}
+
+}  // namespace
 
 bool D3D12ShaderCompiler::supports_feature(std::string_view feature) const {
   return feature == "compute" || feature == "storage-buffers" || feature == "storage-textures"
@@ -296,7 +775,9 @@ RenderBackendCapabilities D3D12Backend::capabilities() const {
   caps.max_workgroup_size_z = 64u;
   caps.max_buffer_alignment = 256u;
   caps.memory_model = "simulated-hlsl-sm6.6";
-  caps.notes = "No external Direct3D 12 SDK required in this gate; simulated backend path.";
+  caps.notes =
+      "No external Direct3D 12 SDK required in this gate; simulated backend path. "
+      "Native accelerator probing is exposed through EnumerateD3D12Accelerators.";
   caps.platform.platform_name = "headless-d3d12-sim";
   caps.platform.headless = true;
   caps.platform.notes = "No ID3D12Device, IDXGISwapChain, or native handles are exposed.";
@@ -341,6 +822,121 @@ IShaderCache* D3D12Backend::shader_cache() {
 
 std::unique_ptr<IFrameGraph> D3D12Backend::create_frame_graph() {
   return std::make_unique<FrameGraph>();
+}
+
+std::vector<AcceleratorCapabilities> EnumerateD3D12Accelerators(bool include_cpu, bool include_warp) {
+  std::vector<AcceleratorCapabilities> accelerators;
+
+#if defined(_WIN32) && defined(PT_ENABLE_D3D12)
+  EnumerateNativeD3D12(accelerators, include_warp);
+#else
+  (void)include_warp;
+#endif
+
+  if (include_cpu) {
+    accelerators.push_back(MakeCpuAccelerator());
+  }
+
+#if !(defined(_WIN32) && defined(PT_ENABLE_D3D12))
+  for (auto& accel : accelerators) {
+    if (accel.cpu) {
+      accel.notes += " D3D12 adapter probing is unavailable in this build.";
+    }
+  }
+#endif
+
+  MarkDefaultAccelerator(accelerators);
+  return accelerators;
+}
+
+RayBudgetPlan BuildD3D12RayBudgetPlan(const RayBudgetRequest& request) {
+  RayBudgetPlan plan;
+  plan.polygon_frame_budget_ms = request.polygon_frame_budget_ms;
+  plan.reserved_polygon_ms = request.reserved_polygon_ms;
+  plan.merge_budget_ms = request.merge_budget_ms;
+  plan.width = request.width;
+  plan.height = request.height;
+  plan.ray_budget_ms = std::max(0.0,
+                                request.polygon_frame_budget_ms -
+                                    std::max(0.0, request.reserved_polygon_ms) -
+                                    std::max(0.0, request.merge_budget_ms));
+
+  if (request.width == 0u || request.height == 0u) {
+    plan.diagnostics.push_back("invalid render dimensions; ray targets cannot be converted to samples per pixel");
+  }
+  if (plan.ray_budget_ms <= 0.0) {
+    plan.diagnostics.push_back("no ray budget remains after polygon and merge reservations");
+  }
+  plan.diagnostics.push_back("ray rates are conservative planning estimates until calibrated per accelerator");
+
+  auto accelerators = EnumerateD3D12Accelerators(request.include_cpu, request.include_warp);
+  std::sort(accelerators.begin(), accelerators.end(), [](const AcceleratorCapabilities& lhs,
+                                                         const AcceleratorCapabilities& rhs) {
+    const double lhs_rate = EstimatePlannerRaysPerMs(lhs);
+    const double rhs_rate = EstimatePlannerRaysPerMs(rhs);
+    if (lhs_rate != rhs_rate) {
+      return lhs_rate > rhs_rate;
+    }
+    return lhs.name < rhs.name;
+  });
+
+  for (const auto& accel : accelerators) {
+    RayBudgetAssignment assignment;
+    assignment.accelerator_id = accel.id;
+    assignment.accelerator_name = accel.name;
+    assignment.accelerator_kind = accel.accelerator_kind;
+    assignment.backend_kind = accel.backend_kind;
+    assignment.backend_name = accel.backend_caps.backend_name;
+    assignment.uses_dxr = accel.ray_tracing && accel.d3d12;
+    assignment.worker_threads = SelectPlannerWorkerThreads(accel);
+    assignment.budget_ms = plan.ray_budget_ms;
+    assignment.estimated_rays_per_ms = EstimatePlannerRaysPerMs(accel);
+
+    if (!accel.available) {
+      assignment.reason = "inactive: accelerator unavailable";
+    } else if (!accel.compute) {
+      assignment.reason = "inactive: compute queue/backend unavailable";
+    } else if (accel.cpu && !request.include_cpu) {
+      assignment.reason = "inactive: CPU participation disabled by request";
+    } else if (accel.accelerator_kind == AcceleratorKind::IntegratedGpu && !request.include_integrated_gpu) {
+      assignment.reason = "inactive: integrated GPU participation disabled by request";
+    } else if (accel.warp && !request.include_warp) {
+      assignment.reason = "inactive: WARP software adapter disabled by request";
+    } else if (request.require_ray_tracing && !accel.ray_tracing) {
+      assignment.reason = "inactive: DXR required but unavailable";
+    } else if (plan.ray_budget_ms <= 0.0) {
+      assignment.reason = "inactive: no ray time remains in frame budget";
+    } else if (assignment.estimated_rays_per_ms <= 0.0) {
+      assignment.reason = "inactive: no ray throughput estimate";
+    } else {
+      const auto raw_target = static_cast<std::uint64_t>(
+          std::max(0.0, std::floor(assignment.estimated_rays_per_ms * plan.ray_budget_ms)));
+      assignment.target_rays = RoundDownToBatch(raw_target, request.min_rays_per_batch);
+      if (assignment.target_rays == 0u && raw_target > 0u && request.min_rays_per_batch == 0u) {
+        assignment.target_rays = raw_target;
+      }
+      if (assignment.target_rays == 0u) {
+        assignment.reason = "inactive: estimated ray count is below the minimum batch size";
+      } else {
+        assignment.active = true;
+        assignment.reason = accel.cpu
+            ? "active: CPU worker count is capped to leave cores for polygon/raster work"
+            : "active: capability check passed and target fits the ray budget";
+        plan.total_target_rays += assignment.target_rays;
+      }
+    }
+
+    plan.assignments.push_back(std::move(assignment));
+  }
+
+  const auto pixels = static_cast<std::uint64_t>(request.width) * static_cast<std::uint64_t>(request.height);
+  if (pixels > 0u) {
+    plan.estimated_samples_per_pixel = static_cast<double>(plan.total_target_rays) / static_cast<double>(pixels);
+  }
+  if (plan.total_target_rays == 0u) {
+    plan.diagnostics.push_back("no accelerator received work under the current budget/filter settings");
+  }
+  return plan;
 }
 
 bool RunD3D12ComputeSmoke(vkpt::render::IRenderBackend& backend) {

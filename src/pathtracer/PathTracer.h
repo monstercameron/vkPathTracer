@@ -152,6 +152,16 @@ struct RTMaterial {
   Vec3 albedo{1.0f, 1.0f, 1.0f};
   Vec3 emissive{0.0f, 0.0f, 0.0f};
   float roughness = 1.0f;
+  float metallic = 0.0f;
+  float ior = 1.5f;
+  float transmission = 0.0f;
+  float clearcoat = 0.0f;
+  float sheen = 0.0f;
+  float anisotropy = 0.0f;
+  float alpha = 1.0f;
+  uint32_t material_model = 0;
+  uint32_t material_effect = 0;
+  uint32_t material_flags = 0;
   bool is_emissive() const {
     return emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f;
   }
