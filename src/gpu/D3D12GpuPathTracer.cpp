@@ -465,10 +465,8 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
 }
 
 bool D3D12GpuPathTracer::reset_accumulation() {
-  if (!m_configured || !m_filmBuf) return false;
-  // Zero the film on GPU.
-  // Use direct UAV clear instead of upload buffer copy to avoid compute queue device
-  // removed issues on some Intel drivers.
+  if (!m_configured || !m_filmBuf || !m_clearHeap) return false;
+  // Zero the film on GPU using the persistent clear heap (avoids per-frame allocation).
   if (!wait_for_gpu()) {
     m_error = "reset wait_for_gpu";
     LogError("reset_accumulation: " + m_error);
@@ -492,28 +490,9 @@ bool D3D12GpuPathTracer::reset_accumulation() {
     return false;
   }
 
-  D3D12_DESCRIPTOR_HEAP_DESC dh{};
-  dh.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  dh.NumDescriptors = 1;
-  dh.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-  Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> clearHeap;
-  if (FAILED(m_device->CreateDescriptorHeap(&dh, IID_PPV_ARGS(&clearHeap)))) {
-    m_error = "reset create descriptor heap";
-    return false;
-  }
-  auto inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-  D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = clearHeap->GetCPUDescriptorHandleForHeapStart();
-  D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = clearHeap->GetGPUDescriptorHandleForHeapStart();
-  cpuHandle.ptr += 0u * static_cast<SIZE_T>(inc);
-  gpuHandle.ptr += 0u * static_cast<SIZE_T>(inc);
-  D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-  uav.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-  uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-  uav.Buffer.NumElements = m_filmPixels;
-  uav.Buffer.StructureByteStride = 0;
-  uav.Buffer.CounterOffsetInBytes = 0;
-  uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-  m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, cpuHandle);
+  // Reuse the persistent clear heap created in create_film_buffer().
+  D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_clearHeap->GetCPUDescriptorHandleForHeapStart();
+  D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_clearHeap->GetGPUDescriptorHandleForHeapStart();
 
   // Transition film to unordered-access
   D3D12_RESOURCE_BARRIER rb{};
@@ -523,7 +502,7 @@ bool D3D12GpuPathTracer::reset_accumulation() {
   rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   rb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
   m_cmdList->ResourceBarrier(1, &rb);
-  m_cmdList->SetDescriptorHeaps(1, clearHeap.GetAddressOf());
+  m_cmdList->SetDescriptorHeaps(1, m_clearHeap.GetAddressOf());
   const FLOAT clearValues[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   m_cmdList->ClearUnorderedAccessViewFloat(gpuHandle, cpuHandle, m_filmBuf.Get(),
                                           clearValues, 0, nullptr);
@@ -740,10 +719,11 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   m_cmdList->SetComputeRootSignature(m_rootSig.Get());
 
   // Create descriptor heap for SRVs/UAVs lazily and reuse across samples.
+  // Slots: t0-t6 (7 SRVs), u0 = FilmBuf (RGBA32F), u1 = LdrBuf (RGBA8).
   if (!m_srvUavHeap) {
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
     heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heapDesc.NumDescriptors = 8;
+    heapDesc.NumDescriptors = 9; // 7 SRVs + 2 UAVs
     heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvUavHeap)))) {
       m_error = "srv heap";
@@ -779,16 +759,30 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     makeSrv(5, m_bvhBuf.Get(),    m_gpuBvh.size()     * sizeof(float), DXGI_FORMAT_R32_FLOAT);
     makeSrv(6, m_triMatBuf.Get(), m_gpuTriMat.size()  * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
 
-    D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
-    uav.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
-    uav.Buffer.NumElements = static_cast<UINT>(m_filmPixels);
-    D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(7) * inc;
-    m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h);
+    // Slot 7: u0 — FilmBuf (RGBA32F accumulation)
+    {
+      D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+      uav.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;
+      uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
+      uav.Buffer.NumElements = static_cast<UINT>(m_filmPixels);
+      D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
+      h.ptr += static_cast<SIZE_T>(7) * inc;
+      m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h);
+    }
+    // Slot 8: u1 — LdrBuf (RGBA8 tonemap output, one uint per pixel)
+    {
+      D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
+      uav.Format             = DXGI_FORMAT_R32_UINT;
+      uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
+      uav.Buffer.NumElements = static_cast<UINT>(m_filmPixels);
+      D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
+      h.ptr += static_cast<SIZE_T>(8) * inc;
+      m_device->CreateUnorderedAccessView(m_ldrBuf.Get(), nullptr, &uav, h);
+    }
   }
   D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
   pc.rays_per_pixel = 4u;
+  pc.exposure       = 1.0f; // Reinhard exposure; GPU tonemap: c*exp / (1 + c*exp)
 
   ID3D12DescriptorHeap* heaps[] = {m_srvUavHeap.Get()};
   m_cmdList->SetDescriptorHeaps(1, heaps);
@@ -797,50 +791,64 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   // Root constants (b0) — 28 DWORDs = 112 bytes
   m_cmdList->SetComputeRoot32BitConstants(0, kPathTraceRoot32BitValues, &pc, 0);
 
-  // Transition film to UAV if needed
-  D3D12_RESOURCE_BARRIER rb{};
-  rb.Type  = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  rb.Transition.pResource   = m_filmBuf.Get();
-  rb.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-  rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  rb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  m_cmdList->ResourceBarrier(1, &rb);
+  // --- Transition FilmBuf and LdrBuf to UAV for GPU work --------------------
+  D3D12_RESOURCE_BARRIER barriers[2]{};
+  auto& filmBarrier = barriers[0];
+  filmBarrier.Type                       = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  filmBarrier.Transition.pResource       = m_filmBuf.Get();
+  filmBarrier.Transition.StateBefore     = D3D12_RESOURCE_STATE_COMMON;
+  filmBarrier.Transition.StateAfter      = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  filmBarrier.Transition.Subresource     = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  auto& ldrBarrier = barriers[1];
+  ldrBarrier.Type                        = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  ldrBarrier.Transition.pResource        = m_ldrBuf.Get();
+  ldrBarrier.Transition.StateBefore      = D3D12_RESOURCE_STATE_COMMON;
+  ldrBarrier.Transition.StateAfter       = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  ldrBarrier.Transition.Subresource      = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  m_cmdList->ResourceBarrier(2, barriers);
 
+  // --- Path trace dispatch --------------------------------------------------
   const UINT groupsX = (m_settings.width + 7u) / 8u;
   const UINT groupsY = (m_settings.height + 7u) / 8u;
   if (verbose) {
-  std::ostringstream d;
-  d << "dispatch groups " << groupsX << "x" << groupsY;
-  LogDebug(d.str());
+    std::ostringstream d;
+    d << "dispatch groups " << groupsX << "x" << groupsY;
+    LogDebug(d.str());
   }
+  m_cmdList->SetPipelineState(m_pso.Get());
   m_cmdList->Dispatch(groupsX, groupsY, 1u);
 
-  const bool finiteSpp = m_settings.spp != std::numeric_limits<uint32_t>::max();
-  const bool isLastFiniteSample = finiteSpp && (sample_idx + 1u >= m_settings.spp);
-  const bool periodicPreviewReadback = !finiteSpp && ((sample_idx & 3u) == 0u);
-  const bool doReadback = isLastFiniteSample || periodicPreviewReadback;
-  const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
+  // UAV barrier on FilmBuf: ensure path trace writes are visible before tonemap reads.
+  D3D12_RESOURCE_BARRIER uavBarrier{};
+  uavBarrier.Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+  uavBarrier.UAV.pResource = m_filmBuf.Get();
+  m_cmdList->ResourceBarrier(1, &uavBarrier);
 
-  if (doReadback) {
-    // Transition film for readback and copy to CPU-visible buffer.
-    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    m_cmdList->ResourceBarrier(1, &rb);
-    if (verbose) {
-      std::ostringstream cb;
-      cb << "copy filmSize=" << filmSize << " bytes to readback";
-      LogDebug(cb.str());
-    }
-    m_cmdList->CopyBufferRegion(m_filmReadbackBuf.Get(), 0, m_filmBuf.Get(), 0, filmSize);
-    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
-    m_cmdList->ResourceBarrier(1, &rb);
-  } else {
-    // Keep the film in COMMON between samples when not reading back.
-    rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
-    m_cmdList->ResourceBarrier(1, &rb);
-  }
+  // --- GPU tonemap dispatch: RGBA32F film → RGBA8 LdrBuf --------------------
+  m_cmdList->SetPipelineState(m_tonemapPso.Get());
+  m_cmdList->Dispatch(groupsX, groupsY, 1u);
+
+  // UAV barrier on LdrBuf: ensure tonemap writes complete before copy-out.
+  uavBarrier.UAV.pResource = m_ldrBuf.Get();
+  m_cmdList->ResourceBarrier(1, &uavBarrier);
+
+  // --- Transition for readback ----------------------------------------------
+  // FilmBuf: UAV → COMMON (stays accumulating; no CPU readback needed for display)
+  filmBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  filmBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+  // LdrBuf: UAV → COPY_SOURCE
+  ldrBarrier.Transition.StateBefore  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  ldrBarrier.Transition.StateAfter   = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  m_cmdList->ResourceBarrier(2, barriers);
+
+  // Copy LdrBuf (RGBA8, 4 B/pixel) to CPU-visible readback buffer.
+  const UINT64 ldrSize = static_cast<UINT64>(m_filmPixels) * sizeof(uint32_t);
+  m_cmdList->CopyBufferRegion(m_ldrReadbackBuf.Get(), 0, m_ldrBuf.Get(), 0, ldrSize);
+
+  // LdrBuf: COPY_SOURCE → COMMON
+  ldrBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+  ldrBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+  m_cmdList->ResourceBarrier(1, &ldrBarrier);
 
   const auto closeRes = m_cmdList->Close();
   if (FAILED(closeRes)) {
@@ -866,51 +874,23 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     return false;
   }
 
-  // Rebuild CPU FilmBuffer only when we performed readback.
-  if (doReadback) {
-    const float* src = reinterpret_cast<const float*>(m_filmReadbackPtr);
+  // Store GPU-tonemapped LDR result for resolve_ldr() — zero CPU work needed.
+  if (m_ldrReadbackPtr && m_filmPixels > 0u) {
+    m_ldrResolve.width  = m_settings.width;
+    m_ldrResolve.height = m_settings.height;
+    m_ldrResolve.rgba8.resize(static_cast<size_t>(m_filmPixels) * 4u);
+    // LdrBuf stores uint packed as R|G<<8|B<<16|0xFF<<24.
+    // In little-endian memory that maps directly to RGBA8 byte layout.
+    std::memcpy(m_ldrResolve.rgba8.data(), m_ldrReadbackPtr,
+                static_cast<size_t>(m_filmPixels) * 4u);
     if (verbose) {
-    const uint32_t probeW = std::min(m_settings.width, 8u);
-    const uint32_t probeH = std::min(m_settings.height, 8u);
-    uint32_t probePixels = 0u;
-    uint32_t nonZeroPixels = 0u;
-    float probeMax = 0.0f;
-    float probeSum = 0.0f;
-    for (uint32_t y = 0; y < probeH; ++y) {
-      for (uint32_t x = 0; x < probeW; ++x) {
-        const uint32_t p = (y * m_settings.width + x) * 4u;
-        const float r = src[p];
-        const float g = src[p + 1u];
-        const float b = src[p + 2u];
-        const float v = r + g + b;
-        ++probePixels;
-        probeSum += v;
-        probeMax = std::max(probeMax, std::max(r, std::max(g, b)));
-        if (r != 0.0f || g != 0.0f || b != 0.0f) ++nonZeroPixels;
-      }
-    }
-    std::ostringstream st;
-    st << "render_sample_batch readback probe frame=" << frame_idx << " sample=" << sample_idx
-       << " probe_pixels=" << probePixels << " non_zero=" << nonZeroPixels
-       << " probe_sum=" << probeSum << " probe_max=" << probeMax;
-    LogDebug(st.str());
-    if (nonZeroPixels == 0u) {
-      LogDebug("render_sample_batch readback probe is black");
-      if (probe) {
-        LogDebug("render_sample_batch readback first pixel bytes="
-                 + FormatBytes(src, std::min<UINT64>(sizeof(float) * 4u, filmSize)));
-      }
-    }
-    }
-    m_film.resize(m_settings.width, m_settings.height);
-    m_film.clear();
-    for (uint32_t y = 0; y < m_settings.height; ++y) {
-      for (uint32_t x = 0; x < m_settings.width; ++x) {
-        const uint32_t p   = (y * m_settings.width + x) * 4u;
-        const float    cnt = std::max(1.0f, src[p + 3u]);
-        const vkpt::pathtracer::Vec3 avg{src[p]/cnt, src[p+1]/cnt, src[p+2]/cnt};
-        m_film.add_sample(x, y, avg);
-      }
+      // Quick non-black probe on byte data (very cheap)
+      const auto* b = m_ldrResolve.rgba8.data();
+      bool nonBlack = false;
+      for (size_t i = 0; i < std::min<size_t>(m_filmPixels, 64u) * 4u; i += 4u)
+        if (b[i] || b[i+1u] || b[i+2u]) { nonBlack = true; break; }
+      LogDebug("render_sample_batch ldr readback frame=" + std::to_string(frame_idx)
+               + " non_black=" + (nonBlack ? "yes" : "no"));
     }
   }
   const uint64_t sampleInc = static_cast<uint64_t>(m_settings.width) * m_settings.height;
@@ -927,41 +907,17 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
 }
 
 vkpt::pathtracer::FilmLdr D3D12GpuPathTracer::resolve_ldr() const {
-  auto ldr = m_film.resolve_ldr();
-
-  // Spatial denoiser: 3x3 box filter that fades off as samples accumulate.
-  // At low sample counts it smooths noise; by ~64 samples it is essentially off.
-  const uint32_t spp = m_lastSampleIdx + 1u;
-  if (spp < 64u && ldr.width > 2u && ldr.height > 2u) {
-    const float alpha = std::min(1.0f, static_cast<float>(spp) / 64.0f);
-    const uint32_t W = ldr.width, H = ldr.height;
-    std::vector<uint8_t> filtered = ldr.rgba8;
-    for (uint32_t y = 1u; y + 1u < H; ++y) {
-      for (uint32_t x = 1u; x + 1u < W; ++x) {
-        float r = 0.0f, g = 0.0f, b = 0.0f;
-        for (int dy = -1; dy <= 1; ++dy) {
-          for (int dx = -1; dx <= 1; ++dx) {
-            const uint32_t q = ((y + static_cast<uint32_t>(dy)) * W +
-                                (x + static_cast<uint32_t>(dx))) * 4u;
-            r += static_cast<float>(ldr.rgba8[q]);
-            g += static_cast<float>(ldr.rgba8[q + 1u]);
-            b += static_cast<float>(ldr.rgba8[q + 2u]);
-          }
-        }
-        r /= 9.0f; g /= 9.0f; b /= 9.0f;
-        const uint32_t p = (y * W + x) * 4u;
-        filtered[p+0u] = static_cast<uint8_t>(std::clamp(
-            static_cast<int>(r * (1.0f - alpha) + static_cast<float>(ldr.rgba8[p+0u]) * alpha), 0, 255));
-        filtered[p+1u] = static_cast<uint8_t>(std::clamp(
-            static_cast<int>(g * (1.0f - alpha) + static_cast<float>(ldr.rgba8[p+1u]) * alpha), 0, 255));
-        filtered[p+2u] = static_cast<uint8_t>(std::clamp(
-            static_cast<int>(b * (1.0f - alpha) + static_cast<float>(ldr.rgba8[p+2u]) * alpha), 0, 255));
-        filtered[p+3u] = ldr.rgba8[p+3u];
-      }
-    }
-    ldr.rgba8 = std::move(filtered);
+  // The GPU tonemap pass already produced an RGBA8 result during render_sample_batch().
+  // Return it directly — no CPU tonemapping, no box filter, no per-pixel work.
+  if (!m_ldrResolve.rgba8.empty()) {
+    return m_ldrResolve;
   }
-  return ldr;
+  // Fallback: if no GPU frame has been produced yet, return blank.
+  vkpt::pathtracer::FilmLdr blank;
+  blank.width  = m_settings.width;
+  blank.height = m_settings.height;
+  blank.rgba8.assign(static_cast<size_t>(m_filmPixels) * 4u, 0u);
+  return blank;
 }
 vkpt::pathtracer::FilmHdr D3D12GpuPathTracer::resolve_hdr() const {
   return m_film.resolve_hdr();
@@ -984,6 +940,7 @@ void D3D12GpuPathTracer::shutdown() {
   m_cmdList.Reset();
   m_cmdAllocator.Reset();
   m_pso.Reset();
+  m_tonemapPso.Reset();
   m_rootSig.Reset();
   if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
   m_cmdQueue.Reset();
@@ -1252,7 +1209,7 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
   ranges[0].RegisterSpace      = 0;
   ranges[0].OffsetInDescriptorsFromTableStart = 0;
   ranges[1].RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-  ranges[1].NumDescriptors     = 1;
+  ranges[1].NumDescriptors     = 2; // u0 = FilmBuf (RGBA32F), u1 = LdrBuf (RGBA8)
   ranges[1].BaseShaderRegister = 0;
   ranges[1].RegisterSpace      = 0;
   ranges[1].OffsetInDescriptorsFromTableStart = 7;
@@ -1324,6 +1281,40 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
   }
   LogDebug("compiled shader bytes=" + std::to_string(csBlob->GetBufferSize()));
   LogInfo("D3D12 compute PSO created from " + m_hlslPath);
+
+  // Compile tonemap entry point from same source
+  if (!create_tonemap_pso(src)) return false;
+
+  return true;
+}
+
+bool D3D12GpuPathTracer::create_tonemap_pso(const std::string& src) {
+  UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
+#if defined(_DEBUG)
+  compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+  compileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
+#endif
+  Microsoft::WRL::ComPtr<ID3DBlob> csBlob, errBlob;
+  HRESULT hr = D3DCompile(src.c_str(), src.size(), m_hlslPath.c_str(),
+      nullptr, nullptr, "tonemap_main", "cs_5_0",
+      compileFlags, 0, &csBlob, &errBlob);
+  if (FAILED(hr)) {
+    m_error = "D3DCompile tonemap_main failed";
+    if (errBlob) LogError(static_cast<const char*>(errBlob->GetBufferPointer()));
+    return false;
+  }
+  D3D12_COMPUTE_PIPELINE_STATE_DESC pso{};
+  pso.pRootSignature    = m_rootSig.Get();
+  pso.CS.pShaderBytecode = csBlob->GetBufferPointer();
+  pso.CS.BytecodeLength  = csBlob->GetBufferSize();
+  const HRESULT createHr = m_device->CreateComputePipelineState(&pso, IID_PPV_ARGS(&m_tonemapPso));
+  if (FAILED(createHr)) {
+    m_error = "CreateComputePipelineState tonemap hr=" + FormatHr(createHr);
+    LogError("create_tonemap_pso: " + m_error);
+    return false;
+  }
+  LogInfo("D3D12 tonemap PSO created");
   return true;
 }
 
@@ -1380,6 +1371,67 @@ bool D3D12GpuPathTracer::create_film_buffer() {
     LogError("create_film_buffer: " + m_error);
     return false;
   }
+
+  // ---- LDR output buffer: GPU-side RGBA8 (one uint per pixel) ----------------
+  const UINT64 ldrSize = static_cast<UINT64>(m_filmPixels) * sizeof(uint32_t);
+  D3D12_RESOURCE_DESC ldrRd{};
+  ldrRd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+  ldrRd.Width            = ldrSize;
+  ldrRd.Height           = 1;
+  ldrRd.DepthOrArraySize = 1;
+  ldrRd.MipLevels        = 1;
+  ldrRd.Format           = DXGI_FORMAT_UNKNOWN;
+  ldrRd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  ldrRd.SampleDesc.Count = 1;
+  ldrRd.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+  if (FAILED(m_device->CreateCommittedResource(&defhp, D3D12_HEAP_FLAG_NONE, &ldrRd,
+      D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_ldrBuf)))) {
+    m_error = "ldr buf create failed";
+    LogError("create_film_buffer: " + m_error);
+    return false;
+  }
+
+  // LDR readback buffer (CPU-visible, 4 bytes/pixel — 4× smaller than RGBA32F)
+  D3D12_RESOURCE_DESC ldrRb{};
+  ldrRb.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+  ldrRb.Width            = ldrSize;
+  ldrRb.Height           = 1;
+  ldrRb.DepthOrArraySize = 1;
+  ldrRb.MipLevels        = 1;
+  ldrRb.Format           = DXGI_FORMAT_UNKNOWN;
+  ldrRb.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  ldrRb.SampleDesc.Count = 1;
+  if (FAILED(m_device->CreateCommittedResource(&rdhp, D3D12_HEAP_FLAG_NONE, &ldrRb,
+      D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_ldrReadbackBuf)))) {
+    m_error = "ldr readback buf create failed";
+    LogError("create_film_buffer: " + m_error);
+    return false;
+  }
+  if (FAILED(m_ldrReadbackBuf->Map(0, nullptr, &m_ldrReadbackPtr))) {
+    m_error = "ldr readback map failed";
+    LogError("create_film_buffer: " + m_error);
+    return false;
+  }
+
+  // ---- Persistent clear heap for reset_accumulation (avoids per-frame alloc) -
+  D3D12_DESCRIPTOR_HEAP_DESC chd{};
+  chd.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+  chd.NumDescriptors = 1;
+  chd.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  if (FAILED(m_device->CreateDescriptorHeap(&chd, IID_PPV_ARGS(&m_clearHeap)))) {
+    m_error = "clear heap create failed";
+    LogError("create_film_buffer: " + m_error);
+    return false;
+  }
+  {
+    D3D12_UNORDERED_ACCESS_VIEW_DESC clearUav{};
+    clearUav.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    clearUav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
+    clearUav.Buffer.NumElements = m_filmPixels;
+    m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &clearUav,
+        m_clearHeap->GetCPUDescriptorHandleForHeapStart());
+  }
+
   return true;
 }
 
@@ -1510,6 +1562,11 @@ void D3D12GpuPathTracer::destroy_film_buffer() {
   m_filmReadbackPtr = nullptr;
   m_filmReadbackBuf.Reset();
   m_filmBuf.Reset();
+  if (m_ldrReadbackPtr && m_ldrReadbackBuf) m_ldrReadbackBuf->Unmap(0, nullptr);
+  m_ldrReadbackPtr = nullptr;
+  m_ldrReadbackBuf.Reset();
+  m_ldrBuf.Reset();
+  m_clearHeap.Reset();
   m_srvUavHeap.Reset();
 }
 

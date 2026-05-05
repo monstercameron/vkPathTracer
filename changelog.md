@@ -1,5 +1,27 @@
 ﻿# Changelog
 
+## 2026-05-05 (session 14)
+
+### GPU tonemapping and D3D12 path performance optimizations
+
+**Bottlenecks removed:**
+- RGBA32F readback (8 MB/frame at 60fps = ~480 MB/s PCIe): eliminated entirely for the interactive path
+- CPU film-averaging loop (~518 K divide+store ops/frame): removed
+- CPU `resolve_ldr()` two-pass tonemapping (log-avg luminance + Reinhard): moved to GPU
+- 3×3 CPU spatial denoiser pass in `D3D12GpuPathTracer::resolve_ldr()`: removed
+- Per-frame temporary descriptor heap allocation in `reset_accumulation()`: replaced with persistent heap
+
+**Changes:**
+- `pathtrace_cs.hlsl`: replaced unused `_pad10` with `exposure` constant; added `RWBuffer<uint> LdrBuf : register(u1)`; added `tonemap_main` compute entry point (Reinhard + gamma 2.2, writes packed RGBA8 uint per pixel)
+- `D3D12GpuPathTracer.h`: `PathTraceConstants._pad1` → `exposure`; added `m_tonemapPso`, `m_ldrBuf`, `m_ldrReadbackBuf`, `m_ldrReadbackPtr`, `m_clearHeap`, `m_ldrResolve`; added `create_tonemap_pso()` private method
+- `D3D12GpuPathTracer.cpp`:
+    - `create_root_sig_and_pso()`: extended UAV descriptor range from 1 to 2 (u0 FilmBuf + u1 LdrBuf); compiles tonemap entry point into `m_tonemapPso`
+    - `create_film_buffer()`: creates LDR GPU buffer (4 B/pixel UAV) + CPU-mapped readback buffer; creates persistent `m_clearHeap` for `reset_accumulation()`
+    - `destroy_film_buffer()`: cleans up LDR buffers and clear heap
+    - `reset_accumulation()`: uses `m_clearHeap` (no per-frame heap allocation)
+    - `render_sample_batch()`: descriptor heap expanded to 9 slots; two dispatches per frame (path trace + tonemap) with UAV barriers between them; LDR readback only (2 MB vs 8 MB); CPU film copy removed
+    - `resolve_ldr()`: returns `m_ldrResolve` (a `memcpy` from the readback buffer — zero CPU tonemapping work)
+
 ## 2026-05-04 (session 13)
 
 ### Camera orbit, backface culling, and Cornell box face winding fixes
