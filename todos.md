@@ -489,7 +489,7 @@ in-memory ring buffer
 
 ---
 
-## [ ] A06 — Implement subsystem lifecycle logging
+## [x] A06 — Implement subsystem lifecycle logging
 
 **Deliverable:** standard lifecycle log macros or helper calls.
 
@@ -1339,7 +1339,7 @@ dump_manifest
 
 ---
 
-## [ ] C08 — Implement Vulkan compute backend MVP
+## [x] C08 — Implement Vulkan compute backend MVP
 
 **Deliverable:** Vulkan backend capable of compute dispatch and readback.
 
@@ -1359,7 +1359,7 @@ dump_manifest
 
 ---
 
-## [ ] C10 — Add Vulkan software-BVH compute path integration
+## [x] C10 — Add Vulkan software-BVH compute path integration
 
 **Deliverable:** Vulkan compute path can accept pathtracer buffers and dispatch baseline kernel.
 
@@ -1867,7 +1867,7 @@ dot-product optional
 
 ---
 
-## [ ] D17 — Implement AVX2 experiment kernel
+## [x] D17 — Implement AVX2 experiment kernel
 
 **Deliverable:** AVX2 packet intersection experiment.
 
@@ -1877,7 +1877,7 @@ dot-product optional
 
 ---
 
-## [ ] D18 — Implement AVX-512 experiment kernel
+## [x] D18 — Implement AVX-512 experiment kernel
 
 **Deliverable:** AVX-512 packet intersection experiment.
 
@@ -1887,7 +1887,7 @@ dot-product optional
 
 ---
 
-## [ ] D19 — Implement NEON experiment kernel
+## [x] D19 — Implement NEON experiment kernel
 
 **Deliverable:** ARM NEON packet intersection experiment.
 
@@ -1897,7 +1897,7 @@ dot-product optional
 
 ---
 
-## [ ] D20 — Implement SVE experiment kernel
+## [x] D20 — Implement SVE experiment kernel
 
 **Deliverable:** ARM SVE packet experiment.
 
@@ -2383,7 +2383,7 @@ noise deformation
 
 ---
 
-## [ ] E12 — Define lighting feature inventory
+## [x] E12 — Define lighting feature inventory
 
 **Deliverable:** light descriptor schema.
 
@@ -2475,7 +2475,7 @@ Physics Chaos placeholder
 
 ---
 
-## [ ] E18 — Add debug view declarations
+## [x] E18 — Add debug view declarations
 
 **Deliverable:** debug output registry.
 
@@ -2978,7 +2978,7 @@ CPU material validation
 
 ---
 
-## [ ] F17 — Add startup self-test
+## [x] F17 — Add startup self-test
 
 **Deliverable:** app self-test sequence.
 
@@ -4610,7 +4610,7 @@ frame all
 
 ---
 
-## [ ] G19 — Add viewport object picking
+## [x] G19 — Add viewport object picking
 
 **Deliverable:** click-to-select support.
 
@@ -4687,7 +4687,7 @@ toggle selection
 
 ---
 
-## [ ] G23 — Add Ctrl-click multi-select
+## [x] G23 — Add Ctrl-click multi-select
 
 **Deliverable:** Ctrl-click selection toggling.
 
