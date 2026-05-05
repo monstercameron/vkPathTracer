@@ -87,6 +87,12 @@ bool ParseConfigFile(const std::string& path,
                      std::vector<ParsedConfigEntry>& out_entries,
                      std::string* error = nullptr);
 
+// Load a .env-style key=value file into the process environment. Existing
+// environment variables are preserved unless override_existing is true.
+bool LoadDotEnvFile(const std::string& path,
+                    bool override_existing = false,
+                    std::string* error = nullptr);
+
 // Apply parsed entries to a RuntimeConfig; warns on unknown keys.
 void ApplyConfigEntries(const std::vector<ParsedConfigEntry>& entries,
                         RuntimeConfig& config);

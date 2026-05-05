@@ -60,6 +60,108 @@ static std::optional<std::string> ReadEnvVar(const char* name) {
 #endif
 }
 
+static bool SetEnvVar(const std::string& name, const std::string& value) {
+#ifdef _WIN32
+  return _putenv_s(name.c_str(), value.c_str()) == 0;
+#else
+  return setenv(name.c_str(), value.c_str(), 1) == 0;
+#endif
+}
+
+static bool IsDotEnvKey(std::string_view key) {
+  if (key.empty()) {
+    return false;
+  }
+  const auto first = static_cast<unsigned char>(key.front());
+  if (std::isalpha(first) == 0 && key.front() != '_') {
+    return false;
+  }
+  return std::all_of(key.begin() + 1, key.end(), [](char c) {
+    const auto ch = static_cast<unsigned char>(c);
+    return std::isalnum(ch) != 0 || c == '_';
+  });
+}
+
+static std::size_t FindUnquotedHash(std::string_view value) {
+  bool single_quote = false;
+  bool double_quote = false;
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    const char c = value[i];
+    if (c == '\\' && double_quote && i + 1 < value.size()) {
+      ++i;
+      continue;
+    }
+    if (c == '\'' && !double_quote) {
+      single_quote = !single_quote;
+      continue;
+    }
+    if (c == '"' && !single_quote) {
+      double_quote = !double_quote;
+      continue;
+    }
+    if (c == '#' && !single_quote && !double_quote &&
+        (i == 0 || std::isspace(static_cast<unsigned char>(value[i - 1])) != 0)) {
+      return i;
+    }
+  }
+  return std::string_view::npos;
+}
+
+static std::string DecodeDoubleQuotedDotEnvValue(std::string_view value) {
+  std::string out;
+  out.reserve(value.size());
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    if (value[i] != '\\' || i + 1 >= value.size()) {
+      out.push_back(value[i]);
+      continue;
+    }
+    const char next = value[++i];
+    switch (next) {
+      case 'n': out.push_back('\n'); break;
+      case 'r': out.push_back('\r'); break;
+      case 't': out.push_back('\t'); break;
+      case '\\': out.push_back('\\'); break;
+      case '"': out.push_back('"'); break;
+      default:
+        out.push_back('\\');
+        out.push_back(next);
+        break;
+    }
+  }
+  return out;
+}
+
+static std::string ParseDotEnvValue(std::string_view raw) {
+  std::string value = Trim(raw);
+  if (value.empty()) {
+    return {};
+  }
+
+  if (value.front() == '"' && value.size() >= 2) {
+    for (std::size_t i = 1; i < value.size(); ++i) {
+      if (value[i] == '\\' && i + 1 < value.size()) {
+        ++i;
+        continue;
+      }
+      if (value[i] == '"') {
+        return DecodeDoubleQuotedDotEnvValue(std::string_view(value).substr(1, i - 1));
+      }
+    }
+  }
+  if (value.front() == '\'' && value.size() >= 2) {
+    const auto end = value.find('\'', 1);
+    if (end != std::string::npos) {
+      return value.substr(1, end - 1);
+    }
+  }
+
+  const auto comment = FindUnquotedHash(value);
+  if (comment != std::string_view::npos) {
+    value = value.substr(0, comment);
+  }
+  return Trim(value);
+}
+
 }  // namespace detail
 
 // ---- ParseConfigFile --------------------------------------------------------
@@ -88,6 +190,56 @@ bool ParseConfigFile(const std::string& path,
     entry.line = line_num;
     if (!entry.key.empty()) {
       out_entries.push_back(std::move(entry));
+    }
+  }
+  return true;
+}
+
+// ---- LoadDotEnvFile ---------------------------------------------------------
+
+bool LoadDotEnvFile(const std::string& path,
+                    bool override_existing,
+                    std::string* error) {
+  std::ifstream in(path);
+  if (!in.is_open()) {
+    if (error) *error = "cannot open .env file: " + path;
+    return false;
+  }
+
+  std::string line;
+  int line_num = 0;
+  while (std::getline(in, line)) {
+    ++line_num;
+    std::string trimmed = detail::Trim(line);
+    if (trimmed.empty() || trimmed.front() == '#') {
+      continue;
+    }
+    if (trimmed.starts_with("export ")) {
+      trimmed = detail::Trim(std::string_view(trimmed).substr(7));
+    }
+
+    const auto eq = trimmed.find('=');
+    if (eq == std::string::npos) {
+      continue;
+    }
+
+    const std::string key = detail::Trim(trimmed.substr(0, eq));
+    if (!detail::IsDotEnvKey(key)) {
+      if (error) {
+        *error = "invalid .env key '" + key + "' at " + path + ":" + std::to_string(line_num);
+      }
+      return false;
+    }
+    if (!override_existing && detail::ReadEnvVar(key.c_str())) {
+      continue;
+    }
+
+    const std::string value = detail::ParseDotEnvValue(std::string_view(trimmed).substr(eq + 1));
+    if (!detail::SetEnvVar(key, value)) {
+      if (error) {
+        *error = "failed to set .env key '" + key + "' from " + path + ":" + std::to_string(line_num);
+      }
+      return false;
     }
   }
   return true;
