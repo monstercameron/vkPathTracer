@@ -2421,7 +2421,7 @@ visible emissive object
 
 ---
 
-## [ ] E14 — Add OBJ/MTL importer MVP
+## [x] E14 — Add OBJ/MTL importer MVP
 
 **Deliverable:** OBJ mesh and basic MTL material import.
 
@@ -2429,15 +2429,19 @@ visible emissive object
 
 **Acceptance:** OBJ fixture imports and renders with fallback material.
 
+**Validation:** `SceneDocument::load_from_file` expands OBJ/MTL scene assets through `src/assets/SceneAssetLoader.h`; `ptbench run --scene assets/scenes/lisa_model.json --backend cpu --renderer-path cpu-scalar --resolution 64x64 --spp 1 --max-depth 2 --output artifacts/benchmarks/lisa_loader_smoke` completed and wrote benchmark artifacts.
+
 ---
 
-## [ ] E15 — Add PNG/JPEG texture path
+## [x] E15 — Add PNG/JPEG texture path
 
 **Deliverable:** basic image decode into texture assets.
 
 **Implementation hints:** classify color vs normal/data maps based on binding context.
 
 **Acceptance:** base color and normal textures appear in material manifest.
+
+**Validation:** Sponza MTL maps are validated with `TextureMetadataImporter` during scene expansion; `ptbench validate-scene --scene assets/scenes/sponza_lite_atrium.json --json` reported `asset_count:8`, and `ptbench run --scene assets/scenes/sponza_lite_atrium.json --backend cpu --renderer-path cpu-scalar --resolution 64x64 --spp 1 --max-depth 2 --output artifacts/benchmarks/sponza_loader_smoke` completed.
 
 ---
 
@@ -6183,3 +6187,119 @@ This section records gaps found while reconciling checked todos against the curr
 - [ ] AUD13 - Replace model-only UI todos with actual docked/floating panels, viewport picking, hover/selection overlays, transform gizmos, inspectors, asset browser, script panel, benchmark panel, log panel, status bar, modals, shortcuts, and accessibility controls.
 - [x] AUD14 - Add UI release-gate checks that exercise the G70 checklist instead of only CLI doctor/crash/benchmark commands.
 - [ ] AUD15 - Add Web UI compatibility implementation or explicitly defer Web UI claims until a browser canvas/WebGPU build exists.
+
+---
+
+# 15.3 Dynamic physics rendering backlog
+
+Goal: dynamic rigid bodies should animate smoothly without forcing full scene-data rebuilds, full geometry uploads, or full BVH/BLAS rebuilds every physics publish. The renderer should keep static geometry resident, publish compact transform updates for moving instances, and invalidate accumulation only for the frames affected by motion.
+
+- [x] DYN01 - Add renderer-facing dynamic instance metadata and a transform-update API.
+
+  **Acceptance:** `RTInstance` carries stable entity IDs, dynamic/physics flags, rotation metadata, and transform revisions; the Qt physics loop queues `RTInstanceTransformUpdate` records before falling back to a full scene reload when the backend does not support transform-only updates.
+
+- [x] DYN02 - Stop baking dynamic instance transforms into duplicated world-space vertices.
+
+  **Deliverable:** `BuildSceneDataFromDocument` preserves local mesh geometry plus per-instance transforms for dynamic mesh entities while retaining a compatibility path for static baked geometry.
+
+  **Acceptance:** A moving sphere changes only its instance transform payload between physics steps; the vertex and index buffer content stays byte-identical while the sphere moves.
+
+- [x] DYN03 - Add two-level acceleration contracts for dynamic instances.
+
+  **Deliverable:** Add mesh-local BLAS/BVH records, instance AABBs, and TLAS records that can be rebuilt or refit without touching static mesh data.
+
+  **Acceptance:** Static scene geometry reports one stable acceleration cache key across physics frames; dynamic instance transforms report dirty TLAS entries only.
+
+- [x] DYN04 - Implement D3D12 compute TLAS update/refit for dynamic rigid bodies.
+
+  **Deliverable:** D3D12 compute path traces through a GPU-resident TLAS over instance bounds and local mesh BVHs, updating only transform/TLAS buffers while bodies move.
+
+  **Acceptance:** The material physics showcase can run with moving dynamic spheres at 60 Hz physics publish cadence without rebuilding the full triangle BVH on the CPU.
+
+- [x] DYN05 - Implement D3D12 DXR BLAS reuse and TLAS update.
+
+  **Deliverable:** Build static and mesh-local BLAS resources with update-safe flags where useful, then update the DXR instance buffer/TLAS for rigid-body motion.
+
+  **Acceptance:** DXR dynamic-body frames update TLAS instance transforms and do not rebuild BLAS unless mesh geometry, material alpha mode, or tessellation changes.
+
+  **Validation:** `ptapp.exe --dynamic-physics-gate --backend d3d12-dxr --scene assets\scenes\material_shader_physics_showcase.json --width 160 --height 90 --spp 4` passed with 72 dynamic bodies, 4 transform-only updates, 73 BLAS/TLAS instances, and `full_rebuild_count: 0`.
+
+- [x] DYN06 - Add accumulation invalidation policy for moving objects.
+
+  **Deliverable:** Reset or mask accumulation only when dynamic transforms materially change, with clear behavior for paused/settled physics and camera movement.
+
+  **Acceptance:** Settled bodies continue accumulating; moving bodies do not smear stale samples across frames.
+
+- [x] DYN07 - Add interpolated render transforms for smooth physics presentation.
+
+  **Deliverable:** Store previous/current physics transforms and render an interpolation pose at display time without mutating authoritative physics state.
+
+  **Acceptance:** 60 Hz physics with variable render tick timing has visually smooth motion and stable collision results.
+
+- [x] DYN08 - Add dynamic physics performance gates.
+
+  **Deliverable:** Add a benchmark scene and status artifact that reports rays/sec, physics step ms, transform publish ms, TLAS update ms, and rebuild count while bodies are moving and after they settle.
+
+  **Acceptance:** CI or a local smoke command fails if dynamic-body rendering regresses into full-scene rebuilds during the moving phase.
+
+- [x] DYN09 - Prevent camera interaction from starving physics transform publishes.
+
+  **Acceptance:** Moving the camera no longer lets physics continue accumulating hidden transform changes indefinitely; pending physics transforms still publish at an adaptive interactive cadence so objects do not visually freeze and then teleport when camera input stops.
+
+- [x] DYN10 - Add a D3D12 compute transform-only dynamic mesh path.
+
+  **Acceptance:** The D3D12 compute backend packs physics-controlled mesh instances as local geometry plus a bounded 24-dword transform record, updates only the instance buffer for physics transform publishes, keeps static triangles in the existing BVH, rejects dynamic instances by local bounds before triangle tests, and falls back to full scene rebuilds for DXR until the DXR TLAS update todo is implemented.
+
+---
+
+# 16. GPU-resident tessellation backlog
+
+Goal: make low-poly authored meshes, especially the showcase sphere mesh, render as smooth path-traced geometry without paying tessellation cost every frame. Generated geometry must be cached by source mesh, tessellation settings, displacement inputs, and transform policy, then reused until one of those inputs changes.
+
+## [ ] TESS01 - Add scene-level tessellation metadata for mesh geometry
+
+**Deliverable:** Each `geometry` entry can declare cached GPU tessellation settings such as `enabled`, `mode`, `factor`, `gpu`, `cache`, `projection`, and `displacement`.
+
+**Implementation hints:** Treat missing metadata as off. Clamp or reject unsafe factors. The material showcase sphere mesh should opt in with a uniform factor plus `projection: sphere` so generated points land on the sphere surface instead of staying on flat source-triangle planes.
+
+**Acceptance:** `SceneDocument::load_from_file` preserves tessellation metadata through load/serialize and scene hashes change when tessellation settings change.
+
+## [ ] TESS02 - Add RT scene tessellation requests and cache keys
+
+**Deliverable:** `BuildSceneDataFromDocument` emits compact tessellation requests that identify source triangle ranges, requested output sizes, and a stable cache key.
+
+**Implementation hints:** Start with uniform triangle subdivision and duplicated edge vertices. The key must include source geometry, tess factor, projection mode, displacement state, and transform policy. It must not include camera state.
+
+**Acceptance:** Loading `material_shader_physics_showcase.json` reports at least one tessellation request, and changing only the camera does not change the generated-geometry cache key.
+
+## [ ] TESS03 - Add D3D12 compute tessellation shader
+
+**Deliverable:** Add an HLSL compute shader that takes source vertices/indices plus a uniform factor/projection mode and writes generated vertex/index buffers at deterministic offsets.
+
+**Implementation hints:** Avoid append buffers for the first version. Pre-size buffers on the CPU, use one source-triangle work item/group, and write each source triangle into a known output slice. Duplicate edge vertices until the pipeline is proven.
+
+**Acceptance:** A GPU smoke path can tessellate a small triangle mesh and read back the expected generated vertex/index counts.
+
+## [ ] TESS04 - Feed generated buffers into D3D12 DXR BLAS
+
+**Deliverable:** D3D12 uses cached generated geometry buffers as BLAS input when tessellation is enabled.
+
+**Implementation hints:** Keep source mesh buffers, generated mesh buffers, BLAS scratch/result, film, and tonemap output GPU-resident. Rebuild BLAS only when the generated-geometry cache key changes. Prefer BLAS refit/update when only supported transform inputs change.
+
+**Acceptance:** Re-rendering a static tessellated scene for additional samples does not redispatch tessellation or rebuild BLAS.
+
+## [ ] TESS05 - Add GPU BVH path for non-DXR compute backends
+
+**Deliverable:** The compute path tracer can trace against GPU-generated tessellated buffers without CPU BVH rebuild/readback.
+
+**Implementation hints:** Start with LBVH/Morton build or another simple GPU builder before optimizing SAH. Keep CPU BVH as fallback.
+
+**Acceptance:** D3D12/Vulkan compute can trace tessellated geometry with no geometry readback in the hot path.
+
+## [ ] TESS06 - Add adaptive factors and displacement after the fixed path is stable
+
+**Deliverable:** Tessellation factors can be derived from screen size, curvature, displacement scale, or user preset while still respecting the frame timing budget.
+
+**Implementation hints:** Adaptive tessellation must still resolve to explicit output buffer sizes before dispatch. Budget logic should degrade factors before stealing time from ray generation.
+
+**Acceptance:** A high-performance preset produces smooth spheres while maintaining the configured polygon frame budget and rays-per-second target.
