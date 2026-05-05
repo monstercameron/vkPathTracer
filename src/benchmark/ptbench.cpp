@@ -139,6 +139,7 @@ std::vector<std::string> BuildPixAutorunArgs(const Path& configPath = {}) {
   std::string d3d12ShaderTraversal = ReadProcessEnvRaw("PT_D3D12_SHADER_TRAVERSAL");
   std::string d3d12PackedTriangles = ReadProcessEnvRaw("PT_D3D12_PACKED_TRIANGLES");
   std::string d3d12ReadbackInterval = ReadProcessEnvRaw("PT_D3D12_READBACK_INTERVAL");
+  std::string d3d12CommandQueue = ReadProcessEnvRaw("PT_D3D12_COMMAND_QUEUE");
   std::string pixProgrammaticCapture = ReadProcessEnvRaw("PTBENCH_PIX_PROGRAMMATIC_CAPTURE");
   std::string pixCapturePath = ReadProcessEnvRaw("PTBENCH_PIX_CAPTURE_PATH");
 
@@ -170,6 +171,7 @@ std::vector<std::string> BuildPixAutorunArgs(const Path& configPath = {}) {
       else if (key == "d3d12_shader_traversal") d3d12ShaderTraversal = value;
       else if (key == "d3d12_packed_triangles") d3d12PackedTriangles = value;
       else if (key == "d3d12_readback_interval") d3d12ReadbackInterval = value;
+      else if (key == "d3d12_command_queue") d3d12CommandQueue = value;
       else if (key == "pix_programmatic_capture") pixProgrammaticCapture = value;
       else if (key == "pix_capture_path") pixCapturePath = value;
     }
@@ -179,6 +181,7 @@ std::vector<std::string> BuildPixAutorunArgs(const Path& configPath = {}) {
   SetProcessEnvVar("PT_D3D12_SHADER_TRAVERSAL", d3d12ShaderTraversal);
   SetProcessEnvVar("PT_D3D12_PACKED_TRIANGLES", d3d12PackedTriangles);
   SetProcessEnvVar("PT_D3D12_READBACK_INTERVAL", d3d12ReadbackInterval);
+  SetProcessEnvVar("PT_D3D12_COMMAND_QUEUE", d3d12CommandQueue);
   SetProcessEnvVar("PTBENCH_PIX_PROGRAMMATIC_CAPTURE", pixProgrammaticCapture);
   SetProcessEnvVar("PTBENCH_PIX_CAPTURE_PATH", pixCapturePath);
 
