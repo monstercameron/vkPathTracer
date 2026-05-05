@@ -227,6 +227,8 @@ ptapp --window --platform qt
 
 The `--platform` flag controls the window/platform shell only; render backend selection remains separate via `--backend`.
 
+Runtime defaults can also come from a local `.env` file in the working directory. `.env` is loaded before `PTAPP_*` process environment variables are applied, so the precedence is defaults, `--config`, `.env`, process environment, then explicit CLI flags. Use `--env-file <path>` to load a specific dotenv file, or `--no-env-file` to disable auto-loading. Copy [`.env.example`](.env.example) to `.env` for common Qt/D3D12 launcher defaults.
+
 Qt CPU preview example:
 
 ```sh
@@ -252,6 +254,8 @@ Windows D3D12 Qt preview example:
 ```
 
 The Qt path is a platform/editor shell. Renderer backends receive native handles and capability descriptors; they must not receive `QWidget*`, `QWindow*`, or other Qt objects. The CPU preview path publishes throttled RGBA8 display frames into a latest-wins viewport handoff; `--ui-present-hz` controls that publish cap and defaults to 30 Hz. The D3D12 path uses the Qt viewport only as a native presentation surface. The Qt shell wraps the viewport in a `QMainWindow` with a native menu bar, native status bar, and dock widgets generated from the editor models. In the Qt CPU preview, left-click selects a pickable object through front-facing mesh triangles and shows its projected 3D bounding box with transform gizmos, `T`/`R`/`S`/`G` switch translate/rotate/scale/universal gizmo modes, right or middle drag orbits the camera, the mouse wheel dollies, and `F` toggles FPS camera mode with `W`/`A`/`S`/`D` plus `Q`/`E` movement.
+
+On Windows Qt builds, `ptapp.exe` uses the GUI subsystem and does not open a separate terminal by default. Pass `--console` or `--terminal` only when you want interactive stdout/stderr diagnostics.
 
 Current panel status: native Qt docks and the native `QStatusBar` are wired. The shell shows scene graph, inspector, materials, lights, camera, render settings, benchmark, diagnostics, performance, debug views, asset browser, timeline, scripting, and physics docks, with dock layout persisted through `QSettings`.
 
@@ -320,11 +324,20 @@ ptapp [options]
   --check-bench-write   Check benchmark artifact write
   --dump-config         Print resolved runtime config as JSON
   --config <path>       Load a config file (key=value format)
+  --env-file <path>     Load .env variables before config/env resolution
+  --no-env-file         Do not auto-load .env from the working directory
   --list-backends       Print known render backends and capabilities
+  --list-accelerators   Print accelerator capability and ray budget plan
+  --list-gpus           Enumerate Vulkan physical devices and select the best
   --headless            Initialize headless platform
   --window              Open desktop window and keep app running
+  --platform <name>     Select platform: auto|raw|qt|headless
   --window-width <px>   Window width (default 1280)
   --window-height <px>  Window height (default 720)
+  --ui-present-hz <hz>  Preview present rate (1..120, default 30)
+  --frames <n>          Exit window mode after n frames (GUI smoke)
+  --exit                Exit window mode after one frame unless --frames is set
+  --console, --terminal Attach or create a console for GUI diagnostics
   --scene <path>        Set startup scene
   --backend <name>      Select backend
   --log-level <n>       Select log level

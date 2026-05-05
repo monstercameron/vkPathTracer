@@ -391,6 +391,12 @@ add_executable(ptapp
   ${PT_CPU_SOURCES}
 )
 
+if(WIN32 AND PT_ENABLE_QT)
+  # Qt GUI builds should not spawn a separate console window by default.
+  # Use ptapp --console or --terminal when interactive stdout/stderr is wanted.
+  set_target_properties(ptapp PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
+
 target_include_directories(ptapp PRIVATE
   "${CMAKE_SOURCE_DIR}/src"
   "${CMAKE_BINARY_DIR}/generated"
