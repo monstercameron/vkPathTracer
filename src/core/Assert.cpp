@@ -8,8 +8,23 @@
 #include <string>
 
 #include "core/Logging.h"
+#include "diagnostics/CrashRecorder.h"
 
 namespace vkpt::assert_detail {
+
+static std::string escape_json(std::string_view sv) {
+  std::string s;
+  s.reserve(sv.size() + 4);
+  for (char c : sv) {
+    if (c == '"') { s += "\\\""; }
+    else if (c == '\\') { s += "\\\\"; }
+    else if (c == '\n') { s += "\\n"; }
+    else if (c == '\r') { s += "\\r"; }
+    else if (c == '\t') { s += "\\t"; }
+    else { s += c; }
+  }
+  return s;
+}
 
 // Write a minimal crash artifact without depending on the full crash recorder
 // (which may not be initialised when an early assertion fires).
@@ -36,24 +51,13 @@ static void write_minimal_crash_artifact(std::string_view condition,
 
     std::ofstream out(dir + "/crash_state.json");
     if (out.is_open()) {
-      auto esc = [](std::string_view sv) -> std::string {
-        std::string s;
-        s.reserve(sv.size() + 4);
-        for (char c : sv) {
-          if (c == '"')  { s += "\\\""; }
-          else if (c == '\\') { s += "\\\\"; }
-          else if (c == '\n') { s += "\\n"; }
-          else { s += c; }
-        }
-        return s;
-      };
       out << "{\n"
           << "  \"type\": \"assert_failure\",\n"
-          << "  \"condition\": \"" << esc(condition) << "\",\n"
-          << "  \"message\": \"" << esc(message) << "\",\n"
-          << "  \"file\": \"" << esc(file) << "\",\n"
+          << "  \"condition\": \"" << escape_json(condition) << "\",\n"
+          << "  \"message\": \"" << escape_json(message) << "\",\n"
+          << "  \"file\": \"" << escape_json(file) << "\",\n"
           << "  \"line\": " << line << ",\n"
-          << "  \"function\": \"" << esc(function) << "\"\n"
+          << "  \"function\": \"" << escape_json(function) << "\"\n"
           << "}\n";
     }
   } catch (...) {
@@ -85,8 +89,30 @@ void handle_failure(std::string_view condition,
         vkpt::log::Severity::Fatal, "assert", oss.str());
   } catch (...) {}
 
-  // Write a minimal crash artifact so agents can inspect the failure.
-  write_minimal_crash_artifact(condition, message, file, line, function);
+  bool wrote_full_bundle = false;
+  try {
+    std::ostringstream state;
+    state << "{\n"
+          << "  \"type\": \"assert_failure\",\n"
+          << "  \"condition\": \"" << escape_json(condition) << "\",\n"
+          << "  \"message\": \"" << escape_json(message) << "\",\n"
+          << "  \"file\": \"" << escape_json(file) << "\",\n"
+          << "  \"line\": " << line << ",\n"
+          << "  \"function\": \"" << escape_json(function) << "\"\n"
+          << "}";
+
+    auto& recorder = vkpt::diagnostics::CrashRecorder::instance();
+    recorder.set_last_error(message);
+    recorder.record_checkpoint("assert_failure", 0, "assert", condition, false);
+    recorder.update_subsystem_state_json("assert", state.str());
+    wrote_full_bundle = !recorder.flush("artifacts/crashes").empty();
+  } catch (...) {
+    wrote_full_bundle = false;
+  }
+
+  if (!wrote_full_bundle) {
+    write_minimal_crash_artifact(condition, message, file, line, function);
+  }
 }
 
 }  // namespace vkpt::assert_detail

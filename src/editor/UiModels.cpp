@@ -92,18 +92,6 @@ bool ReadJsonString(const vkpt::scene::JsonValue& value, const std::string& key,
   return true;
 }
 
-bool ReadJsonNumber(const vkpt::scene::JsonValue& value, const std::string& key, float& out) {
-  if (value.kind != vkpt::scene::JsonValue::Kind::Object) {
-    return false;
-  }
-  const auto it = value.object.find(key);
-  if (it == value.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::Number) {
-    return false;
-  }
-  out = static_cast<float>(it->second.number);
-  return true;
-}
-
 bool ReadJsonArray(const vkpt::scene::JsonValue& value, const std::string& key, std::vector<std::string>& out) {
   if (value.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
@@ -123,6 +111,31 @@ bool ReadJsonArray(const vkpt::scene::JsonValue& value, const std::string& key, 
   return true;
 }
 
+bool ReadJsonStableIdArray(const vkpt::scene::JsonValue& value,
+                           const std::string& key,
+                           std::vector<vkpt::core::StableId>& out) {
+  if (value.kind != vkpt::scene::JsonValue::Kind::Object) {
+    return false;
+  }
+  const auto it = value.object.find(key);
+  if (it == value.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::Array) {
+    return false;
+  }
+  out.clear();
+  out.reserve(it->second.array.size());
+  for (const auto& entry : it->second.array) {
+    if (entry.kind != vkpt::scene::JsonValue::Kind::Number ||
+        entry.number < 0.0 ||
+        !std::isfinite(entry.number)) {
+      return false;
+    }
+    out.push_back(static_cast<vkpt::core::StableId>(entry.number));
+  }
+  return true;
+}
+
+bool ReadJsonFloat(const vkpt::scene::JsonValue& value, const std::string& key, float& out);
+
 bool ReadJsonUInt64(const vkpt::scene::JsonValue& value, const std::string& key, std::uint64_t& out) {
   if (value.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
@@ -138,6 +151,37 @@ bool ReadJsonUInt64(const vkpt::scene::JsonValue& value, const std::string& key,
   return true;
 }
 
+bool ReadJsonVec3(const vkpt::scene::JsonValue& value, Vec3& out) {
+  return ReadJsonFloat(value, "x", out.x) &&
+         ReadJsonFloat(value, "y", out.y) &&
+         ReadJsonFloat(value, "z", out.z);
+}
+
+bool ReadJsonBounds(const vkpt::scene::JsonValue& value, const std::string& key, Bounds& out) {
+  if (value.kind != vkpt::scene::JsonValue::Kind::Object) {
+    return false;
+  }
+  const auto it = value.object.find(key);
+  if (it == value.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::Object) {
+    return false;
+  }
+  const auto min_it = it->second.object.find("min");
+  const auto max_it = it->second.object.find("max");
+  if (min_it == it->second.object.end() || max_it == it->second.object.end() ||
+      min_it->second.kind != vkpt::scene::JsonValue::Kind::Object ||
+      max_it->second.kind != vkpt::scene::JsonValue::Kind::Object) {
+    return false;
+  }
+  Bounds parsed;
+  if (!ReadJsonVec3(min_it->second, parsed.min) ||
+      !ReadJsonVec3(max_it->second, parsed.max)) {
+    return false;
+  }
+  ReadJsonBool(it->second, "valid", parsed.valid);
+  out = parsed;
+  return true;
+}
+
 bool ReadJsonFloat(const vkpt::scene::JsonValue& value, const std::string& key, float& out) {
   if (value.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
@@ -147,18 +191,6 @@ bool ReadJsonFloat(const vkpt::scene::JsonValue& value, const std::string& key, 
     return false;
   }
   out = static_cast<float>(it->second.number);
-  return true;
-}
-
-bool ReadJsonUInt(const vkpt::scene::JsonValue& value, const std::string& key, std::uint32_t& out) {
-  std::uint64_t tmp = 0;
-  if (!ReadJsonUInt64(value, key, tmp)) {
-    return false;
-  }
-  if (tmp > std::numeric_limits<std::uint32_t>::max()) {
-    return false;
-  }
-  out = static_cast<std::uint32_t>(tmp);
   return true;
 }
 
@@ -176,6 +208,25 @@ bool IsIn(const std::vector<std::string_view>& values, std::string_view key) {
     }
   }
   return false;
+}
+
+SelectionSource ParseSelectionSource(std::string_view source) {
+  if (source == "viewport") {
+    return SelectionSource::Viewport;
+  }
+  if (source == "scene_tree") {
+    return SelectionSource::SceneTree;
+  }
+  if (source == "inspector") {
+    return SelectionSource::Inspector;
+  }
+  if (source == "asset_browser") {
+    return SelectionSource::AssetBrowser;
+  }
+  if (source == "script_panel") {
+    return SelectionSource::ScriptPanel;
+  }
+  return SelectionSource::Unknown;
 }
 
 }  // namespace
@@ -623,6 +674,12 @@ std::string SerializeUiRuntimeStateInternal(const UiRuntimeState& state) {
   out << "\"active_scene\":\"" << EscapeJson(state.active_scene) << "\",";
   out << "\"active_camera\":\"" << EscapeJson(state.active_camera) << "\",";
   out << "\"active_renderer_backend\":\"" << EscapeJson(state.active_renderer_backend) << "\",";
+  out << "\"active_renderer_path\":\"" << EscapeJson(state.active_renderer_path) << "\",";
+  out << "\"spp_accumulated\":" << state.spp_accumulated << ",";
+  out << "\"fps\":" << state.fps << ",";
+  out << "\"frame_ms\":" << state.frame_ms << ",";
+  out << "\"background_job_count\":" << state.background_job_count << ",";
+  out << "\"last_warning_or_error\":\"" << EscapeJson(state.last_warning_or_error) << "\",";
   out << "\"last_clicked_entity\":" << state.last_clicked_entity << ",";
   out << "\"last_menu_action\":\"" << EscapeJson(state.last_menu_action) << "\",";
   out << "\"last_inspector_property_edit\":\"" << EscapeJson(state.last_inspector_property_edit) << "\",";
@@ -639,6 +696,11 @@ MenuItem MenuItemNode(std::string_view id, std::string_view label, bool enabled 
   item.label = std::string(label);
   item.enabled = enabled;
   return item;
+}
+
+void DisableMenuItem(MenuItem& item, std::string_view reason) {
+  item.enabled = false;
+  item.disabled_reason = std::string(reason);
 }
 
 MenuItem* FindMenuItemRecursive(MenuItem& node, std::string_view item_id) {
@@ -665,40 +727,11 @@ const MenuItem* FindMenuItemRecursive(const MenuItem& node, std::string_view ite
   return nullptr;
 }
 
-MenuItem* FindPanelMutatingMenuItem(MenuBar& menu, std::string_view item_id) {
-  for (auto& item : menu.top_level_menus) {
-    if (auto* found = FindMenuItemRecursive(item, item_id)) {
-      return found;
-    }
-  }
-  return nullptr;
-}
-
-const MenuItem* FindPanelMutatingMenuItem(const MenuBar& menu, std::string_view item_id) {
-  for (const auto& item : menu.top_level_menus) {
-    if (auto* found = FindMenuItemRecursive(item, item_id)) {
-      return found;
-    }
-  }
-  return nullptr;
-}
-
 UiPanelState* FindPanel(UiLayoutDocument& layout, std::string_view panel_id) {
   auto it = std::find_if(layout.panels.begin(), layout.panels.end(),
                          [panel_id](const UiPanelState& panel) {
                            return panel.id == panel_id;
                          });
-  if (it == layout.panels.end()) {
-    return nullptr;
-  }
-  return &(*it);
-}
-
-const UiPanelState* FindPanel(const UiLayoutDocument& layout, std::string_view panel_id) {
-  const auto it = std::find_if(layout.panels.begin(), layout.panels.end(),
-                               [panel_id](const UiPanelState& panel) {
-                                 return panel.id == panel_id;
-                               });
   if (it == layout.panels.end()) {
     return nullptr;
   }
@@ -747,7 +780,12 @@ void ApplyEditSelectionRules(MenuItem& edit_menu, const SelectionState& selectio
     const bool dependsOnSelection =
         std::find(selectionItems.begin(), selectionItems.end(), child.id) != selectionItems.end();
     if (dependsOnSelection) {
-      child.enabled = hasSelection;
+      if (hasSelection) {
+        child.enabled = true;
+        child.disabled_reason.clear();
+      } else {
+        DisableMenuItem(child, "requires at least one selected entity");
+      }
     }
   }
 }
@@ -1053,6 +1091,12 @@ UiRuntimeState CreateDefaultRuntimeState() {
   state.dpi_scale = 1.0f;
   state.ui_scale = 1.0f;
   state.selected_debug_view = "none";
+  state.active_renderer_backend = "cpu";
+  state.active_renderer_path = "cpu_scalar";
+  state.spp_accumulated = 0;
+  state.fps = 0.0;
+  state.frame_ms = 0.0;
+  state.background_job_count = 0;
   state.visible_panels = {"scene_tree", "inspector", "asset_browser", "viewport", "status_bar", "console"};
   return state;
 }
@@ -1385,6 +1429,309 @@ bool DetectShortcutConflicts(const std::vector<UiShortcutAction>& shortcuts) {
   return false;
 }
 
+std::vector<UiPanelDefinition> BuildDefaultPanelDefinitions() {
+  return {
+    {"viewport", "Viewport", "view.panel.viewport", true, true, false, false, 960.0f, 540.0f},
+    {"scene_tree", "Scene Tree", "view.panel.scene_tree", true, true, true, true, 280.0f, 600.0f},
+    {"inspector", "Inspector", "view.panel.inspector", true, true, true, true, 360.0f, 600.0f},
+    {"asset_browser", "Asset Browser", "view.panel.asset_browser", true, true, true, true, 720.0f, 260.0f},
+    {"material_editor", "Material Editor", "view.panel.material_editor", false, true, true, true, 520.0f, 420.0f},
+    {"script_panel", "Scripts", "view.panel.script_panel", false, true, true, true, 520.0f, 420.0f},
+    {"benchmark_panel", "Benchmark", "view.panel.benchmark", false, true, true, true, 560.0f, 480.0f},
+    {"benchmark_history", "Benchmark History", "view.panel.benchmark_history", false, true, true, true, 680.0f, 360.0f},
+    {"console", "Console", "view.panel.console", true, true, true, true, 720.0f, 260.0f},
+    {"status_bar", "Status Bar", "view.panel.status_bar", true, false, false, false, 1280.0f, 28.0f},
+  };
+}
+
+std::vector<InspectorFieldSchema> BuildDefaultInspectorSchemas() {
+  return {
+    {"transform.position", "Position", "Transform", InspectorControlKind::Vector3, true, true, -100000.0f, 100000.0f, 0.01f, {}},
+    {"transform.rotation", "Rotation", "Transform", InspectorControlKind::Vector3, true, true, -360.0f, 360.0f, 0.1f, {}},
+    {"transform.scale", "Scale", "Transform", InspectorControlKind::Vector3, true, true, 0.0001f, 10000.0f, 0.01f, {}},
+    {"material.id", "Material", "Material", InspectorControlKind::AssetPicker, true, true, 0.0f, 0.0f, 0.0f, {}},
+    {"material.base_color", "Base Color", "Material", InspectorControlKind::Color, true, true, 0.0f, 1.0f, 0.01f, {}},
+    {"material.roughness", "Roughness", "Material", InspectorControlKind::Slider, true, true, 0.0f, 1.0f, 0.01f, {}},
+    {"material.metallic", "Metallic", "Material", InspectorControlKind::Slider, true, true, 0.0f, 1.0f, 0.01f, {}},
+    {"light.type", "Type", "Light", InspectorControlKind::Enum, true, false, 0.0f, 0.0f, 0.0f, {"point", "sphere", "directional", "environment"}},
+    {"light.intensity", "Intensity", "Light", InspectorControlKind::Number, true, true, 0.0f, 100000.0f, 0.1f, {}},
+    {"light.color", "Color", "Light", InspectorControlKind::Color, true, true, 0.0f, 1.0f, 0.01f, {}},
+    {"camera.fov_y", "Vertical FOV", "Camera", InspectorControlKind::Slider, true, false, 1.0f, 179.0f, 0.1f, {}},
+    {"camera.aperture", "Aperture", "Camera", InspectorControlKind::Number, true, false, 0.0f, 64.0f, 0.01f, {}},
+    {"camera.focus_distance", "Focus Distance", "Camera", InspectorControlKind::Number, true, false, 0.001f, 100000.0f, 0.01f, {}},
+    {"script.path", "Script", "Script", InspectorControlKind::AssetPicker, true, true, 0.0f, 0.0f, 0.0f, {}},
+  };
+}
+
+std::vector<ScriptLifecycleHookState> BuildDefaultScriptLifecycleHooks() {
+  const std::vector<std::string_view> names = {
+    "on_load", "on_spawn", "on_enable", "on_disable", "on_update",
+    "on_fixed_update", "on_late_update", "on_collision", "on_trigger",
+    "on_animation_event", "on_animation_loop", "on_keyframe_reached",
+    "on_destroy", "on_unload"
+  };
+  std::vector<ScriptLifecycleHookState> hooks;
+  hooks.reserve(names.size());
+  for (const auto name : names) {
+    ScriptLifecycleHookState hook;
+    hook.hook_name = std::string(name);
+    hooks.push_back(std::move(hook));
+  }
+  return hooks;
+}
+
+std::vector<UiReleaseGateItem> BuildDefaultUiReleaseGateChecklist() {
+  const std::vector<std::pair<std::string_view, std::string_view>> items = {
+    {"window.opens", "window opens"},
+    {"menu.works", "menu bar works"},
+    {"layout.persists", "layout persists"},
+    {"panels.dock_float", "panels dock/float"},
+    {"tree.hierarchy", "scene tree displays hierarchy"},
+    {"viewport.selection", "viewport selection works"},
+    {"viewport.bounds", "bounding boxes display"},
+    {"gizmo.trs", "translate/rotate/scale gizmos work"},
+    {"inspector.edits", "inspector edits selected entity"},
+    {"selection.multi", "multi-select works"},
+    {"grouping", "group/ungroup works"},
+    {"merge.split", "merge/split works"},
+    {"assets.import", "asset browser imports valid files"},
+    {"assets.reject", "invalid file drops are rejected"},
+    {"lua.attach", "Lua script attach UI works"},
+    {"benchmark.desc", "benchmark panel runs benchmark descriptor"},
+    {"benchmark.score", "normalized score displays"},
+    {"logs.errors", "logs panel shows errors"},
+    {"crash.ui_state", "crash snapshot includes UI state"},
+  };
+  std::vector<UiReleaseGateItem> checklist;
+  checklist.reserve(items.size());
+  for (const auto& [id, label] : items) {
+    UiReleaseGateItem item;
+    item.id = std::string(id);
+    item.label = std::string(label);
+    item.required = true;
+    checklist.push_back(std::move(item));
+  }
+  return checklist;
+}
+
+ShortcutResolution ResolveShortcut(const std::vector<UiShortcut>& shortcuts,
+                                   std::uint32_t key_code,
+                                   bool ctrl,
+                                   bool shift,
+                                   bool alt) {
+  ShortcutResolution result;
+  for (const auto& shortcut : shortcuts) {
+    if (shortcut.key_code == key_code &&
+        shortcut.ctrl == ctrl &&
+        shortcut.shift == shift &&
+        shortcut.alt == alt) {
+      result.matched = true;
+      result.conflicting_action_ids.push_back(shortcut.action_id);
+    }
+  }
+  if (result.conflicting_action_ids.size() == 1u) {
+    result.action_id = result.conflicting_action_ids.front();
+  } else if (result.conflicting_action_ids.size() > 1u) {
+    result.conflict = true;
+  }
+  return result;
+}
+
+std::vector<AssetPreviewCard> FilterAndSortAssetCards(const std::vector<AssetPreviewCard>& cards,
+                                                      const AssetBrowserFilter& filter) {
+  const std::string query = ToLower(filter.query);
+  const std::string category = ToLower(filter.category);
+  std::vector<AssetPreviewCard> out;
+  for (const auto& card : cards) {
+    if (!filter.show_missing && card.missing) {
+      continue;
+    }
+    if (!filter.show_generated && ToLower(card.status) == "generated") {
+      continue;
+    }
+    if (!category.empty() && ToLower(card.category) != category) {
+      continue;
+    }
+    if (!query.empty()) {
+      const std::string haystack = ToLower(card.display_name + " " + card.path + " " + card.asset_id);
+      if (haystack.find(query) == std::string::npos) {
+        continue;
+      }
+    }
+    out.push_back(card);
+  }
+
+  const std::string sortKey = ToLower(filter.sort_key);
+  std::sort(out.begin(), out.end(), [&](const AssetPreviewCard& a, const AssetPreviewCard& b) {
+    std::string av;
+    std::string bv;
+    if (sortKey == "category") {
+      av = a.category;
+      bv = b.category;
+    } else if (sortKey == "status") {
+      av = a.status;
+      bv = b.status;
+    } else if (sortKey == "path") {
+      av = a.path;
+      bv = b.path;
+    } else {
+      av = a.display_name;
+      bv = b.display_name;
+    }
+    if (filter.ascending) {
+      return ToLower(av) < ToLower(bv);
+    }
+    return ToLower(av) > ToLower(bv);
+  });
+  return out;
+}
+
+BenchmarkScoreModel ComputeBenchmarkScore(double measured_units_per_second,
+                                          double expected_units_per_second,
+                                          double raw_samples_per_second,
+                                          double workload_units,
+                                          bool calibration_valid) {
+  BenchmarkScoreModel score;
+  score.raw_samples_per_second = raw_samples_per_second;
+  score.workload_units = workload_units;
+  score.expected_units_per_second = expected_units_per_second;
+  score.measured_units_per_second = measured_units_per_second;
+  score.calibration_valid = calibration_valid;
+  if (expected_units_per_second > 0.0) {
+    score.normalized_score = measured_units_per_second / expected_units_per_second;
+  }
+  if (!calibration_valid) {
+    score.confidence = "uncalibrated";
+    score.warnings.push_back("hardware calibration profile is missing or invalid");
+  } else if (score.normalized_score <= 0.0) {
+    score.confidence = "invalid";
+    score.warnings.push_back("measured throughput is zero");
+  } else if (score.normalized_score < 0.75 || score.normalized_score > 1.25) {
+    score.confidence = "low";
+  } else {
+    score.confidence = "high";
+  }
+  return score;
+}
+
+WorkloadComplexityModel EstimateWorkloadComplexity(const vkpt::benchmark::BenchmarkRunDesc& desc,
+                                                   std::uint32_t light_count,
+                                                   std::uint64_t triangle_count,
+                                                   std::uint64_t bvh_node_count,
+                                                   std::uint64_t texture_bytes,
+                                                   bool denoiser_enabled) {
+  WorkloadComplexityModel model;
+  model.width = desc.resolution.width;
+  model.height = desc.resolution.height;
+  model.samples_per_pixel = desc.samples_per_pixel;
+  model.max_depth = desc.max_depth;
+  model.light_count = light_count;
+  model.triangle_count = triangle_count;
+  model.bvh_node_count = bvh_node_count;
+  model.texture_bytes = texture_bytes;
+
+  const double pixel_count = static_cast<double>(std::max<std::uint32_t>(1u, model.width)) *
+                             static_cast<double>(std::max<std::uint32_t>(1u, model.height));
+  const double spp_cost = static_cast<double>(std::max<std::uint32_t>(1u, model.samples_per_pixel));
+  const double depth_cost = static_cast<double>(std::max<std::uint32_t>(1u, model.max_depth));
+  const double light_cost = 1.0 + static_cast<double>(light_count) * 0.08;
+  const double triangle_cost = 1.0 + std::log2(1.0 + static_cast<double>(triangle_count)) * 0.02;
+  const double bvh_cost = 1.0 + std::log2(1.0 + static_cast<double>(bvh_node_count)) * 0.015;
+  const double texture_cost = 1.0 + (static_cast<double>(texture_bytes) / (1024.0 * 1024.0 * 1024.0)) * 0.05;
+  const double denoiser_cost = denoiser_enabled ? 1.12 : 1.0;
+
+  model.normalized_cost_units =
+      (pixel_count * spp_cost * depth_cost * light_cost * triangle_cost * bvh_cost * texture_cost * denoiser_cost) /
+      (1280.0 * 720.0);
+
+  model.cost_drivers.push_back("resolution");
+  model.cost_drivers.push_back("SPP");
+  model.cost_drivers.push_back("max_depth");
+  if (light_count > 0) {
+    model.cost_drivers.push_back("light_count");
+  }
+  if (triangle_count > 0) {
+    model.cost_drivers.push_back("triangle_count");
+  }
+  if (bvh_node_count > 0) {
+    model.cost_drivers.push_back("BVH_node_count");
+  }
+  if (texture_bytes > 0) {
+    model.cost_drivers.push_back("texture_memory");
+  }
+  if (denoiser_enabled) {
+    model.cost_drivers.push_back("denoiser");
+  }
+  if (!desc.renderer_path.empty()) {
+    model.cost_drivers.push_back("renderer_path:" + desc.renderer_path);
+  }
+  if (!desc.backend.empty()) {
+    model.cost_drivers.push_back("backend:" + desc.backend);
+  }
+  return model;
+}
+
+std::vector<BenchmarkCalibrationActionModel> BuildDefaultBenchmarkCalibrationActions(
+    bool gpu_compute_available,
+    bool hardware_rt_available) {
+  return {
+    {"calibration.cpu_scalar", "Run CPU Scalar Calibration", "cpu", "cpu_scalar", true, {}},
+    {"calibration.cpu_threaded", "Run CPU Threaded Calibration", "cpu", "cpu_threaded", true, {}},
+    {"calibration.cpu_simd", "Run CPU SIMD Calibration", "cpu", "cpu_simd", true, {}},
+    {"calibration.gpu_compute", "Run GPU Compute Calibration", "gpu", "gpu_compute", gpu_compute_available,
+     gpu_compute_available ? std::string{} : std::string{"no GPU compute backend is available in this build"}},
+    {"calibration.hardware_rt", "Run Hardware RT Calibration", "gpu", "hardware_rt", hardware_rt_available,
+     hardware_rt_available ? std::string{} : std::string{"hardware ray tracing is unavailable or not selected"}},
+    {"calibration.backend_compare", "Run Backend Comparison", "mixed", "backend_comparison",
+     gpu_compute_available || hardware_rt_available,
+     (gpu_compute_available || hardware_rt_available) ? std::string{} : std::string{"backend comparison needs at least one GPU backend"}}
+  };
+}
+
+BenchmarkPanelModel BuildBenchmarkPanelModel(const vkpt::benchmark::BenchmarkRunDesc& desc,
+                                            const BenchmarkRawMetricsModel& raw_metrics,
+                                            const BenchmarkScoreModel& score,
+                                            const WorkloadComplexityModel& workload,
+                                            std::string_view artifact_location,
+                                            std::string_view result_summary,
+                                            bool can_run,
+                                            std::string_view unavailable_reason) {
+  BenchmarkPanelModel model;
+  model.run_desc = desc;
+  model.can_run = can_run;
+  model.can_cancel = false;
+  model.unavailable_reason = std::string(unavailable_reason);
+  model.artifact_location = std::string(artifact_location);
+  model.result_summary = std::string(result_summary);
+  model.raw_metrics = raw_metrics;
+  model.score = score;
+  model.workload = workload;
+  model.calibration_actions = BuildDefaultBenchmarkCalibrationActions(true, false);
+  return model;
+}
+
+StatusBarModel BuildStatusBarModel(const UiRuntimeState& runtime,
+                                   const SelectionState& selection,
+                                   const BenchmarkScoreModel* score) {
+  StatusBarModel model;
+  model.active_scene = runtime.active_scene;
+  model.backend = runtime.active_renderer_backend;
+  model.renderer_path = runtime.active_renderer_path.empty() ? runtime.selected_debug_view : runtime.active_renderer_path;
+  model.spp = runtime.spp_accumulated;
+  model.fps = runtime.fps;
+  model.frame_ms = runtime.frame_ms;
+  model.selected_entity_count = selection.selected_entity_ids.size();
+  model.active_tool = ToString(runtime.active_viewport_tool);
+  model.last_warning_or_error = runtime.last_warning_or_error.empty()
+      ? runtime.status_message
+      : runtime.last_warning_or_error;
+  model.background_job_count = runtime.background_job_count;
+  if (score != nullptr) {
+    model.normalized_score = score->normalized_score;
+  }
+  return model;
+}
+
 std::string SerializeUiRuntimeState(const UiRuntimeState& state) {
   return SerializeUiRuntimeStateInternal(state);
 }
@@ -1405,6 +1752,7 @@ std::string SerializeMenuBar(const MenuBar& menu) {
     out << "\"id\":\"" << EscapeJson(item.id) << "\",";
     out << "\"label\":\"" << EscapeJson(item.label) << "\",";
     out << "\"enabled\":" << (item.enabled ? "true" : "false") << ",";
+    out << "\"disabled_reason\":\"" << EscapeJson(item.disabled_reason) << "\",";
     out << "\"children\":[";
     for (std::size_t i = 0; i < item.children.size(); ++i) {
       if (i > 0) out << ",";
@@ -1418,6 +1766,155 @@ std::string SerializeMenuBar(const MenuBar& menu) {
   for (std::size_t i = 0; i < menu.top_level_menus.size(); ++i) {
     if (i > 0) out << ",";
     serialize_item(menu.top_level_menus[i], serialize_item, 0, out);
+  }
+  out << "]}";
+  return out.str();
+}
+
+std::string SerializeBenchmarkPanelModel(const BenchmarkPanelModel& model) {
+  auto write_string_array = [](std::ostringstream& out, const std::vector<std::string>& values) {
+    out << "[";
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      if (i > 0) {
+        out << ",";
+      }
+      out << "\"" << EscapeJson(values[i]) << "\"";
+    }
+    out << "]";
+  };
+
+  std::ostringstream out;
+  out << "{";
+  out << "\"selected_scene\":\"" << EscapeJson(model.run_desc.scene_path) << "\",";
+  out << "\"backend\":\"" << EscapeJson(model.run_desc.backend) << "\",";
+  out << "\"renderer_path\":\"" << EscapeJson(model.run_desc.renderer_path) << "\",";
+  out << "\"resolution\":{\"width\":" << model.run_desc.resolution.width
+      << ",\"height\":" << model.run_desc.resolution.height << "},";
+  out << "\"spp\":" << model.run_desc.samples_per_pixel << ",";
+  out << "\"max_depth\":" << model.run_desc.max_depth << ",";
+  out << "\"warmup_frames\":" << model.run_desc.warmup_frames << ",";
+  out << "\"duration\":" << model.run_desc.duration << ",";
+  out << "\"seed\":" << model.run_desc.seed << ",";
+  out << "\"can_run\":" << (model.can_run ? "true" : "false") << ",";
+  out << "\"can_cancel\":" << (model.can_cancel ? "true" : "false") << ",";
+  out << "\"unavailable_reason\":\"" << EscapeJson(model.unavailable_reason) << "\",";
+  out << "\"artifact_location\":\"" << EscapeJson(model.artifact_location) << "\",";
+  out << "\"result_summary\":\"" << EscapeJson(model.result_summary) << "\",";
+  out << "\"raw_metrics\":{";
+  out << "\"fps\":" << model.raw_metrics.fps << ",";
+  out << "\"frame_ms\":" << model.raw_metrics.frame_ms << ",";
+  out << "\"gpu_ms\":" << model.raw_metrics.gpu_ms << ",";
+  out << "\"cpu_ms\":" << model.raw_metrics.cpu_ms << ",";
+  out << "\"samples_per_second\":" << model.raw_metrics.samples_per_second << ",";
+  out << "\"paths_per_second\":" << model.raw_metrics.paths_per_second << ",";
+  out << "\"path_vertices_per_second\":" << model.raw_metrics.path_vertices_per_second << ",";
+  out << "\"spp_accumulated\":" << model.raw_metrics.spp_accumulated << ",";
+  out << "\"memory_estimate_bytes\":" << model.raw_metrics.memory_estimate_bytes << ",";
+  out << "\"bvh_build_ms\":" << model.raw_metrics.bvh_build_ms << ",";
+  out << "\"shader_compile_ms\":" << model.raw_metrics.shader_compile_ms;
+  out << "},";
+  out << "\"score\":{";
+  out << "\"normalized_score\":" << model.score.normalized_score << ",";
+  out << "\"raw_samples_per_second\":" << model.score.raw_samples_per_second << ",";
+  out << "\"raw_paths_per_second\":" << model.score.raw_paths_per_second << ",";
+  out << "\"raw_gpu_ms\":" << model.score.raw_gpu_ms << ",";
+  out << "\"raw_cpu_ms\":" << model.score.raw_cpu_ms << ",";
+  out << "\"workload_units\":" << model.score.workload_units << ",";
+  out << "\"expected_units_per_second\":" << model.score.expected_units_per_second << ",";
+  out << "\"measured_units_per_second\":" << model.score.measured_units_per_second << ",";
+  out << "\"calibration_profile_id\":\"" << EscapeJson(model.score.calibration_profile_id) << "\",";
+  out << "\"confidence\":\"" << EscapeJson(model.score.confidence) << "\",";
+  out << "\"calibration_valid\":" << (model.score.calibration_valid ? "true" : "false") << ",";
+  out << "\"warnings\":";
+  write_string_array(out, model.score.warnings);
+  out << "},";
+  out << "\"workload\":{";
+  out << "\"width\":" << model.workload.width << ",";
+  out << "\"height\":" << model.workload.height << ",";
+  out << "\"samples_per_pixel\":" << model.workload.samples_per_pixel << ",";
+  out << "\"max_depth\":" << model.workload.max_depth << ",";
+  out << "\"light_count\":" << model.workload.light_count << ",";
+  out << "\"triangle_count\":" << model.workload.triangle_count << ",";
+  out << "\"bvh_node_count\":" << model.workload.bvh_node_count << ",";
+  out << "\"texture_bytes\":" << model.workload.texture_bytes << ",";
+  out << "\"normalized_cost_units\":" << model.workload.normalized_cost_units << ",";
+  out << "\"cost_drivers\":";
+  write_string_array(out, model.workload.cost_drivers);
+  out << "},";
+  out << "\"calibration_actions\":[";
+  for (std::size_t i = 0; i < model.calibration_actions.size(); ++i) {
+    const auto& action = model.calibration_actions[i];
+    if (i > 0) {
+      out << ",";
+    }
+    out << "{";
+    out << "\"id\":\"" << EscapeJson(action.id) << "\",";
+    out << "\"label\":\"" << EscapeJson(action.label) << "\",";
+    out << "\"backend\":\"" << EscapeJson(action.backend) << "\",";
+    out << "\"renderer_path\":\"" << EscapeJson(action.renderer_path) << "\",";
+    out << "\"supported\":" << (action.supported ? "true" : "false") << ",";
+    out << "\"unavailable_reason\":\"" << EscapeJson(action.unavailable_reason) << "\"";
+    out << "}";
+  }
+  out << "],";
+  out << "\"history\":[";
+  for (std::size_t i = 0; i < model.history.size(); ++i) {
+    const auto& entry = model.history[i];
+    if (i > 0) {
+      out << ",";
+    }
+    out << "{";
+    out << "\"scene\":\"" << EscapeJson(entry.scene) << "\",";
+    out << "\"backend\":\"" << EscapeJson(entry.backend) << "\",";
+    out << "\"renderer_path\":\"" << EscapeJson(entry.renderer_path) << "\",";
+    out << "\"score\":" << entry.score.normalized_score << ",";
+    out << "\"raw_throughput\":" << entry.score.raw_samples_per_second << ",";
+    out << "\"artifact_path\":\"" << EscapeJson(entry.artifact_path) << "\",";
+    out << "\"timestamp_utc\":\"" << EscapeJson(entry.timestamp_utc) << "\",";
+    out << "\"regression_marker\":\"" << EscapeJson(entry.regression_marker) << "\"";
+    out << "}";
+  }
+  out << "]";
+  out << "}";
+  return out.str();
+}
+
+std::string SerializeUiReleaseGateChecklist(const std::vector<UiReleaseGateItem>& checklist) {
+  std::ostringstream out;
+  std::size_t passed = 0;
+  std::size_t deferred = 0;
+  std::size_t pending = 0;
+  for (const auto& item : checklist) {
+    if (item.passed) {
+      ++passed;
+    } else if (item.deferred) {
+      ++deferred;
+    } else {
+      ++pending;
+    }
+  }
+
+  out << "{";
+  out << "\"total\":" << checklist.size() << ",";
+  out << "\"passed_count\":" << passed << ",";
+  out << "\"deferred_count\":" << deferred << ",";
+  out << "\"pending_count\":" << pending << ",";
+  out << "\"items\":[";
+  for (std::size_t i = 0; i < checklist.size(); ++i) {
+    const auto& item = checklist[i];
+    if (i > 0) {
+      out << ",";
+    }
+    out << "{";
+    out << "\"id\":\"" << EscapeJson(item.id) << "\",";
+    out << "\"label\":\"" << EscapeJson(item.label) << "\",";
+    out << "\"required\":" << (item.required ? "true" : "false") << ",";
+    out << "\"passed\":" << (item.passed ? "true" : "false") << ",";
+    out << "\"deferred\":" << (item.deferred ? "true" : "false") << ",";
+    out << "\"status\":\"" << (item.passed ? "passed" : (item.deferred ? "deferred" : "pending")) << "\",";
+    out << "\"evidence\":\"" << EscapeJson(item.evidence) << "\",";
+    out << "\"deferred_reason\":\"" << EscapeJson(item.deferred_reason) << "\"";
+    out << "}";
   }
   out << "]}";
   return out.str();
@@ -1443,6 +1940,75 @@ std::string SerializeUiEventsJsonl(const std::deque<UiEvent>& events, std::size_
     out << SerializeUiEventInternal(events[i], true);
   }
   return out.str();
+}
+
+bool LoadSelectionFromFile(const std::string& path, SelectionState* out_selection) {
+  if (!out_selection) {
+    return false;
+  }
+  std::ifstream stream(path);
+  if (!stream) {
+    return false;
+  }
+  std::ostringstream text;
+  text << stream.rdbuf();
+  const auto value = vkpt::scene::JsonParser::parse(text.str());
+  if (!value || value->kind != vkpt::scene::JsonValue::Kind::Object) {
+    return false;
+  }
+
+  SelectionState selection = CreateDefaultSelectionState();
+  ReadJsonStableIdArray(*value, "selected_entity_ids", selection.selected_entity_ids);
+  ReadJsonStableIdArray(*value, "hovered_entity_ids", selection.hovered_entity_ids);
+  ReadJsonUInt64(*value, "active_primary_entity", selection.active_primary_entity);
+  ReadJsonUInt64(*value, "hovered_entity", selection.hovered_entity);
+  ReadJsonUInt64(*value, "selected_group", selection.selected_group);
+  ReadJsonString(*value, "selected_group_name", selection.selected_group_name);
+  if (std::string source; ReadJsonString(*value, "selection_source", source)) {
+    selection.selection_source = ParseSelectionSource(source);
+  }
+  ReadJsonBounds(*value, "aggregate_bounds", selection.aggregate_bounds);
+  ReadJsonUInt64(*value, "last_change_frame", selection.last_change_frame);
+
+  if (const auto it = value->object.find("per_item_bounds");
+      it != value->object.end() && it->second.kind == vkpt::scene::JsonValue::Kind::Array) {
+    selection.per_item_bounds.clear();
+    for (const auto& entry : it->second.array) {
+      if (entry.kind != vkpt::scene::JsonValue::Kind::Object) {
+        continue;
+      }
+      SceneEntityBounds item;
+      ReadJsonUInt64(entry, "entity_id", item.entity_id);
+      ReadJsonBounds(entry, "bounds", item.bounds);
+      selection.per_item_bounds.push_back(item);
+    }
+  }
+
+  *out_selection = std::move(selection);
+  return true;
+}
+
+bool SaveSelectionToFile(const std::string& path, const SelectionState& selection, std::string* error) {
+  try {
+    const auto parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) {
+      std::filesystem::create_directories(parent);
+    }
+  } catch (...) {
+    if (error) {
+      *error = "failed to create parent directory";
+    }
+    return false;
+  }
+  std::ofstream out(path);
+  if (!out) {
+    if (error) {
+      *error = "failed to open file";
+    }
+    return false;
+  }
+  out << SerializeSelectionState(selection) << '\n';
+  return true;
 }
 
 bool LoadLayoutFromFile(const std::string& path, UiLayoutDocument* out_layout) {

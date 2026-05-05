@@ -1,10 +1,14 @@
 #include "benchmark/BenchmarkSchema.h"
 
+#include <algorithm>
+#include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <limits>
 #include <string>
+#include <utility>
 
 #include "scene/Scene.h"
 
@@ -237,6 +241,19 @@ bool parse_memory(const vkpt::scene::JsonValue& object, BenchmarkMemory& out) {
          as_double(object, "current_mb", out.current_mb);
 }
 
+bool parse_score(const vkpt::scene::JsonValue& object, BenchmarkScore& out) {
+  if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
+    return false;
+  }
+  as_double_optional(object, "samples_per_sec_per_thread", out.samples_per_sec_per_thread);
+  as_double_optional(object, "paths_per_sec_per_thread", out.paths_per_sec_per_thread);
+  as_double_optional(object, "samples_per_sec_per_megapixel", out.samples_per_sec_per_megapixel);
+  as_double_optional(object, "normalized_score", out.normalized_score);
+  as_u32_optional(object, "hardware_threads", out.hardware_threads);
+  as_string_optional(object, "normalization_basis", out.normalization_basis);
+  return true;
+}
+
 std::string read_file(std::string_view path) {
   std::ifstream stream{std::string(path)};
   std::ostringstream contents;
@@ -244,10 +261,57 @@ std::string read_file(std::string_view path) {
   return contents.str();
 }
 
+std::string_view strip_utf8_bom(std::string_view text) {
+  if (text.size() >= 3u &&
+      static_cast<unsigned char>(text[0]) == 0xefu &&
+      static_cast<unsigned char>(text[1]) == 0xbbu &&
+      static_cast<unsigned char>(text[2]) == 0xbfu) {
+    text.remove_prefix(3u);
+  }
+  return text;
+}
+
+std::filesystem::path resolve_artifact_path(const std::filesystem::path& artifactDir, const std::string& value) {
+  if (value.empty()) {
+    return {};
+  }
+  const std::filesystem::path path(value);
+  if (path.is_absolute()) {
+    return path;
+  }
+  if (std::filesystem::exists(path)) {
+    return path;
+  }
+  return artifactDir / path.filename();
+}
+
+void validate_artifact_file(const std::filesystem::path& artifactDir,
+                            const std::string& name,
+                            bool required,
+                            bool requireNonEmpty,
+                            BenchmarkArtifactValidation& out) {
+  const auto path = artifactDir / name;
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    if (required) {
+      out.missing_files.push_back(name);
+    }
+    return;
+  }
+  if (!std::filesystem::is_regular_file(path, ec)) {
+    out.invalid_files.push_back(name + ": not a regular file");
+    return;
+  }
+  out.present_files.push_back(name);
+  if (requireNonEmpty && std::filesystem::file_size(path, ec) == 0u && !ec) {
+    out.empty_files.push_back(name);
+  }
+}
+
 }  // namespace
 
 vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_view text) {
-  const auto root = vkpt::scene::JsonParser::parse(text);
+  const auto root = vkpt::scene::JsonParser::parse(strip_utf8_bom(text));
   if (!root || root->kind != vkpt::scene::JsonValue::Kind::Object) {
     return vkpt::core::Result<BenchmarkResult>::error(vkpt::core::ErrorCode::InvalidArgument);
   }
@@ -317,6 +381,11 @@ vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_vie
     return vkpt::core::Result<BenchmarkResult>::error(vkpt::core::ErrorCode::InvalidArgument);
   }
 
+  const auto scoreIt = root->object.find("score");
+  if (scoreIt != root->object.end() && !parse_score(scoreIt->second, result.score)) {
+    return vkpt::core::Result<BenchmarkResult>::error(vkpt::core::ErrorCode::InvalidArgument);
+  }
+
   if (!as_string_array(*root, "diagnostics", result.diagnostics)) {
     return vkpt::core::Result<BenchmarkResult>::error(vkpt::core::ErrorCode::InvalidArgument);
   }
@@ -338,6 +407,12 @@ vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_vie
   if (!as_string_optional(*root, "reference_exr", result.reference_exr)) {
     result.reference_exr = "";
   }
+  if (!as_string_optional(*root, "profiler_trace_json", result.profiler_trace_json)) {
+    result.profiler_trace_json = "";
+  }
+  if (!as_string_optional(*root, "logs_jsonl", result.logs_jsonl)) {
+    result.logs_jsonl = "";
+  }
   if (result.output_directory.empty()) {
     result.output_directory = "";
   }
@@ -356,6 +431,12 @@ vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_vie
   if (result.reference_exr.empty()) {
     result.reference_exr = "";
   }
+  if (result.profiler_trace_json.empty()) {
+    result.profiler_trace_json = "";
+  }
+  if (result.logs_jsonl.empty()) {
+    result.logs_jsonl = "";
+  }
 
   std::string issue;
   if (!ValidateBenchmarkResult(result, &issue)) {
@@ -366,7 +447,7 @@ vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_vie
 }
 
 vkpt::core::Result<BenchmarkRunDesc> ParseBenchmarkRunDescFromText(std::string_view text) {
-  const auto root = vkpt::scene::JsonParser::parse(text);
+  const auto root = vkpt::scene::JsonParser::parse(strip_utf8_bom(text));
   if (!root || root->kind != vkpt::scene::JsonValue::Kind::Object) {
     return vkpt::core::Result<BenchmarkRunDesc>::error(vkpt::core::ErrorCode::InvalidArgument);
   }
@@ -399,6 +480,18 @@ vkpt::core::Result<BenchmarkRunDesc> ParseBenchmarkRunDescFromText(std::string_v
   }
   if (desc.max_depth == 0) {
     desc.max_depth = 6;
+  }
+  if (!as_u32_optional(*root, "worker_count", desc.worker_count)) {
+    desc.worker_count = 0;
+  }
+  if (!as_u32_optional(*root, "tile_height", desc.tile_height)) {
+    desc.tile_height = 16;
+  }
+  if (desc.tile_height == 0) {
+    desc.tile_height = 16;
+  }
+  if (!as_bool(*root, "deterministic", desc.deterministic)) {
+    desc.deterministic = false;
   }
 
   std::string issue;
@@ -458,6 +551,33 @@ bool ValidateBenchmarkResult(const BenchmarkResult& result, std::string* message
     if (message) *message = "build_info.app_version is empty";
     return false;
   }
+  if (result.timing.total_ms < 0.0 || result.timing.build_ms < 0.0 ||
+      result.timing.render_ms < 0.0 || result.timing.cpu_ms < 0.0) {
+    if (message) *message = "timing fields must be non-negative";
+    return false;
+  }
+  if (result.throughput.paths_per_sec < 0.0 || result.throughput.samples_per_sec < 0.0) {
+    if (message) *message = "throughput fields must be non-negative";
+    return false;
+  }
+  if (result.memory.peak_mb < 0.0 || result.memory.current_mb < 0.0) {
+    if (message) *message = "memory fields must be non-negative";
+    return false;
+  }
+  if (!std::isfinite(result.reference_error) || result.reference_error < 0.0) {
+    if (message) *message = "reference_error must be finite and non-negative";
+    return false;
+  }
+  for (const auto& event : result.timing_breakdown) {
+    if (event.name.empty() || event.category.empty()) {
+      if (message) *message = "timing_breakdown entries require name and category";
+      return false;
+    }
+    if (!std::isfinite(event.ms) || event.ms < 0.0) {
+      if (message) *message = "timing_breakdown entries require non-negative ms";
+      return false;
+    }
+  }
   return true;
 }
 
@@ -492,6 +612,10 @@ bool ValidateBenchmarkRunDesc(const BenchmarkRunDesc& desc, std::string* message
   }
   if (desc.output_directory.empty()) {
     if (message) *message = "output_directory is empty";
+    return false;
+  }
+  if (desc.tile_height == 0) {
+    if (message) *message = "tile_height is zero";
     return false;
   }
   return true;
@@ -570,6 +694,16 @@ std::string SerializeBenchmarkResult(const BenchmarkResult& result) {
   memory.object["current_mb"] = make_number(result.memory.current_mb);
   root.object["memory"] = memory;
 
+  vkpt::scene::JsonValue score;
+  score.kind = vkpt::scene::JsonValue::Kind::Object;
+  score.object["samples_per_sec_per_thread"] = make_number(result.score.samples_per_sec_per_thread);
+  score.object["paths_per_sec_per_thread"] = make_number(result.score.paths_per_sec_per_thread);
+  score.object["samples_per_sec_per_megapixel"] = make_number(result.score.samples_per_sec_per_megapixel);
+  score.object["normalized_score"] = make_number(result.score.normalized_score);
+  score.object["hardware_threads"] = make_number(result.score.hardware_threads);
+  score.object["normalization_basis"] = make_string(result.score.normalization_basis);
+  root.object["score"] = score;
+
   root.object["image_hash"] = make_string(result.image_hash);
   root.object["reference_error"] = make_number(result.reference_error);
   root.object["output_directory"] = make_string(result.output_directory);
@@ -578,6 +712,8 @@ std::string SerializeBenchmarkResult(const BenchmarkResult& result) {
   root.object["beauty_exr"] = make_string(result.beauty_exr);
   root.object["diff_heatmap_png"] = make_string(result.diff_heatmap_png);
   root.object["reference_exr"] = make_string(result.reference_exr);
+  root.object["profiler_trace_json"] = make_string(result.profiler_trace_json);
+  root.object["logs_jsonl"] = make_string(result.logs_jsonl);
   std::vector<vkpt::scene::JsonValue> diagnostics;
   for (const auto& entry : result.diagnostics) {
     diagnostics.push_back(make_string(entry));
@@ -608,8 +744,251 @@ std::string SerializeBenchmarkRunDesc(const BenchmarkRunDesc& desc) {
   root.object["reference_image"] = make_string(desc.reference_image);
   root.object["tolerance_policy"] = make_string(desc.tolerance_policy);
   root.object["max_depth"] = make_number(desc.max_depth);
+  root.object["worker_count"] = make_number(desc.worker_count);
+  root.object["tile_height"] = make_number(desc.tile_height);
+  root.object["deterministic"] = make_bool(desc.deterministic);
 
   return vkpt::scene::JsonParser::stringify(root);
+}
+
+BenchmarkArtifactContract DefaultBenchmarkArtifactContract() {
+  BenchmarkArtifactContract contract;
+  contract.required_files = {
+      "results.json",
+      "results.csv",
+      "metadata.json",
+      "scene_snapshot.json",
+      "shader_manifest.json",
+      "asset_manifest.json",
+      "beauty.png",
+      "beauty.exr",
+      "logs.jsonl",
+      "profiler_trace.json",
+  };
+  contract.optional_files = {
+      "reference.exr",
+      "diff_heatmap.png",
+  };
+  contract.require_non_empty = true;
+  return contract;
+}
+
+BenchmarkArtifactValidation ValidateBenchmarkArtifactsOnDisk(std::string_view artifact_directory) {
+  BenchmarkArtifactValidation out;
+  out.artifact_directory = std::string(artifact_directory);
+  const std::filesystem::path artifactDir(out.artifact_directory);
+  const auto contract = DefaultBenchmarkArtifactContract();
+  std::error_code ec;
+  if (out.artifact_directory.empty() || !std::filesystem::exists(artifactDir, ec) ||
+      !std::filesystem::is_directory(artifactDir, ec)) {
+    out.missing_files.push_back("artifact_directory");
+    out.ok = false;
+    return out;
+  }
+
+  for (const auto& file : contract.required_files) {
+    validate_artifact_file(artifactDir, file, true, contract.require_non_empty, out);
+  }
+  for (const auto& file : contract.optional_files) {
+    validate_artifact_file(artifactDir, file, false, contract.require_non_empty, out);
+  }
+
+  const auto result = LoadBenchmarkResultFromFile((artifactDir / "results.json").string());
+  if (!result) {
+    out.invalid_files.push_back("results.json: failed to parse benchmark result schema");
+  } else {
+    const auto& r = result.value();
+    const std::vector<std::pair<std::string, std::string>> resultPaths = {
+        {"beauty_png", r.beauty_png},
+        {"beauty_exr", r.beauty_exr},
+        {"logs_jsonl", r.logs_jsonl},
+        {"profiler_trace_json", r.profiler_trace_json},
+    };
+    for (const auto& item : resultPaths) {
+      if (item.second.empty()) {
+        out.invalid_files.push_back("results.json: missing " + item.first);
+        continue;
+      }
+      const auto resolved = resolve_artifact_path(artifactDir, item.second);
+      if (resolved.empty() || !std::filesystem::exists(resolved, ec)) {
+        out.invalid_files.push_back("results.json: " + item.first + " does not resolve to an artifact file");
+      }
+    }
+    if (!r.reference_exr.empty()) {
+      const auto reference = resolve_artifact_path(artifactDir, r.reference_exr);
+      if (reference.empty() || !std::filesystem::exists(reference, ec)) {
+        out.invalid_files.push_back("results.json: reference_exr does not resolve to an artifact file");
+      }
+    }
+    if (!r.diff_heatmap_png.empty()) {
+      const auto diff = resolve_artifact_path(artifactDir, r.diff_heatmap_png);
+      if (diff.empty() || !std::filesystem::exists(diff, ec)) {
+        out.invalid_files.push_back("results.json: diff_heatmap_png does not resolve to an artifact file");
+      }
+    }
+  }
+
+  const auto metadataText = read_file((artifactDir / "metadata.json").string());
+  if (metadataText.find("\"benchmark_capabilities\"") == std::string::npos) {
+    out.invalid_files.push_back("metadata.json: missing benchmark_capabilities");
+  }
+  const auto profilerText = read_file((artifactDir / "profiler_trace.json").string());
+  if (profilerText.find("\"events\"") == std::string::npos) {
+    out.invalid_files.push_back("profiler_trace.json: missing events array");
+  }
+
+  out.ok = out.missing_files.empty() && out.empty_files.empty() && out.invalid_files.empty();
+  return out;
+}
+
+std::string SerializeBenchmarkArtifactValidation(const BenchmarkArtifactValidation& validation) {
+  auto to_array = [](const std::vector<std::string>& values) {
+    std::vector<vkpt::scene::JsonValue> arr;
+    arr.reserve(values.size());
+    for (const auto& value : values) {
+      arr.push_back(make_string(value));
+    }
+    return make_array(std::move(arr));
+  };
+
+  vkpt::scene::JsonValue root;
+  root.kind = vkpt::scene::JsonValue::Kind::Object;
+  root.object["ok"] = make_bool(validation.ok);
+  root.object["artifact_directory"] = make_string(validation.artifact_directory);
+  root.object["present_files"] = to_array(validation.present_files);
+  root.object["missing_files"] = to_array(validation.missing_files);
+  root.object["empty_files"] = to_array(validation.empty_files);
+  root.object["invalid_files"] = to_array(validation.invalid_files);
+  return vkpt::scene::JsonParser::stringify(root);
+}
+
+BenchmarkCapabilities DefaultBenchmarkCapabilities() {
+  BenchmarkCapabilities caps;
+  caps.commands = {
+      "run",
+      "echo-desc",
+      "list-scenes",
+      "list-backends",
+      "list-renderer-paths",
+      "validate-scene",
+      "validate-artifacts",
+      "compare",
+      "dump-capabilities",
+      "run-experiments",
+      "backend-experiments",
+      "thread-sweep",
+      "simd-sweep",
+      "tile-sweep",
+      "gpu-mem-pressure",
+      "shader-matrix",
+      "release-check",
+  };
+  caps.artifact_exports = DefaultBenchmarkArtifactContract().required_files;
+  caps.experiment_support = {
+      "cpu-scalar",
+      "cpu-tiled",
+      "thread-scaling",
+      "simd-sweep",
+      "tile-height-sweep",
+      "gpu-memory-pressure-simulated",
+      "shader-matrix-with-skips",
+      "backend-experiment-availability-matrix",
+  };
+  caps.backend_experiment_targets = {
+      "vulkan-compute",
+      "vulkan-rt",
+      "d3d12-compute",
+      "d3d12-dxr",
+      "metal-compute",
+      "metal-rt",
+      "webgpu-compute",
+  };
+  return caps;
+}
+
+ProfilerCapabilities DefaultProfilerCapabilities() {
+  return {};
+}
+
+std::string SerializeProfilerCapabilities(const ProfilerCapabilities& capabilities) {
+  vkpt::scene::JsonValue root;
+  root.kind = vkpt::scene::JsonValue::Kind::Object;
+  root.object["schema_version"] = make_string(capabilities.schema_version);
+  root.object["cpu_zones"] = make_bool(capabilities.cpu_zones);
+  root.object["gpu_zones"] = make_bool(capabilities.gpu_zones);
+  root.object["job_timings"] = make_bool(capabilities.job_timings);
+  root.object["frame_stage_timings"] = make_bool(capabilities.frame_stage_timings);
+  root.object["asset_import_timings"] = make_bool(capabilities.asset_import_timings);
+  root.object["bvh_build_timings"] = make_bool(capabilities.bvh_build_timings);
+  root.object["shader_compile_timings"] = make_bool(capabilities.shader_compile_timings);
+  root.object["render_pass_timings"] = make_bool(capabilities.render_pass_timings);
+  root.object["json_trace_export"] = make_bool(capabilities.json_trace_export);
+  return vkpt::scene::JsonParser::stringify(root);
+}
+
+std::string SerializeBenchmarkCapabilities(const BenchmarkCapabilities& capabilities) {
+  auto to_array = [](const std::vector<std::string>& values) {
+    std::vector<vkpt::scene::JsonValue> arr;
+    arr.reserve(values.size());
+    for (const auto& value : values) {
+      arr.push_back(make_string(value));
+    }
+    return make_array(std::move(arr));
+  };
+
+  vkpt::scene::JsonValue root;
+  root.kind = vkpt::scene::JsonValue::Kind::Object;
+  root.object["schema_version"] = make_string(capabilities.schema_version);
+  root.object["commands"] = to_array(capabilities.commands);
+  root.object["artifact_exports"] = to_array(capabilities.artifact_exports);
+  root.object["experiment_support"] = to_array(capabilities.experiment_support);
+  root.object["backend_experiment_targets"] = to_array(capabilities.backend_experiment_targets);
+  root.object["descriptor_files"] = make_bool(capabilities.descriptor_files);
+  root.object["artifact_validation"] = make_bool(capabilities.artifact_validation);
+  root.object["normalized_scores"] = make_bool(capabilities.normalized_scores);
+  root.object["benchmark_runner_interface"] = make_bool(capabilities.benchmark_runner_interface);
+  root.object["profiler_service_contract"] = make_bool(capabilities.profiler_service_contract);
+  root.object["profiler_trace_export"] = make_bool(capabilities.profiler_trace_export);
+  return vkpt::scene::JsonParser::stringify(root);
+}
+
+BenchmarkScore ComputeBenchmarkScore(const BenchmarkThroughput& throughput,
+                                     const Resolution& resolution,
+                                     uint32_t hardware_threads) {
+  BenchmarkScore score;
+  score.hardware_threads = std::max(1u, hardware_threads);
+  const double threadCount = static_cast<double>(score.hardware_threads);
+  const double megapixels =
+      std::max(1.0e-6, static_cast<double>(resolution.width) * static_cast<double>(resolution.height) / 1.0e6);
+  score.samples_per_sec_per_thread = throughput.samples_per_sec / threadCount;
+  score.paths_per_sec_per_thread = throughput.paths_per_sec / threadCount;
+  score.samples_per_sec_per_megapixel = throughput.samples_per_sec / megapixels;
+  score.normalized_score = score.samples_per_sec_per_thread / megapixels;
+  score.normalization_basis = "samples_per_sec / hardware_thread / megapixel";
+  return score;
+}
+
+std::string SummarizeBenchmarkResults(const std::vector<BenchmarkResult>& results) {
+  std::ostringstream out;
+  out << "runs=" << results.size();
+  if (results.empty()) {
+    return out.str();
+  }
+  double totalSamples = 0.0;
+  double bestScore = 0.0;
+  std::string bestRun;
+  for (const auto& result : results) {
+    totalSamples += result.throughput.samples_per_sec;
+    if (result.score.normalized_score > bestScore) {
+      bestScore = result.score.normalized_score;
+      bestRun = result.run_id;
+    }
+  }
+  out << " avg_samples_per_sec=" << std::fixed << std::setprecision(2)
+      << (totalSamples / static_cast<double>(results.size()));
+  out << " best_run=" << bestRun;
+  out << " best_normalized_score=" << std::fixed << std::setprecision(2) << bestScore;
+  return out.str();
 }
 
 std::string_view ProfilerEventKindName(ProfilerEventKind kind) {

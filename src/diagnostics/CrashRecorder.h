@@ -22,15 +22,40 @@ struct LiveResourceInfo {
   uint64_t    version    = 0;
 };
 
+struct CrashCheckpoint {
+  std::string name;
+  std::string subsystem;
+  std::string detail;
+  uint64_t frame_index = 0;
+  bool successful = true;
+  std::string timestamp_utc;
+};
+
+struct SubsystemStateInfo {
+  std::string subsystem;
+  std::string state_json = "{}";
+  std::string timestamp_utc;
+};
+
 struct CrashStateSnapshot {
   // --- Build ---
   std::string build_version;
   std::string git_hash;
+  std::string build_date;
   std::string compiler;
+  std::string compiler_name;
+  std::string compiler_version;
+  std::string cxx_standard;
   std::string target_os;
   std::string target_arch;
   std::string build_type;
   std::string enabled_features;
+  std::string disabled_features;
+  std::string sanitizer_mode = "disabled";
+  std::string sanitizer_flavor = "disabled";
+  std::string simd_compile_options;
+  std::string backend_compile_options;
+  std::string platform_shells;
 
   // --- Runtime ---
   std::string selected_backend   = "none";
@@ -40,6 +65,14 @@ struct CrashStateSnapshot {
   std::string last_shader_variant;
   std::string last_error;
   std::string active_scene       = "none";
+  std::string last_successful_checkpoint = "none";
+  std::string runtime_config_json = "{}";
+  std::string frame_state_json = "{}";
+  std::string resource_state_json = "{}";
+  std::string backend_state_json = "{}";
+  std::string scene_state_json = "{}";
+  std::vector<CrashCheckpoint> checkpoints;
+  std::vector<SubsystemStateInfo> subsystem_states;
 
   // --- Resources ---
   std::vector<LiveResourceInfo> live_resources;
@@ -71,9 +104,20 @@ class CrashRecorder {
                       std::string target_os,
                       std::string target_arch,
                       std::string build_type,
-                      std::string enabled_features);
+                      std::string enabled_features,
+                      std::string build_date = {},
+                      std::string compiler_name = {},
+                      std::string compiler_version = {},
+                      std::string cxx_standard = {},
+                      std::string disabled_features = {},
+                      std::string sanitizer_mode = {},
+                      std::string sanitizer_flavor = {},
+                      std::string simd_compile_options = {},
+                      std::string backend_compile_options = {},
+                      std::string platform_shells = {});
 
-  // Call these whenever state changes (cheap: no allocation in hot path).
+  // Call these when important state changes. Prefer stage/checkpoint updates in
+  // hot paths and full JSON snapshots at subsystem boundaries.
   void update_backend(std::string_view backend_name);
   void update_frame_stage(std::string_view stage, uint64_t frame_index);
   void update_pass(std::string_view pass_name);
@@ -86,6 +130,17 @@ class CrashRecorder {
   void update_ui_events_jsonl(std::string_view jsonl);
   void update_editor_commands_jsonl(std::string_view jsonl);
   void update_renderer_state_json(std::string_view json);
+  void update_runtime_config_json(std::string_view json);
+  void update_frame_state_json(std::string_view json);
+  void update_resource_state_json(std::string_view json);
+  void update_backend_state_json(std::string_view json);
+  void update_scene_state_json(std::string_view json);
+  void update_subsystem_state_json(std::string_view subsystem, std::string_view json);
+  void record_checkpoint(std::string_view name,
+                         uint64_t frame_index = 0,
+                         std::string_view subsystem = {},
+                         std::string_view checkpoint_detail = {},
+                         bool successful = true);
 
   // Track a resource (call on create; reverse with release_resource).
   void track_resource(std::string_view label, std::string_view kind,
