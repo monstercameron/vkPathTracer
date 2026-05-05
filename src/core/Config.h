@@ -8,6 +8,16 @@
 
 namespace vkpt::config {
 
+inline constexpr uint32_t kMinUiPresentHz = 1;
+inline constexpr uint32_t kDefaultUiPresentHz = 30;
+inline constexpr uint32_t kMaxUiPresentHz = 120;
+
+inline uint32_t ClampUiPresentHz(uint32_t value) {
+  return value < kMinUiPresentHz ? kMinUiPresentHz
+       : value > kMaxUiPresentHz ? kMaxUiPresentHz
+                                  : value;
+}
+
 // ---- RuntimeConfig ----------------------------------------------------------
 // Resolved configuration that controls the entire run.  Every field has a
 // clear source (default / config-file / CLI flag / env-var), so the system
@@ -41,8 +51,10 @@ struct RuntimeConfig {
   ConfigValue<std::string>  backend{"auto"};
   ConfigValue<std::string>  scene_path{""};
   ConfigValue<std::string>  log_level{"info"};
+  ConfigValue<std::string>  platform{"auto"};
   ConfigValue<bool>         headless{false};
   ConfigValue<bool>         benchmark_mode{false};
+  ConfigValue<uint32_t>     ui_present_hz{kDefaultUiPresentHz};
 
   // --- Render settings ---
   ConfigValue<uint32_t>     render_width{320};
@@ -79,13 +91,14 @@ bool ParseConfigFile(const std::string& path,
 void ApplyConfigEntries(const std::vector<ParsedConfigEntry>& entries,
                         RuntimeConfig& config);
 
-// Probe common environment variables (PTAPP_BACKEND, PTAPP_LOG_LEVEL, etc.)
+// Probe PTAPP_* environment variables. These override config-file values.
 void ApplyEnvVars(RuntimeConfig& config);
 
 // Serialise the resolved config to a JSON string for --dump-config.
 std::string SerializeRuntimeConfig(const RuntimeConfig& config);
 
-// Build a default RuntimeConfig and optionally overlay a config file.
+// Build a RuntimeConfig with precedence: defaults < config file < env.
+// Callers apply CLI flags afterward as the final override layer.
 RuntimeConfig BuildDefaultConfig(const std::string& config_file_path = "");
 
 }  // namespace vkpt::config

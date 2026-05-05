@@ -25,8 +25,21 @@ option(PT_ENABLE_BENCHMARK "Enable benchmark module" OFF)
 option(PT_ENABLE_PROFILING "Enable profiling hooks" OFF)
 option(PT_ENABLE_SANITIZERS "Enable sanitizer instrumentation" OFF)
 option(PT_STRICT_DETERMINISM "Enable strict deterministic mode" OFF)
+option(PT_ENABLE_QT "Enable Qt desktop platform/editor shell" OFF)
+option(PT_ENABLE_QT_EDITOR "Enable Qt editor widgets" OFF)
+option(PT_ENABLE_QT_RHI "Enable experimental Qt QRhi viewport" OFF)
+option(PT_ENABLE_RAW_DESKTOP "Enable raw native desktop platform" ON)
+set(PT_WINDEPLOYQT_EXECUTABLE "" CACHE FILEPATH "Path to windeployqt for Windows Qt runtime deployment")
 set(PT_SANITIZER "disabled" CACHE STRING "Sanitizer flavor")
 set_property(CACHE PT_SANITIZER PROPERTY STRINGS disabled address thread)
+
+if(PT_ENABLE_QT_EDITOR AND NOT PT_ENABLE_QT)
+  message(FATAL_ERROR "PT_ENABLE_QT_EDITOR=ON requires PT_ENABLE_QT=ON.")
+endif()
+
+if(PT_ENABLE_QT_RHI AND NOT PT_ENABLE_QT)
+  message(FATAL_ERROR "PT_ENABLE_QT_RHI=ON requires PT_ENABLE_QT=ON.")
+endif()
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -58,6 +71,10 @@ set(_pt_all_features
   PT_ENABLE_PROFILING
   PT_ENABLE_SANITIZERS
   PT_STRICT_DETERMINISM
+  PT_ENABLE_QT
+  PT_ENABLE_QT_EDITOR
+  PT_ENABLE_QT_RHI
+  PT_ENABLE_RAW_DESKTOP
 )
 
 set(PT_ACTIVE_FEATURE_FLAGS "")
@@ -144,6 +161,78 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
+set(PT_QT_ENABLED_VALUE false)
+set(PT_QT_EDITOR_ENABLED_VALUE false)
+set(PT_QT_RHI_ENABLED_VALUE false)
+set(PT_QT_VERSION "disabled")
+set(PT_PLATFORM_SHELLS headless)
+
+if(PT_ENABLE_RAW_DESKTOP)
+  list(APPEND PT_PLATFORM_SHELLS raw)
+endif()
+
+if(PT_ENABLE_QT)
+  find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+  qt_standard_project_setup()
+  set(PT_QT_ENABLED_VALUE true)
+  set(PT_QT_VERSION "${Qt6Core_VERSION}")
+  if(NOT PT_QT_VERSION)
+    set(PT_QT_VERSION "${Qt6_VERSION}")
+  endif()
+  if(NOT PT_QT_VERSION)
+    set(PT_QT_VERSION "unknown")
+  endif()
+  list(APPEND PT_PLATFORM_SHELLS qt)
+  message(STATUS "Qt support enabled: ${PT_QT_VERSION}")
+  if(WIN32)
+    if(NOT PT_WINDEPLOYQT_EXECUTABLE AND DEFINED WINDEPLOYQT_EXECUTABLE)
+      set(PT_WINDEPLOYQT_EXECUTABLE "${WINDEPLOYQT_EXECUTABLE}" CACHE FILEPATH "Path to windeployqt for Windows Qt runtime deployment" FORCE)
+    endif()
+    if(NOT PT_WINDEPLOYQT_EXECUTABLE)
+      set(_pt_qt_bin_dir "")
+      if(TARGET Qt6::qmake)
+        get_target_property(_pt_qmake_executable Qt6::qmake IMPORTED_LOCATION)
+        if(_pt_qmake_executable)
+          get_filename_component(_pt_qt_bin_dir "${_pt_qmake_executable}" DIRECTORY)
+        endif()
+      endif()
+      find_program(PT_WINDEPLOYQT_EXECUTABLE
+        NAMES windeployqt windeployqt.exe
+        HINTS "${_pt_qt_bin_dir}"
+        DOC "Path to windeployqt for Windows Qt runtime deployment")
+    endif()
+    if(PT_WINDEPLOYQT_EXECUTABLE)
+      message(STATUS "windeployqt: ${PT_WINDEPLOYQT_EXECUTABLE}")
+    else()
+      message(WARNING "windeployqt not found; Windows Qt runtime DLLs will not be deployed beside executables.")
+    endif()
+  endif()
+else()
+  message(STATUS "Qt support disabled (PT_ENABLE_QT=OFF)")
+endif()
+
+function(pt_deploy_qt_runtime target_name)
+  if(WIN32 AND PT_ENABLE_QT AND PT_WINDEPLOYQT_EXECUTABLE)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+      COMMAND "${PT_WINDEPLOYQT_EXECUTABLE}"
+              $<IF:$<CONFIG:Debug>,--debug,--release>
+              --no-translations
+              "$<TARGET_FILE:${target_name}>"
+      COMMENT "Deploying Qt runtime for ${target_name}"
+      VERBATIM)
+  endif()
+endfunction()
+
+if(PT_ENABLE_QT_EDITOR)
+  set(PT_QT_EDITOR_ENABLED_VALUE true)
+endif()
+
+if(PT_ENABLE_QT_RHI)
+  set(PT_QT_RHI_ENABLED_VALUE true)
+endif()
+
+list(JOIN PT_PLATFORM_SHELLS "," PT_PLATFORM_SHELLS_CSV)
+
 # ---- Vulkan SDK --------------------------------------------------------------
 if(PT_ENABLE_VULKAN)
   # Allow the user to point at a specific SDK via VULKAN_SDK env variable.
@@ -191,8 +280,8 @@ set(PT_CPU_SOURCES
   src/diagnostics/CrashHooks.cpp
   src/diagnostics/StatusFile.cpp
   src/jobs/JobSystem.cpp
+  src/platform/PlatformFactory.cpp
   src/platform/HeadlessPlatform.cpp
-  src/platform/DesktopPlatform.cpp
   src/scene/Scene.cpp
   src/pathtracer/PathTracer.cpp
   src/materials/MaterialInterface.cpp
@@ -207,6 +296,10 @@ set(PT_CPU_SOURCES
   src/render/backends/D3D12Backend.cpp
   src/render/backends/VulkanBackend.cpp
 )
+
+if(PT_ENABLE_RAW_DESKTOP)
+  list(APPEND PT_CPU_SOURCES src/platform/DesktopPlatform.cpp)
+endif()
 
 if(PT_ENABLE_AVX2)
   set(PT_ENABLE_CPU_SIMD ON)
@@ -226,6 +319,34 @@ endif()
 
 if(PT_ENABLE_D3D12)
   list(APPEND PT_CPU_SOURCES src/gpu/D3D12GpuPathTracer.cpp)
+endif()
+
+if(PT_ENABLE_QT)
+  add_library(pt_platform_qt STATIC
+    src/platform/qt/QtPlatform.cpp
+  )
+
+  target_include_directories(pt_platform_qt PUBLIC
+    "${CMAKE_SOURCE_DIR}/src"
+  )
+
+  target_link_libraries(pt_platform_qt PUBLIC
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Widgets
+  )
+
+  target_compile_definitions(pt_platform_qt PUBLIC
+    VKPT_HAS_QT=1
+  )
+
+  if(PT_ENABLE_QT_EDITOR)
+    target_compile_definitions(pt_platform_qt PRIVATE
+      VKPT_QT_EDITOR=1
+    )
+  endif()
+
+  target_compile_features(pt_platform_qt PUBLIC cxx_std_23)
 endif()
 
 # ---- ptapp ------------------------------------------------------------------
@@ -253,11 +374,22 @@ if(PT_ENABLE_D3D12)
     PT_SHADER_HLSL_PATH=\"${CMAKE_SOURCE_DIR}/src/shaders/gpu/pathtrace_cs.hlsl\")
 endif()
 
+if(PT_ENABLE_QT)
+  target_link_libraries(ptapp PRIVATE pt_platform_qt)
+  if(PT_ENABLE_QT_EDITOR)
+    target_compile_definitions(ptapp PRIVATE
+      VKPT_QT_EDITOR=1
+    )
+  endif()
+endif()
+
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(ptapp PRIVATE ${feature})
 endforeach()
 
 target_compile_features(ptapp PRIVATE cxx_std_23)
+
+pt_deploy_qt_runtime(ptapp)
 
 # ---- ptbench ----------------------------------------------------------------
 add_executable(ptbench
@@ -280,11 +412,24 @@ if(PT_ENABLE_D3D12)
   target_link_libraries(ptbench PRIVATE d3d12 dxgi d3dcompiler)
 endif()
 
+if(PT_ENABLE_QT)
+  target_link_libraries(ptbench PRIVATE pt_platform_qt)
+endif()
+
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(ptbench PRIVATE ${feature})
 endforeach()
 
 target_compile_features(ptbench PRIVATE cxx_std_23)
+
+pt_deploy_qt_runtime(ptbench)
+
+# ---- ptdoctor ---------------------------------------------------------------
+add_executable(ptdoctor
+  src/app/ptdoctor.cpp
+)
+
+target_compile_features(ptdoctor PRIVATE cxx_std_23)
 
 add_custom_target(hello
   DEPENDS ptapp

@@ -18,4 +18,9 @@ if (-not $NoBuild) {
 }
 
 Write-Host "[run] Launching Cornell box demo (D3D12)..." -ForegroundColor Cyan
-& $exe --window --backend d3d12 --scene "$root\assets\scenes\cornell_native.json"
+& $exe --window --platform qt --backend d3d12 --scene "$root\assets\scenes\cornell_native.json"
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[run] Qt platform path unavailable; falling back to raw desktop platform..." -ForegroundColor Yellow
+    & $exe --window --platform raw --backend d3d12 --scene "$root\assets\scenes\cornell_native.json"
+}
