@@ -185,7 +185,19 @@ bool TiledCpuPathTracer::render_sample_batch(
     uint32_t end_y,
     uint32_t sample_index,
     uint32_t frame_index) {
+  return render_sample_batch_cancellable(start_y, end_y, sample_index, frame_index, {});
+}
+
+bool TiledCpuPathTracer::render_sample_batch_cancellable(
+    uint32_t start_y,
+    uint32_t end_y,
+    uint32_t sample_index,
+    uint32_t frame_index,
+    std::stop_token stop) {
   if (!m_initialized) {
+    return false;
+  }
+  if (stop.stop_requested()) {
     return false;
   }
 
@@ -199,13 +211,18 @@ bool TiledCpuPathTracer::render_sample_batch(
     if (tile_start >= tile_end) {
       continue;
     }
-    auto handle = m_jobSystem->submit_job([&tile, tile_start, tile_end, sample_index, frame_index]() {
+    auto handle = m_jobSystem->submit_job([&tile, tile_start, tile_end, sample_index, frame_index, stop]() {
+      if (stop.stop_requested()) {
+        return;
+      }
       tile.tracer->render_sample_batch(tile_start, tile_end, sample_index, frame_index);
     });
     handles.push_back(handle);
   }
 
-  m_jobSystem->wait_group(handles);
+  if (!m_jobSystem->wait_group(handles, stop) || stop.stop_requested()) {
+    return false;
+  }
   merge_tiles();
   return true;
 }

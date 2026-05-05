@@ -13,6 +13,7 @@ struct JobSystem::JobState {
   std::condition_variable cv;
   JobFunction job;
   std::weak_ptr<JobState> parent;
+  std::vector<vkpt::core::JobHandle> children;
   std::exception_ptr failure;
 };
 
@@ -51,6 +52,10 @@ vkpt::core::JobHandle JobSystem::submit_internal(JobFunction job,
   state->id = m_nextJobId.fetch_add(1u, std::memory_order_relaxed);
   state->job = std::move(job);
   state->parent = std::move(parent);
+  if (auto parentState = state->parent.lock()) {
+    std::scoped_lock lock(parentState->mutex);
+    parentState->children.push_back(state->id);
+  }
   {
     std::scoped_lock lock(m_jobsMutex);
     m_jobs.emplace(state->id, state);
@@ -97,6 +102,32 @@ std::shared_ptr<JobSystem::JobState> JobSystem::find_job(vkpt::core::JobHandle i
     return {};
   }
   return it->second;
+}
+
+void JobSystem::retire_job_tree(vkpt::core::JobHandle id) {
+  auto state = find_job(id);
+  if (!state || state->pending.load(std::memory_order_acquire) != 0u) {
+    return;
+  }
+
+  std::vector<vkpt::core::JobHandle> children;
+  {
+    std::scoped_lock lock(state->mutex);
+    if (state->pending.load(std::memory_order_acquire) != 0u) {
+      return;
+    }
+    children = state->children;
+  }
+
+  for (const auto child : children) {
+    retire_job_tree(child);
+  }
+
+  std::scoped_lock lock(m_jobsMutex);
+  const auto it = m_jobs.find(id);
+  if (it != m_jobs.end() && it->second->pending.load(std::memory_order_acquire) == 0u) {
+    m_jobs.erase(it);
+  }
 }
 
 void JobSystem::complete_job(const std::shared_ptr<JobState>& state, std::exception_ptr failure) {
@@ -227,6 +258,10 @@ vkpt::core::JobHandle JobSystem::submit_indexed_range_job(std::size_t begin,
 }
 
 bool JobSystem::wait(vkpt::core::JobHandle id) {
+  return wait(id, {});
+}
+
+bool JobSystem::wait(vkpt::core::JobHandle id, std::stop_token stop) {
   auto target = find_job(id);
   if (!target) {
     return false;
@@ -242,14 +277,24 @@ bool JobSystem::wait(vkpt::core::JobHandle id) {
     });
   }
 
-  std::scoped_lock lock(target->mutex);
-  return target->failure == nullptr;
+  bool ok = false;
+  {
+    std::scoped_lock lock(target->mutex);
+    ok = target->failure == nullptr;
+  }
+  target.reset();
+  retire_job_tree(id);
+  return ok && !stop.stop_requested();
 }
 
 bool JobSystem::wait_group(const std::vector<vkpt::core::JobHandle>& ids) {
+  return wait_group(ids, {});
+}
+
+bool JobSystem::wait_group(const std::vector<vkpt::core::JobHandle>& ids, std::stop_token stop) {
   bool ok = true;
   for (const auto id : ids) {
-    ok = wait(id) && ok;
+    ok = wait(id, stop) && ok;
   }
   return ok;
 }
