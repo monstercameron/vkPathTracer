@@ -22,6 +22,7 @@
 #include <QAbstractAnimation>
 #include <QApplication>
 #include <QByteArray>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QColor>
@@ -36,6 +37,7 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QImage>
+#include <QIcon>
 #include <QKeyEvent>
 #include <QAction>
 #include <QDockWidget>
@@ -65,6 +67,7 @@
 #include <QSizePolicy>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QSplitter>
 #include <QString>
 #include <QStringList>
 #include <QStatusBar>
@@ -75,6 +78,7 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QtGlobal>
+#include <QVariant>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWidget>
@@ -714,8 +718,12 @@ class QtMainWindow final : public QMainWindow {
   }
 
   static void appendRowSignature(std::ostringstream& out, const QtDockRow& row) {
+    appendSignatureField(out, row.id);
     appendSignatureField(out, row.label);
     appendSignatureField(out, row.value);
+    appendSignatureField(out, row.icon);
+    out << row.entity_id << ','
+        << (row.selected ? '1' : '0') << ';';
     out << row.children.size() << '[';
     for (const auto& child : row.children) {
       appendRowSignature(out, child);
@@ -823,14 +831,102 @@ class QtMainWindow final : public QMainWindow {
     resizeDocks(docks, sizes, Qt::Horizontal);
   }
 
+  static QIcon dockRowIcon(const std::string& icon) {
+    if (icon.empty()) {
+      return {};
+    }
+
+    QColor fill(82, 100, 126);
+    char glyph = 'E';
+    if (icon == "model" || icon == "mesh" || icon == "geometry") {
+      fill = QColor(56, 124, 184);
+      glyph = 'M';
+    } else if (icon == "light") {
+      fill = QColor(201, 142, 41);
+      glyph = 'L';
+    } else if (icon == "camera") {
+      fill = QColor(93, 152, 97);
+      glyph = 'C';
+    } else if (icon == "sdf") {
+      fill = QColor(145, 97, 188);
+      glyph = 'S';
+    } else if (icon == "physics") {
+      fill = QColor(181, 86, 70);
+      glyph = 'P';
+    } else if (icon == "script") {
+      fill = QColor(88, 151, 167);
+      glyph = 'S';
+    } else if (icon == "animation") {
+      fill = QColor(168, 114, 61);
+      glyph = 'A';
+    } else if (icon == "folder" || icon == "group") {
+      fill = QColor(111, 122, 139);
+      glyph = 'G';
+    }
+
+    QPixmap pixmap(16, 16);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(QColor(0, 0, 0, 100), 1.0));
+    painter.setBrush(fill);
+    painter.drawRoundedRect(QRectF(1.0, 1.0, 14.0, 14.0), 3.0, 3.0);
+    QFont font = painter.font();
+    font.setPixelSize(9);
+    font.setBold(true);
+    painter.setFont(font);
+    painter.setPen(QColor(255, 255, 255, 235));
+    painter.drawText(pixmap.rect(), Qt::AlignCenter, QString::fromLatin1(&glyph, 1));
+    return QIcon(pixmap);
+  }
+
   static QTreeWidgetItem* buildTreeItem(const QtDockRow& row) {
     auto* item = new QTreeWidgetItem();
     item->setText(0, ToQString(row.label));
     item->setText(1, ToQString(row.value));
+    if (!row.icon.empty()) {
+      item->setIcon(0, dockRowIcon(row.icon));
+    }
+    if (!row.id.empty()) {
+      item->setData(0, Qt::UserRole, ToQString(row.id));
+    }
+    if (row.entity_id != 0u) {
+      item->setData(0, Qt::UserRole + 1, QVariant::fromValue<qulonglong>(
+          static_cast<qulonglong>(row.entity_id)));
+    } else {
+      Qt::ItemFlags flags = item->flags();
+      flags &= ~Qt::ItemIsSelectable;
+      item->setFlags(flags);
+    }
+    item->setSelected(row.selected);
+    if (!row.value.empty()) {
+      item->setToolTip(0, ToQString(row.label + "\n" + row.value));
+    }
     for (const auto& child : row.children) {
       item->addChild(buildTreeItem(child));
     }
     return item;
+  }
+
+  void emitDockTreeActivation(const std::string& panelId, QTreeWidgetItem* item) {
+    if (m_owner == nullptr || item == nullptr) {
+      return;
+    }
+    bool ok = false;
+    const auto idValue = item->data(0, Qt::UserRole + 1).toULongLong(&ok);
+    if (!ok || idValue == 0u) {
+      return;
+    }
+    const Qt::KeyboardModifiers modifiers = QApplication::keyboardModifiers();
+    const bool append =
+        modifiers.testFlag(Qt::ControlModifier) ||
+        modifiers.testFlag(Qt::MetaModifier);
+    const bool rangeMode = modifiers.testFlag(Qt::ShiftModifier);
+    m_owner->emit_dock_row_activation(panelId,
+                                      ToUtf8String(item->data(0, Qt::UserRole).toString()),
+                                      static_cast<vkpt::core::StableId>(idValue),
+                                      append,
+                                      rangeMode);
   }
 
   static void applyReadOnlyFlags(QTableWidgetItem* item, bool editable, bool enabled) {
@@ -851,6 +947,10 @@ class QtMainWindow final : public QMainWindow {
     return property.editable && property.editor == "dropdown";
   }
 
+  static bool isToggleProperty(const QtDockProperty& property) {
+    return property.editable && property.editor == "toggle";
+  }
+
   static bool isSliderProperty(const QtDockProperty& property) {
     return property.editable && property.editor == "slider" && property.has_numeric_range;
   }
@@ -859,8 +959,24 @@ class QtMainWindow final : public QMainWindow {
     return property.editable && property.editor == "button";
   }
 
+  static bool usesCompactPropertyTable(const QtDockPanel& panel) {
+    return panel.id == "inspector" ||
+           panel.id == "camera" ||
+           panel.id == "device" ||
+           panel.id == "render_settings";
+  }
+
   static int sliderSteps() {
     return 1000;
+  }
+
+  static bool parseTogglePropertyValue(const std::string& value) {
+    std::string normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    return normalized == "1" || normalized == "true" || normalized == "yes" ||
+           normalized == "on" || normalized == "checked";
   }
 
   static double clampSliderValue(double value, double minimum, double maximum) {
@@ -928,12 +1044,15 @@ class QtMainWindow final : public QMainWindow {
     if (table == nullptr) {
       return;
     }
-    const bool hasGroups = std::any_of(panel.properties.begin(),
+    const bool compactProperties = usesCompactPropertyTable(panel);
+    const bool hasGroups = !compactProperties &&
+                           std::any_of(panel.properties.begin(),
                                        panel.properties.end(),
                                        [](const QtDockProperty& property) {
                                          return !property.group.empty();
                                        });
-    const bool hasUnits = std::any_of(panel.properties.begin(),
+    const bool hasUnits = !compactProperties &&
+                          std::any_of(panel.properties.begin(),
                                       panel.properties.end(),
                                       [](const QtDockProperty& property) {
                                         return !property.unit.empty();
@@ -972,6 +1091,14 @@ class QtMainWindow final : public QMainWindow {
           }
           combo->setCurrentText(current);
           combo->setToolTip(ToQString(property.name));
+        }
+      } else if (isToggleProperty(property)) {
+        auto* checkbox = qobject_cast<QCheckBox*>(cell);
+        if (checkbox != nullptr) {
+          QSignalBlocker checkboxBlocker(checkbox);
+          checkbox->setChecked(parseTogglePropertyValue(property.value));
+          checkbox->setEnabled(property.enabled);
+          checkbox->setToolTip(ToQString(property.name));
         }
       } else if (isSliderProperty(property) && cell != nullptr) {
         auto* slider = cell->findChild<QSlider*>();
@@ -1019,6 +1146,29 @@ class QtMainWindow final : public QMainWindow {
                            !panel.tree_rows.empty();
     const bool wantsProperties = panel.content == QtDockPanelContent::Properties ||
                                  !panel.properties.empty();
+    const bool treePrimaryPanel = !panel.tree_rows.empty() &&
+        (panel.id == "scene_graph" || panel.id == "scene_tree");
+    const int sectionCount =
+        (wantsText && !panel.text.empty() ? 1 : 0) +
+        (wantsTree && (!panel.rows.empty() || !panel.tree_rows.empty()) ? 1 : 0) +
+        (wantsProperties && !panel.properties.empty() ? 1 : 0);
+    auto* splitter = sectionCount > 1 ? new QSplitter(Qt::Vertical, root) : nullptr;
+    if (splitter != nullptr) {
+      splitter->setChildrenCollapsible(false);
+      splitter->setHandleWidth(6);
+      splitter->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+    auto addSection = [&](QWidget* section, int stretch) {
+      if (section == nullptr) {
+        return;
+      }
+      if (splitter != nullptr) {
+        splitter->addWidget(section);
+        splitter->setStretchFactor(splitter->count() - 1, std::max(0, stretch));
+      } else {
+        layout->addWidget(section, std::max(0, stretch));
+      }
+    };
 
     if (wantsText && !panel.text.empty()) {
       auto* text = new QTextEdit(root);
@@ -1027,7 +1177,7 @@ class QtMainWindow final : public QMainWindow {
       text->setMinimumHeight(72);
       text->setMinimumWidth(kQtDockMinimumWidth - 24);
       text->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-      layout->addWidget(text);
+      addSection(text, 1);
     }
 
     if (wantsTree && (!panel.rows.empty() || !panel.tree_rows.empty())) {
@@ -1035,6 +1185,10 @@ class QtMainWindow final : public QMainWindow {
       tree->setMinimumWidth(kQtDockMinimumWidth - 24);
       tree->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
       tree->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+      tree->setAlternatingRowColors(true);
+      tree->setSelectionBehavior(QAbstractItemView::SelectRows);
+      tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
+      tree->setUniformRowHeights(true);
       tree->setColumnCount(panel.tree_rows.empty() ? 1 : 2);
       if (panel.tree_rows.empty()) {
         tree->setHeaderHidden(true);
@@ -1051,16 +1205,29 @@ class QtMainWindow final : public QMainWindow {
         tree->addTopLevelItem(buildTreeItem(row));
       }
       tree->expandAll();
-      layout->addWidget(tree);
+      const auto selectedItems = tree->selectedItems();
+      if (!selectedItems.isEmpty()) {
+        tree->scrollToItem(selectedItems.front(), QAbstractItemView::PositionAtCenter);
+      }
+      QObject::connect(tree,
+                       &QTreeWidget::itemClicked,
+                       tree,
+                       [this, panelId = panel.id](QTreeWidgetItem* item, int /*column*/) {
+                         emitDockTreeActivation(panelId, item);
+                       });
+      addSection(tree, wantsProperties ? (treePrimaryPanel ? 1 : 0) : 1);
     }
 
     if (wantsProperties && !panel.properties.empty()) {
-      const bool hasGroups = std::any_of(panel.properties.begin(),
+      const bool compactProperties = usesCompactPropertyTable(panel);
+      const bool hasGroups = !compactProperties &&
+                             std::any_of(panel.properties.begin(),
                                          panel.properties.end(),
                                          [](const QtDockProperty& property) {
                                            return !property.group.empty();
                                          });
-      const bool hasUnits = std::any_of(panel.properties.begin(),
+      const bool hasUnits = !compactProperties &&
+                            std::any_of(panel.properties.begin(),
                                         panel.properties.end(),
                                         [](const QtDockProperty& property) {
                                           return !property.unit.empty();
@@ -1077,20 +1244,34 @@ class QtMainWindow final : public QMainWindow {
       const int columnCount = valueColumn + 1 + (hasUnits ? 1 : 0);
       auto* table = new QTableWidget(static_cast<int>(panel.properties.size()), columnCount, root);
       table->setMinimumWidth(kQtDockMinimumWidth - 24);
+      if (compactProperties) {
+        table->setMinimumHeight(260);
+      }
       table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
       table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
       table->setTextElideMode(Qt::ElideRight);
+      table->setWordWrap(compactProperties);
       QStringList headers;
-      if (hasGroups) {
+      if (compactProperties) {
+        headers.push_back(QStringLiteral("Setting"));
+        headers.push_back(QStringLiteral("Control"));
+      } else if (hasGroups) {
         headers.push_back(QStringLiteral("Group"));
-      }
-      headers.push_back(QStringLiteral("Metric"));
-      headers.push_back(QStringLiteral("Value"));
-      if (hasUnits) {
-        headers.push_back(QStringLiteral("Unit"));
+        headers.push_back(QStringLiteral("Metric"));
+        headers.push_back(QStringLiteral("Value"));
+        if (hasUnits) {
+          headers.push_back(QStringLiteral("Unit"));
+        }
+      } else {
+        headers.push_back(QStringLiteral("Metric"));
+        headers.push_back(QStringLiteral("Value"));
+        if (hasUnits) {
+          headers.push_back(QStringLiteral("Unit"));
+        }
       }
       table->setHorizontalHeaderLabels(headers);
       table->verticalHeader()->setVisible(false);
+      table->verticalHeader()->setDefaultSectionSize(compactProperties ? 38 : 28);
       table->setEditTriggers(anyEditable
           ? QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed
           : QAbstractItemView::NoEditTriggers);
@@ -1102,8 +1283,10 @@ class QtMainWindow final : public QMainWindow {
         table->horizontalHeader()->setSectionResizeMode(groupColumn, QHeaderView::Interactive);
         table->setColumnWidth(groupColumn, 96);
       }
-      table->horizontalHeader()->setSectionResizeMode(propertyColumn, QHeaderView::Interactive);
-      table->setColumnWidth(propertyColumn, hasGroups ? 132 : 150);
+      table->horizontalHeader()->setSectionResizeMode(
+          propertyColumn,
+          compactProperties ? QHeaderView::ResizeToContents : QHeaderView::Interactive);
+      table->setColumnWidth(propertyColumn, compactProperties ? 142 : (hasGroups ? 132 : 150));
       table->horizontalHeader()->setSectionResizeMode(valueColumn, QHeaderView::Stretch);
       if (hasUnits) {
         table->horizontalHeader()->setSectionResizeMode(unitColumn, QHeaderView::Interactive);
@@ -1112,7 +1295,10 @@ class QtMainWindow final : public QMainWindow {
       for (std::size_t i = 0; i < panel.properties.size(); ++i) {
         const auto& property = panel.properties[i];
         const int row = static_cast<int>(i);
+        const bool multilineValue =
+            compactProperties && property.value.find('\n') != std::string::npos;
         const bool usesValueWidget = isDropdownProperty(property) ||
+                                     isToggleProperty(property) ||
                                      isSliderProperty(property) ||
                                      isButtonProperty(property);
         auto* nameItem = new QTableWidgetItem(ToQString(property.name));
@@ -1122,6 +1308,9 @@ class QtMainWindow final : public QMainWindow {
         applyReadOnlyFlags(valueItem, property.editable && !usesValueWidget, property.enabled);
         nameItem->setToolTip(ToQString(property.name));
         valueItem->setToolTip(ToQString(property.value));
+        if (compactProperties) {
+          valueItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        }
         if (hasGroups) {
           auto* groupItem = new QTableWidgetItem(ToQString(property.group));
           applyReadOnlyFlags(groupItem, false, property.enabled);
@@ -1154,8 +1343,32 @@ class QtMainWindow final : public QMainWindow {
                                                               propertyId,
                                                               ToUtf8String(value));
                              }
-                           });
+          });
           table->setCellWidget(row, valueColumn, combo);
+        } else if (isToggleProperty(property)) {
+          auto* checkbox = new QCheckBox(table);
+          checkbox->setChecked(parseTogglePropertyValue(property.value));
+          checkbox->setEnabled(property.enabled);
+          checkbox->setToolTip(ToQString(property.name));
+          checkbox->setText(QStringLiteral("Enabled"));
+          QObject::connect(checkbox,
+                           &QCheckBox::toggled,
+                           checkbox,
+                           [owner = m_owner,
+                            panelId = panel.id,
+                            propertyId = property.id,
+                            valueItem](bool checked) {
+                             const char* text = checked ? "true" : "false";
+                             if (valueItem != nullptr) {
+                               valueItem->setText(QString::fromLatin1(text));
+                               valueItem->setToolTip(QString::fromLatin1(text));
+                             }
+                             if (owner != nullptr && !propertyId.empty()) {
+                               owner->emit_dock_property_edit(panelId, propertyId, text);
+                             }
+                           });
+          table->setCellWidget(row, valueColumn, checkbox);
+          table->setRowHeight(row, compactProperties ? 38 : 32);
         } else if (isSliderProperty(property)) {
           const double minimum = property.minimum;
           const double maximum = std::max(property.minimum, property.maximum);
@@ -1178,7 +1391,7 @@ class QtMainWindow final : public QMainWindow {
           slider->setValue(sliderPositionFromValue(initialValue, minimum, maximum));
           slider->setEnabled(property.enabled);
           slider->setToolTip(ToQString(property.name));
-          slider->setMinimumWidth(96);
+          slider->setMinimumWidth(compactProperties ? 112 : 96);
 
           auto* spin = new QDoubleSpinBox(editor);
           spin->setRange(minimum, maximum);
@@ -1192,7 +1405,7 @@ class QtMainWindow final : public QMainWindow {
 
           auto* reset = new QPushButton(QStringLiteral("Reset"), editor);
           reset->setEnabled(property.enabled && property.has_default);
-          reset->setMinimumWidth(48);
+          reset->setMinimumWidth(compactProperties ? 54 : 48);
           reset->setToolTip(QStringLiteral("Reset to safe default"));
 
           editorLayout->addWidget(slider, 1);
@@ -1245,7 +1458,7 @@ class QtMainWindow final : public QMainWindow {
           });
 
           table->setCellWidget(row, valueColumn, editor);
-          table->setRowHeight(row, 32);
+          table->setRowHeight(row, compactProperties ? 38 : 32);
         } else if (isButtonProperty(property)) {
           auto* button = new QPushButton(ToQString(property.value.empty() ? property.name : property.value), table);
           button->setEnabled(property.enabled);
@@ -1263,13 +1476,18 @@ class QtMainWindow final : public QMainWindow {
                              }
                            });
           table->setCellWidget(row, valueColumn, button);
-          table->setRowHeight(row, 32);
+          table->setRowHeight(row, compactProperties ? 38 : 32);
         }
         if (hasUnits) {
           auto* unitItem = new QTableWidgetItem(ToQString(property.unit));
           applyReadOnlyFlags(unitItem, false, property.enabled);
           unitItem->setToolTip(ToQString(property.unit));
           table->setItem(row, unitColumn, unitItem);
+        }
+        if (multilineValue && !usesValueWidget) {
+          const int lineCount = 1 + static_cast<int>(
+              std::count(property.value.begin(), property.value.end(), '\n'));
+          table->setRowHeight(row, std::min(118, 34 + lineCount * 20));
         }
       }
       QObject::connect(table,
@@ -1292,7 +1510,11 @@ class QtMainWindow final : public QMainWindow {
                                                         ToUtf8String(propertyId),
                                                         ToUtf8String(item->text()));
                        });
-      layout->addWidget(table);
+      addSection(table, treePrimaryPanel ? 0 : 1);
+    }
+
+    if (splitter != nullptr) {
+      layout->addWidget(splitter, 1);
     }
 
     if (panel.text.empty() &&
@@ -2513,6 +2735,22 @@ void QtWindow::emit_dock_property_edit(std::string panel_id,
       std::move(value)});
 }
 
+void QtWindow::emit_dock_row_activation(std::string panel_id,
+                                        std::string row_id,
+                                        vkpt::core::StableId entity_id,
+                                        bool append,
+                                        bool range_mode) {
+  if (panel_id.empty() || entity_id == 0u) {
+    return;
+  }
+  m_dockRowActivations.push_back(QtDockRowActivation{
+      std::move(panel_id),
+      std::move(row_id),
+      entity_id,
+      append,
+      range_mode});
+}
+
 std::vector<InputEvent> QtWindow::drain_events() {
   std::vector<InputEvent> out;
   out.reserve(m_events.size());
@@ -2533,6 +2771,16 @@ std::vector<QtDockPropertyEdit> QtWindow::drain_dock_property_edits() {
   return out;
 }
 
+std::vector<QtDockRowActivation> QtWindow::drain_dock_row_activations() {
+  std::vector<QtDockRowActivation> out;
+  out.reserve(m_dockRowActivations.size());
+  while (!m_dockRowActivations.empty()) {
+    out.push_back(std::move(m_dockRowActivations.front()));
+    m_dockRowActivations.pop_front();
+  }
+  return out;
+}
+
 void QtWindow::mark_closed() {
   m_open = false;
   std::scoped_lock lock(m_frameMutex);
@@ -2544,6 +2792,7 @@ void QtWindow::destroy() {
   m_closeEventQueued = false;
   m_events.clear();
   m_dockPropertyEdits.clear();
+  m_dockRowActivations.clear();
   m_menuBarSignature.clear();
   close_startup_splash(false);
   m_mainWindowRevealed = false;

@@ -2,29 +2,40 @@ param(
     [switch]$NoBuild,
     [string]$Preset = "windows-clangcl-d3d12-qt-debug",
     [string]$Scene = "assets\scenes\cornell_native.json",
+    [string]$Backend = "d3d12",
     [uint32]$Width = 960,
     [uint32]$Height = 540,
     [uint32]$MaxDepth = 2,
     [uint32]$D3D12RaysPerPixel = 8,
     [uint32]$D3D12ReadbackInterval = 4,
-    [uint32]$UiPresentHz = 60
+    [uint32]$UiPresentHz = 60,
+    [switch]$Console,
+    [switch]$Terminal,
+    [string]$EnvFile = ".env",
+    [switch]$NoEnvFile
 )
 
 # Project flag reference (searched 2026-05-05):
 # - run.ps1 parameters:
-#   -NoBuild, -Preset, -Scene, -Width, -Height, -MaxDepth, -D3D12RaysPerPixel,
-#   -D3D12ReadbackInterval, -UiPresentHz.
+#   -NoBuild, -Preset, -Scene, -Backend, -Width, -Height, -MaxDepth, -D3D12RaysPerPixel,
+#   -D3D12ReadbackInterval, -UiPresentHz, -Console, -Terminal, -EnvFile, -NoEnvFile.
+# - run.ps1 loads .env from the repo root by default when it exists. Existing
+#   process environment variables win over .env values, and explicit PowerShell
+#   parameters win over both.
 # - This launcher maps to:
-#   ptapp --window --platform qt --backend d3d12 --scene <path> --width <px>
-#   --height <px> --max-depth <depth> --ui-present-hz <hz>.
+#   ptapp --window --platform qt --backend <backend> --scene <path> --width <px>
+#   --height <px> --max-depth <depth> --ui-present-hz <hz> [--console] [--env-file <path>].
+#   Console/terminal output is opt-in for Qt GUI builds; use -Console or -Terminal
+#   when interactive stdout/stderr diagnostics are needed.
 # - Current ptapp flags:
 #   -h/--help, --version [--json], --doctor, --check-build, --check-cpu,
 #   --check-backends, --check-assets, --check-shaders, --check-job-system,
 #   --check-scene-schema, --check-bench-write, --dump-config,
-#   --config <path>, --list-backends, --list-accelerators, --list-gpus,
+#   --config <path>, --env-file <path>, --no-env-file, --list-backends,
+#   --list-accelerators, --list-gpus,
 #   --headless, --window, --platform <auto|raw|qt|headless>,
 #   --window-width <px>, --window-height <px>, --ui-present-hz <hz>,
-#   --frames <n>, --exit, --scene <path>, --backend <name>,
+#   --frames <n>, --exit, --console/--terminal, --scene <path>, --backend <name>,
 #   --log-level <n>, --crash-test, --ui-model-smoke, --ui-release-gate,
 #   --render, --output <png>, --exr-output <exr>, --width <px>,
 #   --height <px>, --spp <samples>, --max-depth <depth>.
@@ -42,7 +53,9 @@ param(
 #   PTAPP_OUTPUT_PATH, PTAPP_EXR_OUTPUT_PATH,
 #   PTAPP_BENCHMARK_WARMUP_FRAMES, PTAPP_BENCHMARK_TILE_SIZE,
 #   PTAPP_WRITE_STATUS_FILE, PTAPP_STATUS_FILE_PATH,
-#   PTAPP_CRASH_ARTIFACT_DIR.
+#   PTAPP_CRASH_ARTIFACT_DIR, PTAPP_CONSOLE.
+# - run.ps1-only env flags:
+#   VKPT_RUN_PRESET.
 # - ptdoctor delegates to ptapp and accepts the same diagnostic/runtime flags;
 #   VKPT_PTAPP_PATH overrides the delegated ptapp executable.
 # - ptbench commands:
@@ -107,6 +120,129 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
+
+function Get-ProcessEnv([string]$Name) {
+    return [Environment]::GetEnvironmentVariable($Name, "Process")
+}
+
+function Convert-DotEnvValue([string]$Value) {
+    $text = $Value.Trim()
+    if ($text.Length -ge 2 -and $text[0] -eq '"' ) {
+        $escaped = $false
+        for ($i = 1; $i -lt $text.Length; $i++) {
+            if ($escaped) {
+                $escaped = $false
+                continue
+            }
+            if ($text[$i] -eq '\') {
+                $escaped = $true
+                continue
+            }
+            if ($text[$i] -eq '"') {
+                $inner = $text.Substring(1, $i - 1)
+                return $inner.Replace('\n', "`n").Replace('\r', "`r").Replace('\t', "`t").Replace('\"', '"').Replace('\\', '\')
+            }
+        }
+    }
+    if ($text.Length -ge 2 -and $text[0] -eq "'") {
+        $end = $text.IndexOf("'", 1)
+        if ($end -gt 0) {
+            return $text.Substring(1, $end - 1)
+        }
+    }
+    return (($text -replace '\s+#.*$', '').Trim())
+}
+
+function Import-DotEnvFile([string]$Path) {
+    $lineNumber = 0
+    foreach ($line in Get-Content -LiteralPath $Path -ErrorAction Stop) {
+        $lineNumber++
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.StartsWith("#")) {
+            continue
+        }
+        if ($trimmed.StartsWith("export ")) {
+            $trimmed = $trimmed.Substring(7).Trim()
+        }
+        $eq = $trimmed.IndexOf("=")
+        if ($eq -lt 1) {
+            continue
+        }
+        $name = $trimmed.Substring(0, $eq).Trim()
+        if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+            throw "Invalid .env key '$name' at ${Path}:${lineNumber}"
+        }
+        if ($null -ne (Get-ProcessEnv $name)) {
+            continue
+        }
+        $value = Convert-DotEnvValue $trimmed.Substring($eq + 1)
+        [Environment]::SetEnvironmentVariable($name, $value, "Process")
+    }
+}
+
+function Use-EnvString([string]$ParamName, [string]$EnvName, [ref]$Target) {
+    if ($PSBoundParameters.ContainsKey($ParamName)) {
+        return
+    }
+    $value = Get-ProcessEnv $EnvName
+    if (-not [string]::IsNullOrWhiteSpace($value)) {
+        $Target.Value = $value
+    }
+}
+
+function Use-EnvUInt32([string]$ParamName, [string]$EnvName, [ref]$Target) {
+    if ($PSBoundParameters.ContainsKey($ParamName)) {
+        return
+    }
+    $value = Get-ProcessEnv $EnvName
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        return
+    }
+    $parsed = 0
+    if ([uint32]::TryParse($value, [ref]$parsed)) {
+        $Target.Value = $parsed
+    }
+}
+
+function Test-EnvTruthy([string]$Value) {
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+    return @("1", "true", "yes", "on") -contains $Value.Trim().ToLowerInvariant()
+}
+
+$loadedEnvFilePath = ""
+$resolvedEnvFilePath = if ([System.IO.Path]::IsPathRooted($EnvFile)) {
+    $EnvFile
+} else {
+    Join-Path $root $EnvFile
+}
+
+if (-not $NoEnvFile) {
+    if (Test-Path -LiteralPath $resolvedEnvFilePath) {
+        Import-DotEnvFile $resolvedEnvFilePath
+        $loadedEnvFilePath = $resolvedEnvFilePath
+    } elseif ($PSBoundParameters.ContainsKey("EnvFile")) {
+        Write-Error "[run] .env file was not found at $resolvedEnvFilePath."
+        exit 1
+    }
+}
+
+Use-EnvString "Preset" "VKPT_RUN_PRESET" ([ref]$Preset)
+Use-EnvString "Scene" "PTAPP_SCENE" ([ref]$Scene)
+Use-EnvString "Backend" "PTAPP_BACKEND" ([ref]$Backend)
+Use-EnvUInt32 "Width" "PTAPP_RENDER_WIDTH" ([ref]$Width)
+Use-EnvUInt32 "Height" "PTAPP_RENDER_HEIGHT" ([ref]$Height)
+Use-EnvUInt32 "MaxDepth" "PTAPP_MAX_DEPTH" ([ref]$MaxDepth)
+Use-EnvUInt32 "UiPresentHz" "PTAPP_UI_PRESENT_HZ" ([ref]$UiPresentHz)
+Use-EnvUInt32 "D3D12RaysPerPixel" "PT_D3D12_RAYS_PER_PIXEL" ([ref]$D3D12RaysPerPixel)
+Use-EnvUInt32 "D3D12ReadbackInterval" "PT_D3D12_READBACK_INTERVAL" ([ref]$D3D12ReadbackInterval)
+if (-not $PSBoundParameters.ContainsKey("Console") -and -not $PSBoundParameters.ContainsKey("Terminal")) {
+    if (Test-EnvTruthy (Get-ProcessEnv "PTAPP_CONSOLE")) {
+        $Console = $true
+    }
+}
+
 $build = Join-Path $root "build\presets\$Preset"
 $bin = Join-Path $build "bin"
 $exe = Join-Path $bin "ptapp.exe"
@@ -149,5 +285,29 @@ $env:PATH = "$bin;$env:PATH"
 $env:PT_D3D12_RAYS_PER_PIXEL = [string]$D3D12RaysPerPixel
 $env:PT_D3D12_READBACK_INTERVAL = [string]$D3D12ReadbackInterval
 
-Write-Host "[run] Launching Qt Cornell box demo (D3D12, internal ${Width}x${Height}, depth ${MaxDepth}, ${D3D12RaysPerPixel} rays/pixel/dispatch, readback every ${D3D12ReadbackInterval} batches, ${UiPresentHz}Hz UI)..." -ForegroundColor Cyan
-& $exe --window --platform qt --backend d3d12 --scene $scenePath --width $Width --height $Height --max-depth $MaxDepth --ui-present-hz $UiPresentHz
+$ptappArgs = @(
+    "--window",
+    "--platform", "qt",
+    "--backend", $Backend,
+    "--scene", $scenePath,
+    "--width", [string]$Width,
+    "--height", [string]$Height,
+    "--max-depth", [string]$MaxDepth,
+    "--ui-present-hz", [string]$UiPresentHz
+)
+
+if ($NoEnvFile) {
+    $ptappArgs += "--no-env-file"
+} elseif (-not [string]::IsNullOrWhiteSpace($loadedEnvFilePath)) {
+    $ptappArgs += @("--env-file", $loadedEnvFilePath)
+} else {
+    $ptappArgs += "--no-env-file"
+}
+
+if ($Console -or $Terminal) {
+    $ptappArgs += "--console"
+}
+
+$consoleMode = if ($Console -or $Terminal) { "console diagnostics on" } else { "console diagnostics off" }
+Write-Host "[run] Launching Qt demo ($Backend backend, scene '$Scene', internal ${Width}x${Height}, depth ${MaxDepth}, ${D3D12RaysPerPixel} rays/pixel/dispatch, readback every ${D3D12ReadbackInterval} batches, ${UiPresentHz}Hz UI, ${consoleMode})..." -ForegroundColor Cyan
+& $exe @ptappArgs

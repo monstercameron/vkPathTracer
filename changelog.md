@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-05-05 (session 23)
+
+### Qt scene graph selection, quiet GUI launch, and dotenv config
+
+- Added nested Qt scene graph rows with stable hierarchy indentation, selection state, and type-specific icons for models, lights, cameras, SDFs, and other scene items.
+- Wired Qt scene graph item activation into the editor selection path so clicking a panel row selects the corresponding scene item in the canvas, including additive and range selection gestures.
+- Made the Windows Qt GUI launch without a separate console by default, with `--console`, `--terminal`, and `run.ps1 -Console` restoring terminal output on demand.
+- Added `.env` runtime configuration support, a committed `.env.example`, launcher defaults from dotenv/process environment values, and docs for the new flags and environment variables.
+- Verified the Windows clang-cl D3D12 Qt build, GUI subsystem header, Qt UI smoke path, dotenv config loading, launcher parse check, and whitespace check for the touched files.
+
 ## 2026-05-05 (session 22)
 
 ### Physical camera controls, GPU traversal experiments, and profiling docs

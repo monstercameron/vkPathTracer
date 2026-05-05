@@ -82,8 +82,12 @@ enum class QtDockPanelContent {
 };
 
 struct QtDockRow {
+  std::string id;
   std::string label;
   std::string value;
+  std::string icon;
+  vkpt::core::StableId entity_id = 0;
+  bool selected = false;
   std::vector<QtDockRow> children;
 };
 
@@ -109,6 +113,14 @@ struct QtDockPropertyEdit {
   std::string panel_id;
   std::string property_id;
   std::string value;
+};
+
+struct QtDockRowActivation {
+  std::string panel_id;
+  std::string row_id;
+  vkpt::core::StableId entity_id = 0;
+  bool append = false;
+  bool range_mode = false;
 };
 
 struct QtDockPanel {
@@ -185,8 +197,14 @@ class QtWindow final : public IWindow {
   void emit_dock_property_edit(std::string panel_id,
                                std::string property_id,
                                std::string value);
+  void emit_dock_row_activation(std::string panel_id,
+                                std::string row_id,
+                                vkpt::core::StableId entity_id,
+                                bool append,
+                                bool range_mode);
   std::vector<InputEvent> drain_events();
   std::vector<QtDockPropertyEdit> drain_dock_property_edits();
+  std::vector<QtDockRowActivation> drain_dock_row_activations();
   void mark_closed();
   void destroy();
 
@@ -239,6 +257,7 @@ class QtWindow final : public IWindow {
   bool m_mainWindowRevealed = false;
   std::deque<InputEvent> m_events;
   std::deque<QtDockPropertyEdit> m_dockPropertyEdits;
+  std::deque<QtDockRowActivation> m_dockRowActivations;
   int m_lastMouseX = 0;
   int m_lastMouseY = 0;
 
