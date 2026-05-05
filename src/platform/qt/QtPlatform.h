@@ -88,12 +88,27 @@ struct QtDockRow {
 };
 
 struct QtDockProperty {
+  std::string id;
   std::string group;
   std::string name;
   std::string value;
   std::string unit;
+  std::string editor;
+  std::vector<std::string> options;
+  double minimum = 0.0;
+  double maximum = 1.0;
+  double step = 0.01;
+  double default_value = 0.0;
+  bool has_numeric_range = false;
+  bool has_default = false;
   bool editable = false;
   bool enabled = true;
+};
+
+struct QtDockPropertyEdit {
+  std::string panel_id;
+  std::string property_id;
+  std::string value;
 };
 
 struct QtDockPanel {
@@ -106,6 +121,8 @@ struct QtDockPanel {
   bool closable = true;
   bool movable = true;
   bool floatable = true;
+  int preferred_width = 0;
+  int preferred_height = 0;
   std::vector<std::string> rows;
   std::vector<QtDockRow> tree_rows;
   std::vector<QtDockProperty> properties;
@@ -163,7 +180,11 @@ class QtWindow final : public IWindow {
   void emit_mouse_button(std::int32_t button, bool pressed, int x, int y);
   void emit_mouse_wheel(float delta_x, float delta_y, int x, int y);
   void emit_menu_command(std::uint32_t command_id);
+  void emit_dock_property_edit(std::string panel_id,
+                               std::string property_id,
+                               std::string value);
   std::vector<InputEvent> drain_events();
+  std::vector<QtDockPropertyEdit> drain_dock_property_edits();
   void mark_closed();
   void destroy();
 
@@ -209,6 +230,7 @@ class QtWindow final : public IWindow {
   QWidget* m_shell = nullptr;
   QWidget* m_widget = nullptr;
   std::deque<InputEvent> m_events;
+  std::deque<QtDockPropertyEdit> m_dockPropertyEdits;
   int m_lastMouseX = 0;
   int m_lastMouseY = 0;
 
