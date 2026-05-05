@@ -446,10 +446,15 @@ target_include_directories(ptbench PRIVATE
 if(PT_ENABLE_VULKAN)
   target_include_directories(ptbench PRIVATE ${Vulkan_INCLUDE_DIRS})
   target_link_libraries(ptbench PRIVATE ${Vulkan_LIBRARIES})
+  add_dependencies(ptbench pt_shaders)
+  target_compile_definitions(ptbench PRIVATE
+    PT_SHADER_SPV_PATH=\"$<TARGET_FILE_DIR:ptbench>/shaders/pathtrace.spv\")
 endif()
 
 if(PT_ENABLE_D3D12)
   target_link_libraries(ptbench PRIVATE d3d12 dxgi d3dcompiler)
+  target_compile_definitions(ptbench PRIVATE
+    PT_SHADER_HLSL_PATH=\"${CMAKE_SOURCE_DIR}/src/shaders/gpu/pathtrace_cs.hlsl\")
 endif()
 
 if(PT_ENABLE_QT)
