@@ -5,3 +5,5 @@
 bin
 *.log
 protopt_log.txt
+/cpu_err.txt
+/cpu_out.txt
