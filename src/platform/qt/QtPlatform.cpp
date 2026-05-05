@@ -334,6 +334,8 @@ class QtMainWindow final : public QMainWindow {
         if (!oldWidget.isNull()) {
           oldWidget->deleteLater();
         }
+      } else {
+        updateDockWidgetValues(dock->widget(), panel);
       }
       dock->setVisible(panel.visible);
     }
@@ -500,9 +502,7 @@ class QtMainWindow final : public QMainWindow {
       appendSignatureField(out, property.id);
       appendSignatureField(out, property.group);
       appendSignatureField(out, property.name);
-      appendSignatureField(
-          out,
-          property.editor == "slider" ? std::string_view{} : property.value);
+      appendSignatureField(out, std::string_view{});
       appendSignatureField(out, property.unit);
       appendSignatureField(out, property.editor);
       out << property.options.size() << '[';
@@ -676,6 +676,83 @@ class QtMainWindow final : public QMainWindow {
       return parsed;
     }
     return property.has_default ? property.default_value : property.minimum;
+  }
+
+  void updateDockWidgetValues(QWidget* root, const QtDockPanel& panel) {
+    if (root == nullptr || panel.properties.empty()) {
+      return;
+    }
+    auto* table = root->findChild<QTableWidget*>();
+    if (table == nullptr) {
+      return;
+    }
+    const bool hasGroups = std::any_of(panel.properties.begin(),
+                                       panel.properties.end(),
+                                       [](const QtDockProperty& property) {
+                                         return !property.group.empty();
+                                       });
+    const bool hasUnits = std::any_of(panel.properties.begin(),
+                                      panel.properties.end(),
+                                      [](const QtDockProperty& property) {
+                                        return !property.unit.empty();
+                                      });
+    const int propertyColumn = hasGroups ? 1 : 0;
+    const int valueColumn = propertyColumn + 1;
+    const int unitColumn = hasUnits ? valueColumn + 1 : -1;
+    const int rowCount = std::min(table->rowCount(), static_cast<int>(panel.properties.size()));
+    QSignalBlocker tableBlocker(table);
+    for (int row = 0; row < rowCount; ++row) {
+      const auto& property = panel.properties[static_cast<std::size_t>(row)];
+      if (auto* valueItem = table->item(row, valueColumn)) {
+        valueItem->setText(ToQString(property.value));
+        valueItem->setData(Qt::UserRole, ToQString(property.id));
+        valueItem->setToolTip(ToQString(property.value));
+      }
+      if (auto* nameItem = table->item(row, propertyColumn)) {
+        nameItem->setText(ToQString(property.name));
+        nameItem->setToolTip(ToQString(property.name));
+      }
+      if (unitColumn >= 0) {
+        if (auto* unitItem = table->item(row, unitColumn)) {
+          unitItem->setText(ToQString(property.unit));
+          unitItem->setToolTip(ToQString(property.unit));
+        }
+      }
+
+      QWidget* cell = table->cellWidget(row, valueColumn);
+      if (isDropdownProperty(property)) {
+        auto* combo = qobject_cast<QComboBox*>(cell);
+        if (combo != nullptr) {
+          QSignalBlocker comboBlocker(combo);
+          const QString current = ToQString(property.value);
+          if (combo->findText(current) < 0 && !current.isEmpty()) {
+            combo->addItem(current);
+          }
+          combo->setCurrentText(current);
+          combo->setToolTip(ToQString(property.name));
+        }
+      } else if (isSliderProperty(property) && cell != nullptr) {
+        auto* slider = cell->findChild<QSlider*>();
+        auto* spin = cell->findChild<QDoubleSpinBox*>();
+        const double minimum = property.minimum;
+        const double maximum = std::max(property.minimum, property.maximum);
+        const double value =
+            clampSliderValue(parseNumericPropertyValue(property), minimum, maximum);
+        if (slider != nullptr) {
+          QSignalBlocker sliderBlocker(slider);
+          slider->setValue(sliderPositionFromValue(value, minimum, maximum));
+          slider->setToolTip(ToQString(property.name));
+        }
+        if (spin != nullptr) {
+          QSignalBlocker spinBlocker(spin);
+          spin->setRange(minimum, maximum);
+          spin->setSingleStep(property.step > 0.0 ? property.step : 0.01);
+          spin->setDecimals(decimalsForStep(property.step));
+          spin->setValue(value);
+          spin->setToolTip(ToQString(property.name));
+        }
+      }
+    }
   }
 
   QWidget* buildDockWidget(const QtDockPanel& panel) {
