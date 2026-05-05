@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-05-05 (session 21)
+
+### Render threading coordinator and CPU scheduling stability
+
+- Added a latest-frame handoff and `RenderCoordinator` to own background tiled CPU rendering on a `std::jthread`, coalesce camera/scene/settings updates, and publish immutable frames to the UI.
+- Replaced the Qt and raw window tiled CPU background render loops with the coordinator so the UI thread no longer mutates a live tiled tracer.
+- Added stop-aware job waits and cancellable tiled CPU sample batches so coordinator shutdown can drain work safely.
+- Moved scalar CPU render work onto the shared job system instead of spawning per-render `std::thread` workers.
+- Verified the Qt D3D12 build, default build, job-system smoke, and Qt offscreen tiled CPU smoke after the threading changes.
+
 ## 2026-05-05 (session 20)
 
 ### Physics, multi-accelerator planning, tessellation, and SDF editor support
