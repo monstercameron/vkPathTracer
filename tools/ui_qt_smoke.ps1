@@ -63,7 +63,8 @@ param(
         "camera",
         "render_settings",
         "diagnostics",
-        "performance"
+        "performance",
+        "device"
     ),
     [switch]$NoBuild,
     [switch]$SkipQt,
@@ -300,6 +301,27 @@ function Test-QtReadyField([string]$Text, [string[]]$Names) {
     return $false
 }
 
+function Test-QtShellReadyMarkerText([string]$Text) {
+    return ($Text -match '(?i)qt shell ready|qt_shell_ready|qt-shell-ready|qt shell surfaces')
+}
+
+function Wait-QtShellReadyMarker([System.Diagnostics.Process]$Process, [uint32]$TimeoutMilliseconds) {
+    if ($null -eq $Process) { return $false }
+    $deadline = [DateTime]::UtcNow.AddMilliseconds([double]$TimeoutMilliseconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $stdoutText = if (Test-Path $QtStdout) { Get-Content -LiteralPath $QtStdout -Raw -ErrorAction SilentlyContinue } else { "" }
+        $stderrText = if (Test-Path $QtStderr) { Get-Content -LiteralPath $QtStderr -Raw -ErrorAction SilentlyContinue } else { "" }
+        if (Test-QtShellReadyMarkerText ($stdoutText + [Environment]::NewLine + $stderrText)) {
+            return $true
+        }
+        if ($Process.HasExited) {
+            return $false
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    return $false
+}
+
 function Assert-QtShellSurfaceAvailabilityFromLogs {
     $stdoutText = if (Test-Path $QtStdout) { Get-Content -LiteralPath $QtStdout -Raw -ErrorAction SilentlyContinue } else { "" }
     $stderrText = if (Test-Path $QtStderr) { Get-Content -LiteralPath $QtStderr -Raw -ErrorAction SilentlyContinue } else { "" }
@@ -420,7 +442,11 @@ function Invoke-BoundedQtWindowSmoke([string]$Exe, [bool]$PassUiPresentHz) {
         }
 
         if ($ready) {
-            Start-Sleep -Milliseconds 500
+            if ($SkipQtShellProbe) {
+                Start-Sleep -Milliseconds 500
+            } else {
+                [void](Wait-QtShellReadyMarker $process ([Math]::Max(500, [int]$WindowSeconds * 1000)))
+            }
         }
 
         $exitBeforeKill = $false

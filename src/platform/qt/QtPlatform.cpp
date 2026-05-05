@@ -24,13 +24,16 @@
 #include <QClipboard>
 #include <QCloseEvent>
 #include <QColor>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QCursor>
+#include <QDoubleSpinBox>
 #include <QEventLoop>
 #include <QFocusEvent>
 #include <QFont>
 #include <QGuiApplication>
 #include <QHeaderView>
+#include <QHBoxLayout>
 #include <QImage>
 #include <QKeyEvent>
 #include <QAction>
@@ -50,11 +53,17 @@
 #include <QPointer>
 #include <QPixmap>
 #include <QPolygonF>
+#include <QPushButton>
 #include <QRect>
+#include <QRectF>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
+#include <QSizePolicy>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QString>
+#include <QStringList>
 #include <QStatusBar>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -82,10 +91,20 @@ namespace {
 constexpr const char* kQtLogSubsystem = "qt";
 constexpr std::uint64_t kQtFramebufferStatsLogPeriod = 120u;
 constexpr int kQtDockLayoutStateVersion = 2;
+constexpr int kQtDockMinimumWidth = 168;
+constexpr int kQtDockMinimumHeight = 96;
+constexpr int kQtDockMaximumInitialWidth = 1400;
 
 int ClampToQtInt(std::size_t value) {
   constexpr auto kMax = static_cast<std::size_t>(std::numeric_limits<int>::max());
   return static_cast<int>(std::min(value, kMax));
+}
+
+int ClampDockInitialWidth(int value) {
+  if (value <= 0) {
+    return 0;
+  }
+  return std::clamp(value, kQtDockMinimumWidth, kQtDockMaximumInitialWidth);
 }
 
 QString ToQString(std::string_view text) {
@@ -331,8 +350,10 @@ class QtMainWindow final : public QMainWindow {
     }
 
     if (!m_layoutRestored && !m_docks.empty()) {
-      if (!restoreDockLayout()) {
+      const bool restoredLayout = restoreDockLayout();
+      if (!restoredLayout) {
         tabifyDefaultDockGroups();
+        applyInitialSideDockWidths(panels);
       }
       m_layoutRestored = true;
     }
@@ -425,6 +446,10 @@ class QtMainWindow final : public QMainWindow {
     auto* dock = new QDockWidget(ToQString(panel.title.empty() ? panel.id : panel.title), this);
     dock->setObjectName(ToQString(std::string("vkpt.dock.") + panel.id));
     dock->setAllowedAreas(Qt::AllDockWidgetAreas);
+    dock->setMinimumWidth(kQtDockMinimumWidth);
+    dock->setMinimumHeight(kQtDockMinimumHeight);
+    dock->setMaximumWidth(QWIDGETSIZE_MAX);
+    dock->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     addDockWidget(toQtArea(panel.area), dock);
     m_docks.emplace(panel.id, dock);
     return dock;
@@ -472,10 +497,23 @@ class QtMainWindow final : public QMainWindow {
     }
     out << panel.properties.size() << '|';
     for (const auto& property : panel.properties) {
+      appendSignatureField(out, property.id);
       appendSignatureField(out, property.group);
       appendSignatureField(out, property.name);
-      appendSignatureField(out, property.value);
+      appendSignatureField(
+          out,
+          property.editor == "slider" ? std::string_view{} : property.value);
       appendSignatureField(out, property.unit);
+      appendSignatureField(out, property.editor);
+      out << property.options.size() << '[';
+      for (const auto& option : property.options) {
+        appendSignatureField(out, option);
+      }
+      out << ']';
+      out << property.minimum << ',' << property.maximum << ','
+          << property.step << ',' << property.default_value << ','
+          << (property.has_numeric_range ? '1' : '0')
+          << (property.has_default ? '1' : '0');
       out << (property.editable ? '1' : '0') << (property.enabled ? '1' : '0') << ';';
     }
     return out.str();
@@ -518,6 +556,35 @@ class QtMainWindow final : public QMainWindow {
     tabifyDockIds({"diagnostics", "performance", "timeline"});
   }
 
+  void applyInitialSideDockWidths(const std::vector<QtDockPanel>& panels) {
+    applyInitialSideDockWidth(panels, QtDockArea::Left);
+    applyInitialSideDockWidth(panels, QtDockArea::Right);
+  }
+
+  void applyInitialSideDockWidth(const std::vector<QtDockPanel>& panels, QtDockArea area) {
+    QDockWidget* target = nullptr;
+    int width = 0;
+    for (const auto& panel : panels) {
+      if (!panel.visible || panel.area != area) {
+        continue;
+      }
+      target = dockById(panel.id);
+      width = ClampDockInitialWidth(panel.preferred_width);
+      if (target != nullptr && width > 0) {
+        break;
+      }
+    }
+    if (target == nullptr || width <= 0) {
+      return;
+    }
+
+    QList<QDockWidget*> docks;
+    QList<int> sizes;
+    docks.push_back(target);
+    sizes.push_back(width);
+    resizeDocks(docks, sizes, Qt::Horizontal);
+  }
+
   static QTreeWidgetItem* buildTreeItem(const QtDockRow& row) {
     auto* item = new QTreeWidgetItem();
     item->setText(0, ToQString(row.label));
@@ -542,8 +609,80 @@ class QtMainWindow final : public QMainWindow {
     item->setFlags(flags);
   }
 
+  static bool isDropdownProperty(const QtDockProperty& property) {
+    return property.editable && property.editor == "dropdown";
+  }
+
+  static bool isSliderProperty(const QtDockProperty& property) {
+    return property.editable && property.editor == "slider" && property.has_numeric_range;
+  }
+
+  static int sliderSteps() {
+    return 1000;
+  }
+
+  static double clampSliderValue(double value, double minimum, double maximum) {
+    if (!std::isfinite(value)) {
+      return minimum;
+    }
+    if (maximum < minimum) {
+      std::swap(minimum, maximum);
+    }
+    return std::clamp(value, minimum, maximum);
+  }
+
+  static int sliderPositionFromValue(double value, double minimum, double maximum) {
+    if (maximum <= minimum) {
+      return 0;
+    }
+    const double normalized =
+        (clampSliderValue(value, minimum, maximum) - minimum) / (maximum - minimum);
+    return static_cast<int>(std::round(normalized * static_cast<double>(sliderSteps())));
+  }
+
+  static double valueFromSliderPosition(int position, double minimum, double maximum) {
+    if (maximum <= minimum) {
+      return minimum;
+    }
+    const double normalized =
+        std::clamp(static_cast<double>(position) / static_cast<double>(sliderSteps()), 0.0, 1.0);
+    return minimum + (maximum - minimum) * normalized;
+  }
+
+  static int decimalsForStep(double step) {
+    if (!std::isfinite(step) || step <= 0.0) {
+      return 3;
+    }
+    if (step >= 1.0) {
+      return 0;
+    }
+    int decimals = 0;
+    double value = step;
+    while (value < 1.0 && decimals < 6) {
+      value *= 10.0;
+      ++decimals;
+    }
+    return std::clamp(decimals, 1, 6);
+  }
+
+  static QString formatSliderValue(double value, int decimals) {
+    return QString::number(value, 'f', decimals);
+  }
+
+  static double parseNumericPropertyValue(const QtDockProperty& property) {
+    bool ok = false;
+    const double parsed = ToQString(property.value).toDouble(&ok);
+    if (ok && std::isfinite(parsed)) {
+      return parsed;
+    }
+    return property.has_default ? property.default_value : property.minimum;
+  }
+
   QWidget* buildDockWidget(const QtDockPanel& panel) {
     auto* root = new QWidget();
+    root->setMinimumWidth(kQtDockMinimumWidth);
+    root->setMinimumHeight(kQtDockMinimumHeight);
+    root->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     auto* layout = new QVBoxLayout(root);
     layout->setContentsMargins(6, 6, 6, 6);
     layout->setSpacing(6);
@@ -560,11 +699,16 @@ class QtMainWindow final : public QMainWindow {
       text->setReadOnly(true);
       text->setPlainText(ToQString(panel.text));
       text->setMinimumHeight(72);
+      text->setMinimumWidth(kQtDockMinimumWidth - 24);
+      text->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
       layout->addWidget(text);
     }
 
     if (wantsTree && (!panel.rows.empty() || !panel.tree_rows.empty())) {
       auto* tree = new QTreeWidget(root);
+      tree->setMinimumWidth(kQtDockMinimumWidth - 24);
+      tree->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+      tree->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
       tree->setColumnCount(panel.tree_rows.empty() ? 1 : 2);
       if (panel.tree_rows.empty()) {
         tree->setHeaderHidden(true);
@@ -585,6 +729,11 @@ class QtMainWindow final : public QMainWindow {
     }
 
     if (wantsProperties && !panel.properties.empty()) {
+      const bool hasGroups = std::any_of(panel.properties.begin(),
+                                         panel.properties.end(),
+                                         [](const QtDockProperty& property) {
+                                           return !property.group.empty();
+                                         });
       const bool hasUnits = std::any_of(panel.properties.begin(),
                                         panel.properties.end(),
                                         [](const QtDockProperty& property) {
@@ -595,45 +744,208 @@ class QtMainWindow final : public QMainWindow {
                                            [](const QtDockProperty& property) {
                                              return property.editable;
                                            });
-      const int columnCount = hasUnits ? 4 : 3;
+      const int groupColumn = hasGroups ? 0 : -1;
+      const int propertyColumn = hasGroups ? 1 : 0;
+      const int valueColumn = propertyColumn + 1;
+      const int unitColumn = hasUnits ? valueColumn + 1 : -1;
+      const int columnCount = valueColumn + 1 + (hasUnits ? 1 : 0);
       auto* table = new QTableWidget(static_cast<int>(panel.properties.size()), columnCount, root);
-      if (hasUnits) {
-        table->setHorizontalHeaderLabels({QStringLiteral("Group"),
-                                          QStringLiteral("Property"),
-                                          QStringLiteral("Value"),
-                                          QStringLiteral("Unit")});
-      } else {
-        table->setHorizontalHeaderLabels({QStringLiteral("Group"),
-                                          QStringLiteral("Property"),
-                                          QStringLiteral("Value")});
+      table->setMinimumWidth(kQtDockMinimumWidth - 24);
+      table->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+      table->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+      table->setTextElideMode(Qt::ElideRight);
+      QStringList headers;
+      if (hasGroups) {
+        headers.push_back(QStringLiteral("Group"));
       }
+      headers.push_back(QStringLiteral("Metric"));
+      headers.push_back(QStringLiteral("Value"));
+      if (hasUnits) {
+        headers.push_back(QStringLiteral("Unit"));
+      }
+      table->setHorizontalHeaderLabels(headers);
       table->verticalHeader()->setVisible(false);
       table->setEditTriggers(anyEditable
           ? QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed
           : QAbstractItemView::NoEditTriggers);
       table->setSelectionBehavior(QAbstractItemView::SelectRows);
       table->setSelectionMode(QAbstractItemView::SingleSelection);
+      table->horizontalHeader()->setMinimumSectionSize(48);
       table->horizontalHeader()->setStretchLastSection(true);
-      table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-      table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+      if (hasGroups) {
+        table->horizontalHeader()->setSectionResizeMode(groupColumn, QHeaderView::Interactive);
+        table->setColumnWidth(groupColumn, 96);
+      }
+      table->horizontalHeader()->setSectionResizeMode(propertyColumn, QHeaderView::Interactive);
+      table->setColumnWidth(propertyColumn, hasGroups ? 132 : 150);
+      table->horizontalHeader()->setSectionResizeMode(valueColumn, QHeaderView::Stretch);
+      if (hasUnits) {
+        table->horizontalHeader()->setSectionResizeMode(unitColumn, QHeaderView::Interactive);
+        table->setColumnWidth(unitColumn, 64);
+      }
       for (std::size_t i = 0; i < panel.properties.size(); ++i) {
         const auto& property = panel.properties[i];
         const int row = static_cast<int>(i);
-        auto* groupItem = new QTableWidgetItem(ToQString(property.group));
+        const bool usesValueWidget = isDropdownProperty(property) || isSliderProperty(property);
         auto* nameItem = new QTableWidgetItem(ToQString(property.name));
         auto* valueItem = new QTableWidgetItem(ToQString(property.value));
-        applyReadOnlyFlags(groupItem, false, property.enabled);
+        valueItem->setData(Qt::UserRole, ToQString(property.id));
         applyReadOnlyFlags(nameItem, false, property.enabled);
-        applyReadOnlyFlags(valueItem, property.editable, property.enabled);
-        table->setItem(row, 0, groupItem);
-        table->setItem(row, 1, nameItem);
-        table->setItem(row, 2, valueItem);
+        applyReadOnlyFlags(valueItem, property.editable && !usesValueWidget, property.enabled);
+        nameItem->setToolTip(ToQString(property.name));
+        valueItem->setToolTip(ToQString(property.value));
+        if (hasGroups) {
+          auto* groupItem = new QTableWidgetItem(ToQString(property.group));
+          applyReadOnlyFlags(groupItem, false, property.enabled);
+          groupItem->setToolTip(ToQString(property.group));
+          table->setItem(row, groupColumn, groupItem);
+        }
+        table->setItem(row, propertyColumn, nameItem);
+        table->setItem(row, valueColumn, valueItem);
+        if (isDropdownProperty(property)) {
+          auto* combo = new QComboBox(table);
+          combo->setEnabled(property.enabled);
+          bool hasCurrent = false;
+          for (const auto& option : property.options) {
+            combo->addItem(ToQString(option));
+            hasCurrent = hasCurrent || option == property.value;
+          }
+          if (!hasCurrent && !property.value.empty()) {
+            combo->addItem(ToQString(property.value));
+          }
+          combo->setCurrentText(ToQString(property.value));
+          combo->setToolTip(ToQString(property.name));
+          QObject::connect(combo,
+                           &QComboBox::currentTextChanged,
+                           combo,
+                           [owner = m_owner,
+                            panelId = panel.id,
+                            propertyId = property.id](const QString& value) {
+                             if (owner != nullptr && !propertyId.empty()) {
+                               owner->emit_dock_property_edit(panelId,
+                                                              propertyId,
+                                                              ToUtf8String(value));
+                             }
+                           });
+          table->setCellWidget(row, valueColumn, combo);
+        } else if (isSliderProperty(property)) {
+          const double minimum = property.minimum;
+          const double maximum = std::max(property.minimum, property.maximum);
+          const double step = property.step > 0.0 ? property.step : 0.01;
+          const int decimals = decimalsForStep(step);
+          const double initialValue =
+              clampSliderValue(parseNumericPropertyValue(property), minimum, maximum);
+          const double resetValue = clampSliderValue(
+              property.has_default ? property.default_value : initialValue,
+              minimum,
+              maximum);
+
+          auto* editor = new QWidget(table);
+          auto* editorLayout = new QHBoxLayout(editor);
+          editorLayout->setContentsMargins(0, 0, 0, 0);
+          editorLayout->setSpacing(4);
+
+          auto* slider = new QSlider(Qt::Horizontal, editor);
+          slider->setRange(0, sliderSteps());
+          slider->setValue(sliderPositionFromValue(initialValue, minimum, maximum));
+          slider->setEnabled(property.enabled);
+          slider->setToolTip(ToQString(property.name));
+          slider->setMinimumWidth(96);
+
+          auto* spin = new QDoubleSpinBox(editor);
+          spin->setRange(minimum, maximum);
+          spin->setSingleStep(step);
+          spin->setDecimals(decimals);
+          spin->setValue(initialValue);
+          spin->setEnabled(property.enabled);
+          spin->setKeyboardTracking(false);
+          spin->setMinimumWidth(74);
+          spin->setToolTip(ToQString(property.name));
+
+          auto* reset = new QPushButton(QStringLiteral("Reset"), editor);
+          reset->setEnabled(property.enabled && property.has_default);
+          reset->setMinimumWidth(48);
+          reset->setToolTip(QStringLiteral("Reset to safe default"));
+
+          editorLayout->addWidget(slider, 1);
+          editorLayout->addWidget(spin, 0);
+          editorLayout->addWidget(reset, 0);
+
+          auto emitValue = [owner = m_owner,
+                            panelId = panel.id,
+                            propertyId = property.id,
+                            decimals,
+                            valueItem](double value) {
+            const QString text = formatSliderValue(value, decimals);
+            if (valueItem != nullptr) {
+              valueItem->setText(text);
+            }
+            if (owner != nullptr && !propertyId.empty()) {
+              owner->emit_dock_property_edit(panelId,
+                                             propertyId,
+                                             ToUtf8String(text));
+            }
+          };
+
+          QObject::connect(slider,
+                           &QSlider::valueChanged,
+                           slider,
+                           [spin, emitValue, minimum, maximum](int position) {
+                             const double value = valueFromSliderPosition(position, minimum, maximum);
+                             {
+                               QSignalBlocker blocker(spin);
+                               spin->setValue(value);
+                             }
+                             emitValue(value);
+                           });
+          QObject::connect(spin,
+                           QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                           spin,
+                           [slider, emitValue, minimum, maximum](double value) {
+                             {
+                               QSignalBlocker blocker(slider);
+                               slider->setValue(sliderPositionFromValue(value, minimum, maximum));
+                             }
+                             emitValue(value);
+                           });
+          QObject::connect(reset, &QPushButton::clicked, reset, [slider, spin, resetValue, minimum, maximum]() {
+            {
+              QSignalBlocker blocker(slider);
+              slider->setValue(sliderPositionFromValue(resetValue, minimum, maximum));
+            }
+            spin->setValue(resetValue);
+          });
+
+          table->setCellWidget(row, valueColumn, editor);
+          table->setRowHeight(row, 32);
+        }
         if (hasUnits) {
           auto* unitItem = new QTableWidgetItem(ToQString(property.unit));
           applyReadOnlyFlags(unitItem, false, property.enabled);
-          table->setItem(row, 3, unitItem);
+          unitItem->setToolTip(ToQString(property.unit));
+          table->setItem(row, unitColumn, unitItem);
         }
       }
+      QObject::connect(table,
+                       &QTableWidget::itemChanged,
+                       table,
+                       [owner = m_owner,
+                        panelId = panel.id,
+                        valueColumn](QTableWidgetItem* item) {
+                         if (owner == nullptr ||
+                             item == nullptr ||
+                             item->column() != valueColumn ||
+                             (item->flags() & Qt::ItemIsEditable) == 0) {
+                           return;
+                         }
+                         const auto propertyId = item->data(Qt::UserRole).toString();
+                         if (propertyId.isEmpty()) {
+                           return;
+                         }
+                         owner->emit_dock_property_edit(panelId,
+                                                        ToUtf8String(propertyId),
+                                                        ToUtf8String(item->text()));
+                       });
       layout->addWidget(table);
     }
 
@@ -644,6 +956,8 @@ class QtMainWindow final : public QMainWindow {
       auto* text = new QTextEdit(root);
       text->setReadOnly(true);
       text->setPlainText(QStringLiteral("No data"));
+      text->setMinimumWidth(kQtDockMinimumWidth - 24);
+      text->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
       layout->addWidget(text);
     }
 
@@ -771,7 +1085,7 @@ class QtViewportWindow final : public QWidget {
     // UI thread rule: painting only draws the most recent immutable display image
     // and overlay. Rendering, resolving, and handoff publication happen elsewhere.
     if (!m_frame.isNull()) {
-      painter.drawImage(rect(), m_frame);
+      painter.drawImage(frameDisplayRect(), m_frame);
     }
 
     if (!m_overlayBoxes.empty()) {
@@ -863,9 +1177,7 @@ class QtViewportWindow final : public QWidget {
       }
     }
 
-    const QString text = m_overlayText.isEmpty()
-        ? QStringLiteral("vkpt qt ui shell")
-        : m_overlayText;
+    const QString text = m_overlayText;
     const QRect textRect = rect().adjusted(12, 40, -12, -12);
     if (!text.isEmpty() && textRect.isValid()) {
       QFont overlayFont = painter.font();
@@ -1018,6 +1330,27 @@ class QtViewportWindow final : public QWidget {
       m_owner->record_frame_dropped(m_frameId);
     }
     m_framePresented = true;
+  }
+
+  QRectF frameDisplayRect() const {
+    const QRectF viewportRect(rect());
+    if (m_frame.isNull() || m_frame.width() <= 0 || m_frame.height() <= 0 ||
+        viewportRect.width() <= 0.0 || viewportRect.height() <= 0.0) {
+      return viewportRect;
+    }
+
+    const double frameAspect =
+        static_cast<double>(m_frame.width()) / static_cast<double>(m_frame.height());
+    const double viewportAspect = viewportRect.width() / viewportRect.height();
+    if (viewportAspect > frameAspect) {
+      const double fittedWidth = viewportRect.height() * frameAspect;
+      const double x = viewportRect.left() + (viewportRect.width() - fittedWidth) * 0.5;
+      return QRectF(x, viewportRect.top(), fittedWidth, viewportRect.height());
+    }
+
+    const double fittedHeight = viewportRect.width() / frameAspect;
+    const double y = viewportRect.top() + (viewportRect.height() - fittedHeight) * 0.5;
+    return QRectF(viewportRect.left(), y, viewportRect.width(), fittedHeight);
   }
 
   QtWindow* m_owner = nullptr;
@@ -1710,12 +2043,34 @@ void QtWindow::emit_menu_command(std::uint32_t command_id) {
   queue_event(InputEventNormalizer::menu_command(command_id));
 }
 
+void QtWindow::emit_dock_property_edit(std::string panel_id,
+                                       std::string property_id,
+                                       std::string value) {
+  if (panel_id.empty() || property_id.empty()) {
+    return;
+  }
+  m_dockPropertyEdits.push_back(QtDockPropertyEdit{
+      std::move(panel_id),
+      std::move(property_id),
+      std::move(value)});
+}
+
 std::vector<InputEvent> QtWindow::drain_events() {
   std::vector<InputEvent> out;
   out.reserve(m_events.size());
   while (!m_events.empty()) {
     out.push_back(m_events.front());
     m_events.pop_front();
+  }
+  return out;
+}
+
+std::vector<QtDockPropertyEdit> QtWindow::drain_dock_property_edits() {
+  std::vector<QtDockPropertyEdit> out;
+  out.reserve(m_dockPropertyEdits.size());
+  while (!m_dockPropertyEdits.empty()) {
+    out.push_back(std::move(m_dockPropertyEdits.front()));
+    m_dockPropertyEdits.pop_front();
   }
   return out;
 }
@@ -1730,6 +2085,7 @@ void QtWindow::destroy() {
   m_open = false;
   m_closeEventQueued = false;
   m_events.clear();
+  m_dockPropertyEdits.clear();
   m_menuBarSignature.clear();
   QWidget* shell = nullptr;
   QWidget* widget = nullptr;
