@@ -14,6 +14,26 @@ Use this as the master plan for the Codex swarm.
 
 ---
 
+# Active camera, iris, and color-management TODOs
+
+Initial implementation started in the Qt/CPU path. Remaining work should keep these controls visible in the GUI and converge CPU, Vulkan, and D3D12 behavior.
+
+* [x] Persist expanded camera lens/film fields in scene camera components.
+* [x] Surface focal length, sensor size, aperture radius, focus distance, f-stop, shutter, ISO, exposure compensation, white balance, iris blades, iris rotation, iris roundness, and anamorphic squeeze in the Qt camera/inspector docks.
+* [x] Drive CPU thin-lens depth of field from authored scene camera aperture/focus settings.
+* [x] Apply authored camera exposure compensation and Kelvin white balance to the CPU film resolve path.
+* [x] Add polygonal iris and anamorphic lens sampling to CPU scalar and AVX2 camera rays.
+* [x] Add matching lens/iris fields to Vulkan and D3D12/DXR push constants.
+* [x] Implement GPU depth of field, iris blade sampling, and anamorphic squeeze in GLSL, HLSL compute, and DXR raygen.
+* [x] Replace hardcoded D3D12 tonemap exposure with film/camera resolve settings.
+* [x] Add physical exposure mode that derives exposure from shutter, ISO, and f-stop.
+* [x] Add first-pass Qt render settings controls for max depth, NEE/MIS, tone mapper, exposure, gamma, and clamp output.
+* [x] Add selectable output transforms and tone mappers in the Qt render settings dock.
+* [x] Add pick-to-focus, focus-selected, focus-plane overlay, and saved camera shot slots.
+* [x] Add tests for camera JSON round-trip, focus/aperture accumulation reset, white balance, EV exposure, and CPU/GPU camera parity.
+
+---
+
 # 0. Non-negotiable project rules
 
 ## Language and compiler
