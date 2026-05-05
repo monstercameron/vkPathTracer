@@ -76,6 +76,7 @@ A cleanly structured, benchmarkable, interactive path-tracing platform that stil
 ```
 plan.md       full architecture spec
 experiments/  throwaway spikes and feel-tests
+docs/         implementation notes, CI smoke plan, Qt shell migration docs
 ```
 
 ---
@@ -90,8 +91,11 @@ experiments/  throwaway spikes and feel-tests
 | Ninja | any | `ninja --version` |
 | Clang / clang++ | 16+ | MSVC works as a fallback on Windows |
 | C++ std | 23 | set automatically by the presets |
+| Qt | 6.x | Optional; required only for `PT_ENABLE_QT=ON` / Qt presets |
 
 On Windows you can get Clang and Ninja through the **LLVM installer** or via Visual Studio's "Clang tools for Windows" component. CMake is available from cmake.org.
+
+For Qt builds, install a Qt 6 kit that matches the compiler ABI you are using. On Windows, the MSVC 64-bit Qt kit is the expected match for `clang-cl`; either run CMake from the Qt developer environment or set `Qt6_DIR` to the kit's `lib/cmake/Qt6` directory. Missing runtime plugins are a deployment problem, not a renderer problem; see [`docs/qt_diagnostics.md`](docs/qt_diagnostics.md).
 
 ---
 
@@ -103,8 +107,12 @@ The project uses **CMake presets**. Pick the one that matches your platform:
 |--------|----------|--------|
 | `desktop-clang-debug` | Any (default) | Debug, Clang |
 | `desktop-clang-release` | Any | Release, Clang |
+| `desktop-clang-qt-debug` | Any | Debug, Clang, Qt shell |
+| `desktop-clang-qt-release` | Any | Release, Clang, Qt shell |
 | `desktop-clang-benchmark` | Any | Release + benchmark targets |
 | `windows-clangcl-d3d12-debug` | Windows | Debug, D3D12 backend |
+| `windows-clangcl-d3d12-qt-debug` | Windows | Debug, D3D12 backend + Qt shell |
+| `windows-clangcl-d3d12-qt-release` | Windows | Release, D3D12 backend + Qt shell |
 | `linux-clang-vulkan-debug` | Linux | Debug, Vulkan backend |
 | `macos-clang-metal-debug` | macOS | Debug, Metal backend |
 
@@ -132,6 +140,22 @@ Release build:
 cmake --preset desktop-clang-release
 cmake --build build/presets/desktop-clang-release --target ptapp
 ```
+
+Qt shell build:
+
+```sh
+cmake --preset desktop-clang-qt-debug
+cmake --build --preset desktop-clang-qt-debug --target ptapp
+```
+
+Windows D3D12 + Qt shell build:
+
+```sh
+cmake --preset windows-clangcl-d3d12-qt-debug
+cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp
+```
+
+The benchmark presets intentionally stay Qt-free unless a preset explicitly opts in. `ptapp --render`, `ptapp --headless`, `ptapp --doctor`, and benchmark runs must not require `QApplication` or Qt platform plugins.
 
 ---
 
@@ -178,6 +202,7 @@ Open a live preview window that progressively path-traces the scene at up to 60 
 ```sh
 ./build/presets/desktop-clang-debug/bin/ptapp \
   --window \
+  --platform raw \
   --window-width 1280 --window-height 720 \
   --scene assets/scenes/cornell_native.json \
   --backend vulkan
@@ -186,6 +211,56 @@ Open a live preview window that progressively path-traces the scene at up to 60 
 The window accumulates samples continuously. Close it to exit.
 
 On Windows, replace the path with `.\build\presets\desktop-clang-debug\bin\ptapp.exe` (or use the MSVC `build/bin/Debug/ptapp.exe` output if you built through Visual Studio).
+
+Platform shell selection:
+
+```sh
+# Explicit raw/native desktop shell
+ptapp --window --platform raw --scene assets/scenes/cornell_native.json
+
+# Force headless platform selection
+ptapp --headless --platform headless
+
+# Qt shell (compile-time gated; requires PT_ENABLE_QT=ON)
+ptapp --window --platform qt
+```
+
+The `--platform` flag controls the window/platform shell only; render backend selection remains separate via `--backend`.
+
+Qt CPU preview example:
+
+```sh
+./build/presets/desktop-clang-qt-debug/bin/ptapp \
+  --window \
+  --platform qt \
+  --backend cpu \
+  --scene assets/scenes/cornell_native.json \
+  --window-width 1280 --window-height 720 \
+  --ui-present-hz 30
+```
+
+Windows D3D12 Qt preview example:
+
+```powershell
+.\build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe `
+  --window `
+  --platform qt `
+  --backend d3d12 `
+  --scene assets\scenes\cornell_native.json `
+  --window-width 1280 --window-height 720 `
+  --ui-present-hz 30
+```
+
+The Qt path is a platform/editor shell. Renderer backends receive native handles and capability descriptors; they must not receive `QWidget*`, `QWindow*`, or other Qt objects. The CPU preview path publishes throttled RGBA8 display frames into a latest-wins viewport handoff; `--ui-present-hz` controls that publish cap and defaults to 30 Hz. The D3D12 path uses the Qt viewport only as a native presentation surface. In the Qt CPU preview, left-click selects a pickable object and shows its projected bounding box, right or middle drag orbits the camera, the mouse wheel dollies, and `F` toggles FPS camera mode with `W`/`A`/`S`/`D` plus `Q`/`E` movement.
+
+Qt shell docs:
+
+- [`docs/qt_port.md`](docs/qt_port.md) - setup, presets, examples, migration checklist
+- [`docs/platform_contract.md`](docs/platform_contract.md) - ownership boundaries and migration rules
+- [`docs/window_lifecycle.md`](docs/window_lifecycle.md) - Qt/raw/headless lifecycle differences
+- [`docs/qt_native_surface.md`](docs/qt_native_surface.md) - native handle and D3D12 surface contract
+- [`docs/qt_threading.md`](docs/qt_threading.md) - UI/render thread handoff and shutdown order
+- [`docs/qt_diagnostics.md`](docs/qt_diagnostics.md) - troubleshooting and required diagnostic fields
 
 ---
 
@@ -208,6 +283,21 @@ ptapp --dump-config
 # List available backends and their capability flags
 ptapp --list-backends
 ```
+
+---
+
+### Qt troubleshooting quick hits
+
+| Symptom | First checks |
+|---------|--------------|
+| Missing Qt platform plugin | Confirm the Qt kit is deployed beside the executable or `QT_PLUGIN_PATH` points at the kit plugins directory. On Windows, run `windeployqt` for distributable builds. |
+| Black Qt viewport | Confirm the selected backend is producing frames, the CPU preview path receives non-empty RGBA8 data, and the viewport is not being repainted over a native swapchain. |
+| Stale native handle | Reacquire the native handle after viewport creation and after surface recreation; never cache handles across widget destruction. |
+| High-DPI mismatch | Compare logical widget size to physical framebuffer size and reset accumulation on physical-size changes. |
+| Render thread does not stop | Close must signal render stop, join the render thread, flush the backend, then destroy Qt widgets. |
+| D3D12 device removed | Log the device-removed reason, tear down swapchain resources before the Qt surface dies, and allow WARP or a clean fallback where supported. |
+
+Detailed guidance is in [`docs/qt_diagnostics.md`](docs/qt_diagnostics.md), [`docs/qt_native_surface.md`](docs/qt_native_surface.md), and [`docs/qt_threading.md`](docs/qt_threading.md).
 
 ---
 
@@ -281,6 +371,8 @@ Core
 ```
 
 **Hard separation rules** — scene code never sees Vulkan/D3D12/Metal internals; material descriptors never reference native GPU objects; benchmark code never depends on editor UI; renderer backends never own scene identity.
+
+Qt follows the same rule: it is a platform/editor shell only. Qt code may own widgets, menus, docks, dialogs, event translation, and native surface exposure; engine code owns lifecycle, modes, scene state, command replay, render contracts, diagnostics, and benchmarks. Scene, material, path tracer, benchmark, and backend-neutral render interfaces must remain Qt-free.
 
 ---
 

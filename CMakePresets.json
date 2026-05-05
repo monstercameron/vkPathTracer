@@ -38,6 +38,42 @@
       }
     },
     {
+      "name": "desktop-clang-qt-debug",
+      "displayName": "Desktop Clang Qt Debug",
+      "description": "Clang desktop debug build with Qt platform enabled",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/desktop-clang-qt-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_STANDARD": "23",
+        "PT_ENABLE_CPU_RAYTRACER": "ON",
+        "PT_ENABLE_QT": "ON",
+        "PT_ENABLE_QT_EDITOR": "ON",
+        "PT_ENABLE_SANITIZERS": "OFF",
+        "PT_SANITIZER": "disabled"
+      }
+    },
+    {
+      "name": "desktop-clang-qt-release",
+      "displayName": "Desktop Clang Qt Release",
+      "description": "Clang desktop release build with Qt platform enabled",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/desktop-clang-qt-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_STANDARD": "23",
+        "PT_ENABLE_CPU_RAYTRACER": "ON",
+        "PT_ENABLE_QT": "ON",
+        "PT_ENABLE_QT_EDITOR": "ON",
+        "PT_ENABLE_SANITIZERS": "OFF",
+        "PT_SANITIZER": "disabled"
+      }
+    },
+    {
       "name": "desktop-clang-benchmark",
       "displayName": "Desktop Clang Benchmark",
       "description": "Benchmark-oriented debug preset",
@@ -110,7 +146,7 @@
       "description": "Windows clang-cl debug preset for D3D12 path",
       "condition": {
         "type": "equals",
-        "lhs": "$hostSystemName",
+        "lhs": "${hostSystemName}",
         "rhs": "Windows"
       },
       "generator": "Ninja",
@@ -125,12 +161,56 @@
       }
     },
     {
+      "name": "windows-clangcl-d3d12-qt-debug",
+      "displayName": "Windows Clang-cl D3D12 Qt Debug",
+      "description": "Windows clang-cl debug preset for D3D12 path with Qt enabled",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/windows-clangcl-d3d12-qt-debug",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "PT_ENABLE_D3D12": "ON",
+        "PT_ENABLE_VULKAN": "OFF",
+        "PT_ENABLE_WEBGPU": "OFF",
+        "PT_ENABLE_QT": "ON",
+        "PT_ENABLE_QT_EDITOR": "ON"
+      }
+    },
+    {
+      "name": "windows-clangcl-d3d12-qt-release",
+      "displayName": "Windows Clang-cl D3D12 Qt Release",
+      "description": "Windows clang-cl release preset for D3D12 path with Qt enabled",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/presets/windows-clangcl-d3d12-qt-release",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang-cl",
+        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_BUILD_TYPE": "Release",
+        "PT_ENABLE_D3D12": "ON",
+        "PT_ENABLE_VULKAN": "OFF",
+        "PT_ENABLE_WEBGPU": "OFF",
+        "PT_ENABLE_QT": "ON",
+        "PT_ENABLE_QT_EDITOR": "ON"
+      }
+    },
+    {
       "name": "linux-clang-vulkan-debug",
       "displayName": "Linux Clang Vulkan Debug",
       "description": "Linux Vulkan debug preset",
       "condition": {
         "type": "equals",
-        "lhs": "$hostSystemName",
+        "lhs": "${hostSystemName}",
         "rhs": "Linux"
       },
       "generator": "Ninja",
@@ -150,7 +230,7 @@
       "description": "macOS Metal debug preset",
       "condition": {
         "type": "equals",
-        "lhs": "$hostSystemName",
+        "lhs": "${hostSystemName}",
         "rhs": "Darwin"
       },
       "generator": "Ninja",
@@ -220,6 +300,14 @@
       "configurePreset": "desktop-clang-release"
     },
     {
+      "name": "desktop-clang-qt-debug",
+      "configurePreset": "desktop-clang-qt-debug"
+    },
+    {
+      "name": "desktop-clang-qt-release",
+      "configurePreset": "desktop-clang-qt-release"
+    },
+    {
       "name": "desktop-clang-benchmark",
       "configurePreset": "desktop-clang-benchmark"
     },
@@ -238,6 +326,14 @@
     {
       "name": "windows-clangcl-d3d12-debug",
       "configurePreset": "windows-clangcl-d3d12-debug"
+    },
+    {
+      "name": "windows-clangcl-d3d12-qt-debug",
+      "configurePreset": "windows-clangcl-d3d12-qt-debug"
+    },
+    {
+      "name": "windows-clangcl-d3d12-qt-release",
+      "configurePreset": "windows-clangcl-d3d12-qt-release"
     },
     {
       "name": "linux-clang-vulkan-debug",
