@@ -36,10 +36,33 @@ struct PathTraceConstants {
     float  aperture_radius; float focus_distance; uint32_t iris_blade_count; float iris_rotation_radians;
     float  iris_roundness; float anamorphic_squeeze; uint32_t tone_map; uint32_t output_transform;
     float  gamma; uint32_t clamp_output; float white_balance_r; float white_balance_g;
-    float  white_balance_b; float _pad0; float _pad1; float _pad2;
+    float  white_balance_b; uint32_t denoiser_enabled; float denoiser_strength; float denoiser_color_sigma;
+    uint32_t temporal_enabled; uint32_t temporal_history_valid; float temporal_feedback; float temporal_depth_sigma;
+    float temporal_normal_power; float temporal_color_margin; float _pad0; float _pad1;
+    float prev_camera_pos_x; float prev_camera_pos_y; float prev_camera_pos_z; float prev_fov_tan_half;
+    float prev_cam_fwd_x; float prev_cam_fwd_y; float prev_cam_fwd_z; float prev_aspect;
+    float prev_cam_right_x; float prev_cam_right_y; float prev_cam_right_z; float _pad2;
+    float prev_cam_up_x; float prev_cam_up_y; float prev_cam_up_z; float _pad3;
 };
-static_assert(sizeof(PathTraceConstants) == 176,
-              "PathTraceConstants size mismatch (expected 176)");
+static_assert(sizeof(PathTraceConstants) == 272,
+              "PathTraceConstants size mismatch (expected 272)");
+
+struct D3D12TemporalCameraState {
+  float camera_pos_x = 0.0f;
+  float camera_pos_y = 0.0f;
+  float camera_pos_z = 0.0f;
+  float fov_tan_half = 1.0f;
+  float cam_fwd_x = 0.0f;
+  float cam_fwd_y = 0.0f;
+  float cam_fwd_z = -1.0f;
+  float aspect = 1.0f;
+  float cam_right_x = 1.0f;
+  float cam_right_y = 0.0f;
+  float cam_right_z = 0.0f;
+  float cam_up_x = 0.0f;
+  float cam_up_y = 1.0f;
+  float cam_up_z = 0.0f;
+};
 
 class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
  public:
@@ -89,11 +112,15 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool init_dxr_runtime_objects();
   bool create_root_sig_and_pso();
   bool create_tonemap_pso(const std::string& src);
+  bool create_denoise_pso(const std::string& src);
+  bool create_guide_pso(const std::string& src);
+  bool create_temporal_pso(const std::string& src);
   bool create_film_buffer();
   bool ensure_compute_srv_uav_heap();
   bool should_readback_sample(uint32_t sample_idx) const;
   bool upload_scene_buffers();
   bool upload_instance_buffer();
+  bool build_texture_buffers();
   void destroy_scene_buffers();
   void destroy_film_buffer();
   bool wait_for_gpu();
@@ -123,6 +150,9 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   Microsoft::WRL::ComPtr<ID3D12RootSignature>       m_rootSig;
   Microsoft::WRL::ComPtr<ID3D12PipelineState>       m_pso;
   Microsoft::WRL::ComPtr<ID3D12PipelineState>       m_tonemapPso; // second PSO for tonemap pass
+  Microsoft::WRL::ComPtr<ID3D12PipelineState>       m_denoisePso;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState>       m_guidePso;
+  Microsoft::WRL::ComPtr<ID3D12PipelineState>       m_temporalPso;
   Microsoft::WRL::ComPtr<ID3D12Fence>               m_fence;
   HANDLE m_fenceEvent = nullptr;
   UINT64 m_fenceValue = 0;
@@ -142,11 +172,18 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   Microsoft::WRL::ComPtr<ID3D12Resource> m_dynamicBvhBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_localBvhBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_sdfBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_texelBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_texMetaBuf;
 
   Microsoft::WRL::ComPtr<ID3D12Resource> m_filmBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_filmReadbackBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_ldrBuf;          // GPU-side RGBA8 tonemap output
   Microsoft::WRL::ComPtr<ID3D12Resource> m_ldrReadbackBuf;  // CPU-readable copy of ldrBuf
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_denoiseBuf;      // GPU-side HDR denoise output
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_guideBuf;        // GPU-side albedo/normal/depth guide buffer
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_temporalBuf;     // GPU-side temporally accumulated HDR
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_temporalHistoryBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_prevGuideBuf;
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_clearHeap; // persistent heap for reset_accumulation
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_clearCpuHeap; // CPU-only clear descriptor
@@ -205,8 +242,11 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::string m_bvhSplitMode = "sah";
   std::string m_shaderTraversalMode = "baseline";
   bool m_packedTriangleBufferEnabled = true;
+  bool m_temporalHistoryValid = false;
+  D3D12TemporalCameraState m_temporalPrevCamera{};
 
   std::vector<float>    m_gpuVerts;
+  std::vector<float>    m_gpuTexcoords;
   std::vector<uint32_t> m_gpuIdx;
   std::vector<float>    m_gpuMats;
   std::vector<uint32_t> m_gpuInsts;
@@ -217,6 +257,8 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::vector<float>    m_gpuDynamicBvh;
   std::vector<float>    m_gpuLocalBvh;
   std::vector<float>    m_gpuSdfs;
+  std::vector<uint32_t> m_gpuTexels;
+  std::vector<uint32_t> m_gpuTextureMeta;
   bool m_dynamicInstanceTransformsEnabled = false;
   uint32_t m_staticTriangleCount = 0;
   uint32_t m_dynamicInstanceCount = 0;

@@ -128,7 +128,7 @@ class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::vector<uint32_t> m_gpuIdx;     // raw triangle index array
   std::vector<float>    m_gpuMats;    // 8 floats / material
   std::vector<uint32_t> m_gpuInsts;   // 4 uints  / instance
-  std::vector<float>    m_gpuLights;  // 8 floats / light
+  std::vector<float>    m_gpuLights;  // 16 floats / light
 };
 
 }  // namespace vkpt::gpu

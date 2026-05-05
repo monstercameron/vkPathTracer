@@ -82,6 +82,8 @@ struct CameraSettings {
 
 struct FilmSettings {
   FilmResolveSettings resolve{};
+  bool enable_denoiser = false;
+  bool enable_temporal_aa = false;
 };
 
 struct PathTraceSettings {
@@ -109,6 +111,8 @@ struct RenderSettings {
   float russian_roulette_max_survival = 0.99f;
   float camera_aperture_radius = 0.0f;
   float camera_focus_distance = 0.0f;
+  bool enable_denoiser = false;
+  bool enable_temporal_aa = false;
   FilmResolveSettings film_resolve{};
 };
 
@@ -176,6 +180,8 @@ struct RTMaterial {
   uint32_t material_model = 0;
   uint32_t material_effect = 0;
   uint32_t material_flags = 0;
+  uint32_t base_color_texture_index = 0xFFFFFFFFu;
+  uint32_t normal_texture_index = 0xFFFFFFFFu;
   bool is_emissive() const {
     return emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f;
   }
@@ -259,10 +265,14 @@ struct RTHitLight {
   Vec3 color{1.0f, 1.0f, 1.0f};
   float intensity = 0.0f;
   float radius = 0.0f;
+  Vec3 direction{0.0f, -1.0f, 0.0f};
+  float spot_inner_cos = -1.0f;
+  float spot_outer_cos = -1.0f;
 };
 
 struct RTSceneData {
   std::vector<Vec3> vertices;
+  std::vector<Vec2> texcoords;
   std::vector<uint32_t> indices;  // triangle index stream in triples
   // Local mesh data for dynamic instances. Compatibility renderers can keep
   // using baked vertices/indices; dynamic-aware backends use these ranges plus

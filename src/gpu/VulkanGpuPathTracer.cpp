@@ -137,8 +137,12 @@ bool VulkanGpuPathTracer::build_or_update_acceleration() {
     m_gpuLights.push_back(lt.color.x);    m_gpuLights.push_back(lt.color.y);
     m_gpuLights.push_back(lt.color.z);
     m_gpuLights.push_back(lt.intensity);  m_gpuLights.push_back(std::max(0.0f, lt.radius));
+    m_gpuLights.push_back(lt.direction.x); m_gpuLights.push_back(lt.direction.y);
+    m_gpuLights.push_back(lt.direction.z);
+    m_gpuLights.push_back(lt.spot_inner_cos); m_gpuLights.push_back(lt.spot_outer_cos);
+    m_gpuLights.push_back(0.0f); m_gpuLights.push_back(0.0f); m_gpuLights.push_back(0.0f);
   }
-  if (m_gpuLights.empty()) m_gpuLights.assign(8, 0.0f);
+  if (m_gpuLights.empty()) m_gpuLights.assign(16, 0.0f);
 
   // Upload — use HOST_VISIBLE | HOST_COHERENT buffers (mapped directly)
   destroy_scene_buffers();

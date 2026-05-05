@@ -561,6 +561,30 @@ bool read_vec3_list(const JsonValue& object, std::string_view key, std::vector<V
   return true;
 }
 
+bool read_vec2_list(const JsonValue& object, std::string_view key, std::vector<Vec2>& out) {
+  out.clear();
+  auto it = object.object.find(std::string(key));
+  if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array) {
+    return false;
+  }
+  out.reserve(it->second.array.size());
+  for (const auto& element : it->second.array) {
+    if (element.kind != JsonValue::Kind::Array || element.array.size() != 2) {
+      return false;
+    }
+    if (std::any_of(element.array.begin(), element.array.end(), [](const JsonValue& value) {
+          return value.kind != JsonValue::Kind::Number || !std::isfinite(value.number);
+        })) {
+      return false;
+    }
+    Vec2 value{};
+    value.u = static_cast<float>(element.array[0].number);
+    value.v = static_cast<float>(element.array[1].number);
+    out.push_back(value);
+  }
+  return true;
+}
+
 bool read_u32_list(const JsonValue& object, std::string_view key, std::vector<std::uint32_t>& out) {
   out.clear();
   auto it = object.object.find(std::string(key));
@@ -2300,6 +2324,8 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       read_float(item, "anisotropy", material.anisotropy);
       read_float(item, "alpha", material.alpha);
       read_bool(item, "double_sided", material.double_sided);
+      read_string(item, "base_color_texture", material.base_color_texture);
+      read_string(item, "normal_texture", material.normal_texture);
       doc.materials.push_back(std::move(material));
     }
   }
@@ -2312,6 +2338,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       read_string(item, "primitive", geometry.primitive);
       read_u64(item, "material_id", geometry.material_id);
       read_vec3_list(item, "vertices", geometry.vertices);
+      read_vec2_list(item, "texcoords", geometry.texcoords);
       read_u32_list(item, "indices", geometry.indices);
       if (const auto tessNode = item.object.find("tessellation");
           tessNode != item.object.end() && tessNode->second.kind == JsonValue::Kind::Object) {
@@ -2388,6 +2415,9 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         read_vec3(lightNode->second, "color", entity.light.color);
         read_float(lightNode->second, "intensity", entity.light.intensity);
         read_float(lightNode->second, "radius", entity.light.radius);
+        read_vec3(lightNode->second, "direction", entity.light.direction);
+        read_float(lightNode->second, "beam_angle", entity.light.beam_angle_degrees);
+        read_float(lightNode->second, "blend", entity.light.blend);
       }
       if (const auto meshNode = item.object.find("mesh"); meshNode != item.object.end()) {
         entity.has_mesh = true;
@@ -2477,6 +2507,9 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       read_vec3(item, "color", light.light.color);
       read_float(item, "intensity", light.light.intensity);
       read_float(item, "radius", light.light.radius);
+      read_vec3(item, "direction", light.light.direction);
+      read_float(item, "beam_angle", light.light.beam_angle_degrees);
+      read_float(item, "blend", light.light.blend);
       doc.lights.push_back(std::move(light));
     }
   }
@@ -2739,7 +2772,10 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
     }
     if (entity.has_light &&
         (!finite_vec3(entity.light.color) || !std::isfinite(entity.light.intensity) || entity.light.intensity < 0.0f ||
-         !std::isfinite(entity.light.radius) || entity.light.radius < 0.0f)) {
+         !std::isfinite(entity.light.radius) || entity.light.radius < 0.0f ||
+         !finite_vec3(entity.light.direction) || !std::isfinite(entity.light.beam_angle_degrees) ||
+         entity.light.beam_angle_degrees <= 0.0f || !std::isfinite(entity.light.blend) ||
+         entity.light.blend < 0.0f)) {
       report("entity light has invalid values " + std::to_string(entity.id));
     }
   }
@@ -2762,7 +2798,10 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
       report("light references missing entity " + std::to_string(light.id));
     }
     if (!finite_vec3(light.light.color) || !std::isfinite(light.light.intensity) || light.light.intensity < 0.0f ||
-        !std::isfinite(light.light.radius) || light.light.radius < 0.0f) {
+        !std::isfinite(light.light.radius) || light.light.radius < 0.0f ||
+        !finite_vec3(light.light.direction) || !std::isfinite(light.light.beam_angle_degrees) ||
+        light.light.beam_angle_degrees <= 0.0f || !std::isfinite(light.light.blend) ||
+        light.light.blend < 0.0f) {
       report("light has invalid values " + std::to_string(light.id));
     }
   }
@@ -2920,6 +2959,12 @@ std::string SceneDocument::to_json(bool pretty) const {
     value.array.push_back(number_value(v.z));
     return value;
   };
+  auto vec2_value = [&](const Vec2& v) {
+    JsonValue value = array_value();
+    value.array.push_back(number_value(v.u));
+    value.array.push_back(number_value(v.v));
+    return value;
+  };
   auto quat_value = [&](const Quat& v) {
     JsonValue value = array_value();
     value.array.push_back(number_value(v.x));
@@ -2995,6 +3040,12 @@ std::string SceneDocument::to_json(bool pretty) const {
     item.object["anisotropy"] = number_value(material.anisotropy);
     item.object["alpha"] = number_value(material.alpha);
     item.object["double_sided"] = bool_value(material.double_sided);
+    if (!material.base_color_texture.empty()) {
+      item.object["base_color_texture"] = string_value(material.base_color_texture);
+    }
+    if (!material.normal_texture.empty()) {
+      item.object["normal_texture"] = string_value(material.normal_texture);
+    }
     item.object["emission"] = vec3_value(material.emission);
     item.object["emission_intensity"] = number_value(material.emission_intensity);
     materialsNode.array.push_back(std::move(item));
@@ -3030,6 +3081,13 @@ std::string SceneDocument::to_json(bool pretty) const {
       verticesNode.array.push_back(vec3_value(vertex));
     }
     item.object["vertices"] = std::move(verticesNode);
+    if (!geometry_entry.texcoords.empty()) {
+      JsonValue texcoordsNode = array_value();
+      for (const auto& texcoord : geometry_entry.texcoords) {
+        texcoordsNode.array.push_back(vec2_value(texcoord));
+      }
+      item.object["texcoords"] = std::move(texcoordsNode);
+    }
     JsonValue indicesNode = array_value();
     for (const auto index : geometry_entry.indices) {
       indicesNode.array.push_back(number_value(static_cast<double>(index)));
@@ -3074,6 +3132,9 @@ std::string SceneDocument::to_json(bool pretty) const {
       lightNode.object["color"] = vec3_value(entity.light.color);
       lightNode.object["intensity"] = number_value(entity.light.intensity);
       lightNode.object["radius"] = number_value(entity.light.radius);
+      lightNode.object["direction"] = vec3_value(entity.light.direction);
+      lightNode.object["beam_angle"] = number_value(entity.light.beam_angle_degrees);
+      lightNode.object["blend"] = number_value(entity.light.blend);
       item.object["light"] = std::move(lightNode);
     }
     if (entity.has_mesh) {
@@ -3166,6 +3227,9 @@ std::string SceneDocument::to_json(bool pretty) const {
     item.object["color"] = vec3_value(light.light.color);
     item.object["intensity"] = number_value(light.light.intensity);
     item.object["radius"] = number_value(light.light.radius);
+    item.object["direction"] = vec3_value(light.light.direction);
+    item.object["beam_angle"] = number_value(light.light.beam_angle_degrees);
+    item.object["blend"] = number_value(light.light.blend);
     lightsNode.array.push_back(std::move(item));
   }
   root.object["lights"] = std::move(lightsNode);
@@ -3211,7 +3275,11 @@ SceneSnapshot SceneDocument::snapshot() const {
     }
     if (entity.has_light) {
       out.lights.push_back({entity.id, entity.light, entity.transform});
-      blob += "l" + entity.light.type + ":" + std::to_string(entity.light.intensity) + ";";
+      blob += "l" + entity.light.type + ":" + std::to_string(entity.light.intensity) + ":" +
+              std::to_string(entity.light.beam_angle_degrees) + ":" +
+              std::to_string(entity.light.direction.x) + "," +
+              std::to_string(entity.light.direction.y) + "," +
+              std::to_string(entity.light.direction.z) + ";";
     }
     if (entity.has_sdf_primitive) {
       blob += "sdfEntity" + std::to_string(entity.id) + ":" + entity.sdf_primitive.shape + ":" +
@@ -3271,7 +3339,11 @@ SceneSnapshot SceneDocument::snapshot() const {
   }
   for (const auto& light : lights) {
     blob += "L" + std::to_string(light.id) + ":" + light.light.type + ":" +
-            std::to_string(light.light.intensity) + ";";
+            std::to_string(light.light.intensity) + ":" +
+            std::to_string(light.light.beam_angle_degrees) + ":" +
+            std::to_string(light.light.direction.x) + "," +
+            std::to_string(light.light.direction.y) + "," +
+            std::to_string(light.light.direction.z) + ";";
   }
   for (const auto& sdf : sdf_primitives) {
     blob += "sdf" + std::to_string(sdf.id) + ":" + sdf.shape + ":" +

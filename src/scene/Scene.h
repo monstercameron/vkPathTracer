@@ -82,6 +82,11 @@ struct Vec3 {
   float z = 0.0f;
 };
 
+struct Vec2 {
+  float u = 0.0f;
+  float v = 0.0f;
+};
+
 struct Quat {
   float x = 0.0f;
   float y = 0.0f;
@@ -139,6 +144,9 @@ struct LightComponent {
   Vec3 color{1.0f, 1.0f, 1.0f};
   float intensity = 1.0f;
   float radius = 0.0f;
+  Vec3 direction{0.0f, -1.0f, 0.0f};
+  float beam_angle_degrees = 35.0f;
+  float blend = 0.35f;
 };
 
 struct MeshRendererComponent {
@@ -322,6 +330,8 @@ struct SceneMaterialDefinition {
   float anisotropy = 0.0f;
   float alpha = 1.0f;
   bool double_sided = false;
+  std::string base_color_texture;
+  std::string normal_texture;
   Vec3 emission{0.0f, 0.0f, 0.0f};
   float emission_intensity = 0.0f;
 };
@@ -340,6 +350,7 @@ struct SceneGeometryDefinition {
   std::string primitive;
   std::vector<std::string> tags;
   std::vector<Vec3> vertices;
+  std::vector<Vec2> texcoords;
   std::vector<std::uint32_t> indices;
   vkpt::core::StableId material_id = 0;
 

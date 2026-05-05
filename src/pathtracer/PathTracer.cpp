@@ -17,6 +17,7 @@
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace {
 
@@ -359,7 +360,7 @@ bool is_texture_asset_uri(std::string_view uri) {
   std::string ext(uri.substr(dot));
   std::transform(ext.begin(), ext.end(), ext.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".exr" || ext == ".hdr";
+  return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".exr" || ext == ".hdr";
 }
 
 std::string normalize_material_id(std::string_view name) {
@@ -387,9 +388,56 @@ bool is_environment_light_type(std::string_view type) {
          id == "hdri" || id == "hdri_sky" || id == "open_sky" || id == "sky";
 }
 
+bool is_spot_light_type(std::string_view type) {
+  const std::string id = normalize_material_id(type);
+  return id == "spot" || id == "spot_light" || id == "spotlight";
+}
+
 vkpt::pathtracer::Vec3 environment_color_from_light(const vkpt::scene::LightComponent& light) {
   const float intensity = std::max(0.0f, light.intensity);
   return {light.color.x * intensity, light.color.y * intensity, light.color.z * intensity};
+}
+
+vkpt::pathtracer::Vec3 light_direction_from_component(const vkpt::scene::LightComponent& light,
+                                                      const vkpt::scene::TransformComponent& transform) {
+  vkpt::pathtracer::Vec3 direction{light.direction.x, light.direction.y, light.direction.z};
+  if (length_sq(direction) <= 1.0e-8f) {
+    direction = rotate_quat({0.0f, 0.0f, -1.0f}, transform.rotation);
+  }
+  return normalize(direction);
+}
+
+std::pair<float, float> spot_cone_cosines(const vkpt::scene::LightComponent& light) {
+  if (!is_spot_light_type(light.type)) {
+    return {-1.0f, -1.0f};
+  }
+  const float innerHalfDegrees = std::clamp(light.beam_angle_degrees * 0.5f, 1.0f, 89.0f);
+  const float outerHalfDegrees = std::clamp(
+      innerHalfDegrees * (1.0f + std::max(0.0f, light.blend)),
+      innerHalfDegrees + 0.25f,
+      89.5f);
+  return {
+      std::cos(innerHalfDegrees * kPi / 180.0f),
+      std::cos(outerHalfDegrees * kPi / 180.0f)};
+}
+
+float spot_attenuation(const vkpt::pathtracer::RTHitLight& light,
+                       const vkpt::pathtracer::Vec3& from_light_dir) {
+  if (light.spot_inner_cos <= -0.999f) {
+    return 1.0f;
+  }
+  const float cone = dot(normalize(from_light_dir), normalize(light.direction));
+  if (cone <= light.spot_outer_cos) {
+    return 0.0f;
+  }
+  if (cone >= light.spot_inner_cos || light.spot_inner_cos <= light.spot_outer_cos) {
+    return 1.0f;
+  }
+  const float t = std::clamp(
+      (cone - light.spot_outer_cos) / (light.spot_inner_cos - light.spot_outer_cos),
+      0.0f,
+      1.0f);
+  return t * t * (3.0f - 2.0f * t);
 }
 
 uint32_t material_model_from_family(std::string_view family) {
@@ -840,6 +888,8 @@ PathTraceSettings MakePathTraceSettings(const RenderSettings& settings) {
   out.camera.aperture_radius = std::max(0.0f, settings.camera_aperture_radius);
   out.camera.focus_distance = std::max(0.0f, settings.camera_focus_distance);
   out.film.resolve = settings.film_resolve;
+  out.film.enable_denoiser = settings.enable_denoiser;
+  out.film.enable_temporal_aa = settings.enable_temporal_aa;
   return out;
 }
 
@@ -858,6 +908,8 @@ RenderSettings MakeRenderSettings(const PathTraceSettings& settings) {
   out.russian_roulette_max_survival = settings.integrator.russian_roulette_max_survival;
   out.camera_aperture_radius = std::max(0.0f, settings.camera.aperture_radius);
   out.camera_focus_distance = std::max(0.0f, settings.camera.focus_distance);
+  out.enable_denoiser = settings.film.enable_denoiser;
+  out.enable_temporal_aa = settings.film.enable_temporal_aa;
   out.film_resolve = settings.film.resolve;
   return out;
 }
@@ -883,6 +935,8 @@ std::string SerializePathTraceSettings(const PathTraceSettings& settings) {
   out << "\"focus_distance\":" << settings.camera.focus_distance;
   out << "},";
   out << "\"film\":{";
+  out << "\"enable_denoiser\":" << (settings.film.enable_denoiser ? "true" : "false") << ",";
+  out << "\"enable_temporal_aa\":" << (settings.film.enable_temporal_aa ? "true" : "false") << ",";
   out << "\"resolve\":" << SerializeFilmResolveSettings(settings.film.resolve);
   out << "}";
   out << "}";
@@ -1528,6 +1582,10 @@ NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit, const Vec3& v
   if (cos_theta <= 0.0f) {
     return {};
   }
+  const float spotFactor = spot_attenuation(light, -light_dir);
+  if (spotFactor <= 0.0f) {
+    return {};
+  }
 
   // Shadow ray — offset by normal to avoid self-intersection.
   const Ray shadow_ray{hit.position + hit.normal * 0.002f, light_dir};
@@ -1540,7 +1598,7 @@ NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit, const Vec3& v
   const auto mat_index = std::min(hit.material_index, static_cast<uint32_t>(m_scene.materials.size() - 1));
   const auto& material = m_scene.materials[mat_index];
   const Vec3 albedo = apply_material_effect(material, hit.position, hit.normal, -light_dir);
-  const Vec3 irradiance = light.color * (light.intensity / (dist_sq + kEpsilon));
+  const Vec3 irradiance = light.color * ((light.intensity * spotFactor) / (dist_sq + kEpsilon));
   const float roughness = clamp01(material.roughness);
   const bool isMirror = material.material_model == 2u || roughness <= 0.001f;
   const bool isMetallic = material.material_model == 4u || material.metallic > 0.65f;
@@ -1995,12 +2053,35 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   scene.camera_fov_deg = 55.0f;
   scene.environment_color = {0.0f, 0.0f, 0.0f};
 
+  std::unordered_map<std::string, uint32_t> textureLookup;
+  auto normalize_texture_uri = [](std::string uri) {
+    std::replace(uri.begin(), uri.end(), '\\', '/');
+    return uri;
+  };
+  auto add_texture_uri = [&](std::string uri) -> uint32_t {
+    if (uri.empty() || !is_texture_asset_uri(uri)) {
+      return 0xFFFFFFFFu;
+    }
+    uri = normalize_texture_uri(std::move(uri));
+    if (const auto it = textureLookup.find(uri); it != textureLookup.end()) {
+      return it->second;
+    }
+    const uint32_t index = static_cast<uint32_t>(scene.textures.size());
+    textureLookup.emplace(uri, index);
+    scene.textures.push_back(std::move(uri));
+    return index;
+  };
+
   for (const auto& asset : doc.assets) {
     const auto assetType = normalize_material_id(asset.type);
     if (!asset.uri.empty() &&
         (assetType == "texture" || assetType == "image" || is_texture_asset_uri(asset.uri))) {
-      scene.textures.push_back(asset.uri);
+      add_texture_uri(asset.uri);
     }
+  }
+  for (const auto& material : doc.materials) {
+    add_texture_uri(material.base_color_texture);
+    add_texture_uri(material.normal_texture);
   }
 
   std::vector<vkpt::scene::SceneMaterialDefinition> materials = doc.materials;
@@ -2032,6 +2113,8 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     outMaterial.material_effect = material_effect_from_family(
         runtimeMaterial.family.empty() ? runtimeMaterial.name : runtimeMaterial.family);
     outMaterial.material_flags = runtimeMaterial.double_sided ? 1u : 0u;
+    outMaterial.base_color_texture_index = add_texture_uri(runtimeMaterial.base_color_texture);
+    outMaterial.normal_texture_index = add_texture_uri(runtimeMaterial.normal_texture);
     scene.materials.push_back(outMaterial);
   }
 
@@ -2102,12 +2185,20 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     const auto rotation = transform.rotation;
     const auto scale = transform.scale;
     const uint32_t firstVertex = static_cast<uint32_t>(scene.vertices.size());
-    for (const auto& vertex : geometry->vertices) {
+    const bool hasTexcoords = geometry->texcoords.size() == geometry->vertices.size();
+    for (std::size_t vertexIndex = 0; vertexIndex < geometry->vertices.size(); ++vertexIndex) {
+      const auto& vertex = geometry->vertices[vertexIndex];
       scene.vertices.push_back(transform_point(
           Vec3{vertex.x, vertex.y, vertex.z},
           Vec3{translation.x, translation.y, translation.z},
           rotation,
           Vec3{scale.x, scale.y, scale.z}));
+      if (hasTexcoords) {
+        const auto& uv = geometry->texcoords[vertexIndex];
+        scene.texcoords.push_back(Vec2{uv.u, uv.v});
+      } else {
+        scene.texcoords.push_back(Vec2{});
+      }
     }
 
     const uint32_t firstTriangle = static_cast<uint32_t>(scene.indices.size() / 3u);
@@ -2241,11 +2332,16 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     if (!hasTransform) {
       pos = {0.0f, 1.8f, 0.0f};
     }
+    const auto direction = light_direction_from_component(light, transform);
+    const auto [spotInnerCos, spotOuterCos] = spot_cone_cosines(light);
     scene.lights.push_back(RTHitLight{
       pos,
       {light.color.x, light.color.y, light.color.z},
       light.intensity,
-      std::max(0.0f, light.radius)});
+      std::max(0.0f, light.radius),
+      direction,
+      spotInnerCos,
+      spotOuterCos});
   };
 
   std::unordered_set<vkpt::core::StableId> ecsLightIds;
@@ -2353,6 +2449,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
         {-1.0f, 0.0f, -1.0f}, {1.0f, 0.0f, -1.0f}, {1.0f, 2.0f, -1.0f}, {-1.0f, 2.0f, -1.0f},
         {-1.0f, 0.0f, 1.0f},  {1.0f, 0.0f, 1.0f},  {1.0f, 2.0f, 1.0f},  {-1.0f, 2.0f, 1.0f},
     };
+    scene.texcoords.assign(scene.vertices.size(), Vec2{});
     scene.indices = {
         0, 1, 2, 0, 2, 3,  // floor
         4, 5, 1, 4, 1, 0,  // floor duplicate for simple enclosure
@@ -2380,10 +2477,12 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
                                     {
                                       {"vertices", std::to_string(scene.vertices.size())},
                                       {"indices", std::to_string(scene.indices.size())},
+                                      {"texcoords", std::to_string(scene.texcoords.size())},
                                       {"instances", std::to_string(scene.instances.size())},
                                       {"tessellation_requests", std::to_string(scene.tessellation_requests.size())},
                                       {"sdf_primitives", std::to_string(scene.sdf_primitives.size())},
                                       {"materials", std::to_string(scene.materials.size())},
+                                      {"textures", std::to_string(scene.textures.size())},
                                       {"lights", std::to_string(scene.lights.size())},
                                       {"camera_pos", std::to_string(scene.camera_position.x) + "," +
                                          std::to_string(scene.camera_position.y) + "," + std::to_string(scene.camera_position.z)},
@@ -2536,6 +2635,7 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_color", sizeof(Vec3), 1u, alignof(Vec3));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "materials", sizeof(RTMaterial), scene.materials.size(), alignof(RTMaterial));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "vertices", sizeof(Vec3), scene.vertices.size(), alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "texcoords", sizeof(Vec2), scene.texcoords.size(), alignof(Vec2));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "indices", sizeof(std::uint32_t), scene.indices.size(), alignof(std::uint32_t));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "local_vertices", sizeof(Vec3), scene.local_vertices.size(), alignof(Vec3));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "local_indices", sizeof(std::uint32_t), scene.local_indices.size(), alignof(std::uint32_t));

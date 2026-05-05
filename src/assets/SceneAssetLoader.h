@@ -41,10 +41,19 @@ struct IdSets {
 
 struct ObjMaterial {
   std::string name = "obj_default";
+  std::string family;
   vkpt::scene::Vec3 albedo{0.75f, 0.75f, 0.75f};
+  vkpt::scene::Vec3 emission{0.0f, 0.0f, 0.0f};
   float roughness = 0.85f;
   float metallic = 0.0f;
+  float ior = 1.5f;
+  float transmission = 0.0f;
+  float clearcoat = 0.0f;
+  float sheen = 0.0f;
+  float anisotropy = 0.0f;
   float alpha = 1.0f;
+  float emission_intensity = 0.0f;
+  bool double_sided = true;
   std::string base_color_texture;
   std::string normal_texture;
   std::string roughness_texture;
@@ -54,6 +63,7 @@ struct ObjMaterial {
 struct ObjGeometryBucket {
   std::string material_name = "obj_default";
   std::vector<vkpt::scene::Vec3> vertices;
+  std::vector<vkpt::scene::Vec2> texcoords;
   std::vector<std::uint32_t> indices;
 };
 
@@ -116,6 +126,17 @@ inline float Clamp(float value, float lo, float hi) {
   return std::min(hi, std::max(lo, value));
 }
 
+inline std::optional<bool> ParseBool(std::string_view text) {
+  const auto value = detail::ToLower(text);
+  if (value == "1" || value == "true" || value == "yes" || value == "on") {
+    return true;
+  }
+  if (value == "0" || value == "false" || value == "no" || value == "off") {
+    return false;
+  }
+  return {};
+}
+
 inline std::string LastPathToken(const std::vector<std::string>& words) {
   if (words.size() < 2) {
     return {};
@@ -174,17 +195,48 @@ inline std::vector<ObjMaterial> ParseMtl(const std::filesystem::path& path) {
       current.albedo.x = Clamp(current.albedo.x, 0.0f, 1.0f);
       current.albedo.y = Clamp(current.albedo.y, 0.0f, 1.0f);
       current.albedo.z = Clamp(current.albedo.z, 0.0f, 1.0f);
+    } else if (words[0] == "Ke" && words.size() >= 4) {
+      ParseFloat(words[1], &current.emission.x);
+      ParseFloat(words[2], &current.emission.y);
+      ParseFloat(words[3], &current.emission.z);
+      current.emission.x = Clamp(current.emission.x, 0.0f, 64.0f);
+      current.emission.y = Clamp(current.emission.y, 0.0f, 64.0f);
+      current.emission.z = Clamp(current.emission.z, 0.0f, 64.0f);
     } else if (words[0] == "Ns" && words.size() >= 2) {
       float ns = 0.0f;
       if (ParseFloat(words[1], &ns)) {
         current.roughness = Clamp(std::sqrt(2.0f / (std::max(1.0f, ns) + 2.0f)), 0.04f, 1.0f);
       }
+    } else if ((words[0] == "family" || words[0] == "material_family") && words.size() >= 2) {
+      current.family = words[1];
     } else if ((words[0] == "Pr" || words[0] == "roughness") && words.size() >= 2) {
       ParseFloat(words[1], &current.roughness);
       current.roughness = Clamp(current.roughness, 0.0f, 1.0f);
     } else if ((words[0] == "Pm" || words[0] == "metallic") && words.size() >= 2) {
       ParseFloat(words[1], &current.metallic);
       current.metallic = Clamp(current.metallic, 0.0f, 1.0f);
+    } else if ((words[0] == "Ni" || words[0] == "ior") && words.size() >= 2) {
+      ParseFloat(words[1], &current.ior);
+      current.ior = Clamp(current.ior, 1.0f, 4.0f);
+    } else if (words[0] == "transmission" && words.size() >= 2) {
+      ParseFloat(words[1], &current.transmission);
+      current.transmission = Clamp(current.transmission, 0.0f, 1.0f);
+    } else if (words[0] == "clearcoat" && words.size() >= 2) {
+      ParseFloat(words[1], &current.clearcoat);
+      current.clearcoat = Clamp(current.clearcoat, 0.0f, 1.0f);
+    } else if (words[0] == "sheen" && words.size() >= 2) {
+      ParseFloat(words[1], &current.sheen);
+      current.sheen = Clamp(current.sheen, 0.0f, 1.0f);
+    } else if (words[0] == "anisotropy" && words.size() >= 2) {
+      ParseFloat(words[1], &current.anisotropy);
+      current.anisotropy = Clamp(current.anisotropy, -1.0f, 1.0f);
+    } else if (words[0] == "emission_intensity" && words.size() >= 2) {
+      ParseFloat(words[1], &current.emission_intensity);
+      current.emission_intensity = Clamp(current.emission_intensity, 0.0f, 128.0f);
+    } else if (words[0] == "double_sided" && words.size() >= 2) {
+      if (const auto parsed = ParseBool(words[1])) {
+        current.double_sided = *parsed;
+      }
     } else if (words[0] == "d" && words.size() >= 2) {
       ParseFloat(words[1], &current.alpha);
       current.alpha = Clamp(current.alpha, 0.0f, 1.0f);
@@ -195,7 +247,7 @@ inline std::vector<ObjMaterial> ParseMtl(const std::filesystem::path& path) {
       }
     } else if (words[0] == "map_Kd" || words[0] == "baseColorTexture") {
       current.base_color_texture = LastPathToken(words);
-    } else if (words[0] == "map_Bump" || words[0] == "bump" || words[0] == "map_Kn") {
+    } else if (words[0] == "map_Bump" || words[0] == "bump" || words[0] == "map_Kn" || words[0] == "map_Disp") {
       current.normal_texture = LastPathToken(words);
     } else if (words[0] == "map_Pr") {
       current.roughness_texture = LastPathToken(words);
@@ -217,6 +269,30 @@ inline std::optional<std::uint32_t> ResolveObjPositionIndex(std::string_view tok
     const int value = std::stoi(std::string(index_text));
     int resolved = value > 0 ? value - 1 : static_cast<int>(position_count) + value;
     if (resolved < 0 || static_cast<std::size_t>(resolved) >= position_count) {
+      return {};
+    }
+    return static_cast<std::uint32_t>(resolved);
+  } catch (...) {
+    return {};
+  }
+}
+
+inline std::optional<std::uint32_t> ResolveObjTexcoordIndex(std::string_view token, std::size_t texcoord_count) {
+  const auto first_slash = token.find('/');
+  if (first_slash == std::string_view::npos) {
+    return {};
+  }
+  const auto second_slash = token.find('/', first_slash + 1u);
+  const auto index_text = second_slash == std::string_view::npos
+                              ? token.substr(first_slash + 1u)
+                              : token.substr(first_slash + 1u, second_slash - first_slash - 1u);
+  if (index_text.empty()) {
+    return {};
+  }
+  try {
+    const int value = std::stoi(std::string(index_text));
+    int resolved = value > 0 ? value - 1 : static_cast<int>(texcoord_count) + value;
+    if (resolved < 0 || static_cast<std::size_t>(resolved) >= texcoord_count) {
       return {};
     }
     return static_cast<std::uint32_t>(resolved);
@@ -250,6 +326,7 @@ inline ObjLoadResult LoadObj(const std::filesystem::path& obj_path,
   }
 
   std::vector<vkpt::scene::Vec3> positions;
+  std::vector<vkpt::scene::Vec2> texcoords;
   std::vector<std::filesystem::path> material_libraries;
   std::string current_material = "obj_default";
   bool saw_faces = false;
@@ -275,6 +352,11 @@ inline ObjLoadResult LoadObj(const std::filesystem::path& obj_path,
       if (ParseFloat(words[1], &v.x) && ParseFloat(words[2], &v.y) && ParseFloat(words[3], &v.z)) {
         positions.push_back(v);
       }
+    } else if (words[0] == "vt" && words.size() >= 3) {
+      vkpt::scene::Vec2 uv{};
+      if (ParseFloat(words[1], &uv.u) && ParseFloat(words[2], &uv.v)) {
+        texcoords.push_back(uv);
+      }
     } else if (words[0] == "f" && words.size() >= 4) {
       auto& bucket = FindOrCreateBucket(result.geometry, current_material);
       std::vector<std::uint32_t> local_indices;
@@ -285,6 +367,11 @@ inline ObjLoadResult LoadObj(const std::filesystem::path& obj_path,
           continue;
         }
         bucket.vertices.push_back(positions[*source_index]);
+        if (const auto uv_index = ResolveObjTexcoordIndex(words[i], texcoords.size())) {
+          bucket.texcoords.push_back(texcoords[*uv_index]);
+        } else {
+          bucket.texcoords.push_back({});
+        }
         local_indices.push_back(static_cast<std::uint32_t>(bucket.vertices.size() - 1u));
       }
       if (local_indices.size() >= 3u) {
@@ -397,9 +484,10 @@ inline bool AppendTextureAsset(vkpt::scene::SceneDocument& document,
                                const std::filesystem::path& scene_dir,
                                const std::filesystem::path& texture_path,
                                std::string_view binding_context,
-                               vkpt::core::StableId preferred_id,
-                               std::vector<std::string>* diagnostics) {
-  const auto texture_uri = UriRelativeTo(scene_dir, texture_path);
+  vkpt::core::StableId preferred_id,
+  std::vector<std::string>* diagnostics) {
+  (void)scene_dir;
+  const auto texture_uri = PathString(texture_path);
   if (ids.asset_uris.contains(texture_uri)) {
     return true;
   }
@@ -487,12 +575,29 @@ inline bool ExpandSceneAssetReferences(vkpt::scene::SceneDocument& document,
       vkpt::scene::SceneMaterialDefinition scene_material;
       scene_material.id = AllocateId(ids.materials, import_base + 100u + material_index);
       scene_material.name = material.name;
-      scene_material.family = material.metallic > 0.5f ? "metallic_pbr" : "diffuse";
+      scene_material.family = material.family.empty()
+                                  ? (material.metallic > 0.5f ? "metallic_pbr" : "diffuse")
+                                  : material.family;
       scene_material.albedo = material.albedo;
       scene_material.roughness = Clamp(material.roughness, 0.0f, 1.0f);
       scene_material.metallic = Clamp(material.metallic, 0.0f, 1.0f);
+      scene_material.ior = Clamp(material.ior, 1.0f, 4.0f);
+      scene_material.transmission = Clamp(material.transmission, 0.0f, 1.0f);
+      scene_material.clearcoat = Clamp(material.clearcoat, 0.0f, 1.0f);
+      scene_material.sheen = Clamp(material.sheen, 0.0f, 1.0f);
+      scene_material.anisotropy = Clamp(material.anisotropy, -1.0f, 1.0f);
       scene_material.alpha = Clamp(material.alpha, 0.0f, 1.0f);
-      scene_material.double_sided = true;
+      scene_material.emission = material.emission;
+      scene_material.emission_intensity = Clamp(material.emission_intensity, 0.0f, 128.0f);
+      scene_material.double_sided = material.double_sided;
+      if (!material.base_color_texture.empty() && IsTextureUri(material.base_color_texture)) {
+        scene_material.base_color_texture =
+            PathString(ResolvePath(model_path.parent_path(), material.base_color_texture));
+      }
+      if (!material.normal_texture.empty()) {
+        scene_material.normal_texture =
+            PathString(ResolvePath(model_path.parent_path(), material.normal_texture));
+      }
       material_id_by_name[material.name] = scene_material.id;
 
       const std::vector<std::string> texture_slots = {
@@ -548,6 +653,9 @@ inline bool ExpandSceneAssetReferences(vkpt::scene::SceneDocument& document,
       geometry.material_id = material_id;
       geometry.vertices = bucket.vertices;
       geometry.indices = bucket.indices;
+      if (bucket.texcoords.size() == bucket.vertices.size()) {
+        geometry.texcoords = bucket.texcoords;
+      }
       document.geometry.push_back(std::move(geometry));
 
       vkpt::scene::SceneEntityDefinition entity;

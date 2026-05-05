@@ -22,7 +22,13 @@ cbuffer PCBuf {
     float  aperture_radius; float focus_distance; uint iris_blade_count; float iris_rotation_radians;
     float  iris_roundness; float anamorphic_squeeze; uint tone_map; uint output_transform;
     float  gamma; uint clamp_output; float white_balance_r; float white_balance_g;
-    float  white_balance_b; float _pad0; float _pad1; float _pad2;
+    float  white_balance_b; uint denoiser_enabled; float denoiser_strength; float denoiser_color_sigma;
+    uint temporal_enabled; uint temporal_history_valid; float temporal_feedback; float temporal_depth_sigma;
+    float temporal_normal_power; float temporal_color_margin; float _pad0; float _pad1;
+    float prev_camera_pos_x; float prev_camera_pos_y; float prev_camera_pos_z; float prev_fov_tan_half;
+    float prev_cam_fwd_x; float prev_cam_fwd_y; float prev_cam_fwd_z; float prev_aspect;
+    float prev_cam_right_x; float prev_cam_right_y; float prev_cam_right_z; float _pad2;
+    float prev_cam_up_x; float prev_cam_up_y; float prev_cam_up_z; float _pad3;
 };
 
 Buffer<float>    VertBuf  : register(t0);
@@ -38,9 +44,14 @@ Buffer<float>    SdfBuf : register(t9);
 Buffer<float>    TriDataBuf : register(t10);
 RWByteAddressBuffer FilmBuf : register(u0);
 RWBuffer<uint>   LdrBuf   : register(u1); // tonemapped RGBA8 output (R|G<<8|B<<16|0xFF<<24)
+RWByteAddressBuffer DenoiseBuf : register(u2); // denoised HDR mean, RGBA32F
+RWByteAddressBuffer GuideBuf : register(u3); // albedo/depth + normal/hit, two RGBA32F records per pixel
+RWByteAddressBuffer TemporalBuf : register(u4); // temporally accumulated HDR + history length, RGBA32F
+RWByteAddressBuffer TemporalHistoryBuf : register(u5); // previous temporal output, RGBA32F
+RWByteAddressBuffer PrevGuideBuf : register(u6); // previous guide buffer, two RGBA32F records per pixel
 
 static const uint kInstStride = 24u;
-static const uint kPackedTriStride = 12u;
+static const uint kPackedTriStride = 18u;
 static const uint kInstFlagDynamicTransform = 1u;
 static const uint kSdfStride = 16u;
 static const uint kSdfShapeSphere = 0u;
@@ -71,6 +82,61 @@ float4 LoadFilm(uint pixel) {
 
 void StoreFilm(uint pixel, float4 value) {
     FilmBuf.Store4(pixel * 16u, asuint(value));
+}
+
+float4 LoadDenoised(uint pixel) {
+    return asfloat(DenoiseBuf.Load4(pixel * 16u));
+}
+
+void StoreDenoised(uint pixel, float4 value) {
+    DenoiseBuf.Store4(pixel * 16u, asuint(value));
+}
+
+void StoreGuide(uint pixel, float4 albedo_depth, float4 normal_hit) {
+    uint base = pixel * 32u;
+    GuideBuf.Store4(base, asuint(albedo_depth));
+    GuideBuf.Store4(base + 16u, asuint(normal_hit));
+}
+
+float4 LoadGuideAlbedoDepth(uint pixel) {
+    return asfloat(GuideBuf.Load4(pixel * 32u));
+}
+
+float4 LoadGuideNormalHit(uint pixel) {
+    return asfloat(GuideBuf.Load4(pixel * 32u + 16u));
+}
+
+float4 LoadTemporal(uint pixel) {
+    return asfloat(TemporalBuf.Load4(pixel * 16u));
+}
+
+void StoreTemporal(uint pixel, float4 value) {
+    TemporalBuf.Store4(pixel * 16u, asuint(value));
+}
+
+float4 LoadTemporalHistory(uint pixel) {
+    return asfloat(TemporalHistoryBuf.Load4(pixel * 16u));
+}
+
+float4 LoadPrevGuideAlbedoDepth(uint pixel) {
+    return asfloat(PrevGuideBuf.Load4(pixel * 32u));
+}
+
+float4 LoadPrevGuideNormalHit(uint pixel) {
+    return asfloat(PrevGuideBuf.Load4(pixel * 32u + 16u));
+}
+
+float3 FilmMean(uint pixel) {
+    float4 acc = LoadFilm(pixel);
+    return acc.xyz / max(1.0f, acc.w);
+}
+
+float3 CurrentHdrSource(uint pixel) {
+    return (temporal_enabled != 0u) ? LoadTemporal(pixel).xyz : FilmMean(pixel);
+}
+
+float Luma(float3 c) {
+    return dot(c, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
 [numthreads(8, 8, 1)]
@@ -119,8 +185,13 @@ void tonemap_main(uint3 gid : SV_DispatchThreadID) {
     uint pixel = gid.y * width + gid.x;
 
     float4 acc = LoadFilm(pixel);
-    float  cnt = max(1.0f, acc.w);
-    float3 c   = acc.xyz / cnt;
+    float3 c = acc.xyz / max(1.0f, acc.w);
+    if (temporal_enabled != 0u) {
+        c = LoadTemporal(pixel).xyz;
+    }
+    if (denoiser_enabled != 0u) {
+        c = LoadDenoised(pixel).xyz;
+    }
 
     c *= max(0.0f, exposure) * float3(white_balance_r, white_balance_g, white_balance_b);
 
@@ -1203,11 +1274,14 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         if (num_lights > 0u) {
             uint  li   = uint(RandF(rng) * float(num_lights));
             li = min(li, num_lights - 1u);
-            uint  lb   = li * 8u;
+            uint  lb   = li * 16u;
             float3 lpos = float3(LightBuf[lb], LightBuf[lb+1u], LightBuf[lb+2u]);
             float3 lcol = float3(LightBuf[lb+3u], LightBuf[lb+4u], LightBuf[lb+5u]);
             float  lint = LightBuf[lb+6u];
             float  lrad = max(0.0f, LightBuf[lb+7u]);
+            float3 spotDir = normalize(float3(LightBuf[lb+8u], LightBuf[lb+9u], LightBuf[lb+10u]));
+            float  spotInner = LightBuf[lb+11u];
+            float  spotOuter = LightBuf[lb+12u];
 
             // Radius-based area approximation for softer shadows.
             // radius=0 preserves point-light behavior.
@@ -1224,11 +1298,21 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
             float  dist  = sqrt(dist2);
             float3 ldir  = to_l / dist;
             float  cos_t = dot(n, ldir);
+            float  spotFactor = 1.0f;
+            if (spotInner > -0.999f) {
+                float cone = dot(-ldir, spotDir);
+                if (cone <= spotOuter) {
+                    spotFactor = 0.0f;
+                } else if (cone < spotInner && spotInner > spotOuter) {
+                    float t = saturate((cone - spotOuter) / (spotInner - spotOuter));
+                    spotFactor = t * t * (3.0f - 2.0f * t);
+                }
+            }
 
-            if (cos_t > 0.0 && dist > 1e-4) {
+            if (cos_t > 0.0 && dist > 1e-4 && spotFactor > 0.0f) {
                 bool occ = OccludedScene(hit.pos + n * 0.002, ldir, dist - 0.004);
                 if (!occ) {
-                    float3 irrad  = lcol * (lint / (dist2 + 1e-4));
+                    float3 irrad  = lcol * ((lint * spotFactor) / (dist2 + 1e-4));
                     float3 direct = float3(0.0, 0.0, 0.0);
                     if (!is_mirror && !is_transmissive) {
                         direct += albedo * (1.0 / 3.14159265) * irrad * cos_t * float(num_lights);
@@ -1320,4 +1404,223 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         rd = out_dir;
     }
     return rad;
+}
+
+// ============================================================================
+// GPU guide generation + spatial denoise
+// ============================================================================
+[numthreads(8, 8, 1)]
+void guide_main(uint3 gid : SV_DispatchThreadID) {
+    if (gid.x >= width || gid.y >= height) return;
+
+    uint pixel = gid.y * width + gid.x;
+    float3 cam_pos  = float3(camera_pos_x, camera_pos_y, camera_pos_z);
+    float3 cam_fwd  = float3(cam_fwd_x,    cam_fwd_y,    cam_fwd_z);
+    float3 cam_right= float3(cam_right_x,  cam_right_y,  cam_right_z);
+    float3 cam_up   = float3(cam_up_x,     cam_up_y,     cam_up_z);
+
+    float fx = (float(gid.x) + 0.5f) / float(width);
+    float fy = (float(gid.y) + 0.5f) / float(height);
+    float nx = (2.0f * fx - 1.0f) * aspect * fov_tan_half;
+    float ny = (1.0f - 2.0f * fy) * fov_tan_half;
+    float3 dir = normalize(cam_fwd + cam_right * nx + cam_up * ny);
+
+    Hit hit = IntersectScene(cam_pos, dir);
+    if (!hit.ok) {
+        StoreGuide(pixel, float4(0.0f, 0.0f, 0.0f, 1.0e20f),
+                   float4(0.0f, 0.0f, 0.0f, 0.0f));
+        return;
+    }
+
+    float3 n = hit.n;
+    if (dot(n, -dir) < 0.0f) n = -n;
+    uint mi = (num_mats > 0u) ? min(hit.mat, num_mats - 1u) : 0u;
+    float3 albedo = MatSurfaceAlbedo(mi, hit.pos, n, dir);
+    float roughness = MatRoughness(mi);
+    StoreGuide(pixel, float4(saturate(albedo), hit.t), float4(n, 1.0f + roughness));
+}
+
+[numthreads(8, 8, 1)]
+void denoise_main(uint3 gid : SV_DispatchThreadID) {
+    if (gid.x >= width || gid.y >= height) return;
+
+    uint pixel = gid.y * width + gid.x;
+    float4 centerAcc = LoadFilm(pixel);
+    float centerCount = max(1.0f, centerAcc.w);
+    float3 centerColor = CurrentHdrSource(pixel);
+    float4 centerAlbedoDepth = LoadGuideAlbedoDepth(pixel);
+    float4 centerNormalHit = LoadGuideNormalHit(pixel);
+    bool centerHit = centerNormalHit.w > 0.5f;
+    float3 centerNormal = centerHit ? normalize(centerNormalHit.xyz) : float3(0.0f, 0.0f, 1.0f);
+    float centerDepth = centerAlbedoDepth.w;
+    float centerLuma = Luma(centerColor);
+
+    float3 sum = centerColor;
+    float weightSum = 1.0f;
+    float colorSigma = max(0.025f, denoiser_color_sigma) * (1.0f + centerLuma * 0.35f);
+    float depthSigma = max(0.01f, centerDepth * 0.015f);
+    float albedoSigma = 0.35f;
+
+    [unroll]
+    for (int oy = -2; oy <= 2; ++oy) {
+        int y = int(gid.y) + oy;
+        if (y < 0 || y >= int(height)) continue;
+
+        [unroll]
+        for (int ox = -2; ox <= 2; ++ox) {
+            int x = int(gid.x) + ox;
+            if (x < 0 || x >= int(width) || (ox == 0 && oy == 0)) continue;
+
+            uint neighbor = uint(y) * width + uint(x);
+            float3 nColor = CurrentHdrSource(neighbor);
+            float4 nAlbedoDepth = LoadGuideAlbedoDepth(neighbor);
+            float4 nNormalHit = LoadGuideNormalHit(neighbor);
+            bool nHit = nNormalHit.w > 0.5f;
+
+            float dist2 = float(ox * ox + oy * oy);
+            float weight = exp(-dist2 * 0.28f);
+
+            if (centerHit && nHit) {
+                float3 nNormal = normalize(nNormalHit.xyz);
+                float normalWeight = pow(saturate(dot(centerNormal, nNormal)), 24.0f);
+                float depthWeight = exp(-abs(nAlbedoDepth.w - centerDepth) / depthSigma);
+                float3 albedoDiff = nAlbedoDepth.xyz - centerAlbedoDepth.xyz;
+                float albedoWeight = exp(-dot(albedoDiff, albedoDiff) / max(1.0e-4f, albedoSigma * albedoSigma));
+                weight *= normalWeight * depthWeight * albedoWeight;
+            } else if (centerHit != nHit) {
+                weight *= 0.02f;
+            }
+
+            float colorWeight = exp(-abs(Luma(nColor) - centerLuma) / colorSigma);
+            weight *= colorWeight;
+            sum += nColor * weight;
+            weightSum += weight;
+        }
+    }
+
+    float3 filtered = sum / max(1.0e-5f, weightSum);
+    float adaptiveStrength = saturate(denoiser_strength) *
+        (0.25f + 0.75f * saturate((64.0f - min(centerCount, 64.0f)) / 64.0f));
+    StoreDenoised(pixel, float4(lerp(centerColor, filtered, adaptiveStrength), 1.0f));
+}
+
+float3 CameraRayDir(float2 pixelCenter) {
+    float fx = pixelCenter.x / float(width);
+    float fy = pixelCenter.y / float(height);
+    float nx = (2.0f * fx - 1.0f) * aspect * fov_tan_half;
+    float ny = (1.0f - 2.0f * fy) * fov_tan_half;
+    return normalize(float3(cam_fwd_x, cam_fwd_y, cam_fwd_z) +
+                     float3(cam_right_x, cam_right_y, cam_right_z) * nx +
+                     float3(cam_up_x, cam_up_y, cam_up_z) * ny);
+}
+
+bool ProjectToPreviousPixel(float3 worldPos, out uint prevPixel, out float prevRayDistance) {
+    float3 prevPos = float3(prev_camera_pos_x, prev_camera_pos_y, prev_camera_pos_z);
+    float3 prevFwd = normalize(float3(prev_cam_fwd_x, prev_cam_fwd_y, prev_cam_fwd_z));
+    float3 prevRight = normalize(float3(prev_cam_right_x, prev_cam_right_y, prev_cam_right_z));
+    float3 prevUp = normalize(float3(prev_cam_up_x, prev_cam_up_y, prev_cam_up_z));
+    float3 rel = worldPos - prevPos;
+    prevRayDistance = length(rel);
+    float forwardDistance = dot(rel, prevFwd);
+    if (forwardDistance <= 1.0e-4f || prevRayDistance <= 1.0e-4f) {
+        prevPixel = 0u;
+        return false;
+    }
+
+    float projectedX = dot(rel, prevRight) / forwardDistance;
+    float projectedY = dot(rel, prevUp) / forwardDistance;
+    float denomX = max(1.0e-4f, prev_aspect * prev_fov_tan_half);
+    float denomY = max(1.0e-4f, prev_fov_tan_half);
+    float2 uv = float2(0.5f * (projectedX / denomX + 1.0f),
+                       0.5f * (1.0f - projectedY / denomY));
+    if (uv.x < 0.0f || uv.x >= 1.0f || uv.y < 0.0f || uv.y >= 1.0f) {
+        prevPixel = 0u;
+        return false;
+    }
+
+    uint px = min(width - 1u, uint(uv.x * float(width)));
+    uint py = min(height - 1u, uint(uv.y * float(height)));
+    prevPixel = py * width + px;
+    return true;
+}
+
+float3 ClampHistoryToCurrentNeighborhood(uint2 coord, float3 historyColor, float3 centerColor) {
+    float3 minColor = centerColor;
+    float3 maxColor = centerColor;
+
+    [unroll]
+    for (int oy = -1; oy <= 1; ++oy) {
+        int y = int(coord.y) + oy;
+        if (y < 0 || y >= int(height)) continue;
+
+        [unroll]
+        for (int ox = -1; ox <= 1; ++ox) {
+            int x = int(coord.x) + ox;
+            if (x < 0 || x >= int(width)) continue;
+            float3 c = FilmMean(uint(y) * width + uint(x));
+            minColor = min(minColor, c);
+            maxColor = max(maxColor, c);
+        }
+    }
+
+    float margin = max(0.0f, temporal_color_margin) * (1.0f + Luma(centerColor));
+    return clamp(historyColor, minColor - margin, maxColor + margin);
+}
+
+[numthreads(8, 8, 1)]
+void temporal_main(uint3 gid : SV_DispatchThreadID) {
+    if (gid.x >= width || gid.y >= height) return;
+
+    uint pixel = gid.y * width + gid.x;
+    float3 currentColor = FilmMean(pixel);
+    float4 centerAlbedoDepth = LoadGuideAlbedoDepth(pixel);
+    float4 centerNormalHit = LoadGuideNormalHit(pixel);
+    bool centerHit = centerNormalHit.w > 0.5f && centerAlbedoDepth.w < 1.0e19f;
+
+    if (temporal_enabled == 0u || temporal_history_valid == 0u || !centerHit) {
+        StoreTemporal(pixel, float4(currentColor, 1.0f));
+        return;
+    }
+
+    float3 rayDir = CameraRayDir(float2(float(gid.x) + 0.5f, float(gid.y) + 0.5f));
+    float3 cameraPos = float3(camera_pos_x, camera_pos_y, camera_pos_z);
+    float3 worldPos = cameraPos + rayDir * centerAlbedoDepth.w;
+
+    uint prevPixel = 0u;
+    float prevRayDistance = 0.0f;
+    if (!ProjectToPreviousPixel(worldPos, prevPixel, prevRayDistance)) {
+        StoreTemporal(pixel, float4(currentColor, 1.0f));
+        return;
+    }
+
+    float4 prevAlbedoDepth = LoadPrevGuideAlbedoDepth(prevPixel);
+    float4 prevNormalHit = LoadPrevGuideNormalHit(prevPixel);
+    float4 prevHistory = LoadTemporalHistory(prevPixel);
+    bool prevHit = prevNormalHit.w > 0.5f && prevAlbedoDepth.w < 1.0e19f && prevHistory.w > 0.5f;
+    if (!prevHit) {
+        StoreTemporal(pixel, float4(currentColor, 1.0f));
+        return;
+    }
+
+    float3 centerNormal = normalize(centerNormalHit.xyz);
+    float3 prevNormal = normalize(prevNormalHit.xyz);
+    float normalWeight = pow(saturate(dot(centerNormal, prevNormal)), max(1.0f, temporal_normal_power));
+
+    float depthTolerance = max(temporal_depth_sigma, prevRayDistance * 0.03f);
+    float depthDelta = abs(prevAlbedoDepth.w - prevRayDistance);
+    float depthWeight = exp(-depthDelta / max(1.0e-4f, depthTolerance));
+
+    float3 albedoDiff = centerAlbedoDepth.xyz - prevAlbedoDepth.xyz;
+    float albedoWeight = exp(-dot(albedoDiff, albedoDiff) / 0.16f);
+    float confidence = normalWeight * depthWeight * albedoWeight;
+    if (confidence < 0.04f) {
+        StoreTemporal(pixel, float4(currentColor, 1.0f));
+        return;
+    }
+
+    float3 historyColor = ClampHistoryToCurrentNeighborhood(gid.xy, prevHistory.xyz, currentColor);
+    float historyLength = clamp(prevHistory.w, 1.0f, 64.0f);
+    float feedback = min(0.96f, saturate(temporal_feedback) * confidence * saturate(historyLength / 4.0f));
+    float3 temporalColor = lerp(currentColor, historyColor, feedback);
+    StoreTemporal(pixel, float4(temporalColor, min(64.0f, historyLength + 1.0f)));
 }
