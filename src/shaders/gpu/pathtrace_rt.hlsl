@@ -11,6 +11,10 @@ cbuffer PCBuf : register(b0) {
     uint   num_insts;     uint  num_mats;       uint  num_lights;    uint  width;
     uint   height;        uint  base_seed;      float env_r;         float env_g;
     float  env_b;         float max_depth_f;    uint  rays_per_pixel; float exposure;
+    float  aperture_radius; float focus_distance; uint iris_blade_count; float iris_rotation_radians;
+    float  iris_roundness; float anamorphic_squeeze; uint tone_map; uint output_transform;
+    float  gamma; uint clamp_output; float white_balance_r; float white_balance_g;
+    float  white_balance_b; float _pad0; float _pad1; float _pad2;
 };
 
 // ---- Resources -------------------------------------------------------------
@@ -21,6 +25,7 @@ Buffer<float>    MatBuf    : register(t3, space0);
 Buffer<uint>     InstBuf   : register(t4, space0);   // kept for binding compat
 Buffer<float>    LightBuf  : register(t5, space0);   // reserved for NEE
 Buffer<uint>     TriMatBuf : register(t6, space0);
+Buffer<float>    TriDataBuf : register(t7, space0);
 RWByteAddressBuffer FilmBuf : register(u0, space0);
 
 // ---- Payload (64 bytes — must match MaxPayloadSizeInBytes in PSO) -----------
@@ -37,6 +42,7 @@ struct PathPayload {
 
 static const uint kMatStride = 16u;
 static const uint kInstStride = 24u;
+static const uint kPackedTriStride = 12u;
 static const uint kStaticInstanceId = 0x00FFFFFFu;
 float3 MatAlbedo(uint idx)   { uint b=idx*kMatStride; return float3(MatBuf[b], MatBuf[b+1u], MatBuf[b+2u]); }
 float3 MatEmissive(uint idx) { uint b=idx*kMatStride; return float3(MatBuf[b+3u], MatBuf[b+4u], MatBuf[b+5u]); }
@@ -129,6 +135,7 @@ uint  Pcg(uint v);
 float RandF(inout uint rng);
 float Halton2(uint idx);
 float Halton3(uint idx);
+void  ApplyCameraLens(inout float3 origin, inout float3 dir, inout uint rng);
 
 float4 LoadFilm(uint pixel) {
     return asfloat(FilmBuf.Load4(pixel * 16u));
@@ -164,6 +171,8 @@ void RayGen() {
         float nx = (2.0f * fx - 1.0f) * aspect * fov_tan_half;
         float ny = (1.0f - 2.0f * fy) * fov_tan_half;
         float3 dir = normalize(cam_fwd + cam_right * nx + cam_up * ny);
+        float3 origin = cam_pos;
+        ApplyCameraLens(origin, dir, rng);
 
         PathPayload payload;
         payload.radiance    = (float3)0;
@@ -171,7 +180,7 @@ void RayGen() {
         payload.done        = 0u;
         payload.depth       = 0u;
         payload.rng         = rng;
-        payload.next_origin = cam_pos;
+        payload.next_origin = origin;
         payload.next_dir    = dir;
         payload._pad        = 0.0f;
 
@@ -214,25 +223,18 @@ void Miss(inout PathPayload payload) {
 void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttributes attr) {
     uint instanceId = InstanceID();
     uint triIdx = PrimitiveIndex();
-    uint matIdx = 0u;
-    if (instanceId == kStaticInstanceId) {
-        matIdx = TriMatBuf[triIdx];
-    } else {
+    if (instanceId != kStaticInstanceId) {
         uint ib = instanceId * kInstStride;
         triIdx += InstBuf[ib + 0u];
-        matIdx = InstBuf[ib + 2u];
     }
-    uint i0 = IndexBuf[triIdx * 3u + 0u];
-    uint i1 = IndexBuf[triIdx * 3u + 1u];
-    uint i2 = IndexBuf[triIdx * 3u + 2u];
-    float3 v0 = float3(VertBuf[i0 * 3u], VertBuf[i0 * 3u + 1u], VertBuf[i0 * 3u + 2u]);
-    float3 v1 = float3(VertBuf[i1 * 3u], VertBuf[i1 * 3u + 1u], VertBuf[i1 * 3u + 2u]);
-    float3 v2 = float3(VertBuf[i2 * 3u], VertBuf[i2 * 3u + 1u], VertBuf[i2 * 3u + 2u]);
+    uint tb = triIdx * kPackedTriStride;
+    uint matIdx = uint(TriDataBuf[tb + 3u] + 0.5f);
+    float3 e1 = float3(TriDataBuf[tb + 4u], TriDataBuf[tb + 5u], TriDataBuf[tb + 6u]);
+    float3 e2 = float3(TriDataBuf[tb + 8u], TriDataBuf[tb + 9u], TriDataBuf[tb + 10u]);
     float3x4 o2w = ObjectToWorld3x4();
-    float3 w0 = float3(dot(o2w[0], float4(v0, 1.0)), dot(o2w[1], float4(v0, 1.0)), dot(o2w[2], float4(v0, 1.0)));
-    float3 w1 = float3(dot(o2w[0], float4(v1, 1.0)), dot(o2w[1], float4(v1, 1.0)), dot(o2w[2], float4(v1, 1.0)));
-    float3 w2 = float3(dot(o2w[0], float4(v2, 1.0)), dot(o2w[1], float4(v2, 1.0)), dot(o2w[2], float4(v2, 1.0)));
-    float3 n = normalize(cross(w1 - w0, w2 - w0));
+    float3 we1 = float3(dot(o2w[0].xyz, e1), dot(o2w[1].xyz, e1), dot(o2w[2].xyz, e1));
+    float3 we2 = float3(dot(o2w[0].xyz, e2), dot(o2w[1].xyz, e2), dot(o2w[2].xyz, e2));
+    float3 n = normalize(cross(we1, we2));
     if (dot(n, WorldRayDirection()) > 0.0f) n = -n;
     float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
     float3 albedo   = MatSurfaceAlbedo(matIdx, hitPos, n, WorldRayDirection());
@@ -372,6 +374,33 @@ uint Pcg(uint v) {
 float RandF(inout uint rng) {
     rng = Pcg(rng);
     return (float)rng / 4294967296.0f;
+}
+
+void ApplyCameraLens(inout float3 origin, inout float3 dir, inout uint rng) {
+    if (aperture_radius <= 0.0f || focus_distance <= 1.0e-4f) return;
+    float lens_radius_sample = sqrt(RandF(rng));
+    float lens_phi = 6.28318530718f * RandF(rng);
+    float aperture_boundary = 1.0f;
+    float roundness = saturate(iris_roundness);
+    if (iris_blade_count >= 3u && roundness < 0.999f) {
+        float blades = (float)min(iris_blade_count, 64u);
+        float sector = 6.28318530718f / blades;
+        float local_phi = lens_phi - iris_rotation_radians;
+        float wrapped = local_phi - sector * floor(local_phi / sector);
+        float centered = (wrapped > sector * 0.5f) ? wrapped - sector : wrapped;
+        float polygon_boundary = cos(sector * 0.5f) / max(0.1f, cos(centered));
+        aperture_boundary = lerp(polygon_boundary, 1.0f, roundness);
+    }
+    float lens_r = aperture_radius * lens_radius_sample * aperture_boundary;
+    float squeeze = max(0.01f, anamorphic_squeeze);
+    float3 cam_right = float3(cam_right_x, cam_right_y, cam_right_z);
+    float3 cam_up = float3(cam_up_x, cam_up_y, cam_up_z);
+    float3 lens_offset =
+        cam_right * (lens_r * cos(lens_phi) * squeeze) +
+        cam_up * (lens_r * sin(lens_phi));
+    float3 focus_point = origin + dir * focus_distance;
+    origin += lens_offset;
+    dir = normalize(focus_point - origin);
 }
 
 float Halton2(uint idx) {

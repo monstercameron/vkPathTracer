@@ -454,7 +454,22 @@ if(PT_ENABLE_VULKAN)
 endif()
 
 if(PT_ENABLE_D3D12)
-  target_link_libraries(ptbench PRIVATE d3d12 dxgi d3dcompiler)
+  target_link_libraries(ptbench PRIVATE d3d12 dxgi d3dcompiler dxguid)
+  set(PT_WINPIX_EVENT_RUNTIME_INCLUDE_DIR "" CACHE PATH
+    "Optional path containing WinPixEventRuntime pix3.h")
+  set(_pt_winpix_event_runtime_include "")
+  foreach(_pt_winpix_candidate
+      "${PT_WINPIX_EVENT_RUNTIME_INCLUDE_DIR}"
+      "${CMAKE_SOURCE_DIR}/artifacts/pix_probe/winpixeventruntime/pkg/Include/WinPixEventRuntime")
+    if(EXISTS "${_pt_winpix_candidate}/pix3.h")
+      set(_pt_winpix_event_runtime_include "${_pt_winpix_candidate}")
+      break()
+    endif()
+  endforeach()
+  if(_pt_winpix_event_runtime_include)
+    target_include_directories(ptbench PRIVATE "${_pt_winpix_event_runtime_include}")
+    target_compile_definitions(ptbench PRIVATE PT_HAS_WINPIX_EVENT_RUNTIME=1 USE_PIX=1)
+  endif()
   target_compile_definitions(ptbench PRIVATE
     PT_SHADER_HLSL_PATH=\"${CMAKE_SOURCE_DIR}/src/shaders/gpu/pathtrace_cs.hlsl\")
 endif()

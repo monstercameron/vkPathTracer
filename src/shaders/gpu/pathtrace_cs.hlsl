@@ -7,6 +7,10 @@
 #define PT_D3D12_STATIC_TRAVERSAL_MODE 0
 #endif
 
+#ifndef PT_D3D12_PACKED_TRIANGLES
+#define PT_D3D12_PACKED_TRIANGLES 1
+#endif
+
 cbuffer PCBuf {
     float  camera_pos_x;  float camera_pos_y;  float camera_pos_z;  float fov_tan_half;
     float  cam_fwd_x;     float cam_fwd_y;     float cam_fwd_z;     float aspect;
@@ -15,6 +19,10 @@ cbuffer PCBuf {
     uint   num_insts;     uint   num_mats;      uint   num_lights;   uint  width;
     uint   height;        uint   base_seed;     float  env_r;        float env_g;
     float  env_b;         float  max_depth_f;   uint   rays_per_pixel; float  exposure;
+    float  aperture_radius; float focus_distance; uint iris_blade_count; float iris_rotation_radians;
+    float  iris_roundness; float anamorphic_squeeze; uint tone_map; uint output_transform;
+    float  gamma; uint clamp_output; float white_balance_r; float white_balance_g;
+    float  white_balance_b; float _pad0; float _pad1; float _pad2;
 };
 
 Buffer<float>    VertBuf  : register(t0);
@@ -27,10 +35,12 @@ Buffer<uint>     TriMatBuf : register(t6);
 Buffer<float>    DynamicBvhBuf : register(t7);
 Buffer<float>    LocalBvhBuf : register(t8);
 Buffer<float>    SdfBuf : register(t9);
+Buffer<float>    TriDataBuf : register(t10);
 RWByteAddressBuffer FilmBuf : register(u0);
 RWBuffer<uint>   LdrBuf   : register(u1); // tonemapped RGBA8 output (R|G<<8|B<<16|0xFF<<24)
 
 static const uint kInstStride = 24u;
+static const uint kPackedTriStride = 12u;
 static const uint kInstFlagDynamicTransform = 1u;
 static const uint kSdfStride = 16u;
 static const uint kSdfShapeSphere = 0u;
@@ -43,6 +53,8 @@ uint  Pcg(uint v);
 float RandF(inout uint rng);
 bool  IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool double_sided, inout float best_t);
 bool  IntersectTriAny(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool double_sided, float max_t);
+bool  IntersectPackedTri(float3 ro, float3 rd, uint tri, inout float best_t, out uint mat_index, out float3 normal);
+bool  IntersectPackedTriAny(float3 ro, float3 rd, uint tri, float max_t);
 bool  MatDoubleSided(uint idx);
 bool  IntersectSdfSphere(uint sdf_index, float3 ro, float3 rd, inout Hit h);
 bool  OccludedSdfSphere(uint sdf_index, float3 ro, float3 rd, float max_t);
@@ -50,6 +62,7 @@ Hit   IntersectScene(float3 ro, float3 rd);
 bool  OccludedScene(float3 ro, float3 rd, float max_t);
 float3 SampleHemisphere(float3 n, inout uint rng);
 float3 SamplePhongLobe(float3 refl, float exponent, float3 normal, inout uint rng);
+void  ApplyCameraLens(inout float3 origin, inout float3 dir, inout uint rng);
 float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env);
 
 float4 LoadFilm(uint pixel) {
@@ -84,7 +97,9 @@ void main(uint3 gid : SV_DispatchThreadID) {
         float nx = (2.0f * fx - 1.0f) * aspect * fov_tan_half;
         float ny = (1.0f - 2.0f * fy) * fov_tan_half;
         float3 dir = normalize(cam_fwd + cam_right * nx + cam_up * ny);
-        total_color += Trace(cam_pos, dir, rng, env_col);
+        float3 origin = cam_pos;
+        ApplyCameraLens(origin, dir, rng);
+        total_color += Trace(origin, dir, rng, env_col);
     }
 
     float4 prev = LoadFilm(pixel);
@@ -107,16 +122,36 @@ void tonemap_main(uint3 gid : SV_DispatchThreadID) {
     float  cnt = max(1.0f, acc.w);
     float3 c   = acc.xyz / cnt;
 
-    // Reinhard tonemapping with per-frame exposure
-    c *= max(0.0f, exposure);
-    c  = c / (1.0f + c);
+    c *= max(0.0f, exposure) * float3(white_balance_r, white_balance_g, white_balance_b);
 
-    // Gamma 2.2 encode
-    c = pow(saturate(c), 1.0f / 2.2f);
+    if (tone_map == 1u) {
+        c = c / (1.0f + c);
+    } else if (tone_map == 2u) {
+        const float A = 0.15f;
+        const float B = 0.50f;
+        const float C = 0.10f;
+        const float D = 0.20f;
+        const float E = 0.02f;
+        const float F = 0.30f;
+        const float W = 11.2f;
+        float3 filmic = ((c * (A * c + C * B) + D * E) / (c * (A * c + B) + D * F)) - E / F;
+        float white = ((W * (A * W + C * B) + D * E) / (W * (A * W + B) + D * F)) - E / F;
+        c = filmic / max(1.0e-4f, white);
+    } else if (tone_map == 3u) {
+        c = (c * (2.51f * c + 0.03f)) / (c * (2.43f * c + 0.59f) + 0.14f);
+    }
 
-    uint r = min(255u, (uint)(c.x * 255.0f + 0.5f));
-    uint g = min(255u, (uint)(c.y * 255.0f + 0.5f));
-    uint b = min(255u, (uint)(c.z * 255.0f + 0.5f));
+    if (output_transform == 0u) {
+        c = pow(max(c, 0.0f), 1.0f / max(0.01f, gamma));
+    }
+    if (clamp_output != 0u) {
+        c = saturate(c);
+    }
+
+    float3 packed = saturate(c);
+    uint r = min(255u, (uint)(packed.x * 255.0f + 0.5f));
+    uint g = min(255u, (uint)(packed.y * 255.0f + 0.5f));
+    uint b = min(255u, (uint)(packed.z * 255.0f + 0.5f));
     LdrBuf[pixel] = r | (g << 8u) | (b << 16u) | (0xFFu << 24u);
 }
 
@@ -131,6 +166,33 @@ uint Pcg(uint v) {
 float RandF(inout uint rng) {
     rng = Pcg(rng);
     return float(rng) / 4294967296.0;
+}
+
+void ApplyCameraLens(inout float3 origin, inout float3 dir, inout uint rng) {
+    if (aperture_radius <= 0.0f || focus_distance <= 1.0e-4f) return;
+    float lens_radius_sample = sqrt(RandF(rng));
+    float lens_phi = 6.28318530718f * RandF(rng);
+    float aperture_boundary = 1.0f;
+    float roundness = saturate(iris_roundness);
+    if (iris_blade_count >= 3u && roundness < 0.999f) {
+        float blades = float(min(iris_blade_count, 64u));
+        float sector = 6.28318530718f / blades;
+        float local_phi = lens_phi - iris_rotation_radians;
+        float wrapped = local_phi - sector * floor(local_phi / sector);
+        float centered = (wrapped > sector * 0.5f) ? wrapped - sector : wrapped;
+        float polygon_boundary = cos(sector * 0.5f) / max(0.1f, cos(centered));
+        aperture_boundary = lerp(polygon_boundary, 1.0f, roundness);
+    }
+    float lens_r = aperture_radius * lens_radius_sample * aperture_boundary;
+    float squeeze = max(0.01f, anamorphic_squeeze);
+    float3 cam_right = float3(cam_right_x, cam_right_y, cam_right_z);
+    float3 cam_up = float3(cam_up_x, cam_up_y, cam_up_z);
+    float3 lens_offset =
+        cam_right * (lens_r * cos(lens_phi) * squeeze) +
+        cam_up * (lens_r * sin(lens_phi));
+    float3 focus_point = origin + dir * focus_distance;
+    origin += lens_offset;
+    dir = normalize(focus_point - origin);
 }
 
 float Pow2Fast(float x) {
@@ -225,6 +287,77 @@ bool IntersectTriAny(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool doubl
     if (v < 0.0 || u + v > 1.0) return false;
     float t = f * dot(e2, q);
     return t > 1e-4 && t < max_t;
+}
+
+void LoadPackedTriGeometry(uint b, out float3 v0, out float3 e1, out float3 e2,
+                           out bool double_sided) {
+    v0 = float3(TriDataBuf[b + 0u], TriDataBuf[b + 1u], TriDataBuf[b + 2u]);
+    e1 = float3(TriDataBuf[b + 4u], TriDataBuf[b + 5u], TriDataBuf[b + 6u]);
+    double_sided = TriDataBuf[b + 7u] > 0.5f;
+    e2 = float3(TriDataBuf[b + 8u], TriDataBuf[b + 9u], TriDataBuf[b + 10u]);
+}
+
+bool IntersectPackedTri(float3 ro, float3 rd, uint tri, inout float best_t,
+                        out uint mat_index, out float3 normal) {
+    uint b = tri * kPackedTriStride;
+    float3 v0;
+    float3 e1;
+    float3 e2;
+    bool double_sided;
+    LoadPackedTriGeometry(b, v0, e1, e2, double_sided);
+
+    float3 h = cross(rd, e2);
+    float a = dot(e1, h);
+    if (double_sided) {
+        if (abs(a) < 1e-5f) return false;
+    } else if (a < 1e-5f) {
+        return false;
+    }
+
+    float f = 1.0f / a;
+    float3 s = ro - v0;
+    float u = f * dot(s, h);
+    if (u < 0.0f || u > 1.0f) return false;
+    float3 q = cross(s, e1);
+    float v = f * dot(rd, q);
+    if (v < 0.0f || u + v > 1.0f) return false;
+    float t = f * dot(e2, q);
+    if (t <= 1e-4f || t >= best_t) return false;
+
+    best_t = t;
+    mat_index = uint(TriDataBuf[b + 3u] + 0.5f);
+    normal = normalize(cross(e1, e2));
+    if (double_sided && dot(normal, rd) > 0.0f) {
+        normal = -normal;
+    }
+    return true;
+}
+
+bool IntersectPackedTriAny(float3 ro, float3 rd, uint tri, float max_t) {
+    uint b = tri * kPackedTriStride;
+    float3 v0;
+    float3 e1;
+    float3 e2;
+    bool double_sided;
+    LoadPackedTriGeometry(b, v0, e1, e2, double_sided);
+
+    float3 h = cross(rd, e2);
+    float a = dot(e1, h);
+    if (double_sided) {
+        if (abs(a) < 1e-5f) return false;
+    } else if (a < 1e-5f) {
+        return false;
+    }
+
+    float f = 1.0f / a;
+    float3 s = ro - v0;
+    float u = f * dot(s, h);
+    if (u < 0.0f || u > 1.0f) return false;
+    float3 q = cross(s, e1);
+    float v = f * dot(rd, q);
+    if (v < 0.0f || u + v > 1.0f) return false;
+    float t = f * dot(e2, q);
+    return t > 1e-4f && t < max_t;
 }
 
 float3 SafeInstanceScale(uint ib) {
@@ -324,6 +457,86 @@ bool IntersectDynamicTri(uint ib, float3 ro_world, float3 rd_world,
     return true;
 }
 
+bool IntersectDynamicPackedTri(uint ib, float3 ro_world, float3 rd_world,
+                               float3 ro_local, float3 rd_local,
+                               uint tri, bool double_sided,
+                               inout float best_t, out float3 out_pos, out float3 out_n) {
+    uint b = tri * kPackedTriStride;
+    float3 v0;
+    float3 e1;
+    float3 e2;
+    bool packed_double_sided;
+    LoadPackedTriGeometry(b, v0, e1, e2, packed_double_sided);
+
+    float3 h = cross(rd_local, e2);
+    float a = dot(e1, h);
+    if (double_sided) {
+        if (abs(a) < 1e-5f) return false;
+    } else if (a < 1e-5f) {
+        return false;
+    }
+    float f = 1.0f / a;
+    float3 s = ro_local - v0;
+    float u = f * dot(s, h);
+    if (u < 0.0f || u > 1.0f) return false;
+    float3 q = cross(s, e1);
+    float v = f * dot(rd_local, q);
+    if (v < 0.0f || u + v > 1.0f) return false;
+    float t = f * dot(e2, q);
+    if (t <= 1e-4f || t >= best_t) return false;
+
+    float3 local_pos = ro_local + rd_local * t;
+    float3 world_pos = InstanceLocalToWorldPoint(ib, local_pos);
+    float world_t = dot(world_pos - ro_world, rd_world);
+    if (world_t <= 1e-4f || world_t >= best_t) return false;
+
+    float3 world_n = InstanceLocalNormalToWorld(ib, normalize(cross(e1, e2)));
+    if (double_sided && dot(world_n, rd_world) > 0.0f) {
+        world_n = -world_n;
+    }
+    best_t = world_t;
+    out_pos = world_pos;
+    out_n = world_n;
+    return true;
+}
+
+bool IntersectDynamicPackedTriAny(uint ib, float3 ro_world, float3 rd_world,
+                                  float3 ro_local, float3 rd_local,
+                                  uint tri, bool double_sided,
+                                  inout float best_t) {
+    uint b = tri * kPackedTriStride;
+    float3 v0;
+    float3 e1;
+    float3 e2;
+    bool packed_double_sided;
+    LoadPackedTriGeometry(b, v0, e1, e2, packed_double_sided);
+
+    float3 h = cross(rd_local, e2);
+    float a = dot(e1, h);
+    if (double_sided) {
+        if (abs(a) < 1e-5f) return false;
+    } else if (a < 1e-5f) {
+        return false;
+    }
+    float f = 1.0f / a;
+    float3 s = ro_local - v0;
+    float u = f * dot(s, h);
+    if (u < 0.0f || u > 1.0f) return false;
+    float3 q = cross(s, e1);
+    float v = f * dot(rd_local, q);
+    if (v < 0.0f || u + v > 1.0f) return false;
+    float t = f * dot(e2, q);
+    if (t <= 1e-4f || t >= best_t) return false;
+
+    float3 local_pos = ro_local + rd_local * t;
+    float3 world_pos = InstanceLocalToWorldPoint(ib, local_pos);
+    float world_t = dot(world_pos - ro_world, rd_world);
+    if (world_t <= 1e-4f || world_t >= best_t) return false;
+
+    best_t = world_t;
+    return true;
+}
+
 bool IntersectWorldBounds(float3 bmin, float3 bmax, float3 ro, float3 inv_rd, float max_t) {
     float3 t0 = (bmin - ro) * inv_rd;
     float3 t1 = (bmax - ro) * inv_rd;
@@ -377,12 +590,17 @@ void IntersectDynamicInstance(uint instance_index, float3 ro, float3 rd, inout H
             if (is_leaf) {
                 uint first_tri = lf & 0x7FFFFFFFu;
                 for (uint ti = 0u; ti < rc; ++ti) {
-                    uint tb = (first_tri + ti) * 3u;
                     float3 pos;
                     float3 normal;
+#if PT_D3D12_PACKED_TRIANGLES
+                    if (IntersectDynamicPackedTri(ib, ro, rd, ro_local, rd_local,
+                                                  first_tri + ti, double_sided, h.t, pos, normal)) {
+#else
+                    uint tb = (first_tri + ti) * 3u;
                     if (IntersectDynamicTri(ib, ro, rd, ro_local, rd_local,
                                             IndexBuf[tb], IndexBuf[tb + 1u], IndexBuf[tb + 2u],
                                             double_sided, h.t, pos, normal)) {
+#endif
                         h.ok = true;
                         h.pos = pos;
                         h.n = normal;
@@ -397,12 +615,17 @@ void IntersectDynamicInstance(uint instance_index, float3 ro, float3 rd, inout H
         return;
     }
     for (uint ti = 0u; ti < ntri; ++ti) {
-        uint tb = (ftri + ti) * 3u;
         float3 pos;
         float3 normal;
+#if PT_D3D12_PACKED_TRIANGLES
+        if (IntersectDynamicPackedTri(ib, ro, rd, ro_local, rd_local,
+                                      ftri + ti, double_sided, h.t, pos, normal)) {
+#else
+        uint tb = (ftri + ti) * 3u;
         if (IntersectDynamicTri(ib, ro, rd, ro_local, rd_local,
                                 IndexBuf[tb], IndexBuf[tb + 1u], IndexBuf[tb + 2u],
                                 double_sided, h.t, pos, normal)) {
+#endif
             h.ok = true;
             h.pos = pos;
             h.n = normal;
@@ -448,12 +671,17 @@ bool OccludedDynamicInstance(uint instance_index, float3 ro, float3 rd, float ma
             if (is_leaf) {
                 uint first_tri = lf & 0x7FFFFFFFu;
                 for (uint ti = 0u; ti < rc; ++ti) {
-                    uint tb = (first_tri + ti) * 3u;
+#if PT_D3D12_PACKED_TRIANGLES
+                    if (IntersectDynamicPackedTriAny(ib, ro, rd, ro_local, rd_local,
+                                                     first_tri + ti, double_sided, best)) {
+#else
                     float3 pos;
                     float3 normal;
+                    uint tb = (first_tri + ti) * 3u;
                     if (IntersectDynamicTri(ib, ro, rd, ro_local, rd_local,
                                             IndexBuf[tb], IndexBuf[tb + 1u], IndexBuf[tb + 2u],
                                             double_sided, best, pos, normal)) {
+#endif
                         return true;
                     }
                 }
@@ -466,12 +694,17 @@ bool OccludedDynamicInstance(uint instance_index, float3 ro, float3 rd, float ma
     }
     float best = max_t;
     for (uint ti = 0u; ti < ntri; ++ti) {
-        uint tb = (ftri + ti) * 3u;
+#if PT_D3D12_PACKED_TRIANGLES
+        if (IntersectDynamicPackedTriAny(ib, ro, rd, ro_local, rd_local,
+                                         ftri + ti, double_sided, best)) {
+#else
         float3 pos;
         float3 normal;
+        uint tb = (ftri + ti) * 3u;
         if (IntersectDynamicTri(ib, ro, rd, ro_local, rd_local,
                                 IndexBuf[tb], IndexBuf[tb + 1u], IndexBuf[tb + 2u],
                                 double_sided, best, pos, normal)) {
+#endif
             return true;
         }
     }
@@ -546,7 +779,7 @@ Hit IntersectScene(float3 ro, float3 rd) {
 
     float3 inv_rd = float3(1.0f / rd.x, 1.0f / rd.y, 1.0f / rd.z);
 
-    uint stack[64];
+    uint stack[128];
     uint sp = 0u;
     stack[sp++] = 0u; // root node index
 
@@ -577,6 +810,18 @@ Hit IntersectScene(float3 ro, float3 rd) {
             uint first_tri = lf & 0x7FFFFFFFu;
             uint ntri = rc;
             for (uint ti = 0u; ti < ntri; ++ti) {
+#if PT_D3D12_PACKED_TRIANGLES
+                uint mat_index;
+                float3 normal;
+                float t_best = h.t;
+                if (IntersectPackedTri(ro, rd, first_tri + ti, t_best, mat_index, normal)) {
+                    h.ok = true;
+                    h.t = t_best;
+                    h.pos = ro + rd * h.t;
+                    h.n = normal;
+                    h.mat = mat_index;
+                }
+#else
                 uint tb = (first_tri + ti) * 3u;
                 uint i0 = IndexBuf[tb];
                 uint i1 = IndexBuf[tb + 1u];
@@ -597,6 +842,7 @@ Hit IntersectScene(float3 ro, float3 rd) {
                     }
                     h.mat = mat_index;
                 }
+#endif
             }
         } else {
 #if PT_D3D12_STATIC_TRAVERSAL_MODE == 2
@@ -614,21 +860,27 @@ Hit IntersectScene(float3 ro, float3 rd) {
                 ro, inv_rd, h.t, right_t);
             if (left_hit && right_hit) {
                 if (left_t <= right_t) {
-                    stack[sp++] = rc;
-                    stack[sp++] = lf;
+                    if (sp + 2u <= 128u) {
+                        stack[sp++] = rc;
+                        stack[sp++] = lf;
+                    }
                 } else {
-                    stack[sp++] = lf;
-                    stack[sp++] = rc;
+                    if (sp + 2u <= 128u) {
+                        stack[sp++] = lf;
+                        stack[sp++] = rc;
+                    }
                 }
             } else if (left_hit) {
-                stack[sp++] = lf;
+                if (sp < 128u) stack[sp++] = lf;
             } else if (right_hit) {
-                stack[sp++] = rc;
+                if (sp < 128u) stack[sp++] = rc;
             }
 #else
             // Push right child first so left is processed first (DFS)
-            stack[sp++] = rc;
-            stack[sp++] = lf;
+            if (sp + 2u <= 128u) {
+                stack[sp++] = rc;
+                stack[sp++] = lf;
+            }
 #endif
         }
     }
@@ -650,8 +902,10 @@ Hit IntersectScene(float3 ro, float3 rd) {
             uint instance_index = lf & 0x7FFFFFFFu;
             IntersectDynamicInstance(instance_index, ro, rd, h);
         } else {
-            stack[sp++] = rc;
-            stack[sp++] = lf;
+            if (sp + 2u <= 128u) {
+                stack[sp++] = rc;
+                stack[sp++] = lf;
+            }
         }
     }
 
@@ -666,7 +920,7 @@ bool OccludedScene(float3 ro, float3 rd, float max_t) {
     if (max_t <= 1e-4f) return false;
 
     float3 inv_rd = float3(1.0f / rd.x, 1.0f / rd.y, 1.0f / rd.z);
-    uint stack[64];
+    uint stack[128];
     uint sp = 0u;
     stack[sp++] = 0u;
 
@@ -694,12 +948,18 @@ bool OccludedScene(float3 ro, float3 rd, float max_t) {
             uint first_tri = lf & 0x7FFFFFFFu;
             uint ntri = rc;
             for (uint ti = 0u; ti < ntri; ++ti) {
+#if PT_D3D12_PACKED_TRIANGLES
+                if (IntersectPackedTriAny(ro, rd, first_tri + ti, max_t)) {
+                    return true;
+                }
+#else
                 uint tb = (first_tri + ti) * 3u;
                 uint mat_index = TriMatBuf[first_tri + ti];
                 if (IntersectTriAny(ro, rd, IndexBuf[tb], IndexBuf[tb + 1u], IndexBuf[tb + 2u],
                                     MatDoubleSided(mat_index), max_t)) {
                     return true;
                 }
+#endif
             }
         } else {
 #if PT_D3D12_STATIC_TRAVERSAL_MODE == 2
@@ -717,20 +977,26 @@ bool OccludedScene(float3 ro, float3 rd, float max_t) {
                 ro, inv_rd, max_t, right_t);
             if (left_hit && right_hit) {
                 if (left_t <= right_t) {
-                    stack[sp++] = rc;
-                    stack[sp++] = lf;
+                    if (sp + 2u <= 128u) {
+                        stack[sp++] = rc;
+                        stack[sp++] = lf;
+                    }
                 } else {
-                    stack[sp++] = lf;
-                    stack[sp++] = rc;
+                    if (sp + 2u <= 128u) {
+                        stack[sp++] = lf;
+                        stack[sp++] = rc;
+                    }
                 }
             } else if (left_hit) {
-                stack[sp++] = lf;
+                if (sp < 128u) stack[sp++] = lf;
             } else if (right_hit) {
-                stack[sp++] = rc;
+                if (sp < 128u) stack[sp++] = rc;
             }
 #else
-            stack[sp++] = rc;
-            stack[sp++] = lf;
+            if (sp + 2u <= 128u) {
+                stack[sp++] = rc;
+                stack[sp++] = lf;
+            }
 #endif
         }
     }
@@ -754,8 +1020,10 @@ bool OccludedScene(float3 ro, float3 rd, float max_t) {
                 return true;
             }
         } else {
-            stack[sp++] = rc;
-            stack[sp++] = lf;
+            if (sp + 2u <= 128u) {
+                stack[sp++] = rc;
+                stack[sp++] = lf;
+            }
         }
     }
     [loop]

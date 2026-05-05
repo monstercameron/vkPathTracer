@@ -20,6 +20,9 @@ layout(push_constant) uniform PC {
     // the layout is identical on both sides (4-byte aligned scalars, no gap).
     float env_r;          float env_g;          // 88 / 92
     float env_b;          float max_depth_f;    // 96 / 100  (total 104 bytes)
+    float aperture_radius; float focus_distance; // 104 / 108
+    uint  iris_blade_count; float iris_rotation_radians; // 112 / 116
+    float iris_roundness; float anamorphic_squeeze; // 120 / 124
 } pc;
 
 // ---- storage buffers --------------------------------------------------------
@@ -47,6 +50,33 @@ uint pcg(uint v) {
 float rand_f(inout uint rng) {
     rng = pcg(rng);
     return float(rng) / 4294967296.0;
+}
+
+void apply_camera_lens(inout vec3 origin, inout vec3 dir, inout uint rng) {
+    if (pc.aperture_radius <= 0.0 || pc.focus_distance <= 1.0e-4) {
+        return;
+    }
+    float lens_radius_sample = sqrt(rand_f(rng));
+    float lens_phi = 6.28318530718 * rand_f(rng);
+    float aperture_boundary = 1.0;
+    float roundness = clamp(pc.iris_roundness, 0.0, 1.0);
+    if (pc.iris_blade_count >= 3u && roundness < 0.999) {
+        float blades = float(min(pc.iris_blade_count, 64u));
+        float sector = 6.28318530718 / blades;
+        float local_phi = lens_phi - pc.iris_rotation_radians;
+        float wrapped = local_phi - sector * floor(local_phi / sector);
+        float centered = (wrapped > sector * 0.5) ? wrapped - sector : wrapped;
+        float polygon_boundary = cos(sector * 0.5) / max(0.1, cos(centered));
+        aperture_boundary = mix(polygon_boundary, 1.0, roundness);
+    }
+    float lens_r = pc.aperture_radius * lens_radius_sample * aperture_boundary;
+    float squeeze = max(0.01, pc.anamorphic_squeeze);
+    vec3 lens_offset =
+        pc.cam_right * (lens_r * cos(lens_phi) * squeeze) +
+        pc.cam_up * (lens_r * sin(lens_phi));
+    vec3 focus_point = origin + dir * pc.focus_distance;
+    origin += lens_offset;
+    dir = normalize(focus_point - origin);
 }
 
 float pow2_fast(float x) { return x * x; }
@@ -408,8 +438,10 @@ void main() {
     float nx  = (2.0 * fx - 1.0) * pc.aspect * pc.fov_tan_half;
     float ny  = (1.0 - 2.0 * fy) * pc.fov_tan_half;
     vec3  dir = normalize(pc.cam_forward + pc.cam_right * nx + pc.cam_up * ny);
+    vec3  origin = pc.camera_pos;
+    apply_camera_lens(origin, dir, rng);
 
-    vec3 color = trace(pc.camera_pos, dir, rng);
+    vec3 color = trace(origin, dir, rng);
 
     // Accumulate into film buffer (safe — one invocation per pixel, no races)
     uint fb = pixel * 4u;

@@ -1,0 +1,30 @@
+{
+  "schema": "ptopt_d3d12_algorithm_graph.v1",
+  "scope": "D3D12 compute path tracer code-level BVH and traversal decisions",
+  "edge_families": [
+    {
+      "id": "cpu_bvh_leaf_size",
+      "from": "leaf_size=4",
+      "to": ["leaf_size=1", "leaf_size=2", "leaf_size=8", "leaf_size=16"],
+      "metric": "median paths_per_sec and build_ms"
+    },
+    {
+      "id": "cpu_bvh_sah_bucket_count",
+      "from": "buckets=8",
+      "to": ["buckets=4", "buckets=16"],
+      "metric": "median paths_per_sec and build_ms"
+    },
+    {
+      "id": "cpu_bvh_split_mode",
+      "from": "split=sah",
+      "to": ["split=median"],
+      "metric": "median paths_per_sec and build_ms"
+    },
+    {
+      "id": "gpu_static_bvh_traversal",
+      "from": "shader_traversal=baseline",
+      "to": ["shader_traversal=bounds_helper", "shader_traversal=near_order"],
+      "metric": "median paths_per_sec"
+    }
+  ]
+}
