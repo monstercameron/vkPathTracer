@@ -1,11 +1,47 @@
-/build
-/builds
-/build/presets
-/artifacts
-bin
+# Build output
+/build/
+/builds/
+/out/
+/bin/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+build.ninja
+.ninja_deps
+.ninja_log
+*.dir/
+*.ilk
+*.pdb
+*.idb
+*.obj
+*.o
+*.exe
+*.dll
+*.lib
+*.exp
+
+# Generated artifacts and diagnostics
+/artifacts/
+/logs/
+/crashes/
 *.log
-.env
-!.env.example
+*.jsonl
+*.dmp
+*.trace
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+*~
 protopt_log.txt
 /cpu_err.txt
 /cpu_out.txt
+
+# Local environment and IDE state
+.env
+!.env.example
+.vs/
+.vscode/
+.idea/

@@ -10,6 +10,9 @@
 - Added DXR/runtime tuning for deferred DXR object creation, optional hardware shadow rays, quieter verbose logging, and more representative ray counter estimates.
 - Added complete sedan, toy car, and Crytek Sponza scene/model assets, refreshed Sponza material/texture references, and updated showcase scene lighting/collider setup.
 - Added Qt dock slider debounce so live slider edits stay responsive without fighting dock value refreshes.
+- Moved optimization graph scaffolds from `examples/` to `experiments/`, keeping generated graph result folders ignored.
+- Added FPS camera/player collision scaffolding and camera dock controls for entering/exiting FPS mode.
+- Expanded `.gitignore` coverage for build outputs, generated diagnostics, local IDE state, and temporary files.
 
 ## 2026-05-05 (session 24)
 
