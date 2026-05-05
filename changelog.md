@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-05 (session 24)
+
+### Qt startup splash progress polish
+
+- Reworked the custom Qt startup splash layout to use font-metric text bounds so title, subtitle, phase, loading, and footer copy no longer clip under Windows font scaling.
+- Changed the splash spinner to a visibly rotating bright trail instead of a static radial fade.
+- Added a monotonic `Loading 0-100%` counter and determinate progress bar driven by startup phases, with splash completion forcing 100% before fade-out.
+- Verified the Windows clang-cl D3D12 Qt build, UI model smoke path, one-frame Qt window launch, and staged whitespace check for the splash changes.
+
 ## 2026-05-05 (session 23)
 
 ### Qt scene graph selection, quiet GUI launch, and dotenv config
