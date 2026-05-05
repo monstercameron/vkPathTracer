@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -61,6 +62,23 @@
 namespace {
 
 using Path = std::filesystem::path;
+
+std::string ReadProcessEnvRaw(const char* name) {
+  std::string valueText;
+#if defined(_WIN32)
+  char* valueBuffer = nullptr;
+  size_t valueLength = 0u;
+  if (_dupenv_s(&valueBuffer, &valueLength, name) == 0 && valueBuffer != nullptr) {
+    valueText.assign(valueBuffer, valueLength > 0u ? valueLength - 1u : 0u);
+    std::free(valueBuffer);
+  }
+#else
+  if (const char* value = std::getenv(name)) {
+    valueText = value;
+  }
+#endif
+  return valueText;
+}
 
 class TraceProfiler final : public vkpt::benchmark::IProfiler {
  public:
@@ -1431,7 +1449,11 @@ int RunCommand(const std::vector<std::string_view>& args) {
 #endif
   } else if (isD3D12ComputePath || isD3D12DxrPath) {
 #if defined(PT_ENABLE_D3D12)
-    auto gpuTracer = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(PT_SHADER_HLSL_PATH);
+    const std::string d3d12HlslPath = [] {
+      const std::string overridePath = ReadProcessEnvRaw("PT_D3D12_HLSL_PATH");
+      return overridePath.empty() ? std::string(PT_SHADER_HLSL_PATH) : overridePath;
+    }();
+    auto gpuTracer = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(d3d12HlslPath);
     if (!gpuTracer->is_valid()) {
       std::cerr << "d3d12 path tracer init failed: " << gpuTracer->last_error() << "\n";
       return 2;
@@ -1449,6 +1471,7 @@ int RunCommand(const std::vector<std::string_view>& args) {
     result.diagnostics.push_back("gpu_vram_mb=" + std::to_string(gpuTracer->vram_mb()));
     result.diagnostics.push_back("dxr_supported=" + std::string(gpuTracer->dxr_supported() ? "true" : "false"));
     result.diagnostics.push_back("dxr_tier=" + gpuTracer->dxr_tier_string());
+    result.diagnostics.push_back("d3d12_hlsl_path=" + d3d12HlslPath);
     tracer = std::move(gpuTracer);
 #else
     std::cerr << "D3D12 support is not enabled in this build\n";
@@ -1610,6 +1633,9 @@ int RunCommand(const std::vector<std::string_view>& args) {
       result.diagnostics.push_back("dynamic_instance_transforms=" +
                                    std::string(d3d12->dynamic_instance_transforms_allowed() ? "true" : "false"));
       result.diagnostics.push_back("dxr_build_mode=" + d3d12->dxr_build_mode());
+      result.diagnostics.push_back("bvh_leaf_size=" + std::to_string(d3d12->bvh_leaf_size()));
+      result.diagnostics.push_back("bvh_bucket_count=" + std::to_string(d3d12->bvh_bucket_count()));
+      result.diagnostics.push_back("bvh_split_mode=" + d3d12->bvh_split_mode());
     }
   }
 #endif
