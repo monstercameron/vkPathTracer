@@ -305,7 +305,11 @@ MaterialDesc MakeMaterialDescFromDescriptor(const MaterialDescriptor& descriptor
       break;
     case MaterialFamily::Specular:
     case MaterialFamily::Glossy:
+    case MaterialFamily::NormalMappedPbr:
+    case MaterialFamily::Plastic:
+    case MaterialFamily::Rubber:
       desc.roughness = 0.25f;
+      desc.ior = descriptor.family == MaterialFamily::Rubber ? 1.35f : 1.5f;
       break;
     case MaterialFamily::GgxRoughConductor:
     case MaterialFamily::MetallicPbr:
@@ -325,19 +329,26 @@ MaterialDesc MakeMaterialDescFromDescriptor(const MaterialDescriptor& descriptor
     case MaterialFamily::Resin:
     case MaterialFamily::Epoxy:
     case MaterialFamily::Gemstone:
+    case MaterialFamily::FrostedAcrylic:
+    case MaterialFamily::TranslucentPolymer:
       desc.ior = 1.5f;
       desc.transmission = 1.0f;
-      desc.roughness = descriptor.family == MaterialFamily::FrostedGlass ? 0.5f : 0.02f;
+      desc.roughness = (descriptor.family == MaterialFamily::FrostedGlass ||
+                        descriptor.family == MaterialFamily::FrostedAcrylic) ? 0.5f : 0.02f;
       break;
     case MaterialFamily::Clearcoat:
+    case MaterialFamily::Paint:
+    case MaterialFamily::PorcelainCeramic:
+    case MaterialFamily::WetSurface:
     case MaterialFamily::CarPaint:
     case MaterialFamily::EnergyConservingLayered:
+    case MaterialFamily::ThinFilmIridescent:
+    case MaterialFamily::DiffractionGrating:
+    case MaterialFamily::HolographicCoating:
+    case MaterialFamily::Retroreflector:
+    case MaterialFamily::CausticsInspiredResponse:
       desc.clearcoat = 1.0f;
       desc.roughness = 0.2f;
-      break;
-    case MaterialFamily::NormalMappedPbr:
-      desc.normal_map = "normal";
-      desc.texture_bindings.push_back({"normal", "", "default_linear_repeat", "normal"});
       break;
     case MaterialFamily::AlphaMask:
       desc.alpha_mode = AlphaMode::Mask;
@@ -345,11 +356,33 @@ MaterialDesc MakeMaterialDescFromDescriptor(const MaterialDescriptor& descriptor
       break;
     case MaterialFamily::Velvet:
     case MaterialFamily::FabricCloth:
+    case MaterialFamily::HairFurLobes:
     case MaterialFamily::PearlLustre:
       desc.sheen = 0.6f;
       break;
+    case MaterialFamily::SubsurfaceApprox:
+    case MaterialFamily::Skin:
+    case MaterialFamily::Wax:
+    case MaterialFamily::MarbleScattering:
+    case MaterialFamily::Paper:
+      desc.roughness = 0.62f;
+      desc.sheen = 0.2f;
+      break;
+    case MaterialFamily::VolumetricShafts:
+    case MaterialFamily::VolumetricMedium:
+    case MaterialFamily::Smoke:
+    case MaterialFamily::ChromaticDust:
+      desc.roughness = 1.0f;
+      desc.base_color[3] = 0.45f;
+      desc.transmission = 0.12f;
+      break;
     default:
       break;
+  }
+
+  if (descriptor.family == MaterialFamily::NormalMappedPbr) {
+    desc.normal_map = "normal";
+    desc.texture_bindings.push_back({"normal", "", "default_linear_repeat", "normal"});
   }
 
   if (desc.sampler_bindings.empty()) {

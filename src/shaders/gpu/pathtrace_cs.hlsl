@@ -129,6 +129,20 @@ float RandF(inout uint rng) {
     return float(rng) / 4294967296.0;
 }
 
+float Pow2Fast(float x) {
+    return x * x;
+}
+
+float Pow5Fast(float x) {
+    float x2 = x * x;
+    return x2 * x2 * x;
+}
+
+float Pow6Fast(float x) {
+    float x2 = x * x;
+    return x2 * x2 * x2;
+}
+
 // ============================================================================
 // Low-discrepancy Halton sequence
 // ============================================================================
@@ -740,7 +754,7 @@ float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
     uint effect = MatEffect(idx);
     float h = Hash01(p, float(effect));
     if (effect == 1u) {
-        float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 2.0);
+        float rim = Pow2Fast(saturate(1.0 - abs(dot(n, -rd))));
         color = color * (0.65 + 0.25 * h) + float3(0.25, 0.22, 0.28) * rim * (0.4 + MatSheen(idx));
     } else if (effect == 2u) {
         float stripes = 0.5 + 0.5 * sin(p.x * 7.0 + p.z * 5.0 + h * 6.0);
@@ -767,13 +781,17 @@ float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
         float streak = 0.5 + 0.5 * sin(p.y * 18.0 + h * 5.0);
         color *= 0.55 + 0.45 * streak;
     } else if (effect == 12u) {
-        float retro = pow(saturate(dot(n, -rd)), 6.0);
+        float retro = Pow6Fast(saturate(dot(n, -rd)));
         color += float3(0.55, 0.65, 0.95) * retro;
     } else if (effect == 13u) {
         color *= 0.65 + 0.35 * abs(sin(p.x * 10.0) * cos(p.z * 10.0));
     } else if (effect == 14u) {
         float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 0.8);
         color = float3(0.15, 0.75, 1.0) * (0.2 + 0.8 * rim);
+    } else if (effect == 15u) {
+        float bands = 0.5 + 0.5 * sin(p.y * 11.0 + p.x * 3.0 + h * 7.0);
+        float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 1.5);
+        color = color * (0.25 + 0.45 * bands) + float3(0.48, 0.56, 0.68) * (0.18 + 0.32 * rim);
     }
     return clamp(color, 0.0, 1.5);
 }
@@ -783,18 +801,33 @@ bool MatIsEmissive(uint idx) {
     return e.x > 0.0 || e.y > 0.0 || e.z > 0.0;
 }
 
+float3 PreviewReflectionEnvironment(float3 rd) {
+    float t = saturate(rd.y * 0.5 + 0.5);
+    float horizon = Pow2Fast(saturate(1.0 - abs(rd.y)));
+    float3 floorColor = float3(0.08, 0.075, 0.065);
+    float3 skyColor = float3(0.34, 0.42, 0.58);
+    float3 color = lerp(floorColor, skyColor, t);
+    color += float3(0.55, 0.48, 0.36) * horizon * 0.18;
+    return color;
+}
+
 // ============================================================================
 // Path trace
 // ============================================================================
 float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
     float3 rad = 0.0;
     float3 thr = 1.0;
+    bool preview_reflection_env = false;
     uint max_depth = uint(max_depth_f);
 
     for (uint depth = 0u; depth < max_depth; ++depth) {
         Hit hit = IntersectScene(ro, rd);
         if (!hit.ok) {
-            rad += thr * env;
+            float env_luma = max(env.x, max(env.y, env.z));
+            float3 miss_env = (preview_reflection_env && env_luma <= 1.0e-5)
+                ? PreviewReflectionEnvironment(rd)
+                : env;
+            rad += thr * miss_env;
             break;
         }
 
@@ -860,13 +893,13 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
                         float3 half_dir = normalize(ldir + view_dir);
                         float effectiveRoughness = max(0.025, roughness * (is_metallic ? 0.65 : 1.0));
                         float a2 = effectiveRoughness * effectiveRoughness;
-                        float specPower = clamp(2.0 / max(0.0005, a2 * a2) - 2.0, 4.0, 512.0);
+                        float specPower = clamp(2.0 / max(0.0005, a2 * a2) - 2.0, 4.0, 96.0);
                         float spec = pow(saturate(dot(n, half_dir)), specPower);
                         float cosView = saturate(dot(n, view_dir));
                         float ior = MatIor(mi);
                         float f0 = (1.0 - ior) / (1.0 + ior);
                         f0 *= f0;
-                        float fresnel = f0 + (1.0 - f0) * pow(1.0 - cosView, 5.0);
+                        float fresnel = f0 + (1.0 - f0) * Pow5Fast(1.0 - cosView);
                         float specStrength = saturate((1.0 - roughness) * 0.8 +
                                                       MatMetallic(mi) * 0.45 +
                                                       MatClearcoat(mi) * 0.35 +
@@ -892,7 +925,7 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
             float ior = MatIor(mi);
             float r0 = (1.0 - ior) / (1.0 + ior);
             r0 *= r0;
-            float fresnel = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+            float fresnel = r0 + (1.0 - r0) * Pow5Fast(1.0 - cosTheta);
             if (RandF(rng) < min(0.98, fresnel + MatClearcoat(mi) * 0.15)) {
                 out_dir = rd - 2.0 * dot(n, rd) * n;
             } else {
@@ -925,6 +958,7 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         if (is_toon) {
             bounce_weight *= (dot(out_dir, n) > 0.55) ? 1.0 : 0.45;
         }
+        preview_reflection_env = is_mirror || is_metallic || is_transmissive || is_clearcoat || roughness < 0.65;
         thr *= bounce_weight;
 
         float mx = max(thr.x, max(thr.y, thr.z));

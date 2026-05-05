@@ -49,6 +49,10 @@ float rand_f(inout uint rng) {
     return float(rng) / 4294967296.0;
 }
 
+float pow2_fast(float x) { return x * x; }
+float pow5_fast(float x) { float x2 = x * x; return x2 * x2 * x; }
+float pow6_fast(float x) { float x2 = x * x; return x2 * x2 * x2; }
+
 // ---- Moller-Trumbore intersection -------------------------------------------
 bool intersect_tri(vec3 ro, vec3 rd,
                    uint i0, uint i1, uint i2,
@@ -158,6 +162,16 @@ uint  mat_effect_raw(uint idx){ return uint(mats[idx*k_mat_stride + 15u] + 0.5);
 uint  mat_effect(uint idx)    { return mat_effect_raw(idx) & 1023u; }
 bool  mat_double_sided(uint idx) { return (mat_effect_raw(idx) & 1024u) != 0u; }
 
+vec3 preview_reflection_environment(vec3 rd) {
+    float t = clamp(rd.y * 0.5 + 0.5, 0.0, 1.0);
+    float horizon = pow2_fast(clamp(1.0 - abs(rd.y), 0.0, 1.0));
+    vec3 floor_color = vec3(0.08, 0.075, 0.065);
+    vec3 sky_color = vec3(0.34, 0.42, 0.58);
+    vec3 color = mix(floor_color, sky_color, t);
+    color += vec3(0.55, 0.48, 0.36) * horizon * 0.18;
+    return color;
+}
+
 float hash01(vec3 p, float seed) {
     return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719)) + seed * 19.19) * 43758.5453);
 }
@@ -167,7 +181,7 @@ vec3 mat_surface_albedo(uint idx, vec3 p, vec3 n, vec3 rd) {
     uint effect = mat_effect(idx);
     float h = hash01(p, float(effect));
     if (effect == 1u) {
-        float rim = pow(clamp(1.0 - abs(dot(n, -rd)), 0.0, 1.0), 2.0);
+        float rim = pow2_fast(clamp(1.0 - abs(dot(n, -rd)), 0.0, 1.0));
         color = color * (0.65 + 0.25 * h) + vec3(0.25, 0.22, 0.28) * rim * (0.4 + mat_sheen(idx));
     } else if (effect == 2u) {
         float stripes = 0.5 + 0.5 * sin(p.x * 7.0 + p.z * 5.0 + h * 6.0);
@@ -194,13 +208,17 @@ vec3 mat_surface_albedo(uint idx, vec3 p, vec3 n, vec3 rd) {
         float streak = 0.5 + 0.5 * sin(p.y * 18.0 + h * 5.0);
         color *= 0.55 + 0.45 * streak;
     } else if (effect == 12u) {
-        float retro = pow(clamp(dot(n, -rd), 0.0, 1.0), 6.0);
+        float retro = pow6_fast(clamp(dot(n, -rd), 0.0, 1.0));
         color += vec3(0.55, 0.65, 0.95) * retro;
     } else if (effect == 13u) {
         color *= 0.65 + 0.35 * abs(sin(p.x * 10.0) * cos(p.z * 10.0));
     } else if (effect == 14u) {
         float rim = pow(clamp(1.0 - abs(dot(n, -rd)), 0.0, 1.0), 0.8);
         color = vec3(0.15, 0.75, 1.0) * (0.2 + 0.8 * rim);
+    } else if (effect == 15u) {
+        float bands = 0.5 + 0.5 * sin(p.y * 11.0 + p.x * 3.0 + h * 7.0);
+        float rim = pow(clamp(1.0 - abs(dot(n, -rd)), 0.0, 1.0), 1.5);
+        color = color * (0.25 + 0.45 * bands) + vec3(0.48, 0.56, 0.68) * (0.18 + 0.32 * rim);
     }
     return clamp(color, vec3(0.0), vec3(1.5));
 }
@@ -214,11 +232,17 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
     vec3 rad = vec3(0.0);
     vec3 thr = vec3(1.0);
     uint max_depth = uint(pc.max_depth_f);
+    bool preview_reflection_env = false;
 
     for (uint depth = 0u; depth < max_depth; ++depth) {
         Hit hit = intersect_scene(ro, rd);
         if (!hit.ok) {
-            rad += thr * vec3(pc.env_r, pc.env_g, pc.env_b);
+            vec3 env = vec3(pc.env_r, pc.env_g, pc.env_b);
+            float env_luma = max(env.r, max(env.g, env.b));
+            vec3 miss_env = (preview_reflection_env && env_luma <= 1.0e-5)
+                ? preview_reflection_environment(rd)
+                : env;
+            rad += thr * miss_env;
             break;
         }
 
@@ -247,7 +271,7 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
         bool  is_toon = (model == 8u);
 
         // NEE: sample one point light — skip for perfect mirrors
-        if (pc.num_lights > 0u && !is_mirror && !is_transmissive) {
+        if (pc.num_lights > 0u) {
             uint  li    = uint(rand_f(rng) * float(pc.num_lights));
             li = min(li, pc.num_lights - 1u);
             uint  lb    = li * 8u;
@@ -266,8 +290,36 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
                 bool occ   = shadow.ok && shadow.t < dist - 0.004;
                 if (!occ) {
                     vec3 irrad  = lcol * (lint / (dist2 + 1e-4));
-                    vec3 direct = albedo * (1.0 / 3.14159265) * irrad * cos_t
+                    vec3 direct = vec3(0.0);
+                    if (!is_mirror && !is_transmissive) {
+                        direct += albedo * (1.0 / 3.14159265) * irrad * cos_t
                                   * float(pc.num_lights);
+                    }
+                    if (is_mirror || is_metallic || is_clearcoat || is_transmissive || roughness < 0.65) {
+                        vec3 view_dir = normalize(-rd);
+                        vec3 half_dir = normalize(ldir + view_dir);
+                        float effective_roughness = max(0.025, roughness * (is_metallic ? 0.65 : 1.0));
+                        float a2 = effective_roughness * effective_roughness;
+                        float spec_power = clamp(2.0 / max(0.0005, a2 * a2) - 2.0, 4.0, 96.0);
+                        float spec = pow(clamp(dot(n, half_dir), 0.0, 1.0), spec_power);
+                        float cos_view = clamp(dot(n, view_dir), 0.0, 1.0);
+                        float ior = mat_ior(mi);
+                        float f0 = (1.0 - ior) / (1.0 + ior);
+                        f0 *= f0;
+                        float fresnel = f0 + (1.0 - f0) * pow5_fast(1.0 - cos_view);
+                        float spec_strength = clamp((1.0 - roughness) * 0.8 +
+                                                     mat_metallic(mi) * 0.45 +
+                                                     mat_clearcoat(mi) * 0.35 +
+                                                     (is_mirror ? 0.75 : 0.0) +
+                                                     (is_transmissive ? fresnel : 0.0),
+                                                     0.0,
+                                                     1.0);
+                        vec3 spec_tint = mix(vec3(1.0), albedo, is_metallic ? 0.85 : 0.12);
+                        direct += spec_tint * irrad * spec * cos_t * float(pc.num_lights) * max(0.15, spec_strength);
+                    }
+                    if (is_transmissive) {
+                        direct += albedo * irrad * cos_t * float(pc.num_lights) * (0.08 + 0.22 * mat_alpha(mi));
+                    }
                     rad += thr * direct;
                 }
             }
@@ -283,7 +335,7 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
             float ior = mat_ior(mi);
             float r0 = (1.0 - ior) / (1.0 + ior);
             r0 *= r0;
-            float fresnel = r0 + (1.0 - r0) * pow(1.0 - cosTheta, 5.0);
+            float fresnel = r0 + (1.0 - r0) * pow5_fast(1.0 - cosTheta);
             if (rand_f(rng) < min(0.98, fresnel + mat_clearcoat(mi) * 0.15)) {
                 out_dir = rd - 2.0 * dot(n, rd) * n;
             } else {
@@ -319,6 +371,7 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
         if (is_toon) {
             bounce_weight *= (dot(out_dir, n) > 0.55) ? 1.0 : 0.45;
         }
+        preview_reflection_env = is_mirror || is_metallic || is_transmissive || is_clearcoat || roughness < 0.65;
         thr *= bounce_weight;
 
         float mx = max(thr.r, max(thr.g, thr.b));

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <d3dcompiler.h>
@@ -89,6 +90,100 @@ uint32_t ParseEnvU32(const char* name, uint32_t fallback, uint32_t minValue, uin
     return fallback;
   }
   return static_cast<uint32_t>(parsed);
+}
+
+std::string ReadEnvString(const char* name) {
+  std::string valueText;
+#if defined(_WIN32)
+  char* valueBuffer = nullptr;
+  size_t valueLength = 0u;
+  if (_dupenv_s(&valueBuffer, &valueLength, name) == 0 && valueBuffer != nullptr) {
+    valueText.assign(valueBuffer, valueLength > 0u ? valueLength - 1u : 0u);
+    std::free(valueBuffer);
+  }
+#else
+  if (const char* value = std::getenv(name)) {
+    valueText = value;
+  }
+#endif
+  std::transform(valueText.begin(), valueText.end(), valueText.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return valueText;
+}
+
+bool ParseEnvBool(const char* name, bool fallback) {
+  const std::string valueText = ReadEnvString(name);
+  if (valueText.empty()) {
+    return fallback;
+  }
+  if (valueText == "1" || valueText == "true" || valueText == "yes" || valueText == "on") {
+    return true;
+  }
+  if (valueText == "0" || valueText == "false" || valueText == "no" || valueText == "off") {
+    return false;
+  }
+  LogError(std::string("ignoring invalid ") + name + "=" + valueText +
+           " (expected 0/1, true/false, yes/no, or on/off)");
+  return fallback;
+}
+
+std::string SelectDxrBuildMode() {
+  const std::string valueText = ReadEnvString("PT_D3D12_DXR_BUILD_MODE");
+  if (valueText.empty()) {
+    return "fast_trace";
+  }
+  if (valueText == "fast_trace" || valueText == "fast_build" || valueText == "none") {
+    return valueText;
+  }
+  LogError("ignoring invalid PT_D3D12_DXR_BUILD_MODE=" + valueText +
+           " (expected fast_trace, fast_build, or none)");
+  return "fast_trace";
+}
+
+uint32_t SelectBvhLeafSize() {
+  return ParseEnvU32("PT_D3D12_BVH_LEAF_SIZE", 4u, 1u, 16u);
+}
+
+uint32_t SelectBvhBucketCount() {
+  const uint32_t value = ParseEnvU32("PT_D3D12_BVH_BUCKETS", 8u, 2u, 16u);
+  if (value == 4u || value == 8u || value == 16u) {
+    return value;
+  }
+  LogError("ignoring unsupported PT_D3D12_BVH_BUCKETS=" + std::to_string(value) +
+           " (expected 4, 8, or 16)");
+  return 8u;
+}
+
+std::string SelectBvhSplitMode() {
+  const std::string valueText = ReadEnvString("PT_D3D12_BVH_SPLIT_MODE");
+  if (valueText.empty()) {
+    return "sah";
+  }
+  if (valueText == "sah" || valueText == "median") {
+    return valueText;
+  }
+  LogError("ignoring invalid PT_D3D12_BVH_SPLIT_MODE=" + valueText +
+           " (expected sah or median)");
+  return "sah";
+}
+
+D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS DxrBuildPreferenceFlags(
+    const std::string& mode) {
+  if (mode == "fast_build") {
+    return D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+  }
+  if (mode == "none") {
+    return D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+  }
+  return D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+}
+
+D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS AddDxrBuildFlags(
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS lhs,
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS rhs) {
+  return static_cast<D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS>(
+      static_cast<UINT>(lhs) | static_cast<UINT>(rhs));
 }
 
 uint32_t SelectRaysPerPixelPerDispatch(const vkpt::pathtracer::RenderSettings& settings) {
@@ -203,6 +298,12 @@ struct DynamicInstanceRef {
   float bmax[3]{};
 };
 
+struct BvhBuildConfig {
+  uint32_t leaf_size = 4u;
+  uint32_t bucket_count = 8u;
+  bool use_median_split = false;
+};
+
 static float bvh_sa(const float bmin[3], const float bmax[3]) {
   float dx = bmax[0]-bmin[0], dy = bmax[1]-bmin[1], dz = bmax[2]-bmin[2];
   if (dx < 0) dx = 0; if (dy < 0) dy = 0; if (dz < 0) dz = 0;
@@ -217,6 +318,7 @@ static uint32_t bvh_build(
   uint32_t start, uint32_t count,
   const std::vector<uint32_t>&   orig_idx,
   const std::vector<uint32_t>&   orig_tri_mat,
+  const BvhBuildConfig&          config,
   std::vector<float>&            gpu_bvh,
   std::vector<uint32_t>&         reord_idx,
   std::vector<uint32_t>&         reord_tri_mat,
@@ -240,8 +342,7 @@ static uint32_t bvh_build(
   gpu_bvh[base+0u]=bmin[0]; gpu_bvh[base+1u]=bmin[1]; gpu_bvh[base+2u]=bmin[2];
   gpu_bvh[base+3u]=bmax[0]; gpu_bvh[base+4u]=bmax[1]; gpu_bvh[base+5u]=bmax[2];
 
-  // Leaf: <= 4 triangles
-  if (count <= 4u) {
+  if (count <= config.leaf_size) {
     const uint32_t first_tri = static_cast<uint32_t>(reord_idx.size() / 3u);
     for (uint32_t i = start; i < start + count; ++i) {
       const uint32_t t = refs[i].orig_idx;
@@ -255,7 +356,39 @@ static uint32_t bvh_build(
     return ni;
   }
 
-  // SAH split using 8 buckets along each axis
+  if (config.use_median_split) {
+    float cmin[3] = {1e30f, 1e30f, 1e30f};
+    float cmax[3] = {-1e30f, -1e30f, -1e30f};
+    for (uint32_t i = start; i < start + count; ++i) {
+      for (int k = 0; k < 3; ++k) {
+        cmin[k] = std::min(cmin[k], refs[i].centroid[k]);
+        cmax[k] = std::max(cmax[k], refs[i].centroid[k]);
+      }
+    }
+    float extent[3] = {cmax[0] - cmin[0], cmax[1] - cmin[1], cmax[2] - cmin[2]};
+    int axis = 0;
+    if (extent[1] > extent[axis]) axis = 1;
+    if (extent[2] > extent[axis]) axis = 2;
+    const uint32_t mid = start + count / 2u;
+    std::nth_element(refs.begin() + start, refs.begin() + mid, refs.begin() + start + count,
+      [axis](const BvhTriRef& a, const BvhTriRef& b) {
+        return a.centroid[axis] < b.centroid[axis];
+      });
+
+    const uint32_t left_child  = bvh_build(refs, start, mid - start,
+                        orig_idx, orig_tri_mat, config,
+                        gpu_bvh, reord_idx, reord_tri_mat, node_count);
+    const uint32_t right_child = bvh_build(refs, mid, (start + count) - mid,
+                        orig_idx, orig_tri_mat, config,
+                        gpu_bvh, reord_idx, reord_tri_mat, node_count);
+    gpu_bvh[base+6u] = as_fb(left_child);
+    gpu_bvh[base+7u] = as_fb(right_child);
+    return ni;
+  }
+
+  // SAH split using a configurable bucket count along each axis.
+  constexpr int kMaxBvhBuckets = 16;
+  const int bucket_count = static_cast<int>(std::clamp(config.bucket_count, 2u, 16u));
   const float node_sa_v = std::max(1e-9f, bvh_sa(bmin, bmax));
   int   best_axis      = 0;
   float best_split_val = 0.0f;
@@ -272,20 +405,22 @@ static uint32_t bvh_build(
     if (extent < 1e-6f) continue;
 
     struct Bkt { float mn[3], mx[3]; uint32_t n; };
-    Bkt bkts[8];
-    for (int b = 0; b < 8; ++b) {
+    Bkt bkts[kMaxBvhBuckets];
+    for (int b = 0; b < bucket_count; ++b) {
       bkts[b].n = 0;
       for (int k=0;k<3;++k) { bkts[b].mn[k]=1e30f; bkts[b].mx[k]=-1e30f; }
     }
     for (uint32_t i = start; i < start + count; ++i) {
-      const int b = std::min(7, static_cast<int>((refs[i].centroid[axis] - cmin) / extent * 8));
+      const int b = std::min(bucket_count - 1,
+                             static_cast<int>((refs[i].centroid[axis] - cmin) / extent *
+                                              static_cast<float>(bucket_count)));
       bkts[b].n++;
       for (int k=0;k<3;++k) {
         bkts[b].mn[k] = std::min(bkts[b].mn[k], refs[i].bmin[k]);
         bkts[b].mx[k] = std::max(bkts[b].mx[k], refs[i].bmax[k]);
       }
     }
-    for (int s = 1; s < 8; ++s) {
+    for (int s = 1; s < bucket_count; ++s) {
       float lmn[3]={1e30f,1e30f,1e30f}, lmx[3]={-1e30f,-1e30f,-1e30f};
       float rmn[3]={1e30f,1e30f,1e30f}, rmx[3]={-1e30f,-1e30f,-1e30f};
       uint32_t lc = 0, rc = 0;
@@ -294,7 +429,7 @@ static uint32_t bvh_build(
         lc += bkts[b].n;
         for (int k=0;k<3;++k) { lmn[k]=std::min(lmn[k],bkts[b].mn[k]); lmx[k]=std::max(lmx[k],bkts[b].mx[k]); }
       }
-      for (int b=s;b<8;++b) {
+      for (int b=s;b<bucket_count;++b) {
         if (!bkts[b].n) continue;
         rc += bkts[b].n;
         for (int k=0;k<3;++k) { rmn[k]=std::min(rmn[k],bkts[b].mn[k]); rmx[k]=std::max(rmx[k],bkts[b].mx[k]); }
@@ -304,7 +439,7 @@ static uint32_t bvh_build(
       if (cost < best_cost) {
         best_cost      = cost;
         best_axis      = axis;
-        best_split_val = cmin + static_cast<float>(s) / 8.0f * extent;
+        best_split_val = cmin + static_cast<float>(s) / static_cast<float>(bucket_count) * extent;
         found_split    = true;
       }
     }
@@ -325,10 +460,10 @@ static uint32_t bvh_build(
   }
 
   const uint32_t left_child  = bvh_build(refs, start, mid - start,
-                      orig_idx, orig_tri_mat,
+                      orig_idx, orig_tri_mat, config,
                       gpu_bvh, reord_idx, reord_tri_mat, node_count);
   const uint32_t right_child = bvh_build(refs, mid, (start + count) - mid,
-                      orig_idx, orig_tri_mat,
+                      orig_idx, orig_tri_mat, config,
                       gpu_bvh, reord_idx, reord_tri_mat, node_count);
 
   // Write internal node children (bit 31 = 0 means internal)
@@ -561,12 +696,24 @@ bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   m_sceneUploaded     = false;
   m_raysPerPixelPerDispatch = SelectRaysPerPixelPerDispatch(s);
   m_readbackInterval = SelectReadbackInterval(s);
+  m_forceReadbackEverySample = ParseEnvBool("PT_D3D12_FORCE_READBACK_EVERY_SAMPLE", false);
+  m_dynamicInstanceTransformsAllowed = ParseEnvBool("PT_D3D12_DYNAMIC_INSTANCE_TRANSFORMS", true);
+  m_dxrBuildMode = SelectDxrBuildMode();
+  m_bvhLeafSize = SelectBvhLeafSize();
+  m_bvhBucketCount = SelectBvhBucketCount();
+  m_bvhSplitMode = SelectBvhSplitMode();
   std::ostringstream cfg;
   cfg << "configure width=" << s.width << " height=" << s.height
       << " spp=" << s.spp
       << " max_depth=" << s.max_depth << " seed=" << s.seed
       << " rays_per_pixel_per_dispatch=" << m_raysPerPixelPerDispatch
-      << " readback_interval=" << m_readbackInterval;
+      << " readback_interval=" << m_readbackInterval
+      << " force_readback_every_sample=" << (m_forceReadbackEverySample ? "true" : "false")
+      << " dynamic_instance_transforms=" << (m_dynamicInstanceTransformsAllowed ? "true" : "false")
+      << " dxr_build_mode=" << m_dxrBuildMode
+      << " bvh_leaf_size=" << m_bvhLeafSize
+      << " bvh_bucket_count=" << m_bvhBucketCount
+      << " bvh_split_mode=" << m_bvhSplitMode;
   LogDebug(cfg.str());
   destroy_film_buffer();
   return create_film_buffer();
@@ -730,6 +877,10 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
   m_staticTriangleCount = 0u;
   std::vector<PackedInstance> packedInstances(m_sceneData.instances.size());
   std::vector<uint32_t> staticTriMat;
+  const BvhBuildConfig bvhConfig{
+      m_bvhLeafSize,
+      m_bvhBucketCount,
+      m_bvhSplitMode == "median"};
 
   auto append_vertex = [&](const vkpt::pathtracer::Vec3& vertex) {
     const uint32_t out = static_cast<uint32_t>(m_gpuVerts.size() / 3u);
@@ -777,7 +928,7 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
            firstVertex + vertexCount <= m_sceneData.local_vertices.size();
   };
 
-  const bool allowDynamicInstanceTransforms = true;
+  const bool allowDynamicInstanceTransforms = m_dynamicInstanceTransformsAllowed;
   auto should_use_dynamic_instance = [&](const vkpt::pathtracer::RTInstance& inst) {
     return allowDynamicInstanceTransforms &&
            inst.has_flag(vkpt::pathtracer::kRTInstanceFlagDynamicTransform) &&
@@ -1253,6 +1404,9 @@ bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
 }
 
 bool D3D12GpuPathTracer::should_readback_sample(uint32_t sample_idx) const {
+  if (m_forceReadbackEverySample) {
+    return true;
+  }
   const bool finiteSpp = m_settings.spp != std::numeric_limits<uint32_t>::max();
   if (finiteSpp) {
     return sample_idx + 1u >= m_settings.spp;
@@ -2802,7 +2956,7 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
 
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs{};
     inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-    inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+    inputs.Flags = DxrBuildPreferenceFlags(m_dxrBuildMode);
     inputs.NumDescs = 1u;
     inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     inputs.pGeometryDescs = &geomDesc;
@@ -2919,8 +3073,9 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
 
   D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tlasInputs{};
   tlasInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-  tlasInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
-                     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+  tlasInputs.Flags = AddDxrBuildFlags(
+      DxrBuildPreferenceFlags(m_dxrBuildMode),
+      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE);
   tlasInputs.NumDescs = static_cast<UINT>(m_dxrInstanceDescs.size());
   tlasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
   tlasInputs.InstanceDescs = m_tlasInstanceBuf->GetGPUVirtualAddress();
@@ -3053,9 +3208,10 @@ bool D3D12GpuPathTracer::update_dxr_instance_buffer_and_tlas() {
 
   D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS tlasInputs{};
   tlasInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
-  tlasInputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE |
-                     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE |
-                     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+  tlasInputs.Flags = AddDxrBuildFlags(
+      AddDxrBuildFlags(DxrBuildPreferenceFlags(m_dxrBuildMode),
+                       D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE),
+      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE);
   tlasInputs.NumDescs = static_cast<UINT>(m_dxrInstanceDescs.size());
   tlasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
   tlasInputs.InstanceDescs = m_tlasInstanceBuf->GetGPUVirtualAddress();

@@ -500,7 +500,7 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
   bool intersect_torus(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;
   bool intersect_capsule(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;
   bool intersect_scene(const Ray& ray, Hit& out) const;
-  NeeResult sample_direct_light(const Hit& hit, Rng& rng) const;
+  NeeResult sample_direct_light(const Hit& hit, const Vec3& view_dir, Rng& rng) const;
   float light_pdf_for_direction(const Vec3& position, const Vec3& direction) const;
   Ray camera_rays(uint32_t x,
                   uint32_t y,
