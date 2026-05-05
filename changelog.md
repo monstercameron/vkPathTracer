@@ -15,6 +15,7 @@
 - Added D3D12 compute direct-light specular preview terms so mirror, metal, glass, and clearcoat material families remain inspectable under point lights even with a black environment.
 - Threaded configurable D3D12 BVH build settings through static and dynamic-instance builders and logged leaf/bucket/split settings for tuning.
 - Added `ptbench` diagnostics for the D3D12 shader path and BVH leaf/bucket/split settings, with `PT_D3D12_HLSL_PATH` override support for experiments.
+- Added `PT_D3D12_SHADER_TRAVERSAL` experiment selection for D3D12 shader traversal variants, with compile-time shader macros and runtime diagnostics.
 - Fixed the DXR closest-hit path to resolve dynamic instance triangle/material offsets and transform hit normals into world space.
 - Expanded the Qt inspector with editable dropdowns/sliders/reset controls for materials, mesh IDs, SDF primitives, physics, lights, cameras, and render/device statistics.
 - Kept Qt dock panels stable while refreshing live property values in place, avoiding full widget rebuilds for changing inspector/render/device fields.

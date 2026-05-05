@@ -168,6 +168,29 @@ std::string SelectBvhSplitMode() {
   return "sah";
 }
 
+std::string SelectShaderTraversalMode() {
+  const std::string valueText = ReadEnvString("PT_D3D12_SHADER_TRAVERSAL");
+  if (valueText.empty()) {
+    return "baseline";
+  }
+  if (valueText == "baseline" || valueText == "bounds_helper" || valueText == "near_order") {
+    return valueText;
+  }
+  LogError("ignoring invalid PT_D3D12_SHADER_TRAVERSAL=" + valueText +
+           " (expected baseline, bounds_helper, or near_order)");
+  return "baseline";
+}
+
+const char* ShaderTraversalDefine(const std::string& mode) {
+  if (mode == "bounds_helper") {
+    return "1";
+  }
+  if (mode == "near_order") {
+    return "2";
+  }
+  return "0";
+}
+
 D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS DxrBuildPreferenceFlags(
     const std::string& mode) {
   if (mode == "fast_build") {
@@ -625,7 +648,9 @@ uint32_t BuildDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>&
 
 D3D12GpuPathTracer::D3D12GpuPathTracer(std::string hlsl_path, std::string entry_point)
     : m_hlslPath(std::move(hlsl_path)), m_entryPoint(std::move(entry_point)) {
-  LogDebug("D3D12 tracer ctor hlsl=" + m_hlslPath + " entry=" + m_entryPoint);
+  m_shaderTraversalMode = SelectShaderTraversalMode();
+  LogDebug("D3D12 tracer ctor hlsl=" + m_hlslPath + " entry=" + m_entryPoint +
+           " shader_traversal=" + m_shaderTraversalMode);
   m_valid = init_device() && create_root_sig_and_pso();
   if (!m_valid) LogError("D3D12GpuPathTracer init failed: " + m_error);
 }
@@ -713,7 +738,8 @@ bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
       << " dxr_build_mode=" << m_dxrBuildMode
       << " bvh_leaf_size=" << m_bvhLeafSize
       << " bvh_bucket_count=" << m_bvhBucketCount
-      << " bvh_split_mode=" << m_bvhSplitMode;
+      << " bvh_split_mode=" << m_bvhSplitMode
+      << " shader_traversal=" << m_shaderTraversalMode;
   LogDebug(cfg.str());
   destroy_film_buffer();
   return create_film_buffer();
@@ -2090,8 +2116,12 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
   compileFlags |= D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #endif
   Microsoft::WRL::ComPtr<ID3DBlob> csBlob, errBlob;
+  const char* traversalDefine = ShaderTraversalDefine(m_shaderTraversalMode);
+  D3D_SHADER_MACRO shaderMacros[] = {
+      {"PT_D3D12_STATIC_TRAVERSAL_MODE", traversalDefine},
+      {nullptr, nullptr}};
   HRESULT compileHr = D3DCompile(src.c_str(), src.size(), m_hlslPath.c_str(),
-      nullptr, nullptr, m_entryPoint.c_str(), "cs_5_0",
+      shaderMacros, nullptr, m_entryPoint.c_str(), "cs_5_0",
       compileFlags, 0, &csBlob, &errBlob);
   if (FAILED(compileHr)) {
     m_error = "D3DCompile failed";
@@ -2111,7 +2141,8 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
     return false;
   }
   LogDebug("compiled shader bytes=" + std::to_string(csBlob->GetBufferSize()));
-  LogInfo("D3D12 compute PSO created from " + m_hlslPath);
+  LogInfo("D3D12 compute PSO created from " + m_hlslPath +
+          " shader_traversal=" + m_shaderTraversalMode);
 
   // Compile tonemap entry point from same source
   if (!create_tonemap_pso(src)) return false;
