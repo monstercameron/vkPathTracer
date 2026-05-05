@@ -28,7 +28,10 @@ Current deterministic UI contracts:
 
 - `SelectionState` uses stable entity IDs and roundtrips selected IDs, hover state, active primary entity, aggregate bounds, and per-item bounds through JSON.
 - `MenuBar` carries enabled state and disabled reasons so native/Qt/web shells can explain unavailable actions.
-- `UiLayoutDocument` owns dock/floating/visibility/collapse/move/resize state and persists JSON layouts.
+- `UiPanelDefinition` and `UiPanelState` define the engine-owned panel set for viewport, scene tree, inspector, asset browser, material editor, script panel, benchmark panel, benchmark history, console, and status bar.
+- `UiLayoutDocument` owns dock/floating/visibility/collapse/move/resize state and serializes JSON layouts.
+- Layout presets exist for default, benchmark, material authoring, scripting, asset management, debug/profiler, minimal viewport, and fullscreen overlay.
+- `InspectorFieldSchema` covers transform, material, light, camera, and script property fields; `InspectorFieldValue` can represent exact, mixed, and unsupported values.
 - `BenchmarkPanelModel` carries the run descriptor, raw metrics, workload cost, normalized score, calibration actions, result summary, and artifact location.
 - `StatusBarModel` is derived from runtime state, selection state, and optional benchmark score.
 - `UiReleaseGateItem` records passed, deferred, and pending release-gate evidence for the G70 checklist.
@@ -131,8 +134,14 @@ Expected shell behavior:
 - `paintEvent` blits the latest completed image only; it does not run expensive render work.
 - The Qt event queue does not receive per-tile, per-pixel, per-sample, or per-ray progress events.
 - Resize of the physical framebuffer resets accumulation.
-- Left-click viewport picking emits editor selection commands and shows selected-object bounding boxes.
+- Left-click viewport picking emits editor selection commands and shows selected-object 3D bounding boxes.
+- Mesh picking uses bounds as a broad phase, then requires a front-facing triangle hit so backface-culled surfaces are click-through.
+- Selected objects draw translate, rotate, scale, and universal transform gizmo overlays; `T`, `R`, `S`, and `G` switch modes outside FPS camera mode.
 - Right or middle drag controls the orbit camera; `F` toggles FPS camera mode with keyboard movement.
+- Mouse input is grabbed for the duration of viewport drags and released on button-up, focus loss, or close.
+- The Qt shell uses a `QMainWindow` with the path-tracing viewport as the central native surface and a native menu bar generated from the editor menu model.
+- Qt menu actions emit `MenuCommand` events into the same app event loop as viewport input; implemented commands are routed/logged and unsupported commands report a status reason.
+- Native Qt docks and a native Qt status bar are wired. The shell creates scene graph, inspector, materials, lights, camera, render settings, benchmark, diagnostics, performance, debug views, asset browser, timeline, scripting, and physics docks from engine-owned models and saves/restores dock layout through `QSettings`.
 
 ## D3D12 Qt preview example
 
@@ -157,6 +166,15 @@ Expected shell behavior:
 - On close, render submission stops and GPU work is flushed before the Qt native surface is destroyed.
 
 If the command fails because the native handle is null, stale, or unsupported, treat that as a platform contract failure. See [`qt_native_surface.md`](qt_native_surface.md) and [`qt_diagnostics.md`](qt_diagnostics.md).
+
+## Panel and property status
+
+The panel/property work is split between engine-owned models and native Qt widgets:
+
+- Done: panel definitions, panel state mutations, layout presets, layout JSON serialization, status-bar model, inspector property schemas/value states, benchmark panel model, and menu command models.
+- Done in the Qt shell: `QMainWindow`, central viewport, native menu bar, nested/tabbed dock options, native `QDockWidget` panels, native `QStatusBar` binding, `QSettings` layout save/restore, viewport overlay status text, viewport selection overlay, and menu command routing.
+- Current dock behavior: scene graph and inspector are read-only; materials, lights, camera, render settings, benchmark, diagnostics, performance, debug views, asset browser, timeline, scripting, and physics panels expose live rows/properties.
+- Pending behavior: editable dock widgets must submit engine commands or model mutations; Qt signal handlers must not directly mutate scene data.
 
 ## Architecture notes
 

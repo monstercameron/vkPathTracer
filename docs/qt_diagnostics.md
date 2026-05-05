@@ -203,6 +203,28 @@ Checks:
 
 Do not compare the render target against the top-level window if the viewport is inside a menu/status/dock layout. Use the actual viewport widget.
 
+## Qt shell surface readiness
+
+The bounded Qt smoke runs with the offscreen platform and does not click through
+the GUI. To verify the editor shell without interaction, emit one startup log
+line after the main window has installed its central viewport, menu bar, status
+bar, and core docks.
+
+Expected marker shape:
+
+```text
+qt shell ready menu_bar=true status_bar=true dock_count=8 docks=scene_graph,inspector,materials,lights,camera,render_settings,diagnostics,performance
+```
+
+`tools/ui_qt_smoke.ps1` reads the bounded window stdout/stderr logs and checks:
+
+- `menu_bar=true`
+- `status_bar=true`
+- `dock_count` is at least the configured minimum
+- each required dock id is present in the marker
+
+This keeps the smoke non-invasive and compatible with `QT_QPA_PLATFORM=offscreen`.
+
 ## Render thread does not stop
 
 Typical symptom:

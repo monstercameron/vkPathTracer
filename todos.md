@@ -5016,7 +5016,7 @@ batch script attachment
 
 ---
 
-## [ ] G37 — Add ECS scene tree panel
+## [x] G37 — Add ECS scene tree panel
 
 **Deliverable:** hierarchical ECS tree.
 
@@ -5045,7 +5045,7 @@ hover highlight
 
 ---
 
-## [ ] G38 — Add ECS tree parent/child operations
+## [x] G38 — Add ECS tree parent/child operations
 
 **Deliverable:** hierarchy editing commands.
 
@@ -5068,7 +5068,7 @@ hide/show
 
 ---
 
-## [ ] G39 — Add ECS tree drag/drop sibling reorder
+## [x] G39 — Add ECS tree drag/drop sibling reorder
 
 **Deliverable:** drag/drop reordering in tree.
 

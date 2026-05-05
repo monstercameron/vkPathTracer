@@ -251,7 +251,9 @@ Windows D3D12 Qt preview example:
   --ui-present-hz 30
 ```
 
-The Qt path is a platform/editor shell. Renderer backends receive native handles and capability descriptors; they must not receive `QWidget*`, `QWindow*`, or other Qt objects. The CPU preview path publishes throttled RGBA8 display frames into a latest-wins viewport handoff; `--ui-present-hz` controls that publish cap and defaults to 30 Hz. The D3D12 path uses the Qt viewport only as a native presentation surface. In the Qt CPU preview, left-click selects a pickable object and shows its projected bounding box, right or middle drag orbits the camera, the mouse wheel dollies, and `F` toggles FPS camera mode with `W`/`A`/`S`/`D` plus `Q`/`E` movement.
+The Qt path is a platform/editor shell. Renderer backends receive native handles and capability descriptors; they must not receive `QWidget*`, `QWindow*`, or other Qt objects. The CPU preview path publishes throttled RGBA8 display frames into a latest-wins viewport handoff; `--ui-present-hz` controls that publish cap and defaults to 30 Hz. The D3D12 path uses the Qt viewport only as a native presentation surface. The Qt shell wraps the viewport in a `QMainWindow` with a native menu bar, native status bar, and dock widgets generated from the editor models. In the Qt CPU preview, left-click selects a pickable object through front-facing mesh triangles and shows its projected 3D bounding box with transform gizmos, `T`/`R`/`S`/`G` switch translate/rotate/scale/universal gizmo modes, right or middle drag orbits the camera, the mouse wheel dollies, and `F` toggles FPS camera mode with `W`/`A`/`S`/`D` plus `Q`/`E` movement.
+
+Current panel status: native Qt docks and the native `QStatusBar` are wired. The shell shows scene graph, inspector, materials, lights, camera, render settings, benchmark, diagnostics, performance, debug views, asset browser, timeline, scripting, and physics docks, with dock layout persisted through `QSettings`.
 
 Qt shell docs:
 
