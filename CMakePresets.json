@@ -152,12 +152,13 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/presets/windows-clangcl-d3d12-debug",
       "cacheVariables": {
-        "CMAKE_CXX_COMPILER": "clang-cl",
-        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
         "CMAKE_BUILD_TYPE": "Debug",
         "PT_ENABLE_D3D12": "ON",
         "PT_ENABLE_VULKAN": "OFF",
-        "PT_ENABLE_WEBGPU": "OFF"
+        "PT_ENABLE_WEBGPU": "OFF",
+        "PT_ENABLE_JOLT": "ON"
       }
     },
     {
@@ -172,14 +173,16 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/presets/windows-clangcl-d3d12-qt-debug",
       "cacheVariables": {
-        "CMAKE_CXX_COMPILER": "clang-cl",
-        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
         "CMAKE_BUILD_TYPE": "Debug",
         "PT_ENABLE_D3D12": "ON",
         "PT_ENABLE_VULKAN": "OFF",
         "PT_ENABLE_WEBGPU": "OFF",
+        "PT_ENABLE_JOLT": "ON",
         "PT_ENABLE_QT": "ON",
-        "PT_ENABLE_QT_EDITOR": "ON"
+        "PT_ENABLE_QT_EDITOR": "ON",
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64"
       }
     },
     {
@@ -194,14 +197,16 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/presets/windows-clangcl-d3d12-qt-release",
       "cacheVariables": {
-        "CMAKE_CXX_COMPILER": "clang-cl",
-        "CMAKE_C_COMPILER": "clang-cl",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
         "CMAKE_BUILD_TYPE": "Release",
         "PT_ENABLE_D3D12": "ON",
         "PT_ENABLE_VULKAN": "OFF",
         "PT_ENABLE_WEBGPU": "OFF",
+        "PT_ENABLE_JOLT": "ON",
         "PT_ENABLE_QT": "ON",
-        "PT_ENABLE_QT_EDITOR": "ON"
+        "PT_ENABLE_QT_EDITOR": "ON",
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64"
       }
     },
     {

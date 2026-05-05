@@ -629,6 +629,20 @@ bool NearlyEqual(const vkpt::scene::Vec3& lhs, const vkpt::scene::Vec3& rhs) {
   return NearlyEqual(lhs.x, rhs.x) && NearlyEqual(lhs.y, rhs.y) && NearlyEqual(lhs.z, rhs.z);
 }
 
+bool NearlyEqual(JPH::RVec3Arg lhs, const vkpt::scene::Vec3& rhs, float epsilon = 0.0005f) {
+  return std::abs(static_cast<float>(lhs.GetX()) - rhs.x) <= epsilon &&
+         std::abs(static_cast<float>(lhs.GetY()) - rhs.y) <= epsilon &&
+         std::abs(static_cast<float>(lhs.GetZ()) - rhs.z) <= epsilon;
+}
+
+bool NearlyEqual(JPH::QuatArg lhs, const vkpt::scene::Quat& rhs, float epsilon = 0.0005f) {
+  const float dot = lhs.GetX() * rhs.x +
+                    lhs.GetY() * rhs.y +
+                    lhs.GetZ() * rhs.z +
+                    lhs.GetW() * rhs.w;
+  return std::abs(1.0f - std::abs(dot)) <= epsilon;
+}
+
 struct BodyRuntimeKey {
   bool dynamic = false;
   bool trigger = false;
@@ -759,12 +773,29 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
       const auto key = MakeBodyRuntimeKey(sync);
       if (const auto existing = m_bodies.find(sync.entity);
           existing != m_bodies.end() && SameBodyRuntimeKey(existing->second.key, key)) {
-        bodies.SetPositionAndRotation(existing->second.body_id,
-                                      JPH::RVec3(sync.transform.translation.x,
-                                                sync.transform.translation.y,
-                                                sync.transform.translation.z),
-                                      ToJoltQuat(sync.transform.rotation),
-                                      JPH::EActivation::DontActivate);
+        const JPH::RVec3 target_position(sync.transform.translation.x,
+                                         sync.transform.translation.y,
+                                         sync.transform.translation.z);
+        const JPH::Quat target_rotation = ToJoltQuat(sync.transform.rotation);
+        JPH::RVec3 current_position;
+        JPH::Quat current_rotation;
+        bodies.GetPositionAndRotation(existing->second.body_id, current_position, current_rotation);
+        const bool pose_changed =
+            !NearlyEqual(current_position, sync.transform.translation) ||
+            !NearlyEqual(current_rotation, sync.transform.rotation);
+        const auto activation =
+            key.dynamic && pose_changed ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
+        bodies.SetPositionAndRotationWhenChanged(existing->second.body_id,
+                                                 target_position,
+                                                 target_rotation,
+                                                 activation);
+        if (key.dynamic && pose_changed) {
+          bodies.SetLinearAndAngularVelocity(existing->second.body_id,
+                                             JPH::Vec3::sZero(),
+                                             JPH::Vec3::sZero());
+          bodies.ResetSleepTimer(existing->second.body_id);
+          bodies.ActivateBody(existing->second.body_id);
+        }
         continue;
       }
 
