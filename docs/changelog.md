@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-06 (session 33)
+
+### Glass visibility, particles, gallery assets, and editor polish
+
+- Fixed glass-lab regressions by removing stray slab-target quads, keeping the scene at the intended 9 mesh objects and 14 SDF glass samples.
+- Improved transmissive visibility across CPU and D3D12 preview paths so glass no longer behaves as an opaque blocker for direct-light visibility, and D3D12 SDF slabs render through shape-aware SDF dispatch.
+- Added scene particle emitter schema/load/export/script support plus rain and smoke conversion into renderable particle geometry for benchmark/demo scenes.
+- Added Louvre/Mona Lisa gallery scene assets, generator tools, and richer wood material family variants for parquet, walnut, sandalwood, pine, teak, and mahogany.
+- Preserved Qt dock tree scroll/top-row state across panel rebuilds, added scene edit reload timing diagnostics, and expanded light visibility delta smoke coverage.
+- Verified no-Qt and Windows clang-cl D3D12 Qt `ptapp` builds, glass-lab CPU/D3D12 renders, and UI model smoke checks.
+
 ## 2026-05-06 (session 32)
 
 ### Runtime scene controls, HDRI lighting, and render cleanup
