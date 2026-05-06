@@ -553,6 +553,12 @@ uint32_t material_effect_from_family(std::string_view family) {
 }  // namespace
 
 vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::SceneDocument& doc) {
+  return BuildSceneDataFromDocumentAtFrame(doc, SceneParticleAnimationState{});
+}
+
+vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
+    const vkpt::scene::SceneDocument& doc,
+    const SceneParticleAnimationState& animation) {
   RTSceneData scene;
   scene.camera_position = {0.0f, 1.0f, 4.0f};
   scene.camera_target = {0.0f, 1.0f, 0.0f};
@@ -712,8 +718,10 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
 
   std::unordered_map<vkpt::core::StableId, bool> animatedPathCache;
   std::unordered_map<vkpt::core::StableId, bool> scriptedPathCache;
+  std::unordered_map<vkpt::core::StableId, bool> dirtyTransformPathCache;
   animatedPathCache.reserve(doc.entities.size());
   scriptedPathCache.reserve(doc.entities.size());
+  dirtyTransformPathCache.reserve(doc.entities.size());
 
   auto entity_has_animated_transform_path =
       [&](const vkpt::scene::SceneEntityDefinition& entity) {
@@ -767,6 +775,36 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     }
     scriptedPathCache.emplace(entity.id, scripted);
     return scripted;
+  };
+
+  auto entity_has_dirty_transform_path =
+      [&](const vkpt::scene::SceneEntityDefinition& entity) {
+    if (const auto cached = dirtyTransformPathCache.find(entity.id);
+        cached != dirtyTransformPathCache.end()) {
+      return cached->second;
+    }
+    bool dirty = false;
+    const auto* current = &entity;
+    for (std::size_t depth = 0u; current != nullptr && depth <= doc.entities.size(); ++depth) {
+      if (const auto cached = dirtyTransformPathCache.find(current->id);
+          cached != dirtyTransformPathCache.end()) {
+        dirty = cached->second;
+        break;
+      }
+      if (current->has_transform && current->transform.dirty) {
+        dirty = true;
+        break;
+      }
+      const vkpt::core::StableId parent =
+          current->has_hierarchy ? current->hierarchy.parent : 0u;
+      if (parent == 0u) {
+        break;
+      }
+      const auto parentIt = entityById.find(parent);
+      current = (parentIt != entityById.end()) ? parentIt->second : nullptr;
+    }
+    dirtyTransformPathCache.emplace(entity.id, dirty);
+    return dirty;
   };
 
   auto resolve_entity_transform = [&](vkpt::core::StableId id,
@@ -831,7 +869,8 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
         entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
     if (physicsDynamic ||
         entity_has_animated_transform_path(entity) ||
-        entity_has_scripted_transform_path(entity)) {
+        entity_has_scripted_transform_path(entity) ||
+        entity_has_dirty_transform_path(entity)) {
       add_capacity(dynamicVertexCapacity, geometry->vertices.size());
       add_capacity(dynamicIndexCapacity, geometry->indices.size());
     }
@@ -870,7 +909,9 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
         entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
     const bool animation_dynamic = entity_has_animated_transform_path(entity);
     const bool scripted_dynamic = entity_has_scripted_transform_path(entity);
-    const bool dynamic_transform = physics_dynamic || animation_dynamic || scripted_dynamic;
+    const bool edited_dynamic = entity_has_dirty_transform_path(entity);
+    const bool dynamic_transform =
+        physics_dynamic || animation_dynamic || scripted_dynamic || edited_dynamic;
     // Dynamic instances keep local geometry alongside world-space triangles for later refits.
     if (scene.vertices.size() >
         static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) -
@@ -1082,6 +1123,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
         material.emissive.y + material.albedo.y * emissionBoost,
         material.emissive.z + material.albedo.z * emissionBoost};
     material.alpha = clamp01(material.alpha * alphaScale);
+    material.material_flags |= 1u;
     scene.materials.push_back(material);
     return static_cast<uint32_t>(scene.materials.size() - 1u);
   };
@@ -1141,6 +1183,18 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     return ParticlePhysicsSample{position, velocity};
   };
 
+  auto emitter_lifetime = [](const vkpt::scene::SceneParticleEmitterDefinition& emitter) {
+    return std::max(0.001f, emitter.lifetime);
+  };
+
+  auto emitter_phase = [&](const vkpt::scene::SceneParticleEmitterDefinition& emitter,
+                           uint64_t seed,
+                           uint32_t stream) {
+    const float lifetime = emitter_lifetime(emitter);
+    const float animatedTime = emitter.time + (animation.advance_emitters ? animation.seconds : 0.0f);
+    return std::fmod(random01(seed, stream) + animatedTime / lifetime, 1.0f);
+  };
+
   auto append_rain_emitter = [&](const vkpt::scene::SceneParticleEmitterDefinition& emitter) {
     if (!emitter.enabled || emitter.count == 0u) {
       return;
@@ -1178,7 +1232,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
         if (particleBucket != bucket) {
           continue;
         }
-      const float phase = std::fmod(random01(seed, 11u) + emitter.time / emitter.lifetime, 1.0f);
+      const float phase = emitter_phase(emitter, seed, 11u);
       const Vec3 local{
           random_signed(seed, 1u) * bounds.x,
           (0.5f - phase) * 2.0f * bounds.y,
@@ -1192,15 +1246,19 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
           local,
           jitter,
           seed,
-          phase * emitter.lifetime);
+          phase * emitter_lifetime(emitter));
       const Vec3 particleDirection = normalize(
           length_sq(physics.velocity) <= kEpsilon ? Vec3{0.0f, -1.0f, 0.0f} : physics.velocity);
-      Vec3 basisA = normalize(cross(particleDirection, Vec3{0.0f, 0.0f, 1.0f}));
+      const Vec3 center = emitter_world_position(emitter, physics.position);
+      Vec3 viewDirection = normalize(scene.camera_position - center);
+      if (length_sq(viewDirection) <= kEpsilon) {
+        viewDirection = {0.0f, 0.0f, 1.0f};
+      }
+      Vec3 basisA = normalize(cross(particleDirection, viewDirection));
       if (length_sq(basisA) <= kEpsilon) {
         basisA = normalize(cross(particleDirection, Vec3{1.0f, 0.0f, 0.0f}));
       }
-      const Vec3 basisB = normalize(cross(particleDirection, basisA));
-      const Vec3 center = emitter_world_position(emitter, physics.position);
+      const Vec3 basisB = normalize(cross(viewDirection, basisA));
       const float widthJitter = 0.72f + random01(seed, 29u) * 0.75f;
       const Vec3 a = basisA * (halfRadius * widthJitter);
       const Vec3 b = basisB * (halfRadius * widthJitter);
@@ -1259,7 +1317,13 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       return;
     }
     const uint32_t materialIndex = make_particle_material_variant(
-        material_index_for_id(emitter.material_id), 1.08f, 0.0f, 0.72f);
+        material_index_for_id(emitter.material_id), 1.65f, 0.22f, 0.34f);
+    scene.materials[materialIndex].material_effect = 0u;
+    scene.materials[materialIndex].material_model = 0u;
+    scene.materials[materialIndex].emissive = {
+        std::max(scene.materials[materialIndex].emissive.x, 0.18f),
+        std::max(scene.materials[materialIndex].emissive.y, 0.18f),
+        std::max(scene.materials[materialIndex].emissive.z, 0.18f)};
     const uint32_t firstTriangle = static_cast<uint32_t>(scene.indices.size() / 3u);
     const Vec3 bounds{
         std::max(0.001f, emitter.bounds.x),
@@ -1270,7 +1334,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       const uint64_t seed = (static_cast<uint64_t>(emitter.seed) << 32u) ^
                             static_cast<uint64_t>(emitter.id) ^
                             static_cast<uint64_t>(i) * 0xbf58476d1ce4e5b9ULL;
-      const float phase = std::fmod(random01(seed, 17u) + emitter.time / emitter.lifetime, 1.0f);
+      const float phase = emitter_phase(emitter, seed, 17u);
       const Vec3 baseLocal{
           random_signed(seed, 1u) * bounds.x,
           random_signed(seed, 2u) * bounds.y,
@@ -1284,7 +1348,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
           baseLocal,
           jitter,
           seed,
-          phase * emitter.lifetime);
+          phase * emitter_lifetime(emitter));
       Vec3 local = physics.position;
       local.x += random_signed(seed, 8u) * emitter.turbulence * phase;
       local.z += random_signed(seed, 9u) * emitter.turbulence * phase;
@@ -1294,10 +1358,18 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       const float wobble = 0.75f + random01(seed, 13u) * 0.65f;
       const float plumeHeight = std::max(0.04f, emitter.radius * (2.2f + 3.0f * phase) * wobble);
       const float plumeWidth = std::max(0.03f, emitter.radius * (0.9f + 1.9f * phase) * wobble);
-      const float angle = random01(seed, 41u) * 6.28318530718f + emitter.vortex_strength * phase;
-      const Vec3 axisA{std::cos(angle), 0.0f, std::sin(angle)};
-      const Vec3 axisB{-axisA.z, 0.0f, axisA.x};
+      Vec3 viewDirection = normalize(scene.camera_position - center);
+      if (length_sq(viewDirection) <= kEpsilon) {
+        viewDirection = {0.0f, 0.0f, 1.0f};
+      }
       const Vec3 up{0.0f, 1.0f, 0.0f};
+      Vec3 axisA = normalize(cross(up, viewDirection));
+      if (length_sq(axisA) <= kEpsilon) {
+        axisA = {1.0f, 0.0f, 0.0f};
+      }
+      const float angle = random01(seed, 41u) * 0.7f + emitter.vortex_strength * phase * 0.25f;
+      axisA = normalize(axisA * std::cos(angle) + up * (std::sin(angle) * 0.18f));
+      const Vec3 axisB = normalize(cross(viewDirection, axisA));
       const Vec3 bottom = center - up * (plumeHeight * 0.35f);
       const Vec3 mid = center + up * (plumeHeight * 0.10f);
       const Vec3 top = center + up * (plumeHeight * 0.65f);
@@ -1325,18 +1397,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       scene.indices.insert(scene.indices.end(), std::begin(plumeIndices), std::end(plumeIndices));
       ++sheetCount;
 
-      if ((i % 5u) == 0u) {
-        RTSdfPrimitive puff{};
-        puff.shape = SdfShape::Sphere;
-        puff.position = center + up * (plumeHeight * 0.15f);
-        puff.rotation = {0.0f, 0.0f, 0.0f};
-        puff.radius = std::max(0.01f, emitter.radius * growth * wobble * 0.45f);
-        puff.scale = {1.0f, 1.5f + random01(seed, 14u), 1.0f};
-        puff.param_a = phase;
-        puff.param_b = emitter.turbulence;
-        puff.material_index = materialIndex;
-        scene.sdf_primitives.push_back(puff);
-      }
+      (void)growth;
     }
     if (sheetCount != 0u) {
       RTInstance instance;
@@ -1352,14 +1413,6 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       scene.instances.push_back(instance);
     }
   };
-
-  for (const auto& emitter : doc.particle_emitters) {
-    if (is_rain_particle_type(emitter.type)) {
-      append_rain_emitter(emitter);
-    } else if (is_smoke_particle_type(emitter.type)) {
-      append_smoke_emitter(emitter);
-    }
-  }
 
   auto add_light = [&](vkpt::core::StableId id,
                        const vkpt::scene::LightComponent& light,
@@ -1502,6 +1555,14 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     scene.camera_target = center;
     scene.camera_position = center + Vec3{0.0f, std::max(0.6f, 0.4f * radius), std::max(2.0f, 2.2f * radius)};
 
+  }
+
+  for (const auto& emitter : doc.particle_emitters) {
+    if (is_rain_particle_type(emitter.type)) {
+      append_rain_emitter(emitter);
+    } else if (is_smoke_particle_type(emitter.type)) {
+      append_smoke_emitter(emitter);
+    }
   }
 
   vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,

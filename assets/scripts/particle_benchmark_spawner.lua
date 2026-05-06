@@ -3,7 +3,24 @@ local script = {}
 local first_id = 12000
 local count = 18
 
+local function entity_exists(ctx, id)
+  return ctx.world:find_entity(id) ~= nil
+end
+
+local function safe_destroy(ctx, id)
+  if entity_exists(ctx, id) then
+    ctx.world:destroy_entity(id)
+  end
+end
+
+local function unspawn_batch(ctx)
+  for i = 0, count - 1 do
+    safe_destroy(ctx, first_id + i)
+  end
+end
+
 local function spawn_batch(self, ctx)
+  unspawn_batch(ctx)
   for i = 0, count - 1 do
     local col = i % 6
     local row = math.floor(i / 6)
@@ -11,7 +28,6 @@ local function spawn_batch(self, ctx)
     ctx.world:spawn_entity({
       id = id,
       name = "Lua Droplet " .. tostring(i),
-      parent = self:id(),
       transform = {
         translation = {
           x = -1.2 + col * 0.48,
@@ -26,12 +42,6 @@ local function spawn_batch(self, ctx)
         material_id = 2,
       },
     })
-  end
-end
-
-local function unspawn_batch(ctx)
-  for i = 0, count - 1 do
-    ctx.world:destroy_entity(first_id + i)
   end
 end
 

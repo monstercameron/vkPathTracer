@@ -85,11 +85,11 @@
       "name": "louvre_limestone_wall",
       "family": "stone",
       "albedo": [
-        0.74,
-        0.7,
-        0.62
+        0.77,
+        0.73,
+        0.64
       ],
-      "roughness": 0.82,
+      "roughness": 0.80,
       "metallic": 0.0,
       "ior": 1.5,
       "transmission": 0.0,
@@ -111,15 +111,15 @@
       "name": "parquet_oak_floor",
       "family": "parquet",
       "albedo": [
-        0.46,
-        0.4,
-        0.27
+        0.52,
+        0.38,
+        0.21
       ],
-      "roughness": 0.18,
+      "roughness": 0.24,
       "metallic": 0.0,
       "ior": 1.5,
       "transmission": 0.0,
-      "clearcoat": 0.72,
+      "clearcoat": 0.62,
       "sheen": 0.0,
       "anisotropy": 0.28,
       "alpha": 1.0,
@@ -141,12 +141,12 @@
         0.82,
         0.68
       ],
-      "roughness": 0.64,
+      "roughness": 0.54,
       "metallic": 0.0,
-      "ior": 1.5,
+      "ior": 1.52,
       "transmission": 0.0,
-      "clearcoat": 0.12,
-      "sheen": 0.22,
+      "clearcoat": 0.20,
+      "sheen": 0.14,
       "anisotropy": 0.0,
       "alpha": 1.0,
       "double_sided": true,
@@ -163,17 +163,17 @@
       "name": "gilded_gold_leaf",
       "family": "metallic_pbr",
       "albedo": [
-        0.83,
-        0.67,
-        0.21
+        0.98,
+        0.76,
+        0.28
       ],
-      "roughness": 0.14,
+      "roughness": 0.16,
       "metallic": 1.0,
       "ior": 1.5,
       "transmission": 0.0,
       "clearcoat": 0.0,
       "sheen": 0.0,
-      "anisotropy": 0.12,
+      "anisotropy": 0.18,
       "alpha": 1.0,
       "double_sided": false,
       "base_color_texture": "assets/models/louvre_gallery/textures/gilded_frame.png",
@@ -260,24 +260,24 @@
         0.74,
         0.38
       ],
-      "emission_intensity": 30.0
+      "emission_intensity": 4.0
     },
     {
       "id": 5208,
       "name": "dark_bronze_fixture_housing",
       "family": "metallic_pbr",
       "albedo": [
-        0.24,
-        0.18,
-        0.1
+        0.30,
+        0.22,
+        0.10
       ],
-      "roughness": 0.26,
+      "roughness": 0.22,
       "metallic": 1.0,
       "ior": 1.5,
       "transmission": 0.0,
-      "clearcoat": 0.18,
+      "clearcoat": 0.22,
       "sheen": 0.0,
-      "anisotropy": 0.25,
+      "anisotropy": 0.35,
       "alpha": 1.0,
       "double_sided": false,
       "base_color_texture": "assets/models/louvre_gallery/textures/brushed_brass.png",
@@ -312,6 +312,78 @@
         0.0,
         0.0
       ],
+      "emission_intensity": 0.0
+    },
+    {
+      "id": 5210,
+      "name": "matte_black_track_housing",
+      "family": "metallic_pbr",
+      "albedo": [0.04, 0.04, 0.04],
+      "roughness": 0.58,
+      "metallic": 1.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.0,
+      "sheen": 0.0,
+      "anisotropy": 0.0,
+      "alpha": 1.0,
+      "double_sided": false,
+      "base_color_texture": "",
+      "emission": [0.0, 0.0, 0.0],
+      "emission_intensity": 0.0
+    },
+    {
+      "id": 5211,
+      "name": "warm_track_spot_aperture",
+      "family": "emissive",
+      "albedo": [1.0, 0.83, 0.54],
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.0,
+      "sheen": 0.0,
+      "anisotropy": 0.0,
+      "alpha": 1.0,
+      "double_sided": true,
+      "base_color_texture": "",
+      "emission": [1.0, 0.83, 0.54],
+      "emission_intensity": 15.0
+    },
+    {
+      "id": 5212,
+      "name": "ceiling_gallery_diffuser",
+      "family": "emissive",
+      "albedo": [1.0, 0.97, 0.93],
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.0,
+      "sheen": 0.0,
+      "anisotropy": 0.0,
+      "alpha": 1.0,
+      "double_sided": false,
+      "base_color_texture": "",
+      "emission": [1.0, 0.97, 0.93],
+      "emission_intensity": 0.85
+    },
+    {
+      "id": 5213,
+      "name": "salle_des_etats_red_damask",
+      "family": "fabric",
+      "albedo": [0.38, 0.04, 0.05],
+      "roughness": 0.91,
+      "metallic": 0.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.0,
+      "sheen": 0.44,
+      "anisotropy": 0.0,
+      "alpha": 1.0,
+      "double_sided": true,
+      "base_color_texture": "",
+      "emission": [0.0, 0.0, 0.0],
       "emission_intensity": 0.0
     }
   ],
@@ -671,13 +743,13 @@
         "focal_length_mm": 46.0,
         "sensor_width_mm": 36.0,
         "sensor_height_mm": 24.0,
-        "aperture_radius": 0.038,
+        "aperture_radius": 0.0082,
         "focus_distance": 6.93,
-        "f_stop": 2.0,
+        "f_stop": 2.8,
         "shutter_seconds": 0.0166667,
-        "iso": 160.0,
-        "exposure_compensation": 1.45,
-        "white_balance_kelvin": 4300.0
+        "iso": 200.0,
+        "exposure_compensation": 0.15,
+        "white_balance_kelvin": 4000.0
       }
     },
     {
@@ -826,6 +898,7 @@
     {
       "id": 5405,
       "name": "Protective glass cover",
+      "visible": false,
       "transform": {
         "translation": [
           0.0,
@@ -1778,7 +1851,7 @@
           0.78,
           0.46
         ],
-        "intensity": 40.0,
+        "intensity": 0.0,
         "radius": 0.32
       },
       "physics": {
@@ -1866,7 +1939,7 @@
           0.76,
           0.44
         ],
-        "intensity": 19.0,
+        "intensity": 0.0,
         "radius": 0.24
       },
       "physics": {
@@ -1954,7 +2027,7 @@
           0.76,
           0.44
         ],
-        "intensity": 19.0,
+        "intensity": 0.0,
         "radius": 0.24
       },
       "physics": {
@@ -2042,7 +2115,7 @@
           0.72,
           0.38
         ],
-        "intensity": 12.0,
+        "intensity": 0.0,
         "radius": 0.22
       },
       "physics": {
@@ -2091,7 +2164,7 @@
           0.72,
           0.38
         ],
-        "intensity": 12.0,
+        "intensity": 0.0,
         "radius": 0.22
       },
       "physics": {
@@ -2196,7 +2269,7 @@
           0.026,
           0.028
         ],
-        "intensity": 1.0,
+        "intensity": 0.0,
         "radius": 0.0
       }
     },
@@ -2884,7 +2957,7 @@
         "rotation": [0.0, 0.0, 0.0, 1.0],
         "scale": [3.55, 0.65, 0.028]
       },
-      "mesh": {"mesh_id": 5300, "material_id": 5201},
+      "mesh": {"mesh_id": 5300, "material_id": 5213},
       "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
     },
     {
@@ -2895,7 +2968,7 @@
         "rotation": [0.0, 0.0, 0.0, 1.0],
         "scale": [3.95, 0.65, 0.028]
       },
-      "mesh": {"mesh_id": 5300, "material_id": 5201},
+      "mesh": {"mesh_id": 5300, "material_id": 5213},
       "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
     },
     {
@@ -2906,7 +2979,7 @@
         "rotation": [0.0, 0.0, 0.0, 1.0],
         "scale": [0.028, 0.65, 6.2]
       },
-      "mesh": {"mesh_id": 5300, "material_id": 5201},
+      "mesh": {"mesh_id": 5300, "material_id": 5213},
       "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
     },
     {
@@ -2917,7 +2990,7 @@
         "rotation": [0.0, 0.0, 0.0, 1.0],
         "scale": [0.028, 0.65, 6.2]
       },
-      "mesh": {"mesh_id": 5300, "material_id": 5201},
+      "mesh": {"mesh_id": 5300, "material_id": 5213},
       "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
     },
 
@@ -3120,6 +3193,144 @@
       },
       "mesh": {"mesh_id": 5300, "material_id": 5208},
       "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5550,
+      "name": "Center ceiling track rail",
+      "transform": {"translation": [0.0, 3.22, 2.1], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.055, 0.04, 6.2]},
+      "mesh": {"mesh_id": 5300, "material_id": 5210},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5551,
+      "name": "Back wall cross track rail",
+      "transform": {"translation": [-1.5, 3.22, -0.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [3.6, 0.04, 0.055]},
+      "mesh": {"mesh_id": 5300, "material_id": 5210},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5552,
+      "name": "Left wall portrait track rail",
+      "transform": {"translation": [-4.8, 3.22, 1.25], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.055, 0.04, 1.8]},
+      "mesh": {"mesh_id": 5300, "material_id": 5210},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5553,
+      "name": "Mona Lisa track spot 1 housing",
+      "transform": {"translation": [-0.80, 3.11, 0.55], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.065, 0.12, 0.065]},
+      "mesh": {"mesh_id": 5300, "material_id": 5210},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5554,
+      "name": "Mona Lisa track spot 1 aperture",
+      "transform": {"translation": [-0.80, 3.044, 0.55], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.052, 0.012, 0.052]},
+      "mesh": {"mesh_id": 5300, "material_id": 5211},
+      "light": {"type": "spot", "color": [1.0, 0.80, 0.52], "intensity": 6.0, "radius": 0.04, "direction": [0.346, -0.617, -0.707], "beam_angle": 32.0, "blend": 0.35},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5555,
+      "name": "Mona Lisa track spot 2 housing",
+      "transform": {"translation": [0.80, 3.11, 0.55], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.065, 0.12, 0.065]},
+      "mesh": {"mesh_id": 5300, "material_id": 5210},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5556,
+      "name": "Mona Lisa track spot 2 aperture",
+      "transform": {"translation": [0.80, 3.044, 0.55], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.052, 0.012, 0.052]},
+      "mesh": {"mesh_id": 5300, "material_id": 5211},
+      "light": {"type": "spot", "color": [1.0, 0.80, 0.52], "intensity": 6.0, "radius": 0.04, "direction": [-0.346, -0.617, -0.707], "beam_angle": 32.0, "blend": 0.35},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5557,
+      "name": "Mona Lisa track spot 3 housing",
+      "transform": {"translation": [0.0, 3.11, 0.75], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.065, 0.12, 0.065]},
+      "mesh": {"mesh_id": 5300, "material_id": 5210},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5558,
+      "name": "Mona Lisa track spot 3 aperture",
+      "transform": {"translation": [0.0, 3.044, 0.75], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.052, 0.012, 0.052]},
+      "mesh": {"mesh_id": 5300, "material_id": 5211},
+      "light": {"type": "spot", "color": [1.0, 0.80, 0.52], "intensity": 6.5, "radius": 0.04, "direction": [0.0, -0.614, -0.789], "beam_angle": 30.0, "blend": 0.30},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5559,
+      "name": "Back portrait track spot housing",
+      "transform": {"translation": [-2.95, 3.11, -0.70], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.065, 0.12, 0.065]},
+      "mesh": {"mesh_id": 5300, "material_id": 5210},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5560,
+      "name": "Back portrait track spot aperture",
+      "transform": {"translation": [-2.95, 3.044, -0.70], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.052, 0.012, 0.052]},
+      "mesh": {"mesh_id": 5300, "material_id": 5211},
+      "light": {"type": "spot", "color": [1.0, 0.80, 0.52], "intensity": 3.5, "radius": 0.04, "direction": [0.0, -0.967, -0.254], "beam_angle": 30.0, "blend": 0.30},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5561,
+      "name": "Left wall portrait track spot housing",
+      "transform": {"translation": [-4.80, 3.11, 1.25], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.065, 0.12, 0.065]},
+      "mesh": {"mesh_id": 5300, "material_id": 5210},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5562,
+      "name": "Left wall portrait track spot aperture",
+      "transform": {"translation": [-4.80, 3.044, 1.25], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.052, 0.012, 0.052]},
+      "mesh": {"mesh_id": 5300, "material_id": 5211},
+      "light": {"type": "spot", "color": [1.0, 0.80, 0.52], "intensity": 3.5, "radius": 0.04, "direction": [-0.258, -0.966, 0.0], "beam_angle": 30.0, "blend": 0.30},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5563,
+      "name": "Gallery wash left track spot housing",
+      "transform": {"translation": [-2.8, 3.11, 3.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.065, 0.12, 0.065]},
+      "mesh": {"mesh_id": 5300, "material_id": 5210},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5564,
+      "name": "Gallery wash left track spot aperture",
+      "transform": {"translation": [-2.8, 3.044, 3.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.052, 0.012, 0.052]},
+      "mesh": {"mesh_id": 5300, "material_id": 5211},
+      "light": {"type": "spot", "color": [1.0, 0.94, 0.82], "intensity": 3.0, "radius": 0.04, "direction": [0.0, -1.0, 0.0], "beam_angle": 50.0, "blend": 0.45},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5565,
+      "name": "Gallery wash right track spot housing",
+      "transform": {"translation": [2.8, 3.11, 3.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.065, 0.12, 0.065]},
+      "mesh": {"mesh_id": 5300, "material_id": 5210},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5566,
+      "name": "Gallery wash right track spot aperture",
+      "transform": {"translation": [2.8, 3.044, 3.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.052, 0.012, 0.052]},
+      "mesh": {"mesh_id": 5300, "material_id": 5211},
+      "light": {"type": "spot", "color": [1.0, 0.94, 0.82], "intensity": 3.0, "radius": 0.04, "direction": [0.0, -1.0, 0.0], "beam_angle": 50.0, "blend": 0.45},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5570,
+      "name": "Ceiling gallery diffuser panel",
+      "transform": {"translation": [0.0, 3.26, 2.1], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [9.2, 0.015, 5.4]},
+      "mesh": {"mesh_id": 5300, "material_id": 5212},
+      "light": {"type": "sphere area", "color": [1.0, 0.97, 0.93], "intensity": 0.50, "radius": 2.5}
     }
   ],
   "benchmark": {

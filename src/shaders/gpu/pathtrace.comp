@@ -318,19 +318,6 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
         bool  is_clearcoat = (model == 7u) || (mat_clearcoat(mi) > 0.05);
         bool  is_toon = (model == 8u);
 
-        if (is_transmissive) {
-            float transmission = clamp(mat_transmission(mi), 0.0, 1.0);
-            float absorption = clamp(mat_alpha(mi), 0.0, 1.0);
-            float clear_preview = transmission * (1.0 - absorption);
-            float grazing = 1.0 - clamp(dot(n, -rd), 0.0, 1.0);
-            float preview_weight = clear_preview * mix(0.72, 0.46, grazing);
-            vec3 env = vec3(pc.env_r, pc.env_g, pc.env_b);
-            vec3 through = preview_transmission(hit.pos + rd * 0.02, rd, env);
-            vec3 tint = mix(vec3(1.0), albedo, absorption);
-            rad += thr * through * tint * preview_weight;
-            thr *= 1.0 - preview_weight * 0.12;
-        }
-
         // NEE: sample one point light — skip for perfect mirrors
         if (pc.num_lights > 0u) {
             uint  li    = uint(rand_f(rng) * float(pc.num_lights));
