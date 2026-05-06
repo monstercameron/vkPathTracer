@@ -135,7 +135,38 @@ FilmHdr FilmBuffer::resolve_hdr() const {
     return out;
   }
   out.rgbf.resize(rgb_count, 0.0f);
+  if (m_accumulation.size() < num_pixels || m_sampleCounts.size() < num_pixels) {
+    out.width = 0u;
+    out.height = 0u;
+    out.rgbf.clear();
+    return out;
+  }
   // HDR resolve averages valid accumulated samples and leaves exposure/tone mapping to ApplyFilmResolve.
+  const uint32_t first_sample_count = num_pixels > 0u ? m_sampleCounts.front() : 0u;
+  const bool uniform_sample_count = std::all_of(
+      m_sampleCounts.begin(),
+      m_sampleCounts.begin() + static_cast<std::ptrdiff_t>(num_pixels),
+      [first_sample_count](uint32_t count) { return count == first_sample_count; });
+  if (uniform_sample_count) {
+    const float invSamples = 1.0f / std::max(1u, first_sample_count);
+    const Vec3* src = m_accumulation.data();
+    float* dst = out.rgbf.data();
+    if (invSamples == 1.0f) {
+      for (std::size_t idx = 0u; idx < num_pixels; ++idx) {
+        *dst++ = src[idx].x;
+        *dst++ = src[idx].y;
+        *dst++ = src[idx].z;
+      }
+    } else {
+      for (std::size_t idx = 0u; idx < num_pixels; ++idx) {
+        *dst++ = src[idx].x * invSamples;
+        *dst++ = src[idx].y * invSamples;
+        *dst++ = src[idx].z * invSamples;
+      }
+    }
+    return out;
+  }
+
   std::size_t rgb = 0u;
   for (std::size_t idx = 0u; idx < num_pixels; ++idx) {
     const float invSamples = 1.0f / std::max(1u, m_sampleCounts[idx]);

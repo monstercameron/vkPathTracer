@@ -130,6 +130,7 @@ const char* ToString(MaterialFamily family) {
     case MaterialFamily::TerraEarth:             return "TerraEarth";
     case MaterialFamily::BrushedMetal:           return "BrushedMetal";
     case MaterialFamily::GroundMetal:            return "GroundMetal";
+    case MaterialFamily::Wood:                   return "Wood";
     case MaterialFamily::FireSparkleEmission:    return "FireSparkleEmission";
     case MaterialFamily::LightEmittingTextile:   return "LightEmittingTextile";
     case MaterialFamily::HolographicCoating:     return "HolographicCoating";
@@ -225,7 +226,7 @@ const std::vector<MaterialDescriptor>& GetMaterialRegistry() {
     r.push_back({MaterialFamily::IceCrystal,        "ice_crystal",        "Ice Crystal",         ImplementationStatus::Implemented, false, "Birefringent translucent solid"});
     r.push_back({MaterialFamily::StylizedDiffuse,   "stylized_diffuse",   "Stylized Diffuse",    ImplementationStatus::Implemented, false, "Artist-driven BRDF control"});
 
-    // Advanced pack: implemented specialized surfaces (25 materials)
+    // Advanced pack: implemented specialized surfaces (26 materials)
     r.push_back({MaterialFamily::Skin,                    "skin",                    "Skin",                    ImplementationStatus::Implemented, false, "Multi-layer SSS skin"});
     r.push_back({MaterialFamily::Wax,                     "wax",                    "Wax",                     ImplementationStatus::Implemented, false, "Translucent wax SSS"});
     r.push_back({MaterialFamily::MarbleScattering,        "marble_scattering",       "Marble Scattering",       ImplementationStatus::Implemented, false, "Veined stone with SSS"});
@@ -237,6 +238,7 @@ const std::vector<MaterialDescriptor>& GetMaterialRegistry() {
     r.push_back({MaterialFamily::TerraEarth,              "terra_earth",             "Terra/Earth",             ImplementationStatus::Implemented, false, "Mixed soil material"});
     r.push_back({MaterialFamily::BrushedMetal,            "brushed_metal",           "Brushed Metal",           ImplementationStatus::Implemented, false, "Anisotropic conductor"});
     r.push_back({MaterialFamily::GroundMetal,             "ground_metal",            "Ground Metal",            ImplementationStatus::Implemented, false, "Rough isotropic conductor"});
+    r.push_back({MaterialFamily::Wood,                    "wood",                    "Procedural Wood",         ImplementationStatus::Implemented, false, "Runtime plank grain and growth-ring bands"});
     r.push_back({MaterialFamily::FireSparkleEmission,     "fire_sparkle_emission",   "Fire Sparkle Emission",   ImplementationStatus::Implemented, false, "Stochastic emissive particles"});
     r.push_back({MaterialFamily::LightEmittingTextile,    "light_emitting_textile",  "Light-Emitting Textile",  ImplementationStatus::Implemented, false, "LED fiber cloth"});
     r.push_back({MaterialFamily::HolographicCoating,      "holographic_coating",     "Holographic Coating",     ImplementationStatus::Implemented, false, "Spectral grating film"});
@@ -377,6 +379,12 @@ MaterialDesc MakeMaterialDescFromDescriptor(const MaterialDescriptor& descriptor
       desc.roughness = 1.0f;
       desc.base_color[3] = 0.45f;
       desc.transmission = 0.12f;
+      break;
+    case MaterialFamily::Wood:
+      desc.base_color = {0.55f, 0.36f, 0.18f, 1.0f};
+      desc.roughness = 0.46f;
+      desc.clearcoat = 0.22f;
+      desc.anisotropy = 0.18f;
       break;
     default:
       break;

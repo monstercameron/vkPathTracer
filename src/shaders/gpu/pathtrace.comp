@@ -192,16 +192,6 @@ uint  mat_effect_raw(uint idx){ return uint(mats[idx*k_mat_stride + 15u] + 0.5);
 uint  mat_effect(uint idx)    { return mat_effect_raw(idx) & 1023u; }
 bool  mat_double_sided(uint idx) { return (mat_effect_raw(idx) & 1024u) != 0u; }
 
-vec3 preview_reflection_environment(vec3 rd) {
-    float t = clamp(rd.y * 0.5 + 0.5, 0.0, 1.0);
-    float horizon = pow2_fast(clamp(1.0 - abs(rd.y), 0.0, 1.0));
-    vec3 floor_color = vec3(0.08, 0.075, 0.065);
-    vec3 sky_color = vec3(0.34, 0.42, 0.58);
-    vec3 color = mix(floor_color, sky_color, t);
-    color += vec3(0.55, 0.48, 0.36) * horizon * 0.18;
-    return color;
-}
-
 float hash01(vec3 p, float seed) {
     return fract(sin(dot(p, vec3(12.9898, 78.233, 37.719)) + seed * 19.19) * 43758.5453);
 }
@@ -262,23 +252,19 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
     vec3 rad = vec3(0.0);
     vec3 thr = vec3(1.0);
     uint max_depth = uint(pc.max_depth_f);
-    bool preview_reflection_env = false;
 
     for (uint depth = 0u; depth < max_depth; ++depth) {
         Hit hit = intersect_scene(ro, rd);
         if (!hit.ok) {
             vec3 env = vec3(pc.env_r, pc.env_g, pc.env_b);
-            float env_luma = max(env.r, max(env.g, env.b));
-            vec3 miss_env = (preview_reflection_env && env_luma <= 1.0e-5)
-                ? preview_reflection_environment(rd)
-                : env;
-            rad += thr * miss_env;
+            rad += thr * env;
             break;
         }
 
         // Shading normal — flip to face incoming ray
-        vec3 n = hit.n;
-        if (dot(n, -rd) < 0.0) n = -n;
+        vec3 geom_n = hit.n;
+        bool entering_surface = dot(rd, geom_n) < 0.0;
+        vec3 n = entering_surface ? geom_n : -geom_n;
 
         uint mi = (pc.num_mats > 0u) ? min(hit.mat, pc.num_mats - 1u) : 0u;
         vec3 albedo   = mat_surface_albedo(mi, hit.pos, n, rd);
@@ -331,6 +317,16 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
             if (cos_t > 0.0 && dist > 1e-4 && spot_factor > 0.0) {
                 Hit shadow = intersect_scene(hit.pos + n * 0.002, ldir);
                 bool occ   = shadow.ok && shadow.t < dist - 0.004;
+                if (occ && pc.num_mats > 0u) {
+                    uint shadow_mi = min(shadow.mat, pc.num_mats - 1u);
+                    bool shadow_transmissive = (mat_model(shadow_mi) == 5u) || (mat_transmission(shadow_mi) > 0.05);
+                    if (shadow_transmissive) {
+                        occ = false;
+                    }
+                }
+                if (is_transmissive) {
+                    occ = false;
+                }
                 if (!occ) {
                     vec3 irrad  = lcol * ((lint * spot_factor) / (dist2 + 1e-4));
                     vec3 direct = vec3(0.0);
@@ -360,9 +356,6 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
                         vec3 spec_tint = mix(vec3(1.0), albedo, is_metallic ? 0.85 : 0.12);
                         direct += spec_tint * irrad * spec * cos_t * float(pc.num_lights) * max(0.15, spec_strength);
                     }
-                    if (is_transmissive) {
-                        direct += albedo * irrad * cos_t * float(pc.num_lights) * (0.08 + 0.22 * mat_alpha(mi));
-                    }
                     rad += thr * direct;
                 }
             }
@@ -370,6 +363,7 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
 
         // ---- BSDF bounce ---------------------------------------------------
         vec3 out_dir;
+        bool refracted_bounce = false;
         if (is_mirror) {
             // Perfect specular reflection
             out_dir = rd - 2.0 * dot(n, rd) * n;
@@ -382,11 +376,13 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
             if (rand_f(rng) < min(0.98, fresnel + mat_clearcoat(mi) * 0.15)) {
                 out_dir = rd - 2.0 * dot(n, rd) * n;
             } else {
-                out_dir = refract(rd, n, 1.0 / ior);
+                float eta = entering_surface ? (1.0 / ior) : ior;
+                out_dir = refract(rd, n, eta);
                 if (dot(out_dir, out_dir) <= 1.0e-8) {
                     out_dir = rd - 2.0 * dot(n, rd) * n;
                 } else {
                     out_dir = normalize(out_dir);
+                    refracted_bounce = true;
                 }
             }
         } else if (is_diffuse || is_toon) {
@@ -409,12 +405,15 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
         if (is_metallic || is_mirror) {
             bounce_weight = albedo * (0.65 + 0.35 * mat_metallic(mi));
         } else if (is_transmissive) {
-            bounce_weight = albedo * (0.25 + 0.55 * mat_alpha(mi)) + vec3(0.2);
+            float tint_strength = clamp(mat_alpha(mi), 0.0, 1.0) * mat_transmission(mi);
+            bounce_weight = mix(vec3(1.0), albedo, tint_strength);
+            if (refracted_bounce) {
+                bounce_weight *= max(0.55, mat_transmission(mi));
+            }
         }
         if (is_toon) {
             bounce_weight *= (dot(out_dir, n) > 0.55) ? 1.0 : 0.45;
         }
-        preview_reflection_env = is_mirror || is_metallic || is_transmissive || is_clearcoat || roughness < 0.65;
         thr *= bounce_weight;
 
         float mx = max(thr.r, max(thr.g, thr.b));
@@ -427,7 +426,7 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
             thr /= rr;
         }
 
-        ro = hit.pos + n * 0.002;
+        ro = hit.pos + out_dir * 0.002;
         rd = out_dir;
     }
     return rad;

@@ -19,10 +19,12 @@ BvhAabb ParallelBvhBuilder::compute_aabb(
   }
   for (std::size_t i = 0; i < count; ++i) {
     const auto& a = prim_aabbs[indices[i]];
-    for (int k = 0; k < 3; ++k) {
-      out.min[k] = std::min(out.min[k], a.min[k]);
-      out.max[k] = std::max(out.max[k], a.max[k]);
-    }
+    out.min[0] = std::min(out.min[0], a.min[0]);
+    out.min[1] = std::min(out.min[1], a.min[1]);
+    out.min[2] = std::min(out.min[2], a.min[2]);
+    out.max[0] = std::max(out.max[0], a.max[0]);
+    out.max[1] = std::max(out.max[1], a.max[1]);
+    out.max[2] = std::max(out.max[2], a.max[2]);
   }
   return out;
 }
@@ -39,11 +41,15 @@ BvhAabb ParallelBvhBuilder::compute_centroid_aabb(
   }
   for (std::size_t i = 0; i < count; ++i) {
     const auto& a = prim_aabbs[indices[i]];
-    for (int k = 0; k < 3; ++k) {
-      const float c = 0.5f * (a.min[k] + a.max[k]);
-      out.min[k] = std::min(out.min[k], c);
-      out.max[k] = std::max(out.max[k], c);
-    }
+    const float c0 = 0.5f * (a.min[0] + a.max[0]);
+    const float c1 = 0.5f * (a.min[1] + a.max[1]);
+    const float c2 = 0.5f * (a.min[2] + a.max[2]);
+    out.min[0] = std::min(out.min[0], c0);
+    out.min[1] = std::min(out.min[1], c1);
+    out.min[2] = std::min(out.min[2], c2);
+    out.max[0] = std::max(out.max[0], c0);
+    out.max[1] = std::max(out.max[1], c1);
+    out.max[2] = std::max(out.max[2], c2);
   }
   return out;
 }
