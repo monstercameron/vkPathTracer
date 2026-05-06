@@ -635,6 +635,18 @@
         if (enabled) {
           qtScriptState.scripts_enabled = true;
         }
+        qtPendingFpsLookDx = 0.0f;
+        qtPendingFpsLookDy = 0.0f;
+        qtLeftMouseDown = false;
+        qtRightMouseDown = false;
+        qtMiddleMouseDown = false;
+        qtPotentialClick = false;
+        qtGizmoDrag = {};
+        qtHoveredGizmoHit = std::nullopt;
+        qtSetViewportMouseLocked(enabled);
+        if (!enabled) {
+          qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
+        }
         qtScriptState.status = enabled ? "lua playable mode running" : "lua playable mode paused";
         ui_runtime_state.status_message = qtScriptState.status;
         qtDockPanelsDirty = true;
