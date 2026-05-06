@@ -441,6 +441,9 @@ void RenderCoordinator::run(std::stop_token stop,
         if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(nextScene, updates) ||
             !tracer->load_scene_snapshot(nextScene) ||
             !tracer->build_or_update_acceleration()) {
+          (void)(tracer->load_scene_snapshot(scene) &&
+                 tracer->build_or_update_acceleration() &&
+                 (!options.reset_accumulation || tracer->reset_accumulation()));
           mark_failed("render coordinator instance transform full acceleration fallback failed");
           break;
         }
@@ -464,6 +467,9 @@ void RenderCoordinator::run(std::stop_token stop,
             !tracer->load_scene_snapshot(nextScene) ||
             !tracer->build_or_update_acceleration() ||
             (options.reset_accumulation && !tracer->reset_accumulation())) {
+          (void)(tracer->load_scene_snapshot(scene) &&
+                 tracer->build_or_update_acceleration() &&
+                 (!options.reset_accumulation || tracer->reset_accumulation()));
           mark_failed("render coordinator instance transform full scene fallback failed");
           break;
         }
