@@ -205,6 +205,8 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   Microsoft::WRL::ComPtr<ID3D12Resource> m_sdfBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_texelBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_texMetaBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_envBuf;
+  Microsoft::WRL::ComPtr<ID3D12Resource> m_envMetaBuf;
 
   Microsoft::WRL::ComPtr<ID3D12Resource> m_filmBuf;
   Microsoft::WRL::ComPtr<ID3D12Resource> m_filmReadbackBuf;
@@ -290,6 +292,8 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::vector<float>    m_gpuSdfs;
   std::vector<uint32_t> m_gpuTexels;
   std::vector<uint32_t> m_gpuTextureMeta;
+  std::vector<float>    m_gpuEnv;
+  std::vector<uint32_t> m_gpuEnvMeta;
   bool m_dynamicInstanceTransformsEnabled = false;
   uint32_t m_staticTriangleCount = 0;
   uint32_t m_dynamicInstanceCount = 0;

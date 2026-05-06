@@ -1,0 +1,4 @@
+Asset: Kiara 1 Dawn HDRI, 1K HDR
+Source: https://polyhaven.com/a/kiara_1_dawn
+Download: https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/kiara_1_dawn_1k.hdr
+License: CC0, per Poly Haven asset page.

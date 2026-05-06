@@ -131,7 +131,7 @@ bool D3D12GpuPathTracer::create_dxr_global_root_sig() {
   // the descriptor table for scene buffers and the HDR film UAV.
   // Param 0: constants CBV (PCBuf) at b0
   // Param 1: root SRV at t0 (TLAS)
-  // Param 2: descriptor table [t1-t9 SRV, u0 UAV]
+  // Param 2: descriptor table [t1-t11 SRV, u0 UAV]
   D3D12_ROOT_PARAMETER params[3]{};
   params[0].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_CBV;
   params[0].Descriptor.ShaderRegister = 0;
@@ -144,7 +144,7 @@ bool D3D12GpuPathTracer::create_dxr_global_root_sig() {
 
   D3D12_DESCRIPTOR_RANGE ranges[2]{};
   ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-  ranges[0].NumDescriptors = 9;          // t1-t9
+  ranges[0].NumDescriptors = 11;         // t1-t11
   ranges[0].BaseShaderRegister = 1;
   ranges[0].RegisterSpace = 0;
   ranges[0].OffsetInDescriptorsFromTableStart = 0;
@@ -152,7 +152,7 @@ bool D3D12GpuPathTracer::create_dxr_global_root_sig() {
   ranges[1].NumDescriptors = 1;          // u0
   ranges[1].BaseShaderRegister = 0;
   ranges[1].RegisterSpace = 0;
-  ranges[1].OffsetInDescriptorsFromTableStart = 9;
+  ranges[1].OffsetInDescriptorsFromTableStart = 11;
   params[2].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
   params[2].DescriptorTable.NumDescriptorRanges = 2;
   params[2].DescriptorTable.pDescriptorRanges   = ranges;

@@ -42,6 +42,8 @@ Buffer<float>    DynamicBvhBuf : register(t7);
 Buffer<float>    LocalBvhBuf : register(t8);
 Buffer<float>    SdfBuf : register(t9);
 Buffer<float>    TriDataBuf : register(t10);
+Buffer<float>    EnvBuf : register(t11);
+Buffer<uint>     EnvMetaBuf : register(t12);
 RWByteAddressBuffer FilmBuf : register(u0);
 RWBuffer<uint>   LdrBuf   : register(u1); // tonemapped RGBA8 output (R|G<<8|B<<16|0xFF<<24)
 RWByteAddressBuffer DenoiseBuf : register(u2); // denoised HDR mean, RGBA32F
@@ -55,6 +57,8 @@ static const uint kPackedTriStride = 18u;
 static const uint kInstFlagDynamicTransform = 1u;
 static const uint kSdfStride = 16u;
 static const uint kSdfShapeSphere = 0u;
+static const uint kSdfShapeBox = 1u;
+static const uint kSdfShapeRoundedBox = 2u;
 
 // ---- Forward declarations (fxc requires them) -------------------------------
 float Halton2(uint idx);
@@ -67,13 +71,15 @@ bool  IntersectTriAny(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool doub
 bool  IntersectPackedTri(float3 ro, float3 rd, uint tri, inout float best_t, out uint mat_index, out float3 normal);
 bool  IntersectPackedTriAny(float3 ro, float3 rd, uint tri, float max_t);
 bool  MatDoubleSided(uint idx);
-bool  IntersectSdfSphere(uint sdf_index, float3 ro, float3 rd, inout Hit h);
-bool  OccludedSdfSphere(uint sdf_index, float3 ro, float3 rd, float max_t);
+bool  IntersectSdfPrimitive(uint sdf_index, float3 ro, float3 rd, inout Hit h);
+bool  OccludedSdfPrimitive(uint sdf_index, float3 ro, float3 rd, float max_t);
+bool  IsMaterialTransmissive(uint mat_index);
 Hit   IntersectScene(float3 ro, float3 rd);
 bool  OccludedScene(float3 ro, float3 rd, float max_t);
 float3 SampleHemisphere(float3 n, inout uint rng);
 float3 SamplePhongLobe(float3 refl, float exponent, float3 normal, inout uint rng);
 void  ApplyCameraLens(inout float3 origin, inout float3 dir, inout uint rng);
+float3 SampleSceneEnvironment(float3 rd, float3 fallback_env);
 float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env);
 
 float4 LoadFilm(uint pixel) {
@@ -813,6 +819,55 @@ bool IntersectSdfSphere(uint sdf_index, float3 ro, float3 rd, inout Hit h) {
     return true;
 }
 
+float3 SdfBoxNormal(float3 local, float3 half_extents) {
+    float3 face_dist = abs(half_extents - abs(local));
+    if (face_dist.x <= face_dist.y && face_dist.x <= face_dist.z) {
+        return float3(local.x >= 0.0f ? 1.0f : -1.0f, 0.0f, 0.0f);
+    }
+    if (face_dist.y <= face_dist.z) {
+        return float3(0.0f, local.y >= 0.0f ? 1.0f : -1.0f, 0.0f);
+    }
+    return float3(0.0f, 0.0f, local.z >= 0.0f ? 1.0f : -1.0f);
+}
+
+bool IntersectSdfBox(uint sdf_index, float3 ro, float3 rd, inout Hit h) {
+    uint base = sdf_index * kSdfStride;
+    uint shape = uint(SdfBuf[base + 0u] + 0.5f);
+    if (shape != kSdfShapeBox && shape != kSdfShapeRoundedBox) return false;
+
+    float3 center = float3(SdfBuf[base + 4u], SdfBuf[base + 5u], SdfBuf[base + 6u]);
+    float3 half_extents = max(abs(float3(SdfBuf[base + 8u], SdfBuf[base + 9u], SdfBuf[base + 10u])),
+                              float3(0.001f, 0.001f, 0.001f));
+    float3 bmin = center - half_extents;
+    float3 bmax = center + half_extents;
+    float3 inv_rd = 1.0f / rd;
+    float3 t0 = (bmin - ro) * inv_rd;
+    float3 t1 = (bmax - ro) * inv_rd;
+    float3 tsm = min(t0, t1);
+    float3 tbg = max(t0, t1);
+    float t_near = max(tsm.x, max(tsm.y, tsm.z));
+    float t_far = min(tbg.x, min(tbg.y, tbg.z));
+    if (t_far <= 1.0e-4f || t_near > t_far) return false;
+
+    float t = (t_near > 1.0e-4f) ? t_near : t_far;
+    if (t <= 1.0e-4f || t >= h.t) return false;
+
+    h.ok = true;
+    h.t = t;
+    h.pos = ro + rd * t;
+    h.n = SdfBoxNormal(h.pos - center, half_extents);
+    h.mat = uint(SdfBuf[base + 1u] + 0.5f);
+    return true;
+}
+
+bool IntersectSdfPrimitive(uint sdf_index, float3 ro, float3 rd, inout Hit h) {
+    uint base = sdf_index * kSdfStride;
+    uint shape = uint(SdfBuf[base + 0u] + 0.5f);
+    if (shape == kSdfShapeSphere) return IntersectSdfSphere(sdf_index, ro, rd, h);
+    if (shape == kSdfShapeBox || shape == kSdfShapeRoundedBox) return IntersectSdfBox(sdf_index, ro, rd, h);
+    return false;
+}
+
 bool OccludedSdfSphere(uint sdf_index, float3 ro, float3 rd, float max_t) {
     uint base = sdf_index * kSdfStride;
     uint shape = uint(SdfBuf[base + 0u] + 0.5f);
@@ -835,6 +890,40 @@ bool OccludedSdfSphere(uint sdf_index, float3 ro, float3 rd, float max_t) {
         t = -half_b + root;
     }
     return t > 1e-4f && t < max_t;
+}
+
+bool OccludedSdfBox(uint sdf_index, float3 ro, float3 rd, float max_t) {
+    uint base = sdf_index * kSdfStride;
+    uint shape = uint(SdfBuf[base + 0u] + 0.5f);
+    if (shape != kSdfShapeBox && shape != kSdfShapeRoundedBox) return false;
+
+    float3 center = float3(SdfBuf[base + 4u], SdfBuf[base + 5u], SdfBuf[base + 6u]);
+    float3 half_extents = max(abs(float3(SdfBuf[base + 8u], SdfBuf[base + 9u], SdfBuf[base + 10u])),
+                              float3(0.001f, 0.001f, 0.001f));
+    float3 bmin = center - half_extents;
+    float3 bmax = center + half_extents;
+    float3 inv_rd = 1.0f / rd;
+    float3 t0 = (bmin - ro) * inv_rd;
+    float3 t1 = (bmax - ro) * inv_rd;
+    float3 tsm = min(t0, t1);
+    float3 tbg = max(t0, t1);
+    float t_near = max(tsm.x, max(tsm.y, tsm.z));
+    float t_far = min(tbg.x, min(tbg.y, tbg.z));
+    if (t_far <= 1.0e-4f || t_near > t_far) return false;
+    float t = (t_near > 1.0e-4f) ? t_near : t_far;
+    return t > 1.0e-4f && t < max_t;
+}
+
+bool OccludedSdfPrimitive(uint sdf_index, float3 ro, float3 rd, float max_t) {
+    uint base = sdf_index * kSdfStride;
+    uint shape = uint(SdfBuf[base + 0u] + 0.5f);
+    uint mat_index = uint(SdfBuf[base + 1u] + 0.5f);
+    if (IsMaterialTransmissive(mat_index)) {
+        return false;
+    }
+    if (shape == kSdfShapeSphere) return OccludedSdfSphere(sdf_index, ro, rd, max_t);
+    if (shape == kSdfShapeBox || shape == kSdfShapeRoundedBox) return OccludedSdfBox(sdf_index, ro, rd, max_t);
+    return false;
 }
 
 // ============================================================================
@@ -982,7 +1071,7 @@ Hit IntersectScene(float3 ro, float3 rd) {
 
     [loop]
     for (uint si = 0u; si < num_sdfs; ++si) {
-        IntersectSdfSphere(si, ro, rd, h);
+        IntersectSdfPrimitive(si, ro, rd, h);
     }
     return h;
 }
@@ -1099,7 +1188,7 @@ bool OccludedScene(float3 ro, float3 rd, float max_t) {
     }
     [loop]
     for (uint si = 0u; si < num_sdfs; ++si) {
-        if (OccludedSdfSphere(si, ro, rd, max_t)) {
+        if (OccludedSdfPrimitive(si, ro, rd, max_t)) {
             return true;
         }
     }
@@ -1160,9 +1249,41 @@ float  MatAlpha(uint idx)    { return MatBuf[idx*kMatStride + 14u]; }
 uint   MatEffectRaw(uint idx){ return uint(MatBuf[idx*kMatStride + 15u] + 0.5); }
 uint   MatEffect(uint idx)   { return MatEffectRaw(idx) & 1023u; }
 bool   MatDoubleSided(uint idx) { return (MatEffectRaw(idx) & 1024u) != 0u; }
+bool   IsMaterialTransmissive(uint mat_index) {
+    if (num_mats == 0u) return false;
+    uint idx = min(mat_index, num_mats - 1u);
+    return MatModel(idx) == 5u || MatTransmission(idx) > 0.05;
+}
 
 float Hash01(float3 p, float seed) {
     return frac(sin(dot(p, float3(12.9898, 78.233, 37.719)) + seed * 19.19) * 43758.5453);
+}
+
+float3 ProceduralWoodAlbedo(float3 base, float3 p) {
+    const float plankWidth = 0.42;
+    const float plankLength = 1.35;
+    float px = p.x / plankWidth;
+    float pz = p.z / plankLength;
+    float cellX = floor(px);
+    float cellZ = floor(pz);
+    float localX = frac(px);
+    float localZ = frac(pz);
+    float seed = Hash01(float3(cellX, cellZ, 0.0), 16.0);
+    bool rotate = fmod(cellX + cellZ, 2.0) >= 1.0;
+    float along = rotate ? localZ : localX;
+    float across = rotate ? localX : localZ;
+    float wave = sin((along * 18.0 + seed * 6.2831853) +
+                     sin(across * 9.0 + seed * 4.0) * 0.75);
+    float fine = sin(along * 95.0 + across * 11.0 + seed * 12.0);
+    float ring = smoothstep(-0.25, 0.85, wave) * 0.75 + (0.5 + 0.5 * fine) * 0.25;
+    float seam = 1.0 - smoothstep(0.0, 0.035, min(min(localX, 1.0 - localX),
+                                                  min(localZ, 1.0 - localZ)));
+    float3 dark = float3(0.20, 0.115, 0.045);
+    float3 amber = float3(0.76, 0.49, 0.22);
+    float3 wood = lerp(dark, amber, ring);
+    wood *= 0.82 + 0.28 * seed;
+    wood *= 1.0 - seam * 0.55;
+    return base * 0.35 + wood * 0.65;
 }
 
 float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
@@ -1208,6 +1329,8 @@ float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
         float bands = 0.5 + 0.5 * sin(p.y * 11.0 + p.x * 3.0 + h * 7.0);
         float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 1.5);
         color = color * (0.25 + 0.45 * bands) + float3(0.48, 0.56, 0.68) * (0.18 + 0.32 * rim);
+    } else if (effect == 16u) {
+        color = ProceduralWoodAlbedo(color, p);
     }
     return clamp(color, 0.0, 1.5);
 }
@@ -1217,14 +1340,34 @@ bool MatIsEmissive(uint idx) {
     return e.x > 0.0 || e.y > 0.0 || e.z > 0.0;
 }
 
-float3 PreviewReflectionEnvironment(float3 rd) {
-    float t = saturate(rd.y * 0.5 + 0.5);
-    float horizon = Pow2Fast(saturate(1.0 - abs(rd.y)));
-    float3 floorColor = float3(0.08, 0.075, 0.065);
-    float3 skyColor = float3(0.34, 0.42, 0.58);
-    float3 color = lerp(floorColor, skyColor, t);
-    color += float3(0.55, 0.48, 0.36) * horizon * 0.18;
-    return color;
+float3 LoadEnvTexel(uint x, uint y, uint width) {
+    uint base = (y * width + x) * 3u;
+    return float3(EnvBuf[base], EnvBuf[base + 1u], EnvBuf[base + 2u]);
+}
+
+float3 SampleSceneEnvironment(float3 rd, float3 fallback_env) {
+    uint width = EnvMetaBuf[0];
+    uint height = EnvMetaBuf[1];
+    uint enabled = EnvMetaBuf[2];
+    if (enabled == 0u || width == 0u || height == 0u) {
+        return fallback_env;
+    }
+
+    float3 dir = normalize(rd);
+    float u = frac(0.5 + atan2(dir.z, dir.x) * 0.15915494309189535);
+    float v = acos(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907;
+    float x = u * float(width);
+    float y = saturate(v) * float(max(1u, height) - 1u);
+    uint x0 = uint(floor(x)) % width;
+    uint x1 = (x0 + 1u) % width;
+    uint y0 = min(uint(floor(y)), height - 1u);
+    uint y1 = min(y0 + 1u, height - 1u);
+    float tx = x - floor(x);
+    float ty = y - floor(y);
+
+    float3 top = lerp(LoadEnvTexel(x0, y0, width), LoadEnvTexel(x1, y0, width), tx);
+    float3 bottom = lerp(LoadEnvTexel(x0, y1, width), LoadEnvTexel(x1, y1, width), tx);
+    return lerp(top, bottom, ty);
 }
 
 // ============================================================================
@@ -1233,22 +1376,18 @@ float3 PreviewReflectionEnvironment(float3 rd) {
 float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
     float3 rad = 0.0;
     float3 thr = 1.0;
-    bool preview_reflection_env = false;
     uint max_depth = uint(max_depth_f);
 
     for (uint depth = 0u; depth < max_depth; ++depth) {
         Hit hit = IntersectScene(ro, rd);
         if (!hit.ok) {
-            float env_luma = max(env.x, max(env.y, env.z));
-            float3 miss_env = (preview_reflection_env && env_luma <= 1.0e-5)
-                ? PreviewReflectionEnvironment(rd)
-                : env;
-            rad += thr * miss_env;
+            rad += thr * SampleSceneEnvironment(rd, env);
             break;
         }
 
-        float3 n = hit.n;
-        if (dot(n, -rd) < 0.0) n = -n;
+        float3 geom_n = hit.n;
+        bool entering_surface = dot(rd, geom_n) < 0.0;
+        float3 n = entering_surface ? geom_n : -geom_n;
 
         uint mi = (num_mats > 0u) ? min(hit.mat, num_mats - 1u) : 0u;
         float3 albedo   = MatSurfaceAlbedo(mi, hit.pos, n, rd);
@@ -1311,6 +1450,9 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
 
             if (cos_t > 0.0 && dist > 1e-4 && spotFactor > 0.0f) {
                 bool occ = OccludedScene(hit.pos + n * 0.002, ldir, dist - 0.004);
+                if (is_transmissive) {
+                    occ = false;
+                }
                 if (!occ) {
                     float3 irrad  = lcol * ((lint * spotFactor) / (dist2 + 1e-4));
                     float3 direct = float3(0.0, 0.0, 0.0);
@@ -1337,9 +1479,6 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
                         float3 specTint = lerp(float3(1.0, 1.0, 1.0), albedo, is_metallic ? 0.85 : 0.12);
                         direct += specTint * irrad * spec * cos_t * float(num_lights) * max(0.15, specStrength);
                     }
-                    if (is_transmissive) {
-                        direct += albedo * irrad * cos_t * float(num_lights) * (0.08 + 0.22 * MatAlpha(mi));
-                    }
                     rad += thr * direct;
                 }
             }
@@ -1347,6 +1486,7 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
 
         // BSDF bounce
         float3 out_dir;
+        bool refracted_bounce = false;
         if (is_mirror) {
             out_dir = rd - 2.0 * dot(n, rd) * n;
         } else if (is_transmissive) {
@@ -1358,11 +1498,13 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
             if (RandF(rng) < min(0.98, fresnel + MatClearcoat(mi) * 0.15)) {
                 out_dir = rd - 2.0 * dot(n, rd) * n;
             } else {
-                out_dir = refract(rd, n, 1.0 / ior);
+                float eta = entering_surface ? (1.0 / ior) : ior;
+                out_dir = refract(rd, n, eta);
                 if (dot(out_dir, out_dir) <= 1.0e-8) {
                     out_dir = rd - 2.0 * dot(n, rd) * n;
                 } else {
                     out_dir = normalize(out_dir);
+                    refracted_bounce = true;
                 }
             }
         } else if (is_diffuse || is_toon) {
@@ -1382,12 +1524,15 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         if (is_metallic || is_mirror) {
             bounce_weight = albedo * (0.65 + 0.35 * MatMetallic(mi));
         } else if (is_transmissive) {
-            bounce_weight = albedo * (0.25 + 0.55 * MatAlpha(mi)) + float3(0.2, 0.2, 0.2);
+            float tint_strength = saturate(MatAlpha(mi)) * MatTransmission(mi);
+            bounce_weight = lerp(float3(1.0, 1.0, 1.0), albedo, tint_strength);
+            if (refracted_bounce) {
+                bounce_weight *= max(0.55, MatTransmission(mi));
+            }
         }
         if (is_toon) {
             bounce_weight *= (dot(out_dir, n) > 0.55) ? 1.0 : 0.45;
         }
-        preview_reflection_env = is_mirror || is_metallic || is_transmissive || is_clearcoat || roughness < 0.65;
         thr *= bounce_weight;
 
         float mx = max(thr.x, max(thr.y, thr.z));
@@ -1400,7 +1545,7 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
             thr /= rr;
         }
 
-        ro = hit.pos + n * 0.002;
+        ro = hit.pos + out_dir * 0.002;
         rd = out_dir;
     }
     return rad;

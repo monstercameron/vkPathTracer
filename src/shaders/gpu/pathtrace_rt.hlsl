@@ -32,6 +32,8 @@ Buffer<uint>     TriMatBuf : register(t6, space0);
 Buffer<float>    TriDataBuf : register(t7, space0);
 Buffer<uint>     TexelBuf : register(t8, space0);
 Buffer<uint>     TexMetaBuf : register(t9, space0);
+Buffer<float>    EnvBuf : register(t10, space0);
+Buffer<uint>     EnvMetaBuf : register(t11, space0);
 RWByteAddressBuffer FilmBuf : register(u0, space0);
 
 // ---- Payload (56 bytes; must match MaxPayloadSizeInBytes in PSO) ------------
@@ -50,7 +52,6 @@ static const uint kPackedTriStride = 18u;
 static const uint kStaticInstanceId = 0x00FFFFFFu;
 static const uint kInvalidTextureIndex = 0xFFFFFFFFu;
 static const uint kPayloadDone = 1u;
-static const uint kPayloadSpecularMiss = 2u;
 static const uint kPayloadShadowRay = 4u;
 static const uint kPayloadDepthShift = 8u;
 static const uint kPayloadDepthMask = 0xFFu;
@@ -63,10 +64,6 @@ uint PayloadDepth(PathPayload payload) {
     return (payload.state >> kPayloadDepthShift) & kPayloadDepthMask;
 }
 
-bool PayloadHasSpecularMiss(PathPayload payload) {
-    return (payload.state & kPayloadSpecularMiss) != 0u;
-}
-
 bool PayloadIsShadowRay(PathPayload payload) {
     return (payload.state & kPayloadShadowRay) != 0u;
 }
@@ -75,9 +72,8 @@ void PayloadSetDone(inout PathPayload payload) {
     payload.state |= kPayloadDone;
 }
 
-void PayloadSetBounceState(inout PathPayload payload, uint depth, bool specularMiss) {
-    payload.state = (min(depth, kPayloadDepthMask) << kPayloadDepthShift) |
-                    (specularMiss ? kPayloadSpecularMiss : 0u);
+void PayloadSetBounceState(inout PathPayload payload, uint depth) {
+    payload.state = min(depth, kPayloadDepthMask) << kPayloadDepthShift;
 }
 
 float3 MatAlbedo(uint idx)   { uint b=idx*kMatStride; return float3(MatBuf[b], MatBuf[b+1u], MatBuf[b+2u]); }
@@ -194,6 +190,33 @@ float Hash01(float3 p, float seed) {
     return frac(sin(dot(p, float3(12.9898, 78.233, 37.719)) + seed * 19.19) * 43758.5453);
 }
 
+float3 ProceduralWoodAlbedo(float3 base, float3 p) {
+    const float plankWidth = 0.42;
+    const float plankLength = 1.35;
+    float px = p.x / plankWidth;
+    float pz = p.z / plankLength;
+    float cellX = floor(px);
+    float cellZ = floor(pz);
+    float localX = frac(px);
+    float localZ = frac(pz);
+    float seed = Hash01(float3(cellX, cellZ, 0.0), 16.0);
+    bool rotate = fmod(cellX + cellZ, 2.0) >= 1.0;
+    float along = rotate ? localZ : localX;
+    float across = rotate ? localX : localZ;
+    float wave = sin((along * 18.0 + seed * 6.2831853) +
+                     sin(across * 9.0 + seed * 4.0) * 0.75);
+    float fine = sin(along * 95.0 + across * 11.0 + seed * 12.0);
+    float ring = smoothstep(-0.25, 0.85, wave) * 0.75 + (0.5 + 0.5 * fine) * 0.25;
+    float seam = 1.0 - smoothstep(0.0, 0.035, min(min(localX, 1.0 - localX),
+                                                  min(localZ, 1.0 - localZ)));
+    float3 dark = float3(0.20, 0.115, 0.045);
+    float3 amber = float3(0.76, 0.49, 0.22);
+    float3 wood = lerp(dark, amber, ring);
+    wood *= 0.82 + 0.28 * seed;
+    wood *= 1.0 - seam * 0.55;
+    return base * 0.35 + wood * 0.65;
+}
+
 float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
     float3 color = MatAlbedo(idx);
     uint effect = MatEffect(idx);
@@ -234,18 +257,38 @@ float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
         float bands = 0.5 + 0.5 * sin(p.y * 11.0 + p.x * 3.0 + h * 7.0);
         float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 1.5);
         color = color * (0.25 + 0.45 * bands) + float3(0.48, 0.56, 0.68) * (0.18 + 0.32 * rim);
+    } else if (effect == 16u) {
+        color = ProceduralWoodAlbedo(color, p);
     }
     return clamp(color, 0.0, 1.5);
 }
 
-float3 PreviewReflectionEnvironment(float3 rd) {
-    float t = saturate(rd.y * 0.5 + 0.5);
-    float horizon = Pow2Fast(saturate(1.0 - abs(rd.y)));
-    float3 floorColor = float3(0.08, 0.075, 0.065);
-    float3 skyColor = float3(0.34, 0.42, 0.58);
-    float3 color = lerp(floorColor, skyColor, t);
-    color += float3(0.55, 0.48, 0.36) * horizon * 0.18;
-    return color;
+float3 LoadEnvTexel(uint x, uint y, uint width) {
+    uint base = (y * width + x) * 3u;
+    return float3(EnvBuf[base], EnvBuf[base + 1u], EnvBuf[base + 2u]);
+}
+
+float3 SampleSceneEnvironment(float3 rd, float3 fallbackEnv) {
+    uint width = EnvMetaBuf[0];
+    uint height = EnvMetaBuf[1];
+    uint enabled = EnvMetaBuf[2];
+    if (enabled == 0u || width == 0u || height == 0u) {
+        return fallbackEnv;
+    }
+    float3 dir = normalize(rd);
+    float u = frac(0.5 + atan2(dir.z, dir.x) * 0.15915494309189535);
+    float v = acos(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907;
+    float x = u * float(width);
+    float y = saturate(v) * float(max(1u, height) - 1u);
+    uint x0 = uint(floor(x)) % width;
+    uint x1 = (x0 + 1u) % width;
+    uint y0 = min(uint(floor(y)), height - 1u);
+    uint y1 = min(y0 + 1u, height - 1u);
+    float tx = x - floor(x);
+    float ty = y - floor(y);
+    float3 top = lerp(LoadEnvTexel(x0, y0, width), LoadEnvTexel(x1, y0, width), tx);
+    float3 bottom = lerp(LoadEnvTexel(x0, y1, width), LoadEnvTexel(x1, y1, width), tx);
+    return lerp(top, bottom, ty);
 }
 
 // ---- Forward declarations --------------------------------------------------
@@ -331,12 +374,8 @@ void Miss(inout PathPayload payload) {
         return;
     }
 #endif
-    float3 env = float3(env_r, env_g, env_b);
-    float envLuma = max(env.x, max(env.y, env.z));
-    float3 missEnv = (PayloadHasSpecularMiss(payload) && envLuma <= 1.0e-5)
-        ? PreviewReflectionEnvironment(WorldRayDirection())
-        : env;
-    payload.radiance += payload.throughput * missEnv;
+    float3 env = SampleSceneEnvironment(WorldRayDirection(), float3(env_r, env_g, env_b));
+    payload.radiance += payload.throughput * env;
     PayloadSetDone(payload);
 }
 
@@ -361,8 +400,9 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
     float3x4 o2w = ObjectToWorld3x4();
     float3 we1 = float3(dot(o2w[0].xyz, e1), dot(o2w[1].xyz, e1), dot(o2w[2].xyz, e1));
     float3 we2 = float3(dot(o2w[0].xyz, e2), dot(o2w[1].xyz, e2), dot(o2w[2].xyz, e2));
-    float3 n = normalize(cross(we1, we2));
-    if (dot(n, WorldRayDirection()) > 0.0f) n = -n;
+    float3 geomN = normalize(cross(we1, we2));
+    bool enteringSurface = dot(WorldRayDirection(), geomN) < 0.0f;
+    float3 n = enteringSurface ? geomN : -geomN;
     float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
     uint normalTexture = MatNormalTextureIndex(matIdx);
     if (normalTexture != kInvalidTextureIndex) {
@@ -462,7 +502,7 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
                          0,
                          shadowRay,
                          shadowPayload);
-                if (!PayloadIsDone(shadowPayload)) {
+                if (!PayloadIsDone(shadowPayload) || isTransmissive) {
 #endif
                 float3 irrad = lcol * ((lint * spotFactor) / (dist2 + 1.0e-4));
                 float3 direct = float3(0.0, 0.0, 0.0);
@@ -489,9 +529,6 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
                     float3 specTint = lerp(float3(1.0, 1.0, 1.0), albedo, isMetallic ? 0.85 : 0.12);
                     direct += specTint * irrad * spec * cosL * float(num_lights) * max(0.15, specStrength);
                 }
-                if (isTransmissive) {
-                    direct += albedo * irrad * cosL * float(num_lights) * (0.08 + 0.22 * MatAlpha(matIdx));
-                }
                 payload.radiance += payload.throughput * direct;
 #if PT_D3D12_DXR_SHADOW_RAYS
                 }
@@ -507,6 +544,7 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
         payload.throughput /= q;
     }
     float3 nextDir;
+    bool refractedBounce = false;
     if (isMirror) {
         nextDir = WorldRayDirection() - 2.0 * dot(n, WorldRayDirection()) * n;
     } else if (isTransmissive) {
@@ -518,11 +556,13 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
         if (RandF(rng) < min(0.98, fresnel + MatClearcoat(matIdx) * 0.15)) {
             nextDir = WorldRayDirection() - 2.0 * dot(n, WorldRayDirection()) * n;
         } else {
-            nextDir = refract(WorldRayDirection(), n, 1.0 / ior);
+            float eta = enteringSurface ? (1.0 / ior) : ior;
+            nextDir = refract(WorldRayDirection(), n, eta);
             if (dot(nextDir, nextDir) <= 1.0e-8) {
                 nextDir = WorldRayDirection() - 2.0 * dot(n, WorldRayDirection()) * n;
             } else {
                 nextDir = normalize(nextDir);
+                refractedBounce = true;
             }
         }
     } else {
@@ -555,17 +595,20 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
     if (isMetallic || isMirror) {
         bounceWeight = albedo * (0.65 + 0.35 * MatMetallic(matIdx));
     } else if (isTransmissive) {
-        bounceWeight = albedo * (0.25 + 0.55 * MatAlpha(matIdx)) + float3(0.2, 0.2, 0.2);
+        float tintStrength = saturate(MatAlpha(matIdx)) * MatTransmission(matIdx);
+        bounceWeight = lerp(float3(1.0, 1.0, 1.0), albedo, tintStrength);
+        if (refractedBounce) {
+            bounceWeight *= max(0.55, MatTransmission(matIdx));
+        }
     }
     if (isToon) {
         bounceWeight *= (dot(nextDir, n) > 0.55) ? 1.0 : 0.45;
     }
     payload.throughput *= bounceWeight;
     payload.rng = rng;
-    payload.next_origin = hitPos + n * 1e-4f;
     payload.next_dir    = normalize(nextDir);
-    PayloadSetBounceState(payload, depth + 1u,
-                          isMirror || isMetallic || isTransmissive || isClearcoat || roughness < 0.65);
+    payload.next_origin = hitPos + payload.next_dir * 1e-4f;
+    PayloadSetBounceState(payload, depth + 1u);
 }
 
 // ---- PCG hash / sampling helpers -------------------------------------------
