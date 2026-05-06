@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-06 (session 30)
+
+### Cross-platform shell stubs and Lua playable-mode updates
+
+- Added host platform detection plus runtime platform support metadata so version output, JSON metadata, doctor checks, and runtime logs report built/available/stub state for headless, raw, and Qt shells.
+- Added Linux X11/Wayland and macOS Cocoa raw desktop stub reporting, with non-Windows raw initialization returning `Unsupported` cleanly until native implementations land.
+- Made non-GUI commands fall back to the headless shell for unavailable GUI platform requests while keeping `--window` failures explicit.
+- Updated Qt Lua playable mode to send script transform and camera changes incrementally where possible, route playable mouse-look input into scripts, and avoid per-frame full scene/light reloads for cheap transform-only updates.
+- Added the third-person Lua demo scene/scripts and expanded scripting smoke coverage for forward movement, strafing, mouse-look steering, and chase-camera locking.
+- Verified desktop Clang `ptapp`, `ptbench`, and `pt_scripting_smoke` targets, platform metadata commands, raw one-frame window smoke, doctor, scene validation, source-size guardrails, and whitespace checks.
+
 ## 2026-05-06 (session 29)
 
 ### C++ decomposition guardrail completion
