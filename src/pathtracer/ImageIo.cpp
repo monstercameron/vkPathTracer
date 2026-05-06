@@ -44,11 +44,18 @@ uint32_t crc32_chunk(std::string_view type, const std::vector<uint8_t>& data) {
 
 uint32_t adler32(const std::vector<uint8_t>& bytes) {
   constexpr uint32_t kMod = 65521u;
+  constexpr std::size_t kMaxBlock = 5552u;
   uint32_t a = 1u;
   uint32_t b = 0u;
-  for (auto byte : bytes) {
-    a = (a + byte) % kMod;
-    b = (b + a) % kMod;
+  std::size_t offset = 0u;
+  while (offset < bytes.size()) {
+    const std::size_t block_end = std::min(offset + kMaxBlock, bytes.size());
+    for (; offset < block_end; ++offset) {
+      a += bytes[offset];
+      b += a;
+    }
+    a %= kMod;
+    b %= kMod;
   }
   return (b << 16) | a;
 }
@@ -94,7 +101,8 @@ bool checked_image_sizes(uint32_t width,
 std::vector<uint8_t> encode_deflate_stored(const std::vector<uint8_t>& raw) {
   // Compatibility PNG writer uses zlib stored blocks, avoiding a dependency on a compression library.
   std::vector<uint8_t> out;
-  out.reserve(raw.size() * 2);
+  const std::size_t block_count = raw.empty() ? 0u : ((raw.size() + 0xfffeu) / 0xffffu);
+  out.reserve(2u + block_count * 5u + raw.size() + 4u);
   out.push_back(0x78);
   out.push_back(0x01);
 

@@ -175,6 +175,11 @@ void ApplyMaterialFamilyPreset(SceneMaterialDefinition& material,
     set_if_generic(material.roughness, family == "rubber" ? 0.55f : 0.38f, 1.0f);
     set_if_generic(material.metallic, 0.0f, 0.0f);
     set_if_generic(material.ior, family == "rubber" ? 1.35f : 1.5f, 1.5f);
+  } else if (family == "wood" || family == "oak" || family == "walnut" || family == "parquet") {
+    set_if_generic(material.roughness, 0.46f, 1.0f);
+    set_if_generic(material.metallic, 0.0f, 0.0f);
+    set_if_generic(material.clearcoat, 0.22f, 0.0f);
+    set_if_generic(material.anisotropy, 0.18f, 0.0f);
   } else if (family == "stone" ||
              family == "concrete" ||
              family == "plaster" ||

@@ -6,147 +6,446 @@
   },
   "materials": [
     {
-      "id": 61,
-      "name": "lab_glass",
-      "albedo": [
-        0.85,
-        0.9,
-        1.0
-      ],
-      "roughness": 0.05
+      "id": 610,
+      "name": "matte charcoal floor",
+      "family": "diffuse",
+      "albedo": [0.18, 0.19, 0.2],
+      "roughness": 0.86
     },
     {
-      "id": 62,
-      "name": "lab_table",
-      "albedo": [
-        0.8,
-        0.8,
-        0.8
-      ],
+      "id": 611,
+      "name": "matte warm floor inlay",
+      "family": "diffuse",
+      "albedo": [0.72, 0.66, 0.55],
+      "roughness": 0.82
+    },
+    {
+      "id": 612,
+      "name": "blue refraction card",
+      "family": "diffuse",
+      "albedo": [0.18, 0.38, 0.92],
       "roughness": 0.9
+    },
+    {
+      "id": 613,
+      "name": "red refraction card",
+      "family": "diffuse",
+      "albedo": [0.86, 0.24, 0.17],
+      "roughness": 0.9
+    },
+    {
+      "id": 614,
+      "name": "green refraction card",
+      "family": "diffuse",
+      "albedo": [0.18, 0.72, 0.42],
+      "roughness": 0.9
+    },
+    {
+      "id": 615,
+      "name": "white sweep wall",
+      "family": "diffuse",
+      "albedo": [0.78, 0.78, 0.74],
+      "roughness": 0.88
+    },
+    {
+      "id": 620,
+      "name": "clear crown glass IOR 1.52",
+      "family": "dielectric_glass",
+      "albedo": [0.96, 0.985, 1.0],
+      "roughness": 0.0,
+      "ior": 1.52,
+      "transmission": 1.0,
+      "alpha": 0.01,
+      "clearcoat": 1.0
+    },
+    {
+      "id": 621,
+      "name": "low iron display glass",
+      "family": "dielectric_glass",
+      "albedo": [0.9, 1.0, 0.96],
+      "roughness": 0.015,
+      "ior": 1.46,
+      "transmission": 1.0,
+      "alpha": 0.015,
+      "clearcoat": 1.0
+    },
+    {
+      "id": 622,
+      "name": "frosted rough glass",
+      "family": "frosted_glass",
+      "albedo": [0.82, 0.9, 1.0],
+      "roughness": 0.38,
+      "ior": 1.5,
+      "transmission": 0.9,
+      "alpha": 0.16,
+      "clearcoat": 0.25
+    },
+    {
+      "id": 623,
+      "name": "smoked grey glass",
+      "family": "dirty_glass",
+      "albedo": [0.42, 0.48, 0.58],
+      "roughness": 0.08,
+      "ior": 1.52,
+      "transmission": 0.82,
+      "alpha": 0.18,
+      "clearcoat": 0.7
+    },
+    {
+      "id": 624,
+      "name": "amber bottle glass",
+      "family": "dielectric_glass",
+      "albedo": [1.0, 0.58, 0.18],
+      "roughness": 0.035,
+      "ior": 1.49,
+      "transmission": 0.88,
+      "alpha": 0.14,
+      "clearcoat": 0.85
+    },
+    {
+      "id": 625,
+      "name": "water lens IOR 1.33",
+      "family": "water_fluid_surface",
+      "albedo": [0.74, 0.9, 1.0],
+      "roughness": 0.004,
+      "ior": 1.33,
+      "transmission": 1.0,
+      "alpha": 0.01,
+      "clearcoat": 0.0
+    },
+    {
+      "id": 626,
+      "name": "dense sapphire glass",
+      "family": "gemstone",
+      "albedo": [0.18, 0.32, 1.0],
+      "roughness": 0.01,
+      "ior": 1.78,
+      "transmission": 0.9,
+      "alpha": 0.12,
+      "clearcoat": 1.0
+    },
+    {
+      "id": 627,
+      "name": "clear acrylic comparison",
+      "family": "translucent_polymer",
+      "albedo": [0.92, 0.96, 1.0],
+      "roughness": 0.02,
+      "ior": 1.49,
+      "transmission": 0.94,
+      "alpha": 0.03,
+      "clearcoat": 0.55
+    },
+    {
+      "id": 628,
+      "name": "thin film coated glass",
+      "family": "thin_film_iridescent",
+      "albedo": [0.9, 0.94, 1.0],
+      "roughness": 0.018,
+      "ior": 1.6,
+      "transmission": 0.94,
+      "alpha": 0.04,
+      "clearcoat": 1.0
+    },
+    {
+      "id": 629,
+      "name": "white softbox emitter",
+      "family": "emissive",
+      "albedo": [1.0, 1.0, 1.0],
+      "emission": [1.0, 0.96, 0.88],
+      "emission_intensity": 5.0,
+      "roughness": 1.0
     }
   ],
   "geometry": [
     {
-      "id": 61,
-      "primitive": "triangle",
-      "material_id": 61,
-      "vertices": [
-        [
-          -1.0,
-          0.0,
-          0.0
-        ],
-        [
-          1.0,
-          0.0,
-          0.0
-        ],
-        [
-          0.0,
-          2.0,
-          0.0
-        ]
-      ],
-      "indices": [
-        0,
-        1,
-        2
-      ]
+      "id": 610,
+      "primitive": "quad",
+      "material_id": 610,
+      "vertices": [[-6.0, 0.0, -3.0], [6.0, 0.0, -3.0], [6.0, 0.0, 3.2], [-6.0, 0.0, 3.2]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 611,
+      "primitive": "quad",
+      "material_id": 611,
+      "vertices": [[-5.7, 0.006, -2.5], [5.7, 0.006, -2.5], [5.7, 0.006, -2.08], [-5.7, 0.006, -2.08]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 612,
+      "primitive": "quad",
+      "material_id": 611,
+      "vertices": [[-5.7, 0.007, -0.22], [5.7, 0.007, -0.22], [5.7, 0.007, 0.22], [-5.7, 0.007, 0.22]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 613,
+      "primitive": "quad",
+      "material_id": 611,
+      "vertices": [[-5.7, 0.008, 2.06], [5.7, 0.008, 2.06], [5.7, 0.008, 2.5], [-5.7, 0.008, 2.5]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 614,
+      "primitive": "quad",
+      "material_id": 615,
+      "vertices": [[-6.0, 0.0, -3.0], [6.0, 0.0, -3.0], [6.0, 3.7, -3.0], [-6.0, 3.7, -3.0]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 615,
+      "primitive": "quad",
+      "material_id": 612,
+      "vertices": [[-5.1, 0.25, -2.98], [-3.25, 0.25, -2.98], [-3.25, 2.85, -2.98], [-5.1, 2.85, -2.98]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 616,
+      "primitive": "quad",
+      "material_id": 613,
+      "vertices": [[-1.05, 0.25, -2.97], [1.05, 0.25, -2.97], [1.05, 2.85, -2.97], [-1.05, 2.85, -2.97]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 617,
+      "primitive": "quad",
+      "material_id": 614,
+      "vertices": [[3.25, 0.25, -2.96], [5.1, 0.25, -2.96], [5.1, 2.85, -2.96], [3.25, 2.85, -2.96]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 618,
+      "primitive": "quad",
+      "material_id": 629,
+      "vertices": [[-1.6, 3.45, -1.0], [1.6, 3.45, -1.0], [1.6, 3.45, 1.0], [-1.6, 3.45, 1.0]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 619,
+      "primitive": "quad",
+      "material_id": 612,
+      "vertices": [[-4.04, 0.08, 0.55], [-3.16, 0.08, 0.55], [-3.16, 1.62, 0.55], [-4.04, 1.62, 0.55]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 620,
+      "primitive": "quad",
+      "material_id": 615,
+      "vertices": [[-2.69, 0.08, 0.55], [-1.81, 0.08, 0.55], [-1.81, 1.62, 0.55], [-2.69, 1.62, 0.55]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 621,
+      "primitive": "quad",
+      "material_id": 613,
+      "vertices": [[-1.34, 0.08, 0.55], [-0.46, 0.08, 0.55], [-0.46, 1.62, 0.55], [-1.34, 1.62, 0.55]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 622,
+      "primitive": "quad",
+      "material_id": 611,
+      "vertices": [[0.04, 0.08, 0.55], [0.92, 0.08, 0.55], [0.92, 1.62, 0.55], [0.04, 1.62, 0.55]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 623,
+      "primitive": "quad",
+      "material_id": 614,
+      "vertices": [[1.38, 0.08, 0.55], [2.26, 0.08, 0.55], [2.26, 1.62, 0.55], [1.38, 1.62, 0.55]],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 624,
+      "primitive": "quad",
+      "material_id": 615,
+      "vertices": [[2.74, 0.08, 0.55], [3.62, 0.08, 0.55], [3.62, 1.62, 0.55], [2.74, 1.62, 0.55]],
+      "indices": [0, 1, 2, 0, 2, 3]
     }
   ],
   "entities": [
-    {
-      "id": 605,
-      "name": "Scene Root",
-      "hierarchy": {
-        "parent": 0,
-        "sibling_order": 0
-      }
-    },
-    {
-      "id": 606,
-      "name": "Cameras",
-      "hierarchy": {
-        "parent": 605,
-        "sibling_order": 0
-      }
-    },
-    {
-      "id": 607,
-      "name": "Lights",
-      "hierarchy": {
-        "parent": 605,
-        "sibling_order": 1
-      }
-    },
-    {
-      "id": 608,
-      "name": "Geometry",
-      "hierarchy": {
-        "parent": 605,
-        "sibling_order": 2
-      }
-    },
+    {"id": 605, "name": "Scene Root", "hierarchy": {"parent": 0, "sibling_order": 0}},
+    {"id": 606, "name": "Cameras", "hierarchy": {"parent": 605, "sibling_order": 0}},
+    {"id": 607, "name": "Lights", "hierarchy": {"parent": 605, "sibling_order": 1}},
+    {"id": 608, "name": "Review Geometry", "hierarchy": {"parent": 605, "sibling_order": 2}},
+    {"id": 609, "name": "Glass Samples", "hierarchy": {"parent": 605, "sibling_order": 3}},
     {
       "id": 601,
-      "name": "camera",
+      "name": "review camera",
       "camera": {
-        "fov": 70.0,
+        "fov": 48.0,
         "near_plane": 0.05,
-        "far_plane": 250.0
+        "far_plane": 250.0,
+        "focal_length_mm": 42.0,
+        "aperture_radius": 0.0,
+        "focus_distance": 8.0,
+        "white_balance_kelvin": 5600.0
       },
-      "hierarchy": {
-        "parent": 606,
-        "sibling_order": 0
-      }
-    },
-    {
-      "id": 602,
-      "name": "bottle",
-      "mesh": {
-        "mesh_id": 61,
-        "material_id": 61
+      "transform": {
+        "translation": [0.0, 2.35, 8.2],
+        "rotation": [-0.074, 0.0, 0.0, 0.997],
+        "scale": [1.0, 1.0, 1.0]
       },
-      "hierarchy": {
-        "parent": 608,
-        "sibling_order": 0
-      }
+      "hierarchy": {"parent": 606, "sibling_order": 0}
     },
-    {
-      "id": 603,
-      "name": "table",
-      "mesh": {
-        "mesh_id": 61,
-        "material_id": 62
-      },
-      "hierarchy": {
-        "parent": 608,
-        "sibling_order": 1
-      }
-    },
+    {"id": 630, "name": "charcoal floor", "mesh": {"mesh_id": 610, "material_id": 610}, "hierarchy": {"parent": 608, "sibling_order": 0}},
+    {"id": 631, "name": "front warm reference stripe", "mesh": {"mesh_id": 611, "material_id": 611}, "hierarchy": {"parent": 608, "sibling_order": 1}},
+    {"id": 632, "name": "middle warm reference stripe", "mesh": {"mesh_id": 612, "material_id": 611}, "hierarchy": {"parent": 608, "sibling_order": 2}},
+    {"id": 633, "name": "rear warm reference stripe", "mesh": {"mesh_id": 613, "material_id": 611}, "hierarchy": {"parent": 608, "sibling_order": 3}},
+    {"id": 634, "name": "white sweep wall", "mesh": {"mesh_id": 614, "material_id": 615}, "hierarchy": {"parent": 608, "sibling_order": 4}},
+    {"id": 635, "name": "blue refraction card", "mesh": {"mesh_id": 615, "material_id": 612}, "hierarchy": {"parent": 608, "sibling_order": 5}},
+    {"id": 636, "name": "red refraction card", "mesh": {"mesh_id": 616, "material_id": 613}, "hierarchy": {"parent": 608, "sibling_order": 6}},
+    {"id": 637, "name": "green refraction card", "mesh": {"mesh_id": 617, "material_id": 614}, "hierarchy": {"parent": 608, "sibling_order": 7}},
+    {"id": 638, "name": "visible overhead softbox", "mesh": {"mesh_id": 618, "material_id": 629}, "hierarchy": {"parent": 608, "sibling_order": 8}},
+    {"id": 643, "name": "slab target blue", "mesh": {"mesh_id": 619, "material_id": 612}, "hierarchy": {"parent": 608, "sibling_order": 9}},
+    {"id": 644, "name": "slab target white", "mesh": {"mesh_id": 620, "material_id": 615}, "hierarchy": {"parent": 608, "sibling_order": 10}},
+    {"id": 645, "name": "slab target red", "mesh": {"mesh_id": 621, "material_id": 613}, "hierarchy": {"parent": 608, "sibling_order": 11}},
+    {"id": 646, "name": "slab target warm", "mesh": {"mesh_id": 622, "material_id": 611}, "hierarchy": {"parent": 608, "sibling_order": 12}},
+    {"id": 647, "name": "slab target green", "mesh": {"mesh_id": 623, "material_id": 614}, "hierarchy": {"parent": 608, "sibling_order": 13}},
+    {"id": 648, "name": "slab target neutral", "mesh": {"mesh_id": 624, "material_id": 615}, "hierarchy": {"parent": 608, "sibling_order": 14}},
     {
       "id": 604,
-      "name": "light",
-      "light": {
-        "type": "sphere area",
-        "color": [
-          1.0,
-          0.95,
-          0.85
-        ],
-        "intensity": 4.0,
-        "radius": 0.4
-      },
-      "hierarchy": {
-        "parent": 607,
-        "sibling_order": 0
-      }
+      "name": "large overhead soft light",
+      "light": {"type": "sphere area", "color": [1.0, 0.96, 0.88], "intensity": 18.0, "radius": 1.2},
+      "transform": {"translation": [0.0, 3.35, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+      "hierarchy": {"parent": 607, "sibling_order": 0}
+    },
+    {
+      "id": 640,
+      "name": "left cool rim light",
+      "light": {"type": "point", "color": [0.42, 0.62, 1.0], "intensity": 7.0, "radius": 0.0},
+      "transform": {"translation": [-4.6, 1.55, 1.65], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+      "hierarchy": {"parent": 607, "sibling_order": 1}
+    },
+    {
+      "id": 641,
+      "name": "right warm rim light",
+      "light": {"type": "point", "color": [1.0, 0.62, 0.38], "intensity": 5.5, "radius": 0.0},
+      "transform": {"translation": [4.8, 1.35, 1.45], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+      "hierarchy": {"parent": 607, "sibling_order": 2}
+    },
+    {
+      "id": 642,
+      "name": "soft ambient fill",
+      "light": {"type": "environment", "color": [0.08, 0.09, 0.11], "intensity": 1.0, "radius": 0.0},
+      "hierarchy": {"parent": 607, "sibling_order": 3}
+    },
+    {
+      "id": 650,
+      "name": "clear crown sphere",
+      "transform": {"translation": [-4.2, 0.72, -0.65], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.72, 0.72, 0.72]},
+      "sdf_primitive": {"shape": "sphere", "radius": 0.72, "param_a": 0.0, "param_b": 0.0},
+      "material": {"id": 620},
+      "hierarchy": {"parent": 609, "sibling_order": 0}
+    },
+    {
+      "id": 651,
+      "name": "low iron green edge sphere",
+      "transform": {"translation": [-3.0, 0.66, -0.1], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.66, 0.66, 0.66]},
+      "sdf_primitive": {"shape": "sphere", "radius": 0.66, "param_a": 0.0, "param_b": 0.0},
+      "material": {"id": 621},
+      "hierarchy": {"parent": 609, "sibling_order": 1}
+    },
+    {
+      "id": 652,
+      "name": "frosted rough sphere",
+      "transform": {"translation": [-1.78, 0.66, -0.52], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.66, 0.66, 0.66]},
+      "sdf_primitive": {"shape": "sphere", "radius": 0.66, "param_a": 0.0, "param_b": 0.0},
+      "material": {"id": 622},
+      "hierarchy": {"parent": 609, "sibling_order": 2}
+    },
+    {
+      "id": 653,
+      "name": "smoked grey sphere",
+      "transform": {"translation": [-0.55, 0.68, -0.05], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.68, 0.68, 0.68]},
+      "sdf_primitive": {"shape": "sphere", "radius": 0.68, "param_a": 0.0, "param_b": 0.0},
+      "material": {"id": 623},
+      "hierarchy": {"parent": 609, "sibling_order": 3}
+    },
+    {
+      "id": 654,
+      "name": "amber bottle sphere",
+      "transform": {"translation": [0.74, 0.68, -0.5], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.68, 0.68, 0.68]},
+      "sdf_primitive": {"shape": "sphere", "radius": 0.68, "param_a": 0.0, "param_b": 0.0},
+      "material": {"id": 624},
+      "hierarchy": {"parent": 609, "sibling_order": 4}
+    },
+    {
+      "id": 655,
+      "name": "water lens sphere",
+      "transform": {"translation": [2.02, 0.7, -0.1], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.7, 0.7, 0.7]},
+      "sdf_primitive": {"shape": "sphere", "radius": 0.7, "param_a": 0.0, "param_b": 0.0},
+      "material": {"id": 625},
+      "hierarchy": {"parent": 609, "sibling_order": 5}
+    },
+    {
+      "id": 656,
+      "name": "dense sapphire sphere",
+      "transform": {"translation": [3.25, 0.62, -0.55], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.62, 0.62, 0.62]},
+      "sdf_primitive": {"shape": "sphere", "radius": 0.62, "param_a": 0.0, "param_b": 0.0},
+      "material": {"id": 626},
+      "hierarchy": {"parent": 609, "sibling_order": 6}
+    },
+    {
+      "id": 657,
+      "name": "clear acrylic sphere",
+      "transform": {"translation": [4.45, 0.66, -0.1], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.66, 0.66, 0.66]},
+      "sdf_primitive": {"shape": "sphere", "radius": 0.66, "param_a": 0.0, "param_b": 0.0},
+      "material": {"id": 627},
+      "hierarchy": {"parent": 609, "sibling_order": 7}
+    },
+    {
+      "id": 660,
+      "name": "clear thick slab",
+      "transform": {"translation": [-3.6, 0.78, 1.18], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.48, 0.78, 0.16]},
+      "sdf_primitive": {"shape": "box", "radius": 1.0, "param_a": 0.04, "param_b": 0.0},
+      "material": {"id": 620},
+      "hierarchy": {"parent": 609, "sibling_order": 8}
+    },
+    {
+      "id": 661,
+      "name": "frosted privacy slab",
+      "transform": {"translation": [-2.25, 0.78, 1.42], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.48, 0.78, 0.14]},
+      "sdf_primitive": {"shape": "box", "radius": 1.0, "param_a": 0.04, "param_b": 0.0},
+      "material": {"id": 622},
+      "hierarchy": {"parent": 609, "sibling_order": 9}
+    },
+    {
+      "id": 662,
+      "name": "smoked architectural slab",
+      "transform": {"translation": [-0.9, 0.78, 1.18], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.48, 0.78, 0.14]},
+      "sdf_primitive": {"shape": "box", "radius": 1.0, "param_a": 0.04, "param_b": 0.0},
+      "material": {"id": 623},
+      "hierarchy": {"parent": 609, "sibling_order": 10}
+    },
+    {
+      "id": 663,
+      "name": "thin film coated slab",
+      "transform": {"translation": [0.48, 0.78, 1.42], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.48, 0.78, 0.12]},
+      "sdf_primitive": {"shape": "box", "radius": 1.0, "param_a": 0.04, "param_b": 0.0},
+      "material": {"id": 628},
+      "hierarchy": {"parent": 609, "sibling_order": 11}
+    },
+    {
+      "id": 664,
+      "name": "amber bottle wall slab",
+      "transform": {"translation": [1.82, 0.78, 1.18], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.48, 0.78, 0.14]},
+      "sdf_primitive": {"shape": "box", "radius": 1.0, "param_a": 0.04, "param_b": 0.0},
+      "material": {"id": 624},
+      "hierarchy": {"parent": 609, "sibling_order": 12}
+    },
+    {
+      "id": 665,
+      "name": "sapphire dense slab",
+      "transform": {"translation": [3.18, 0.78, 1.42], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.48, 0.78, 0.14]},
+      "sdf_primitive": {"shape": "box", "radius": 1.0, "param_a": 0.04, "param_b": 0.0},
+      "material": {"id": 626},
+      "hierarchy": {"parent": 609, "sibling_order": 13}
     }
   ],
   "benchmark": {
     "enabled": true,
-    "frame_target": 64,
-    "warmup_frames": 4
+    "frame_target": 128,
+    "warmup_frames": 8
   }
 }

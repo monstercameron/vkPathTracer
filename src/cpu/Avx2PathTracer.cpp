@@ -45,16 +45,59 @@ inline Vec3  normalize(const Vec3& a) {
   float l = length(a);
   return (l < 1e-12f) ? a : a * (1.0f / l);
 }
-inline Vec3 preview_reflection_environment(const Vec3& direction) {
-  const float t = std::clamp(direction.y * 0.5f + 0.5f, 0.0f, 1.0f);
-  const float horizon = std::pow(std::clamp(1.0f - std::fabs(direction.y), 0.0f, 1.0f), 2.0f);
-  const Vec3 floor_color{0.08f, 0.075f, 0.065f};
-  const Vec3 sky_color{0.34f, 0.42f, 0.58f};
-  return floor_color * (1.0f - t) + sky_color * t + Vec3{0.55f, 0.48f, 0.36f} * (horizon * 0.18f);
+inline float square(float value) { return value * value; }
+inline float pow5(float value) {
+  const float value2 = value * value;
+  return value2 * value2 * value;
+}
+inline float pow6(float value) {
+  const float value2 = value * value;
+  return value2 * value2 * value2;
+}
+inline Vec3 refract_dir(const Vec3& incoming, const Vec3& normal, float eta, bool& tir) {
+  const float cosi = std::clamp(dot(-incoming, normal), 0.0f, 1.0f);
+  const float k = 1.0f - eta * eta * (1.0f - cosi * cosi);
+  if (k < 0.0f) {
+    tir = true;
+    return {};
+  }
+  tir = false;
+  return normalize(incoming * eta + normal * (eta * cosi - std::sqrt(k)));
 }
 inline float hash01(float x, float y, float z, float seed) {
   const float v = std::sin(x * 12.9898f + y * 78.233f + z * 37.719f + seed * 19.19f) * 43758.5453f;
   return v - std::floor(v);
+}
+inline float smoothstep01(float edge0, float edge1, float x) {
+  const float t = std::clamp((x - edge0) / std::max(1.0e-6f, edge1 - edge0), 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+inline Vec3 procedural_wood_albedo(const Vec3& base, const Vec3& position) {
+  const float plank_width = 0.42f;
+  const float plank_length = 1.35f;
+  const float px = position.x / plank_width;
+  const float pz = position.z / plank_length;
+  const float cell_x = std::floor(px);
+  const float cell_z = std::floor(pz);
+  const float local_x = px - cell_x;
+  const float local_z = pz - cell_z;
+  const float seed = hash01(cell_x, cell_z, 0.0f, 16.0f);
+  const bool rotate = std::fmod(cell_x + cell_z, 2.0f) >= 1.0f;
+  const float along = rotate ? local_z : local_x;
+  const float across = rotate ? local_x : local_z;
+  const float wave = std::sin((along * 18.0f + seed * 6.2831853f) +
+                              std::sin(across * 9.0f + seed * 4.0f) * 0.75f);
+  const float fine = std::sin(along * 95.0f + across * 11.0f + seed * 12.0f);
+  const float ring = smoothstep01(-0.25f, 0.85f, wave) * 0.75f + (0.5f + 0.5f * fine) * 0.25f;
+  const float seam_x = std::min(local_x, 1.0f - local_x);
+  const float seam_z = std::min(local_z, 1.0f - local_z);
+  const float seam = 1.0f - smoothstep01(0.0f, 0.035f, std::min(seam_x, seam_z));
+  const Vec3 dark{0.20f, 0.115f, 0.045f};
+  const Vec3 amber{0.76f, 0.49f, 0.22f};
+  Vec3 wood = dark * (1.0f - ring) + amber * ring;
+  wood = wood * (0.82f + 0.28f * seed);
+  wood = wood * (1.0f - seam * 0.55f);
+  return base * 0.35f + wood * 0.65f;
 }
 inline Vec3 material_effect_albedo(const vkpt::pathtracer::RTMaterial& material,
                                    const Vec3& position,
@@ -64,7 +107,7 @@ inline Vec3 material_effect_albedo(const vkpt::pathtracer::RTMaterial& material,
   const float h = hash01(position.x, position.y, position.z, static_cast<float>(material.material_effect));
   switch (material.material_effect) {
     case 1u: {
-      const float rim = std::pow(std::max(0.0f, 1.0f - std::fabs(dot(normal, -incoming))), 2.0f);
+      const float rim = square(std::max(0.0f, 1.0f - std::fabs(dot(normal, -incoming))));
       color = color * (0.65f + 0.25f * h) + Vec3{0.25f, 0.22f, 0.28f} * (rim * (0.4f + material.sheen));
       break;
     }
@@ -107,7 +150,7 @@ inline Vec3 material_effect_albedo(const vkpt::pathtracer::RTMaterial& material,
       break;
     }
     case 12u: {
-      const float retro = std::pow(std::max(0.0f, dot(normal, -incoming)), 6.0f);
+      const float retro = pow6(std::max(0.0f, dot(normal, -incoming)));
       color = color + Vec3{0.55f, 0.65f, 0.95f} * retro;
       break;
     }
@@ -125,6 +168,9 @@ inline Vec3 material_effect_albedo(const vkpt::pathtracer::RTMaterial& material,
       color = color * (0.25f + 0.45f * bands) + Vec3{0.48f, 0.56f, 0.68f} * (0.18f + 0.32f * rim);
       break;
     }
+    case 16u:
+      color = procedural_wood_albedo(color, position);
+      break;
     default:
       break;
   }
@@ -521,7 +567,6 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
   Vec3 radiance{0.0f, 0.0f, 0.0f};
   Vec3 throughput{1.0f, 1.0f, 1.0f};
   vkpt::pathtracer::Ray ray = input_ray;
-  bool preview_reflection_env = false;
 
   const uint32_t num_mats = static_cast<uint32_t>(scene.materials.size());
 
@@ -543,20 +588,13 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
     intersect_scene8(ray8, scene, hits, counters);
 
     if (!hits.hit[0]) {
-      Vec3 miss_environment = scene.environment_color;
-      if (preview_reflection_env &&
-          std::max({miss_environment.x, miss_environment.y, miss_environment.z}) <= 1.0e-5f) {
-        miss_environment = preview_reflection_environment(ray.direction);
-      }
-      radiance = radiance + throughput * miss_environment;
+      radiance = radiance + throughput * vkpt::pathtracer::SampleSceneEnvironment(scene, ray.direction);
       break;
     }
 
-    Vec3 shading_normal = hits.norm[0];
-    // Flip normal to face incoming ray (same as scalar tracer)
-    if (dot(shading_normal, -ray.direction) < 0.0f) {
-      shading_normal = -shading_normal;
-    }
+    const Vec3 geometric_normal = hits.norm[0];
+    const bool entering_surface = dot(ray.direction, geometric_normal) < 0.0f;
+    Vec3 shading_normal = entering_surface ? geometric_normal : -geometric_normal;
 
     const uint32_t mat_idx = std::min(hits.mat[0], num_mats > 0 ? num_mats - 1 : 0u);
     const auto& material = scene.materials[mat_idx];
@@ -591,7 +629,7 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
     const bool is_clearcoat = (material.material_model == 7u) || material.clearcoat > 0.05f;
     const bool is_diffuse = (roughness >= 0.999f) && !is_mirror && !is_metallic && !is_transmissive;
 
-    // NEE: skip perfect mirrors (delta BSDF).
+    // NEE keeps only the specular term for transmissive materials below.
     if (settings.enable_nee && !scene.lights.empty() && depth + 1 < settings.max_depth) {
       const std::size_t nl  = scene.lights.size();
       const std::size_t li  = static_cast<std::size_t>(rng.next01() * static_cast<float>(nl));
@@ -607,16 +645,33 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
           if (counters) {
             ++counters->shadow_tests;
           }
-          RaySoA sr8{
-              _mm256_set1_ps(shadow_ray.origin.x),
-              _mm256_set1_ps(shadow_ray.origin.y),
-              _mm256_set1_ps(shadow_ray.origin.z),
-              _mm256_set1_ps(shadow_ray.direction.x),
-              _mm256_set1_ps(shadow_ray.direction.y),
-              _mm256_set1_ps(shadow_ray.direction.z)};
-          Hit8 sh{};
-          intersect_scene8(sr8, scene, sh, counters);
-          const bool occluded = sh.hit[0] && sh.t[0] < dist - 0.004f;
+          bool occluded = false;
+          float remaining_dist = dist - 0.004f;
+          for (uint32_t transparent_skips = 0u; transparent_skips < 8u && remaining_dist > 0.004f; ++transparent_skips) {
+            RaySoA sr8{
+                _mm256_set1_ps(shadow_ray.origin.x),
+                _mm256_set1_ps(shadow_ray.origin.y),
+                _mm256_set1_ps(shadow_ray.origin.z),
+                _mm256_set1_ps(shadow_ray.direction.x),
+                _mm256_set1_ps(shadow_ray.direction.y),
+                _mm256_set1_ps(shadow_ray.direction.z)};
+            Hit8 sh{};
+            intersect_scene8(sr8, scene, sh, counters);
+            if (!sh.hit[0] || sh.t[0] >= remaining_dist) {
+              break;
+            }
+            const uint32_t shadow_mat_idx = std::min(sh.mat[0], num_mats > 0 ? num_mats - 1 : 0u);
+            const auto& shadow_material = scene.materials[shadow_mat_idx];
+            const bool shadow_transmissive =
+                (shadow_material.material_model == 5u) || shadow_material.transmission > 0.05f;
+            if (!shadow_transmissive) {
+              occluded = true;
+              break;
+            }
+            const float advance = sh.t[0] + 0.004f;
+            shadow_ray.origin = shadow_ray.origin + shadow_ray.direction * advance;
+            remaining_dist -= advance;
+          }
           if (!occluded) {
             const Vec3 irradiance = lt.color * (lt.intensity / (dist_sq + kEpsilon));
             Vec3 direct{};
@@ -634,7 +689,7 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
               const float cos_view = std::max(0.0f, dot(shading_normal, view_dir));
               float f0 = (1.0f - material.ior) / (1.0f + material.ior);
               f0 *= f0;
-              const float fresnel = f0 + (1.0f - f0) * std::pow(1.0f - cos_view, 5.0f);
+              const float fresnel = f0 + (1.0f - f0) * pow5(1.0f - cos_view);
               const float spec_strength = std::clamp((1.0f - roughness) * 0.8f +
                                                      material.metallic * 0.45f +
                                                      material.clearcoat * 0.35f +
@@ -648,11 +703,6 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
               direct = direct + spec_tint * irradiance *
                                   (spec * cos_theta * static_cast<float>(nl) *
                                    std::max(0.15f, spec_strength));
-            }
-            if (is_transmissive) {
-              direct = direct + surface_albedo * irradiance *
-                                  (cos_theta * static_cast<float>(nl) *
-                                   (0.08f + 0.22f * material.alpha));
             }
             if (settings.enable_mis) {
               const float bsdf_pdf = cos_theta * kInvPi;
@@ -670,20 +720,26 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
 
     // ---- BSDF bounce -------------------------------------------------------
     Vec3 out_dir;
+    bool refracted_bounce = false;
     if (is_mirror) {
       out_dir = ray.direction - 2.0f * dot(shading_normal, ray.direction) * shading_normal;
     } else if (is_transmissive) {
       const float cos_theta = std::max(0.0f, dot(shading_normal, -ray.direction));
-      float r0 = (1.0f - material.ior) / (1.0f + material.ior);
+      const float safe_ior = std::max(1.0001f, material.ior);
+      float r0 = (1.0f - safe_ior) / (1.0f + safe_ior);
       r0 *= r0;
-      const float fresnel = r0 + (1.0f - r0) * std::pow(1.0f - cos_theta, 5.0f);
+      const float fresnel = r0 + (1.0f - r0) * pow5(1.0f - cos_theta);
       if (rng.next01() < std::min(0.98f, fresnel + material.clearcoat * 0.15f)) {
         out_dir = ray.direction - 2.0f * dot(shading_normal, ray.direction) * shading_normal;
       } else {
-        out_dir = sample_phong_lobe(rng,
-                                    normalize(ray.direction - 2.0f * dot(shading_normal, ray.direction) * shading_normal),
-                                    128.0f,
-                                    shading_normal);
+        bool tir = false;
+        const float eta = entering_surface ? (1.0f / safe_ior) : safe_ior;
+        out_dir = refract_dir(ray.direction, shading_normal, eta, tir);
+        if (tir) {
+          out_dir = ray.direction - 2.0f * dot(shading_normal, ray.direction) * shading_normal;
+        } else {
+          refracted_bounce = true;
+        }
       }
     } else if (is_diffuse) {
       out_dir = sample_hemisphere(rng, shading_normal);
@@ -700,11 +756,15 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
     if (is_metallic || is_mirror) {
       bounce_weight = surface_albedo * (0.65f + 0.35f * material.metallic);
     } else if (is_transmissive) {
-      bounce_weight = surface_albedo * (0.25f + 0.55f * material.alpha) + Vec3{0.2f, 0.2f, 0.2f};
+      const float tint_strength = std::clamp(material.alpha, 0.0f, 1.0f) * material.transmission;
+      const Vec3 white{1.0f, 1.0f, 1.0f};
+      bounce_weight = white * (1.0f - tint_strength) + surface_albedo * tint_strength;
+      if (refracted_bounce) {
+        bounce_weight = bounce_weight * std::max(0.55f, material.transmission);
+      }
     } else {
       bounce_weight = surface_albedo;
     }
-    preview_reflection_env = is_mirror || is_metallic || is_transmissive || is_clearcoat || roughness < 0.65f;
     throughput = throughput * bounce_weight;
 
     if (std::max({throughput.x, throughput.y, throughput.z}) < 0.001f) break;
@@ -714,7 +774,7 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
     if (depth >= settings.russian_roulette_start_depth && rng.next01() > rr) break;
     throughput = throughput / rr;
 
-    ray.origin    = hits.pos[0] + shading_normal * 0.002f;
+    ray.origin    = hits.pos[0] + out_dir * 0.002f;
     ray.direction = out_dir;
   }
 

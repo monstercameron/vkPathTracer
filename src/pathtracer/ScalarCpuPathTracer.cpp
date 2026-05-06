@@ -72,13 +72,18 @@ float length(const vkpt::pathtracer::Vec3& value) {
   return std::sqrt(length_sq(value));
 }
 
-vkpt::pathtracer::Vec3 preview_reflection_environment(const vkpt::pathtracer::Vec3& direction) {
-  const float t = std::clamp(direction.y * 0.5f + 0.5f, 0.0f, 1.0f);
-  const float horizon = std::pow(std::clamp(1.0f - std::fabs(direction.y), 0.0f, 1.0f), 2.0f);
-  const vkpt::pathtracer::Vec3 floorColor{0.08f, 0.075f, 0.065f};
-  const vkpt::pathtracer::Vec3 skyColor{0.34f, 0.42f, 0.58f};
-  return floorColor * (1.0f - t) + skyColor * t +
-         vkpt::pathtracer::Vec3{0.55f, 0.48f, 0.36f} * (horizon * 0.18f);
+float square(float value) {
+  return value * value;
+}
+
+float pow5(float value) {
+  const float value2 = value * value;
+  return value2 * value2 * value;
+}
+
+float pow6(float value) {
+  const float value2 = value * value;
+  return value2 * value2 * value2;
 }
 
 vkpt::pathtracer::Vec3 normalize(const vkpt::pathtracer::Vec3& value) {
@@ -168,6 +173,41 @@ float hash01(float x, float y, float z, float seed) {
   return v - std::floor(v);
 }
 
+float smoothstep(float edge0, float edge1, float x) {
+  const float t = clamp01((x - edge0) / std::max(1.0e-6f, edge1 - edge0));
+  return t * t * (3.0f - 2.0f * t);
+}
+
+vkpt::pathtracer::Vec3 procedural_wood_albedo(const vkpt::pathtracer::Vec3& base,
+                                              const vkpt::pathtracer::Vec3& position) {
+  using vkpt::pathtracer::Vec3;
+  const float plank_width = 0.42f;
+  const float plank_length = 1.35f;
+  const float px = position.x / plank_width;
+  const float pz = position.z / plank_length;
+  const float cell_x = std::floor(px);
+  const float cell_z = std::floor(pz);
+  const float local_x = px - cell_x;
+  const float local_z = pz - cell_z;
+  const float seed = hash01(cell_x, cell_z, 0.0f, 16.0f);
+  const bool rotate = std::fmod(cell_x + cell_z, 2.0f) >= 1.0f;
+  const float along = rotate ? local_z : local_x;
+  const float across = rotate ? local_x : local_z;
+  const float wave = std::sin((along * 18.0f + seed * 6.2831853f) +
+                              std::sin(across * 9.0f + seed * 4.0f) * 0.75f);
+  const float fine = std::sin(along * 95.0f + across * 11.0f + seed * 12.0f);
+  const float ring = smoothstep(-0.25f, 0.85f, wave) * 0.75f + (0.5f + 0.5f * fine) * 0.25f;
+  const float seam_x = std::min(local_x, 1.0f - local_x);
+  const float seam_z = std::min(local_z, 1.0f - local_z);
+  const float seam = 1.0f - smoothstep(0.0f, 0.035f, std::min(seam_x, seam_z));
+  const Vec3 dark{0.20f, 0.115f, 0.045f};
+  const Vec3 amber{0.76f, 0.49f, 0.22f};
+  Vec3 wood = dark * (1.0f - ring) + amber * ring;
+  wood = wood * (0.82f + 0.28f * seed);
+  wood = wood * (1.0f - seam * 0.55f);
+  return base * 0.35f + wood * 0.65f;
+}
+
 vkpt::pathtracer::Vec3 apply_material_effect(const vkpt::pathtracer::RTMaterial& material,
                                              const vkpt::pathtracer::Vec3& position,
                                              const vkpt::pathtracer::Vec3& normal,
@@ -177,7 +217,7 @@ vkpt::pathtracer::Vec3 apply_material_effect(const vkpt::pathtracer::RTMaterial&
   const float h = hash01(position.x, position.y, position.z, static_cast<float>(material.material_effect));
   switch (material.material_effect) {
     case 1u: {  // cloth/velvet fibers
-      const float rim = std::pow(std::max(0.0f, 1.0f - std::fabs(dot(normal, -incoming))), 2.0f);
+      const float rim = square(std::max(0.0f, 1.0f - std::fabs(dot(normal, -incoming))));
       color = color * (0.65f + 0.25f * h) + Vec3{0.25f, 0.22f, 0.28f} * (rim * (0.4f + material.sheen));
       break;
     }
@@ -227,7 +267,7 @@ vkpt::pathtracer::Vec3 apply_material_effect(const vkpt::pathtracer::RTMaterial&
       break;
     }
     case 12u: {  // retro/caustic sparkle
-      const float retro = std::pow(std::max(0.0f, dot(normal, -incoming)), 6.0f);
+      const float retro = pow6(std::max(0.0f, dot(normal, -incoming)));
       color = color + Vec3{0.55f, 0.65f, 0.95f} * retro;
       break;
     }
@@ -244,6 +284,10 @@ vkpt::pathtracer::Vec3 apply_material_effect(const vkpt::pathtracer::RTMaterial&
       const float bands = 0.5f + 0.5f * std::sin(position.y * 11.0f + position.x * 3.0f + h * 7.0f);
       const float rim = std::pow(std::max(0.0f, 1.0f - std::fabs(dot(normal, -incoming))), 1.5f);
       color = color * (0.25f + 0.45f * bands) + Vec3{0.48f, 0.56f, 0.68f} * (0.18f + 0.32f * rim);
+      break;
+    }
+    case 16u: {  // procedural wood/parquet grain
+      color = procedural_wood_albedo(color, position);
       break;
     }
     default:
@@ -266,14 +310,14 @@ vkpt::pathtracer::Vec3 refract_dir(const vkpt::pathtracer::Vec3& incoming,
                                    const vkpt::pathtracer::Vec3& normal,
                                    float eta,
                                    bool& tir) {
-  const float cosi = std::min(1.0f, std::max(-1.0f, dot(incoming, normal)));
+  const float cosi = std::min(1.0f, std::max(0.0f, dot(-incoming, normal)));
   const float k = 1.0f - eta * eta * (1.0f - cosi * cosi);
   if (k < 0.0f) {
     tir = true;
     return {};
   }
   tir = false;
-  return normalize(incoming * eta - normal * (eta * cosi + std::sqrt(k)));
+  return normalize(incoming * eta + normal * (eta * cosi - std::sqrt(k)));
 }
 
 }  // namespace
@@ -719,23 +763,39 @@ NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit,
     return {};
   }
 
-  // Shadow ray — offset by normal to avoid self-intersection.
-  const Ray shadow_ray{hit.position + hit.normal * 0.002f, light_dir};
-  Hit shadow_hit;
-  ++counters.shadow_tests;
-  if (intersect_scene(shadow_ray, shadow_hit, counters) && shadow_hit.t < dist - 0.004f) {
-    return {};  // occluded
-  }
-
   const auto mat_index = std::min(hit.material_index, static_cast<uint32_t>(m_scene.materials.size() - 1));
   const auto& material = m_scene.materials[mat_index];
-  const Vec3 albedo = apply_material_effect(material, hit.position, hit.normal, -light_dir);
-  const Vec3 irradiance = light.color * ((light.intensity * spotFactor) / (dist_sq + kEpsilon));
   const float roughness = clamp01(material.roughness);
   const bool isMirror = material.material_model == 2u || roughness <= 0.001f;
   const bool isMetallic = material.material_model == 4u || material.metallic > 0.65f;
   const bool isTransmissive = material.material_model == 5u || material.transmission > 0.05f;
   const bool isClearcoat = material.material_model == 7u || material.clearcoat > 0.05f;
+
+  // Shadow ray — offset by normal to avoid self-intersection.
+  const Ray shadow_ray{hit.position + hit.normal * 0.002f, light_dir};
+  ++counters.shadow_tests;
+  Ray visibilityRay = shadow_ray;
+  float remainingDistance = dist - 0.004f;
+  for (uint32_t transparentSkips = 0; transparentSkips < 8u && remainingDistance > 0.004f; ++transparentSkips) {
+    Hit shadow_hit;
+    if (!intersect_scene(visibilityRay, shadow_hit, counters) || shadow_hit.t >= remainingDistance) {
+      break;
+    }
+    const auto shadowMatIndex = std::min(shadow_hit.material_index,
+                                         static_cast<uint32_t>(m_scene.materials.size() - 1));
+    const auto& shadowMaterial = m_scene.materials[shadowMatIndex];
+    const bool shadowTransmissive =
+        shadowMaterial.material_model == 5u || shadowMaterial.transmission > 0.05f;
+    if (!shadowTransmissive) {
+      return {};  // occluded
+    }
+    const float advance = shadow_hit.t + 0.004f;
+    visibilityRay.origin = visibilityRay.origin + visibilityRay.direction * advance;
+    remainingDistance -= advance;
+  }
+
+  const Vec3 albedo = apply_material_effect(material, hit.position, hit.normal, -light_dir);
+  const Vec3 irradiance = light.color * ((light.intensity * spotFactor) / (dist_sq + kEpsilon));
 
   Vec3 direct{};
   if (!isMirror && !isTransmissive) {
@@ -750,7 +810,7 @@ NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit,
     const float cosView = std::max(0.0f, dot(hit.normal, normalize(view_dir)));
     float f0 = (1.0f - material.ior) / (1.0f + material.ior);
     f0 *= f0;
-    const float fresnel = f0 + (1.0f - f0) * std::pow(1.0f - cosView, 5.0f);
+    const float fresnel = f0 + (1.0f - f0) * pow5(1.0f - cosView);
     const float specStrength = clamp01((1.0f - roughness) * 0.8f +
                                        material.metallic * 0.45f +
                                        material.clearcoat * 0.35f +
@@ -762,11 +822,6 @@ NeeResult ScalarCpuPathTracer::sample_direct_light(const Hit& hit,
     direct += specTint * irradiance * (spec * cos_theta * static_cast<float>(num_lights) *
                                        std::max(0.15f, specStrength));
   }
-  if (isTransmissive) {
-    direct += albedo * irradiance * (cos_theta * static_cast<float>(num_lights) *
-                                     (0.08f + 0.22f * material.alpha));
-  }
-
   return NeeResult{direct, true};
 }
 
@@ -809,23 +864,17 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
   Vec3 radiance{0.0f, 0.0f, 0.0f};
   Vec3 throughput{1.0f, 1.0f, 1.0f};
   Ray ray = input;
-  bool previewReflectionEnvironment = false;
   for (uint32_t depth = 0; depth < m_settings.max_depth; ++depth) {
     ++ray_counter;
     Hit hit;
     if (!intersect_scene(ray, hit, counters)) {
-      Vec3 missEnvironment = m_scene.environment_color;
-      if (previewReflectionEnvironment && std::max({missEnvironment.x, missEnvironment.y, missEnvironment.z}) <= 1.0e-5f) {
-        missEnvironment = preview_reflection_environment(ray.direction);
-      }
-      radiance += throughput * missEnvironment;
+      radiance += throughput * SampleSceneEnvironment(m_scene, ray.direction);
       break;
     }
 
-    Vec3 shadingNormal = hit.normal;
-    if (dot(shadingNormal, -ray.direction) < 0.0f) {
-      shadingNormal = -shadingNormal;
-    }
+    const Vec3 geometricNormal = hit.normal;
+    const bool enteringSurface = dot(ray.direction, geometricNormal) < 0.0f;
+    Vec3 shadingNormal = enteringSurface ? geometricNormal : -geometricNormal;
 
     const auto index = std::min(hit.material_index, static_cast<uint32_t>(m_scene.materials.size() - 1));
     const auto& material = m_scene.materials[index];
@@ -874,6 +923,7 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
 
     // ---- BSDF bounce -------------------------------------------------------
     Vec3 outDir;
+    bool refractedBounce = false;
     if (isMirror) {
       // Perfect specular reflection: r = d - 2*(d·n)*n
       outDir = ray.direction - 2.0f * dot(shadingNormal, ray.direction) * shadingNormal;
@@ -884,9 +934,13 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
         outDir = ray.direction - 2.0f * dot(shadingNormal, ray.direction) * shadingNormal;
       } else {
         bool tir = false;
-        outDir = refract_dir(ray.direction, shadingNormal, 1.0f / std::max(1.01f, material.ior), tir);
+        const float safeIor = std::max(1.01f, material.ior);
+        const float eta = enteringSurface ? (1.0f / safeIor) : safeIor;
+        outDir = refract_dir(ray.direction, shadingNormal, eta, tir);
         if (tir || length_sq(outDir) <= 1.0e-8f) {
           outDir = ray.direction - 2.0f * dot(shadingNormal, ray.direction) * shadingNormal;
+        } else {
+          refractedBounce = true;
         }
       }
     } else if (isDiffuse || isToon) {
@@ -910,12 +964,16 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
     if (isMetallic || isMirror) {
       bounceWeight = materialAlbedo * (0.65f + 0.35f * material.metallic);
     } else if (isTransmissive) {
-      bounceWeight = materialAlbedo * (0.25f + 0.55f * material.alpha) + Vec3{0.2f, 0.2f, 0.2f};
+      const float tintStrength = clamp01(material.alpha) * material.transmission;
+      const Vec3 white{1.0f, 1.0f, 1.0f};
+      bounceWeight = white * (1.0f - tintStrength) + materialAlbedo * tintStrength;
+      if (refractedBounce) {
+        bounceWeight = bounceWeight * std::max(0.55f, material.transmission);
+      }
     }
     if (isToon) {
       bounceWeight = bounceWeight * (dot(outDir, shadingNormal) > 0.55f ? 1.0f : 0.45f);
     }
-    previewReflectionEnvironment = isMirror || isMetallic || isTransmissive || isClearcoat || roughness < 0.65f;
     throughput = throughput * bounceWeight;
 
     if (std::max(throughput.x, std::max(throughput.y, throughput.z)) < 0.001f) {
@@ -928,7 +986,7 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
       break;
     }
     throughput = throughput / rr;
-    ray.origin = hit.position + shadingNormal * 0.002f;
+    ray.origin = hit.position + outDir * 0.002f;
     ray.direction = outDir;
   }
   (void)sample_index;

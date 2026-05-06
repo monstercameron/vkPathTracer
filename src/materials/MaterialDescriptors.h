@@ -70,6 +70,7 @@ enum class MaterialFamily : std::uint8_t {
   TerraEarth,
   BrushedMetal,
   GroundMetal,
+  Wood,
   FireSparkleEmission,
   LightEmittingTextile,
   HolographicCoating,
