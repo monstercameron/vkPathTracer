@@ -778,7 +778,6 @@
           return false;
         }
         auto nextScene = std::move(sceneResult.value());
-        qtApplySceneLightingFallbackTo(nextScene);
         const auto sceneDelta = vkpt::pathtracer::BuildSceneDeltaUpdate(qtScene, nextScene);
         const bool hasSceneDeltaWork =
             sceneDelta.has_value() &&
@@ -786,6 +785,7 @@
              !sceneDelta->lights.empty() ||
              sceneDelta->environment_color_changed);
         qtScene = std::move(nextScene);
+        qtRebuildRtInstanceIndexCache();
         syncQtCameraPoseFromScene();
         syncQtFpsAnglesFromPose();
         qtCameraFocusDistance = std::max(
@@ -846,7 +846,8 @@
                    reason == std::string_view{"asset browser scene load"} ||
                    reason == std::string_view{"asset browser model spawn"} ||
                    reason == std::string_view{"scene graph delete"} ||
-                   reason == std::string_view{"scene graph reparent"}) {
+                   reason == std::string_view{"scene graph reparent"} ||
+                   reason == std::string_view{"scene graph visibility"}) {
           ui_runtime_state.status_message = std::string(reason);
         } else {
           ui_runtime_state.status_message = "gizmo " + std::string(reason);
@@ -857,6 +858,99 @@
         }
         updateQtSelectionOverlay();
         return qtTracerReady;
+      };
+      auto qtToggleSceneGraphVisibility =
+          [&](vkpt::core::StableId entityId, vkpt::core::FrameIndex frameIndex) {
+        auto entityIt = std::find_if(
+            qtSceneDocument.entities.begin(),
+            qtSceneDocument.entities.end(),
+            [entityId](const vkpt::scene::SceneEntityDefinition& entity) {
+              return entity.id == entityId;
+            });
+        if (entityIt == qtSceneDocument.entities.end()) {
+          ui_runtime_state.status_message =
+              "scene graph visibility target missing #" + std::to_string(entityId);
+          logger.log(vkpt::log::Severity::Warning,
+                     "app",
+                     "Qt scene graph visibility target missing",
+                     {{"entity_id", std::to_string(entityId)}});
+          return false;
+        }
+
+        std::unordered_map<vkpt::core::StableId, vkpt::scene::SceneEntityDefinition*>
+            entitiesById;
+        entitiesById.reserve(qtSceneDocument.entities.size());
+        for (auto& entity : qtSceneDocument.entities) {
+          entitiesById.emplace(entity.id, &entity);
+        }
+        auto entityEffectiveVisible =
+            [&](const vkpt::scene::SceneEntityDefinition& entity) {
+          const auto* current = &entity;
+          std::unordered_set<vkpt::core::StableId> visited;
+          visited.reserve(8u);
+          for (std::size_t depth = 0u;
+               current != nullptr && depth <= qtSceneDocument.entities.size() &&
+               visited.insert(current->id).second;
+               ++depth) {
+            if (!current->visible) {
+              return false;
+            }
+            if (current->hierarchy.parent == 0u) {
+              break;
+            }
+            const auto parentIt = entitiesById.find(current->hierarchy.parent);
+            current = parentIt == entitiesById.end() ? nullptr : parentIt->second;
+          }
+          return true;
+        };
+
+        const bool currentlyVisible = entityEffectiveVisible(*entityIt);
+        if (currentlyVisible) {
+          entityIt->visible = false;
+        } else {
+          vkpt::scene::SceneEntityDefinition* current = &*entityIt;
+          std::unordered_set<vkpt::core::StableId> visited;
+          visited.reserve(8u);
+          for (std::size_t depth = 0u;
+               current != nullptr && depth <= qtSceneDocument.entities.size() &&
+               visited.insert(current->id).second;
+               ++depth) {
+            current->visible = true;
+            if (current->hierarchy.parent == 0u) {
+              break;
+            }
+            const auto parentIt = entitiesById.find(current->hierarchy.parent);
+            current = parentIt == entitiesById.end() ? nullptr : parentIt->second;
+          }
+        }
+        const bool visible = !currentlyVisible;
+        const std::string displayName = QtEntityDisplayName(*entityIt);
+        const std::string state = visible ? "shown" : "hidden";
+        const bool reloaded = qtReloadEditedScene("scene graph visibility");
+        ui_runtime_state.last_scene_tree_operation =
+            state + " " + std::to_string(entityId);
+        ui_runtime_state.status_message =
+            "scene graph " + state + " " + displayName;
+        PushUiEvent(ui_event_log,
+                    "scene_tree_visibility",
+                    "scene_tree",
+                    "entity." + std::to_string(entityId),
+                    frameIndex,
+                    {},
+                    std::to_string(entityId),
+                    ui_runtime_state.status_message);
+        UpdateCrashArtifactsFromUiState(ui_runtime_state,
+                                       ui_selection_state,
+                                       ui_layout_state,
+                                       ui_event_log,
+                                       ui_command_history);
+        logger.log(vkpt::log::Severity::Info,
+                   "app",
+                   "Qt scene graph visibility toggled",
+                   {{"entity_id", std::to_string(entityId)},
+                    {"visible", visible ? "true" : "false"},
+                    {"reload", reloaded ? "true" : "false"}});
+        return reloaded;
       };
       std::unordered_map<vkpt::core::StableId, vkpt::scene::TransformComponent>
           qtAnimationBaseTransforms;
@@ -904,7 +998,10 @@
         if (updates.empty() || !qtTracerReady) {
           return false;
         }
-        if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(qtScene, updates)) {
+        if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(
+                qtScene,
+                updates,
+                vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly)) {
           return false;
         }
 

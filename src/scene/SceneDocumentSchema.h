@@ -35,6 +35,7 @@ struct SceneLightDefinition {
 struct SceneEntityDefinition {
   vkpt::core::StableId id = 0;
   std::string name;
+  bool visible = true;
   bool has_transform = false;
   bool has_camera = false;
   bool has_light = false;

@@ -5,6 +5,8 @@
 #include "scene/Json.h"
 #include "scene/SceneInternal.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +21,65 @@
 namespace vkpt::scene {
 
 using namespace detail;
+
+namespace {
+
+std::string LowerCopy(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  for (const unsigned char ch : text) {
+    out.push_back(static_cast<char>(std::tolower(ch)));
+  }
+  return out;
+}
+
+std::string ExtensionOf(std::string_view uri) {
+  auto ext = std::filesystem::path(std::string(uri)).extension().generic_string();
+  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return ext;
+}
+
+bool IsStandaloneImageLikeAsset(const SceneAssetDefinition& asset) {
+  const auto type = LowerCopy(asset.type);
+  const auto ext = ExtensionOf(asset.uri);
+  const bool imageExt = ext == ".png" || ext == ".jpg" || ext == ".jpeg" ||
+                        ext == ".tga" || ext == ".exr" || ext == ".hdr";
+  return imageExt &&
+         (type == "texture" || type == "image" || type == "environment/hdri" ||
+          type == "environment_hdri" || type == "hdri" || type == "environment" ||
+          type == "environment/sky" || type == "environment_sky");
+}
+
+void ResolveStandaloneAssetUris(SceneDocument& document, const std::filesystem::path& scene_path) {
+  const auto sceneDir = scene_path.has_parent_path()
+                            ? scene_path.parent_path()
+                            : std::filesystem::current_path();
+  for (auto& asset : document.assets) {
+    if (asset.uri.empty() || !IsStandaloneImageLikeAsset(asset)) {
+      continue;
+    }
+    const std::filesystem::path requested{asset.uri};
+    if (requested.is_absolute()) {
+      asset.uri = requested.lexically_normal().generic_string();
+      continue;
+    }
+    std::error_code ec;
+    const auto sceneRelative = (sceneDir / requested).lexically_normal();
+    if (std::filesystem::exists(sceneRelative, ec) && !ec) {
+      asset.uri = sceneRelative.generic_string();
+      continue;
+    }
+    ec.clear();
+    const auto cwdRelative = (std::filesystem::current_path() / requested).lexically_normal();
+    if (std::filesystem::exists(cwdRelative, ec) && !ec) {
+      asset.uri = cwdRelative.generic_string();
+    }
+  }
+}
+
+}  // namespace
 
 vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view text) {
   const auto root = JsonParser::parse(text);
@@ -197,6 +258,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       }
       usedIds.insert(entity.id);
       read_string(item, "name", entity.name);
+      read_bool(item, "visible", entity.visible);
 
       if (const auto transformNode = item.object.find("transform"); transformNode != item.object.end()) {
         entity.has_transform = true;
@@ -379,6 +441,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_file(std::string_view
                                           {"entities", std::to_string(expansion_stats.imported_entities)},
                                       });
   }
+  ResolveStandaloneAssetUris(document, std::filesystem::path(std::string(path)));
   if (!document.validate(nullptr)) {
     return vkpt::core::Result<SceneDocument>::error(vkpt::core::ErrorCode::InvalidArgument);
   }

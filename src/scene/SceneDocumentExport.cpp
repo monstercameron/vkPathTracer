@@ -3,7 +3,10 @@
 #include "scene/Json.h"
 #include "scene/SceneInternal.h"
 
+#include <cstddef>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace vkpt::scene {
@@ -232,6 +235,9 @@ std::string SceneDocument::to_json(bool pretty) const {
     JsonValue item = object_value();
     item.object["id"] = number_value(static_cast<double>(entity.id));
     item.object["name"] = string_value(entity.name);
+    if (!entity.visible) {
+      item.object["visible"] = bool_value(false);
+    }
     if (entity.has_transform) {
       item.object["transform"] = transform_value(entity.transform);
     }
@@ -394,14 +400,51 @@ SceneSnapshot SceneDocument::snapshot() const {
   out.entity_ids.reserve(entities.size());
   out.renderables.reserve(entities.size());
   out.lights.reserve(entities.size() + lights.size());
+  std::unordered_map<vkpt::core::StableId, const SceneEntityDefinition*> entityById;
+  entityById.reserve(entities.size());
   for (const auto& entity : entities) {
+    entityById.emplace(entity.id, &entity);
+  }
+  std::unordered_map<vkpt::core::StableId, bool> visiblePathCache;
+  visiblePathCache.reserve(entities.size());
+  auto entity_visible_path = [&](const SceneEntityDefinition& entity) {
+    if (const auto cached = visiblePathCache.find(entity.id);
+        cached != visiblePathCache.end()) {
+      return cached->second;
+    }
+    bool visible = true;
+    const auto* current = &entity;
+    std::unordered_set<vkpt::core::StableId> visited;
+    visited.reserve(8u);
+    for (std::size_t depth = 0u;
+         current != nullptr && depth <= entities.size() &&
+         visited.insert(current->id).second;
+         ++depth) {
+      if (!current->visible) {
+        visible = false;
+        break;
+      }
+      if (current->hierarchy.parent == 0u) {
+        break;
+      }
+      const auto parentIt = entityById.find(current->hierarchy.parent);
+      current = parentIt == entityById.end() ? nullptr : parentIt->second;
+    }
+    visiblePathCache.emplace(entity.id, visible);
+    return visible;
+  };
+  for (const auto& entity : entities) {
+    const bool entityVisible = entity_visible_path(entity);
     out.entity_ids.push_back(entity.id);
     blob += "e" + std::to_string(entity.id) + ":" + entity.name + ";";
-    if (entity.has_mesh) {
+    if (!entityVisible) {
+      blob += "hidden;";
+    }
+    if (entityVisible && entity.has_mesh) {
       out.renderables.push_back({entity.id, entity.mesh.mesh_id, entity.mesh.material_id, entity.transform});
       blob += "m" + std::to_string(entity.mesh.mesh_id) + ":" + std::to_string(entity.mesh.material_id) + ";";
     }
-    if (entity.has_light) {
+    if (entityVisible && entity.has_light) {
       out.lights.push_back({entity.id, entity.light, entity.transform});
       blob += "l" + entity.light.type + ":" + std::to_string(entity.light.intensity) + ":" +
               std::to_string(entity.light.beam_angle_degrees) + ":" +
@@ -409,11 +452,11 @@ SceneSnapshot SceneDocument::snapshot() const {
               std::to_string(entity.light.direction.y) + "," +
               std::to_string(entity.light.direction.z) + ";";
     }
-    if (entity.has_sdf_primitive) {
+    if (entityVisible && entity.has_sdf_primitive) {
       blob += "sdfEntity" + std::to_string(entity.id) + ":" + entity.sdf_primitive.shape + ":" +
               std::to_string(entity.sdf_primitive.radius) + ";";
     }
-    if (entity.has_camera && !out.camera) {
+    if (entityVisible && entity.has_camera && !out.camera) {
       out.camera = SceneCameraDefinition{entity.id, entity.camera};
       blob += "c" + std::to_string(entity.id) + ":" + camera_hash_blob(entity.camera) + ";";
     }

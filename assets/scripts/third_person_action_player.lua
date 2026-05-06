@@ -1,9 +1,12 @@
 local script = {}
 
-local MOUSE_YAW_SENSITIVITY = 0.0045
-local MOUSE_PITCH_SENSITIVITY = 0.0035
+local MOUSE_YAW_SENSITIVITY = 0.0018
+local MOUSE_PITCH_SENSITIVITY = 0.0014
+local MAX_MOUSE_DELTA = 90.0
 local MIN_CAMERA_PITCH = 0.08
 local MAX_CAMERA_PITCH = 0.62
+local DEFAULT_CAMERA_PITCH = 0.20
+local MODEL_YAW_SIGN = -1.0
 local CAMERA_TARGET_Y = 1.35
 local PLAYER_COLLISION_RADIUS = 0.42
 local CONTACT_SLOP = 0.015
@@ -18,6 +21,21 @@ end
 
 local function length2(x, z)
   return math.sqrt(x * x + z * z)
+end
+
+local function filtered_mouse_delta(value)
+  if math.abs(value) < 0.01 then
+    return 0.0
+  end
+  return clamp(value, -MAX_MOUSE_DELTA, MAX_MOUSE_DELTA)
+end
+
+local function model_yaw_from_camera_yaw(camera_yaw)
+  return camera_yaw * MODEL_YAW_SIGN
+end
+
+local function camera_yaw_from_model_yaw(model_yaw)
+  return model_yaw * MODEL_YAW_SIGN
 end
 
 local function transform_or_default(entity)
@@ -343,7 +361,20 @@ local function current_camera_pitch(camera_transform, player_transform)
       MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
 end
 
-local function update_camera(ctx, player_transform, yaw, pitch, running)
+local function camera_yaw_from_transform(camera_transform, player_transform, fallback_yaw)
+  local forward_x = player_transform.translation.x - camera_transform.translation.x
+  local forward_z = player_transform.translation.z - camera_transform.translation.z
+  if length2(forward_x, forward_z) <= 0.0001 then
+    return fallback_yaw
+  end
+  return math.atan(forward_x, -forward_z)
+end
+
+local function camera_basis(yaw)
+  return math.sin(yaw), -math.cos(yaw), math.cos(yaw), math.sin(yaw)
+end
+
+local function update_camera(ctx, player_transform, camera_yaw, pitch, running)
   local camera = ctx.world:find_entity("Action Camera")
   if camera == nil then
     return
@@ -354,8 +385,8 @@ local function update_camera(ctx, player_transform, yaw, pitch, running)
   local target_x = px
   local target_y = player_transform.translation.y + CAMERA_TARGET_Y
   local target_z = pz
-  local forward_x = math.sin(yaw)
-  local forward_z = -math.cos(yaw)
+  local forward_x = math.sin(camera_yaw)
+  local forward_z = -math.cos(camera_yaw)
   local distance = running and 5.6 or 5.0
   local horizontal_distance = math.cos(pitch) * distance
   local vertical_distance = math.sin(pitch) * distance
@@ -394,8 +425,8 @@ end
 
 function script.on_update(self, ctx)
   local input = ctx.input
-  local mouse_dx = input.mouse_delta_x or 0.0
-  local mouse_dy = input.mouse_delta_y or 0.0
+  local mouse_dx = filtered_mouse_delta(input.mouse_delta_x or 0.0)
+  local mouse_dy = filtered_mouse_delta(input.mouse_delta_y or 0.0)
   local mouse_look = math.abs(mouse_dx) > 0.001 or math.abs(mouse_dy) > 0.001
   local forward_input = 0.0
   local strafe_input = 0.0
@@ -419,21 +450,22 @@ function script.on_update(self, ctx)
   local running = moving and input:key_down("shift")
   local dt = math.min(ctx.dt or ctx.delta_seconds or 0.016, 0.05)
   local transform = transform_or_default(self)
-  local yaw = yaw_from_quat(transform.rotation)
+  local facing_yaw = yaw_from_quat(transform.rotation)
   local camera = ctx.world:find_entity("Action Camera")
   local camera_transform = camera ~= nil and transform_or_default(camera) or nil
-  local pitch = camera_transform ~= nil and current_camera_pitch(camera_transform, transform) or 0.20
+  local camera_yaw = camera_transform ~= nil and
+      camera_yaw_from_transform(camera_transform, transform, camera_yaw_from_model_yaw(facing_yaw)) or
+      camera_yaw_from_model_yaw(facing_yaw)
+  local pitch = camera_transform ~= nil and
+      current_camera_pitch(camera_transform, transform) or DEFAULT_CAMERA_PITCH
 
   if mouse_look then
-    yaw = yaw - mouse_dx * MOUSE_YAW_SENSITIVITY
+    camera_yaw = camera_yaw + mouse_dx * MOUSE_YAW_SENSITIVITY
     pitch = clamp(pitch + mouse_dy * MOUSE_PITCH_SENSITIVITY, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
   end
 
   if moving then
-    local forward_x = math.sin(yaw)
-    local forward_z = -math.cos(yaw)
-    local right_x = math.cos(yaw)
-    local right_z = math.sin(yaw)
+    local forward_x, forward_z, right_x, right_z = camera_basis(camera_yaw)
     move_x = right_x * strafe_input + forward_x * forward_input
     move_z = right_z * strafe_input + forward_z * forward_input
     move_len = length2(move_x, move_z)
@@ -452,12 +484,16 @@ function script.on_update(self, ctx)
     return
   end
 
-  transform.rotation = yaw_quat(yaw)
+  if moving or mouse_look then
+    facing_yaw = model_yaw_from_camera_yaw(camera_yaw)
+  end
+
+  transform.rotation = yaw_quat(facing_yaw)
   self:set_transform(transform)
   if moving then
     update_walk_pose(ctx, moving, running, strafe_input)
   end
-  update_camera(ctx, transform, yaw, pitch, running)
+  update_camera(ctx, transform, camera_yaw, pitch, running)
 end
 
 return script

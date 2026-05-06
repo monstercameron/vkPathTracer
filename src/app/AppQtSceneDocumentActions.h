@@ -40,6 +40,7 @@ bool SetQtSceneEntityParentPreserveWorld(vkpt::scene::SceneDocument& document,
                                          const vkpt::scene::SceneWorld* preWriteWorld,
                                          bool preserveWorld);
 void PromoteQtSceneObjectCamerasAndLights(vkpt::scene::SceneDocument& document);
+void EnsureQtFallbackLightingEntities(vkpt::scene::SceneDocument& document);
 
 }  // namespace vkpt::app
 

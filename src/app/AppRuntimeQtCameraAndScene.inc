@@ -257,6 +257,7 @@
       constexpr int kQtKeyEscape = 0x01000000;
       constexpr int kQtKeyShift = 0x01000020;
       constexpr int kQtKeyControl = 0x01000021;
+      constexpr int kQtKeyAlt = 0x01000023;
       constexpr int kQtKeyLeft = 0x01000012;
       constexpr int kQtKeyUp = 0x01000013;
       constexpr int kQtKeyRight = 0x01000014;
@@ -351,10 +352,9 @@
         return FindQtSceneEntity(qtSceneDocument, id);
       };
       auto qtFindRtInstanceIndex = [&](vkpt::core::StableId entityId) -> uint32_t {
-        for (std::size_t index = 0; index < qtScene.instances.size(); ++index) {
-          if (qtScene.instances[index].entity_id == entityId) {
-            return static_cast<uint32_t>(index);
-          }
+        const auto found = qtRtInstanceIndexByEntity.find(entityId);
+        if (found != qtRtInstanceIndexByEntity.end()) {
+          return found->second;
         }
         return vkpt::pathtracer::kInvalidRTInstanceIndex;
       };
@@ -415,6 +415,7 @@
       };
       auto qtEnsureRuntimeLightObject = [&]() {
         qtPromoteSceneObjectCamerasAndLights();
+        EnsureQtFallbackLightingEntities(qtSceneDocument);
         if (qtDocumentHasLightObject()) {
           return;
         }
@@ -505,19 +506,6 @@
       qtPromoteSceneObjectCamerasAndLights();
       qtEnsureRuntimeLightObject();
       qtSyncActiveCameraObjectFromPose();
-      auto qtApplySceneLightingFallbackTo = [](vkpt::pathtracer::RTSceneData& scene) {
-        bool hasLight = !scene.lights.empty();
-        bool hasEmissive = false;
-        for (const auto& mat : scene.materials) {
-          if (mat.is_emissive()) {
-            hasEmissive = true;
-            break;
-          }
-        }
-        if (!hasLight && !hasEmissive) {
-          scene.environment_color = {0.35f, 0.4f, 0.5f};
-        }
-      };
       auto qtScriptRuntime = vkpt::scripting::CreateScriptRuntime();
       QtDockScriptRuntimeState qtScriptState;
       const auto qtScriptRuntimeStartTime = std::chrono::steady_clock::now();

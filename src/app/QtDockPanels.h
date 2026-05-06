@@ -46,6 +46,8 @@ struct QtDockTreeRow {
   bool selected = false;
   bool activatable = false;
   bool draggable = false;
+  bool visible = true;
+  bool visibility_toggle_enabled = false;
   std::vector<QtDockTreeRow> children;
 };
 

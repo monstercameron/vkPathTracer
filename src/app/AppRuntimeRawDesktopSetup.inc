@@ -287,8 +287,7 @@
         }
         outScene = std::move(sceneResult.value());
       } else {
-        vkpt::scene::SceneDocument document;
-        document.metadata.scene_name = "cornell";
+        vkpt::scene::SceneDocument document = LoadDefaultSceneDocument();
         auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(document);
         if (!sceneResult) {
           if (outErr) {
@@ -299,18 +298,7 @@
         outScene = std::move(sceneResult.value());
       }
 
-      bool hasLight = !outScene.lights.empty();
-      bool hasEmissive = false;
-      for (const auto& material : outScene.materials) {
-        if (material.is_emissive()) {
-          hasEmissive = true;
-          break;
-        }
-      }
-      if (!hasLight && !hasEmissive) {
-        outScene.environment_color = {0.35f, 0.4f, 0.5f};
-        }
-        return true;
+      return true;
       };
 
     vkpt::pathtracer::RTSceneData previewScene;

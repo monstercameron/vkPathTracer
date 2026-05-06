@@ -1,13 +1,17 @@
 #include "pathtracer/SceneConversion.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstddef>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -230,12 +234,199 @@ std::string normalize_material_id(std::string_view name) {
 bool is_environment_light_type(std::string_view type) {
   const std::string id = normalize_material_id(type);
   return id == "environment" || id == "environment_sky" || id == "environment_hdri" ||
-         id == "hdri" || id == "hdri_sky" || id == "open_sky" || id == "sky";
+         id == "environmenthdri" || id == "hdri" || id == "hdri_sky" ||
+         id == "open_sky" || id == "sky";
 }
 
 bool is_spot_light_type(std::string_view type) {
   const std::string id = normalize_material_id(type);
   return id == "spot" || id == "spot_light" || id == "spotlight";
+}
+
+bool is_environment_map_asset_type(std::string_view type) {
+  const std::string id = normalize_material_id(type);
+  return id == "environment" || id == "environment_sky" || id == "environment_hdri" ||
+         id == "environmenthdri" || id == "hdri" || id == "hdri_sky" ||
+         id == "open_sky" || id == "sky";
+}
+
+bool is_hdr_asset_uri(std::string_view uri) {
+  const auto dot = uri.find_last_of('.');
+  if (dot == std::string_view::npos) {
+    return false;
+  }
+  std::string ext(uri.substr(dot));
+  std::transform(ext.begin(), ext.end(), ext.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return ext == ".hdr";
+}
+
+struct RadianceHdrImage {
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  std::vector<Vec3> pixels;
+};
+
+Vec3 decode_rgbe(const std::array<unsigned char, 4>& rgbe) {
+  if (rgbe[3] == 0u) {
+    return {};
+  }
+  const float scale = std::ldexp(1.0f, static_cast<int>(rgbe[3]) - (128 + 8));
+  return {
+      static_cast<float>(rgbe[0]) * scale,
+      static_cast<float>(rgbe[1]) * scale,
+      static_cast<float>(rgbe[2]) * scale};
+}
+
+bool parse_radiance_resolution(std::string_view line,
+                               uint32_t& width,
+                               uint32_t& height,
+                               bool& flip_x,
+                               bool& flip_y) {
+  std::istringstream input{std::string(line)};
+  std::string axis_a;
+  std::string axis_b;
+  int value_a = 0;
+  int value_b = 0;
+  if (!(input >> axis_a >> value_a >> axis_b >> value_b)) {
+    return false;
+  }
+  auto consume = [&](const std::string& axis, int value) {
+    if (axis.size() != 2u || value <= 0) {
+      return false;
+    }
+    const char sign = axis[0];
+    const char dimension = static_cast<char>(std::toupper(static_cast<unsigned char>(axis[1])));
+    if (dimension == 'X') {
+      width = static_cast<uint32_t>(value);
+      flip_x = sign == '-';
+      return true;
+    }
+    if (dimension == 'Y') {
+      height = static_cast<uint32_t>(value);
+      flip_y = sign == '+';
+      return true;
+    }
+    return false;
+  };
+  return consume(axis_a, value_a) && consume(axis_b, value_b) &&
+         width > 0u && height > 0u;
+}
+
+std::optional<RadianceHdrImage> load_radiance_hdr(std::string_view uri) {
+  std::ifstream file{std::filesystem::path(std::string(uri)), std::ios::binary};
+  if (!file.is_open()) {
+    return std::nullopt;
+  }
+
+  std::string line;
+  bool foundFormat = false;
+  while (std::getline(file, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.rfind("FORMAT=", 0u) == 0u &&
+        line.find("32-bit_rle_rgbe") != std::string::npos) {
+      foundFormat = true;
+    }
+    if (line.empty()) {
+      break;
+    }
+  }
+  if (!foundFormat || !std::getline(file, line)) {
+    return std::nullopt;
+  }
+  if (!line.empty() && line.back() == '\r') {
+    line.pop_back();
+  }
+
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  bool flipX = false;
+  bool flipY = false;
+  if (!parse_radiance_resolution(line, width, height, flipX, flipY)) {
+    return std::nullopt;
+  }
+  constexpr uint64_t kMaxEnvironmentPixels = 8192ull * 4096ull;
+  const uint64_t pixelCount = static_cast<uint64_t>(width) * height;
+  if (pixelCount == 0u || pixelCount > kMaxEnvironmentPixels) {
+    return std::nullopt;
+  }
+
+  RadianceHdrImage image;
+  image.width = width;
+  image.height = height;
+  image.pixels.resize(static_cast<std::size_t>(pixelCount));
+
+  auto store_pixel = [&](uint32_t x, uint32_t y, const std::array<unsigned char, 4>& rgbe) {
+    const uint32_t dstX = flipX ? (width - 1u - x) : x;
+    const uint32_t dstY = flipY ? (height - 1u - y) : y;
+    image.pixels[static_cast<std::size_t>(dstY) * width + dstX] = decode_rgbe(rgbe);
+  };
+
+  std::vector<unsigned char> scanline(static_cast<std::size_t>(width) * 4u);
+  for (uint32_t y = 0u; y < height; ++y) {
+    std::array<unsigned char, 4> header{};
+    if (!file.read(reinterpret_cast<char*>(header.data()), 4)) {
+      return std::nullopt;
+    }
+    const bool rle = width >= 8u && width <= 32767u &&
+                     header[0] == 2u && header[1] == 2u &&
+                     ((static_cast<uint32_t>(header[2]) << 8u) | header[3]) == width;
+    if (!rle) {
+      store_pixel(0u, y, header);
+      for (uint32_t x = 1u; x < width; ++x) {
+        std::array<unsigned char, 4> rgbe{};
+        if (!file.read(reinterpret_cast<char*>(rgbe.data()), 4)) {
+          return std::nullopt;
+        }
+        store_pixel(x, y, rgbe);
+      }
+      continue;
+    }
+
+    for (uint32_t channel = 0u; channel < 4u; ++channel) {
+      uint32_t x = 0u;
+      while (x < width) {
+        unsigned char count = 0u;
+        if (!file.read(reinterpret_cast<char*>(&count), 1)) {
+          return std::nullopt;
+        }
+        if (count > 128u) {
+          const uint32_t run = static_cast<uint32_t>(count - 128u);
+          unsigned char value = 0u;
+          if (run == 0u || x + run > width ||
+              !file.read(reinterpret_cast<char*>(&value), 1)) {
+            return std::nullopt;
+          }
+          std::fill_n(scanline.begin() + static_cast<std::ptrdiff_t>(channel * width + x),
+                      run,
+                      value);
+          x += run;
+        } else {
+          const uint32_t run = static_cast<uint32_t>(count);
+          if (run == 0u || x + run > width ||
+              !file.read(reinterpret_cast<char*>(
+                             scanline.data() + static_cast<std::size_t>(channel) * width + x),
+                         run)) {
+            return std::nullopt;
+          }
+          x += run;
+        }
+      }
+    }
+
+    for (uint32_t x = 0u; x < width; ++x) {
+      store_pixel(x,
+                  y,
+                  {scanline[x],
+                   scanline[static_cast<std::size_t>(width) + x],
+                   scanline[static_cast<std::size_t>(width) * 2u + x],
+                   scanline[static_cast<std::size_t>(width) * 3u + x]});
+    }
+  }
+
+  return image;
 }
 
 Vec3 environment_color_from_light(const vkpt::scene::LightComponent& light) {
@@ -330,6 +521,7 @@ uint32_t material_effect_from_family(std::string_view family) {
   if (id == "normal_mapped_pbr") return 13u;
   if (id == "xray") return 14u;
   if (id == "volumetric_medium" || id == "volumetric_shafts" || id == "smoke") return 15u;
+  if (id == "wood" || id == "oak" || id == "walnut" || id == "parquet") return 16u;
   return 0u;
 }
 
@@ -382,8 +574,23 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   for (const auto& asset : doc.assets) {
     const auto assetType = normalize_material_id(asset.type);
     if (!asset.uri.empty() &&
-        (assetType == "texture" || assetType == "image" || is_texture_asset_uri(asset.uri))) {
+        (assetType == "texture" || assetType == "image" ||
+         (!is_environment_map_asset_type(asset.type) && is_texture_asset_uri(asset.uri)))) {
       add_texture_uri(asset.uri);
+    }
+    if (scene.environment_map.empty() && !asset.uri.empty() &&
+        is_environment_map_asset_type(asset.type) && is_hdr_asset_uri(asset.uri)) {
+      if (auto hdr = load_radiance_hdr(asset.uri)) {
+        scene.environment_map_width = hdr->width;
+        scene.environment_map_height = hdr->height;
+        scene.environment_map = std::move(hdr->pixels);
+      } else {
+        vkpt::log::Logger::instance().log(
+            vkpt::log::Severity::Warning,
+            "scene-conversion",
+            "environment HDRI could not be decoded",
+            {{"uri", asset.uri}});
+      }
     }
   }
   for (const auto& material : doc.materials) {
@@ -438,6 +645,36 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   for (const auto& entity : doc.entities) {
     entityById[entity.id] = &entity;
   }
+  std::unordered_map<vkpt::core::StableId, bool> visiblePathCache;
+  visiblePathCache.reserve(doc.entities.size());
+  auto entity_visible_path =
+      [&](const vkpt::scene::SceneEntityDefinition& entity) {
+    if (const auto cached = visiblePathCache.find(entity.id);
+        cached != visiblePathCache.end()) {
+      return cached->second;
+    }
+    bool visible = true;
+    const auto* current = &entity;
+    std::unordered_set<vkpt::core::StableId> visited;
+    visited.reserve(8u);
+    for (std::size_t depth = 0u;
+         current != nullptr && depth <= doc.entities.size() &&
+         visited.insert(current->id).second;
+         ++depth) {
+      if (!current->visible) {
+        visible = false;
+        break;
+      }
+      const vkpt::core::StableId parent = current->hierarchy.parent;
+      if (parent == 0u) {
+        break;
+      }
+      const auto parentIt = entityById.find(parent);
+      current = parentIt == entityById.end() ? nullptr : parentIt->second;
+    }
+    visiblePathCache.emplace(entity.id, visible);
+    return visible;
+  };
 
   std::unordered_map<vkpt::core::StableId, bool> animatedPathCache;
   std::unordered_map<vkpt::core::StableId, bool> scriptedPathCache;
@@ -528,7 +765,6 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   for (const auto& geometry : doc.geometry) {
     geometryById[geometry.id] = &geometry;
   }
-
   auto add_capacity = [](std::size_t& target, std::size_t amount) {
     const std::size_t maxValue = std::numeric_limits<std::size_t>::max();
     target = amount > maxValue - target ? maxValue : target + amount;
@@ -544,7 +780,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   std::size_t dynamicVertexCapacity = 0u;
   std::size_t dynamicIndexCapacity = 0u;
   for (const auto& entity : doc.entities) {
-    if (!entity.has_mesh) {
+    if (!entity.has_mesh || !entity_visible_path(entity)) {
       continue;
     }
     const auto itGeom = geometryById.find(entity.mesh.mesh_id);
@@ -573,7 +809,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   reserve_capacity(scene.local_indices, dynamicIndexCapacity);
 
   for (const auto& entity : doc.entities) {
-    if (!entity.has_mesh) {
+    if (!entity.has_mesh || !entity_visible_path(entity)) {
       continue;
     }
     const auto itGeom = geometryById.find(entity.mesh.mesh_id);
@@ -744,6 +980,10 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     if (!entity.has_sdf_primitive) {
       continue;
     }
+    ecsSdfIds.insert(entity.id);
+    if (!entity_visible_path(entity)) {
+      continue;
+    }
     const auto transform = resolve_entity_transform(
         entity.id, entity.has_transform ? &entity.transform : nullptr, nullptr);
     RTSdfPrimitive out{};
@@ -762,7 +1002,6 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     }
     if (out.shape != SdfShape::Unknown) {
       scene.sdf_primitives.push_back(out);
-      ecsSdfIds.insert(entity.id);
     }
   }
 
@@ -794,6 +1033,10 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
           scene.environment_color.x + env.x,
           scene.environment_color.y + env.y,
           scene.environment_color.z + env.z};
+      scene.environment_map_scale = {
+          scene.environment_map_scale.x + env.x,
+          scene.environment_map_scale.y + env.y,
+          scene.environment_map_scale.z + env.z};
       return;
     }
     bool hasTransform = false;
@@ -825,9 +1068,12 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   std::unordered_set<vkpt::core::StableId> ecsLightIds;
   ecsLightIds.reserve(doc.entities.size());
   for (const auto& entity : doc.entities) {
-    if (entity.has_light) {
+    if (!entity.has_light) {
+      continue;
+    }
+    ecsLightIds.insert(entity.id);
+    if (entity_visible_path(entity)) {
       add_light(entity.id, entity.light);
-      ecsLightIds.insert(entity.id);
     }
   }
 
@@ -835,6 +1081,13 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     if (!ecsLightIds.contains(light.id)) {
       add_light(light.id, light.light);
     }
+  }
+
+  if (!scene.environment_map.empty() &&
+      std::max({scene.environment_map_scale.x,
+                scene.environment_map_scale.y,
+                scene.environment_map_scale.z}) <= 1.0e-6f) {
+    scene.environment_map_scale = {1.0f, 1.0f, 1.0f};
   }
 
   auto apply_camera = [&](vkpt::core::StableId id,
@@ -879,7 +1132,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   bool hasCameraEntity = false;
   bool hasCameraTransform = false;
   for (const auto& entity : doc.entities) {
-    if (entity.has_camera) {
+    if (entity.has_camera && entity_visible_path(entity)) {
       hasCameraEntity = true;
       apply_camera(entity.id, entity.camera, &hasCameraTransform);
       break;
@@ -909,46 +1162,6 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     scene.camera_target = center;
     scene.camera_position = center + Vec3{0.0f, std::max(0.6f, 0.4f * radius), std::max(2.0f, 2.2f * radius)};
 
-    if (scene.lights.empty()) {
-        scene.lights.push_back(RTHitLight{
-          center + Vec3{0.0f, std::max(1.0f, 1.2f * radius), 0.0f},
-          {6.0f, 6.0f, 6.0f},
-          10.0f,
-          0.2f});
-    }
-  }
-
-  if (scene.vertices.empty() || scene.indices.empty()) {
-    scene.materials.clear();
-    scene.materials.push_back(RTMaterial{{0.75f, 0.75f, 0.75f}, {0.0f, 0.0f, 0.0f}, 1.0f});
-    scene.materials.push_back(RTMaterial{{0.7f, 0.2f, 0.2f}, {0.0f, 0.0f, 0.0f}, 1.0f});
-    scene.materials.push_back(RTMaterial{{0.2f, 0.7f, 0.2f}, {0.0f, 0.0f, 0.0f}, 1.0f});
-    scene.materials.push_back(RTMaterial{{0.95f, 0.95f, 0.95f}, {8.0f, 8.0f, 8.0f}, 1.0f});
-
-    scene.vertices = {
-        {-1.0f, 0.0f, -1.0f}, {1.0f, 0.0f, -1.0f}, {1.0f, 2.0f, -1.0f}, {-1.0f, 2.0f, -1.0f},
-        {-1.0f, 0.0f, 1.0f},  {1.0f, 0.0f, 1.0f},  {1.0f, 2.0f, 1.0f},  {-1.0f, 2.0f, 1.0f},
-    };
-    scene.texcoords.assign(scene.vertices.size(), Vec2{});
-    scene.indices = {
-        0, 1, 2, 0, 2, 3,  // floor
-        4, 5, 1, 4, 1, 0,  // floor duplicate for simple enclosure
-        3, 2, 6, 3, 6, 7,  // right wall
-        0, 3, 7, 0, 7, 4,  // left wall
-        1, 5, 6, 1, 6, 2,  // near wall
-        4, 0, 3, 4, 3, 7,  // far wall
-    };
-    RTInstance fallbackInstance{};
-    fallbackInstance.geometry_id = 0u;
-    fallbackInstance.first_triangle = 0u;
-    fallbackInstance.triangle_count = static_cast<uint32_t>(scene.indices.size() / 3u);
-    fallbackInstance.material_index = 0u;
-    fallbackInstance.translation = {0.0f, 0.0f, 0.0f};
-    fallbackInstance.scale = {1.0f, 1.0f, 1.0f};
-    scene.instances.push_back(fallbackInstance);
-    scene.sdf_primitives.push_back(
-        RTSdfPrimitive{SdfShape::Sphere, {0.0f, 1.8f, 0.0f}, {0.35f, 0.35f, 0.35f}, {0.0f, 0.0f, 0.0f}, 3u, 0.35f, 0.0f, 0.0f});
-    scene.lights.push_back(RTHitLight{{0.0f, 1.8f, 0.0f}, {6.0f, 6.0f, 6.0f}, 10.0f, 0.2f});
   }
 
   vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,

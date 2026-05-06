@@ -100,6 +100,22 @@ std::uint64_t NowMs() {
       duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
 }
 
+constexpr std::string_view kDefaultSceneAssetPath = "assets/scenes/cornell_native.json";
+
+vkpt::scene::SceneDocument LoadDefaultSceneDocument() {
+  if (auto document = vkpt::scene::SceneDocument::load_from_file(
+          std::string(kDefaultSceneAssetPath))) {
+    return document.value();
+  }
+  vkpt::scene::SceneDocument document;
+  document.metadata.scene_name = "empty";
+  return document;
+}
+
+std::string RuntimeSceneDisplayName(const std::string& scenePath) {
+  return scenePath.empty() ? std::string(kDefaultSceneAssetPath) : scenePath;
+}
+
 std::string_view ToString(vkpt::platform::InputEventType type) {
   switch (type) {
     case vkpt::platform::InputEventType::MenuCommand: return "menu_command";
@@ -523,7 +539,7 @@ int RunApp(int argc, char** argv) {
     {"mode", executionMode},
     {"requested_backend", config.backend.value},
     {"platform", config.platform.value},
-    {"scene", config.scene_path.value.empty() ? "builtin:cornell" : config.scene_path.value},
+    {"scene", RuntimeSceneDisplayName(config.scene_path.value)},
     {"resolution", std::to_string(config.render_width.value) + "x" +
                        std::to_string(config.render_height.value)},
     {"spp", std::to_string(config.spp.value)},
@@ -896,6 +912,9 @@ int RunApp(int argc, char** argv) {
           auto parseResult = vkpt::scene::SceneDocument::load_from_file(config.scene_path.value);
           if (parseResult) {
             qtSceneDocument = parseResult.value();
+#ifdef PT_ENABLE_QT
+            EnsureQtFallbackLightingEntities(qtSceneDocument);
+#endif
             auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(qtSceneDocument);
             if (sceneResult) {
               qtScene = std::move(sceneResult.value());
@@ -903,7 +922,10 @@ int RunApp(int argc, char** argv) {
             }
           }
         } else {
-          qtSceneDocument.metadata.scene_name = "cornell";
+          qtSceneDocument = LoadDefaultSceneDocument();
+#ifdef PT_ENABLE_QT
+          EnsureQtFallbackLightingEntities(qtSceneDocument);
+#endif
           auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(qtSceneDocument);
           if (sceneResult) {
             qtScene = std::move(sceneResult.value());
@@ -916,20 +938,23 @@ int RunApp(int argc, char** argv) {
           platform->shutdown();
           return 1;
         }
-        // Ensure scene has lighting
-        bool hasLight = !qtScene.lights.empty();
-        bool hasEmissive = false;
-        for (const auto& mat : qtScene.materials) {
-          if (mat.is_emissive()) { hasEmissive = true; break; }
-        }
-        if (!hasLight && !hasEmissive) {
-          qtScene.environment_color = {0.35f, 0.4f, 0.5f};
-        }
       }
       qtStartupStep("scene loaded");
+      std::unordered_map<vkpt::core::StableId, uint32_t> qtRtInstanceIndexByEntity;
+      auto qtRebuildRtInstanceIndexCache = [&]() {
+        qtRtInstanceIndexByEntity.clear();
+        qtRtInstanceIndexByEntity.reserve(qtScene.instances.size());
+        for (std::size_t index = 0; index < qtScene.instances.size(); ++index) {
+          const auto entityId = qtScene.instances[index].entity_id;
+          if (entityId != 0u) {
+            qtRtInstanceIndexByEntity[entityId] = static_cast<uint32_t>(index);
+          }
+        }
+      };
+      qtRebuildRtInstanceIndexCache();
       vkpt::core::TraceExecution("qt_scene_ready", {
         {"renderer_path", qtRendererPath},
-        {"scene", config.scene_path.value.empty() ? "builtin:cornell" : config.scene_path.value},
+        {"scene", RuntimeSceneDisplayName(config.scene_path.value)},
         {"document_entities", std::to_string(qtSceneDocument.entities.size())},
         {"document_geometry", std::to_string(qtSceneDocument.geometry.size())},
         {"rt_vertices", std::to_string(qtScene.vertices.size())},

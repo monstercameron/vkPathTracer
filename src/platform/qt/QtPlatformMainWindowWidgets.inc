@@ -65,15 +65,24 @@
       tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
       tree->setUniformRowHeights(true);
       const bool sceneTreePanel = panel.id == "scene_graph" || panel.id == "scene_tree";
+      const bool hasVisibilityToggles = hasTreeRowVisibilityToggles(panel.tree_rows);
       tree->setDragEnabled(panel.id == "asset_browser" || sceneTreePanel);
       tree->setAcceptDrops(sceneTreePanel);
       tree->setDropIndicatorShown(sceneTreePanel);
-      tree->setColumnCount(panel.tree_single_column || panel.tree_rows.empty() ? 1 : 2);
+      const bool singleColumnTree =
+          (panel.tree_single_column && !hasVisibilityToggles) || panel.tree_rows.empty();
+      tree->setColumnCount(singleColumnTree ? 1 : 2);
       if (panel.tree_single_column || panel.tree_rows.empty()) {
         tree->setHeaderHidden(true);
       } else {
         tree->setHeaderLabels({QStringLiteral("Name"), QStringLiteral("Value")});
         tree->header()->setStretchLastSection(true);
+      }
+      if (hasVisibilityToggles) {
+        tree->header()->setStretchLastSection(false);
+        tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+        tree->header()->setSectionResizeMode(1, QHeaderView::Fixed);
+        tree->setColumnWidth(1, 32);
       }
       for (const auto& row : panel.rows) {
         auto* item = new QTreeWidgetItem();
@@ -81,7 +90,9 @@
         tree->addTopLevelItem(item);
       }
       for (const auto& row : panel.tree_rows) {
-        tree->addTopLevelItem(buildTreeItem(row));
+        auto* item = buildTreeItem(row, hasVisibilityToggles);
+        tree->addTopLevelItem(item);
+        installTreeItemWidgets(tree, row, item, panel.id);
       }
       tree->expandAll();
       const auto selectedItems = tree->selectedItems();

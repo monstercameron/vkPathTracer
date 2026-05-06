@@ -160,8 +160,6 @@
                 qtSetGizmoMode(vkpt::editor::GizmoMode::Translate, "keyboard", qtFrameCount);
               } else if (!qtFpsMode && (key == 'R' || rawKey == 'R')) {
                 qtSetGizmoMode(vkpt::editor::GizmoMode::Rotate, "keyboard", qtFrameCount);
-              } else if (!qtFpsMode && (key == 'S' || rawKey == 'S')) {
-                qtSetGizmoMode(vkpt::editor::GizmoMode::Scale, "keyboard", qtFrameCount);
               } else if (!qtFpsMode && (key == 'G' || rawKey == 'G')) {
                 qtSetGizmoMode(vkpt::editor::GizmoMode::Universal, "keyboard", qtFrameCount);
               } else if (!qtFpsMode &&
@@ -433,6 +431,7 @@
           qtPendingFpsLookDy = 0.0f;
         }
         qtApplyContinuousFpsMovement(qtInputDt);
+        qtApplyContinuousOrbitCameraMovement(qtInputDt);
         qtApplyPhysicsSimulation(qtFrameStart);
         qtApplySceneAnimation(qtFrameStart);
         const bool qtScriptDispatched = qtApplyScriptPlayback(qtFrameStart, qtFrameCount, qtInputDt);

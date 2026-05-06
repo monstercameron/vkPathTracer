@@ -52,7 +52,7 @@
     PrintNonGuiPlatformShellNotice("render", selectedPlatform, effectivePlatform);
     vkpt::diagnostics::CrashRecorder::instance().update_frame_stage("render_prepare", 0);
     ui_runtime_state.status_message = "render_prepare";
-    ui_runtime_state.active_scene = config.scene_path.value.empty() ? "cornell_builtin" : config.scene_path.value;
+    ui_runtime_state.active_scene = RuntimeSceneDisplayName(config.scene_path.value);
     recordUiAction("app.render", "render", "render_prepare",
                    MakeUnsupportedUiCommand("app.render", "render path entered"));
     vkpt::scene::SceneDocument document;
@@ -68,11 +68,11 @@
       document = parseResult.value();
       vkpt::diagnostics::CrashRecorder::instance().update_scene(config.scene_path.value);
     } else {
-      document.metadata.scene_name = "cornell";
-      vkpt::diagnostics::CrashRecorder::instance().update_scene("cornell_builtin");
+      document = LoadDefaultSceneDocument();
+      vkpt::diagnostics::CrashRecorder::instance().update_scene(std::string(kDefaultSceneAssetPath));
     }
     vkpt::core::TraceExecution("render_scene_document_loaded", {
-      {"scene", config.scene_path.value.empty() ? "builtin:cornell" : config.scene_path.value},
+      {"scene", RuntimeSceneDisplayName(config.scene_path.value)},
       {"scene_name", document.metadata.scene_name},
       {"entities", std::to_string(document.entities.size())},
       {"geometry", std::to_string(document.geometry.size())},

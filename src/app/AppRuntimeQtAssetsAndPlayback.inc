@@ -44,6 +44,7 @@
         qtHoveredGizmoHit = std::nullopt;
         qtSceneDocument = std::move(parseResult.value());
         qtPromoteSceneObjectCamerasAndLights();
+        EnsureQtFallbackLightingEntities(qtSceneDocument);
         ui_selection_state = vkpt::editor::CreateDefaultSelectionState();
         qtAnimationBaseTransforms.clear();
         config.scene_path.value = displayPath;
