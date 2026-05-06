@@ -1,0 +1,8 @@
+Louvre Mona Lisa gallery support assets.
+
+- mona_lisa_c2rmf_retouched.jpg was downloaded from Wikimedia Commons via:
+  https://commons.wikimedia.org/wiki/Special:Redirect/file/Mona_Lisa%2C_by_Leonardo_da_Vinci%2C_from_C2RMF_retouched.jpg?width=1024
+- Procedural gallery textures and the high-resolution OBJ furniture pack were generated locally by tools/generate_louvre_gallery_assets.ps1.
+- A CPU-visible Mona Lisa mosaic OBJ was generated locally by tools/generate_louvre_painting_mosaic.ps1. It samples the Mona Lisa texture into many colored material tiles so CPU preview can show the painting even before texture sampling is available there.
+- Two CPU-visible procedural portrait OBJ files were generated locally by tools/generate_louvre_side_portraits.ps1 for the additional wall installations.
+- The furniture OBJ is authored for this repository and uses textured MTL materials for walnut, brass, velvet, and linen label surfaces.
