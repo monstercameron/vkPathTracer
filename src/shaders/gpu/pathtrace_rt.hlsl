@@ -190,31 +190,54 @@ float Hash01(float3 p, float seed) {
     return frac(sin(dot(p, float3(12.9898, 78.233, 37.719)) + seed * 19.19) * 43758.5453);
 }
 
-float3 ProceduralWoodAlbedo(float3 base, float3 p) {
-    const float plankWidth = 0.42;
-    const float plankLength = 1.35;
-    float px = p.x / plankWidth;
-    float pz = p.z / plankLength;
+float3 ProceduralWoodAlbedo(float3 base, float3 p, float roughness, float clearcoat, uint style) {
+    // Style separates species/layout: parquet uses broad polished boards, walnut uses rough
+    // dark bench grain, and sandalwood uses fine pale frame streaks instead of floor planks.
+    float rough = saturate(roughness);
+    float coat = saturate(clearcoat);
+    float polish = saturate(coat * (1.25 - rough * 0.75));
+    float parquet = (style == 17u) ? 1.0 : 0.0;
+    float walnut = (style == 18u) ? 1.0 : 0.0;
+    float sandal = (style == 19u) ? 1.0 : 0.0;
+    float plankWidth = 0.40 + 0.16 * parquet + 0.08 * polish - 0.18 * walnut;
+    float plankLength = 1.15 + 0.85 * parquet + 0.55 * polish - 0.55 * walnut;
+    float px = (p.x + sandal * p.y * 0.35) / max(0.12, plankWidth);
+    float pz = (p.z + walnut * p.y * 0.70 + sandal * p.x * 0.22) / max(0.30, plankLength);
     float cellX = floor(px);
     float cellZ = floor(pz);
     float localX = frac(px);
     float localZ = frac(pz);
     float seed = Hash01(float3(cellX, cellZ, 0.0), 16.0);
-    bool rotate = fmod(cellX + cellZ, 2.0) >= 1.0;
+    float macroNoise = Hash01(floor(p * 3.7), 31.0 + float(style));
+    float microNoise = Hash01(floor(p * 34.0), 47.0 + float(style));
+    bool rotate = parquet > 0.5 && fmod(cellX + cellZ, 2.0) >= 1.0;
     float along = rotate ? localZ : localX;
     float across = rotate ? localX : localZ;
-    float wave = sin((along * 18.0 + seed * 6.2831853) +
-                     sin(across * 9.0 + seed * 4.0) * 0.75);
-    float fine = sin(along * 95.0 + across * 11.0 + seed * 12.0);
-    float ring = smoothstep(-0.25, 0.85, wave) * 0.75 + (0.5 + 0.5 * fine) * 0.25;
-    float seam = 1.0 - smoothstep(0.0, 0.035, min(min(localX, 1.0 - localX),
-                                                  min(localZ, 1.0 - localZ)));
-    float3 dark = float3(0.20, 0.115, 0.045);
-    float3 amber = float3(0.76, 0.49, 0.22);
+    float grainWobble = (macroNoise - 0.5) * (0.06 + rough * 0.12 + walnut * 0.08 + sandal * 0.04);
+    float warpedAlong = along + grainWobble + sin(across * 6.0 + seed * 5.0) * 0.018;
+    float grainFreq = 12.0 + rough * 8.0 + walnut * 22.0 + sandal * 36.0;
+    float wave = sin((warpedAlong * grainFreq + seed * 6.2831853) +
+                     sin(across * (6.0 + rough * 8.0) + seed * 4.0) * (0.25 + rough * 0.45 + walnut * 0.45));
+    float fine = sin(warpedAlong * (55.0 + rough * 55.0 + sandal * 110.0) +
+                     across * (9.0 + walnut * 25.0) + seed * 12.0);
+    float fineWeight = 0.10 + rough * 0.18 + walnut * 0.18 + sandal * 0.22;
+    float ring = smoothstep(-0.35 + polish * 0.18, 0.82, wave) * (1.0 - fineWeight) +
+                 (0.5 + 0.5 * fine) * fineWeight;
+    float seam = (1.0 - sandal) * (1.0 - smoothstep(0.0, 0.028 + polish * 0.018,
+        min(min(localX, 1.0 - localX), min(localZ, 1.0 - localZ))));
+    float3 dark = base * (0.46 - rough * 0.10 - walnut * 0.18);
+    float3 amber = base * (1.14 + coat * 0.22 + sandal * 0.18) +
+                   float3(0.08 + sandal * 0.18, 0.055 + sandal * 0.06, 0.025);
     float3 wood = lerp(dark, amber, ring);
-    wood *= 0.82 + 0.28 * seed;
-    wood *= 1.0 - seam * 0.55;
-    return base * 0.35 + wood * 0.65;
+    float boardTint = 0.92 + (0.08 + walnut * 0.12 + sandal * 0.06) * seed +
+                      (macroNoise - 0.5) * (0.08 + rough * 0.06);
+    float pores = smoothstep(0.74 - walnut * 0.08, 1.0, microNoise) *
+                  (0.025 + rough * 0.055 + walnut * 0.055 + sandal * 0.018);
+    wood *= boardTint;
+    wood *= 1.0 - pores;
+    wood *= 1.0 - seam * (0.10 + rough * 0.35 + parquet * 0.18) * (1.0 - coat * 0.45);
+    float woodMix = 0.30 + rough * 0.34 - polish * 0.14 + walnut * 0.26 + sandal * 0.18;
+    return base * (1.0 - woodMix) + wood * woodMix;
 }
 
 float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
@@ -257,8 +280,8 @@ float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
         float bands = 0.5 + 0.5 * sin(p.y * 11.0 + p.x * 3.0 + h * 7.0);
         float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 1.5);
         color = color * (0.25 + 0.45 * bands) + float3(0.48, 0.56, 0.68) * (0.18 + 0.32 * rim);
-    } else if (effect == 16u) {
-        color = ProceduralWoodAlbedo(color, p);
+    } else if (effect >= 16u && effect <= 19u) {
+        color = ProceduralWoodAlbedo(color, p, MatRoughness(idx), MatClearcoat(idx), effect);
     }
     return clamp(color, 0.0, 1.5);
 }

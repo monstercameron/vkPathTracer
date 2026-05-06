@@ -179,33 +179,70 @@ float smoothstep(float edge0, float edge1, float x) {
 }
 
 vkpt::pathtracer::Vec3 procedural_wood_albedo(const vkpt::pathtracer::Vec3& base,
-                                              const vkpt::pathtracer::Vec3& position) {
+                                              const vkpt::pathtracer::Vec3& position,
+                                              float roughness,
+                                              float clearcoat,
+                                              uint32_t style) {
   using vkpt::pathtracer::Vec3;
-  const float plank_width = 0.42f;
-  const float plank_length = 1.35f;
-  const float px = position.x / plank_width;
-  const float pz = position.z / plank_length;
+  // Style separates species/layout: parquet uses broad polished boards, walnut uses rough
+  // dark bench grain, and sandalwood uses fine pale frame streaks instead of floor planks.
+  const float rough = clamp01(roughness);
+  const float coat = clamp01(clearcoat);
+  const float polish = clamp01(coat * (1.25f - rough * 0.75f));
+  const float parquet = style == 17u ? 1.0f : 0.0f;
+  const float walnut = style == 18u ? 1.0f : 0.0f;
+  const float sandal = style == 19u ? 1.0f : 0.0f;
+  const float plank_width = 0.40f + 0.16f * parquet + 0.08f * polish - 0.18f * walnut;
+  const float plank_length = 1.15f + 0.85f * parquet + 0.55f * polish - 0.55f * walnut;
+  const float px = (position.x + sandal * position.y * 0.35f) / std::max(0.12f, plank_width);
+  const float pz = (position.z + walnut * position.y * 0.70f + sandal * position.x * 0.22f) /
+                   std::max(0.30f, plank_length);
   const float cell_x = std::floor(px);
   const float cell_z = std::floor(pz);
   const float local_x = px - cell_x;
   const float local_z = pz - cell_z;
   const float seed = hash01(cell_x, cell_z, 0.0f, 16.0f);
-  const bool rotate = std::fmod(cell_x + cell_z, 2.0f) >= 1.0f;
+  const float macro_noise = hash01(std::floor(position.x * 3.7f),
+                                   std::floor(position.y * 3.7f),
+                                   std::floor(position.z * 3.7f),
+                                   31.0f + static_cast<float>(style));
+  const float micro_noise = hash01(std::floor(position.x * 34.0f),
+                                   std::floor(position.y * 34.0f),
+                                   std::floor(position.z * 34.0f),
+                                   47.0f + static_cast<float>(style));
+  const bool rotate = parquet > 0.5f && std::fmod(cell_x + cell_z, 2.0f) >= 1.0f;
   const float along = rotate ? local_z : local_x;
   const float across = rotate ? local_x : local_z;
-  const float wave = std::sin((along * 18.0f + seed * 6.2831853f) +
-                              std::sin(across * 9.0f + seed * 4.0f) * 0.75f);
-  const float fine = std::sin(along * 95.0f + across * 11.0f + seed * 12.0f);
-  const float ring = smoothstep(-0.25f, 0.85f, wave) * 0.75f + (0.5f + 0.5f * fine) * 0.25f;
+  const float grain_wobble =
+      (macro_noise - 0.5f) * (0.06f + rough * 0.12f + walnut * 0.08f + sandal * 0.04f);
+  const float warped_along = along + grain_wobble + std::sin(across * 6.0f + seed * 5.0f) * 0.018f;
+  const float grain_freq = 12.0f + rough * 8.0f + walnut * 22.0f + sandal * 36.0f;
+  const float wave = std::sin((warped_along * grain_freq + seed * 6.2831853f) +
+                              std::sin(across * (6.0f + rough * 8.0f) + seed * 4.0f) *
+                                  (0.25f + rough * 0.45f + walnut * 0.45f));
+  const float fine = std::sin(warped_along * (55.0f + rough * 55.0f + sandal * 110.0f) +
+                              across * (9.0f + walnut * 25.0f) + seed * 12.0f);
+  const float fine_weight = 0.10f + rough * 0.18f + walnut * 0.18f + sandal * 0.22f;
+  const float ring = smoothstep(-0.35f + polish * 0.18f, 0.82f, wave) * (1.0f - fine_weight) +
+                     (0.5f + 0.5f * fine) * fine_weight;
   const float seam_x = std::min(local_x, 1.0f - local_x);
   const float seam_z = std::min(local_z, 1.0f - local_z);
-  const float seam = 1.0f - smoothstep(0.0f, 0.035f, std::min(seam_x, seam_z));
-  const Vec3 dark{0.20f, 0.115f, 0.045f};
-  const Vec3 amber{0.76f, 0.49f, 0.22f};
+  const float seam = (1.0f - sandal) *
+      (1.0f - smoothstep(0.0f, 0.028f + polish * 0.018f, std::min(seam_x, seam_z)));
+  const Vec3 dark = base * (0.46f - rough * 0.10f - walnut * 0.18f);
+  const Vec3 amber = base * (1.14f + coat * 0.22f + sandal * 0.18f) +
+                     Vec3{0.08f + sandal * 0.18f, 0.055f + sandal * 0.06f, 0.025f};
   Vec3 wood = dark * (1.0f - ring) + amber * ring;
-  wood = wood * (0.82f + 0.28f * seed);
-  wood = wood * (1.0f - seam * 0.55f);
-  return base * 0.35f + wood * 0.65f;
+  const float board_tint = 0.92f +
+                           (0.08f + walnut * 0.12f + sandal * 0.06f) * seed +
+                           (macro_noise - 0.5f) * (0.08f + rough * 0.06f);
+  const float pores = smoothstep(0.74f - walnut * 0.08f, 1.0f, micro_noise) *
+                      (0.025f + rough * 0.055f + walnut * 0.055f + sandal * 0.018f);
+  wood = wood * board_tint;
+  wood = wood * (1.0f - pores);
+  wood = wood * (1.0f - seam * (0.10f + rough * 0.35f + parquet * 0.18f) * (1.0f - coat * 0.45f));
+  const float wood_mix = 0.30f + rough * 0.34f - polish * 0.14f + walnut * 0.26f + sandal * 0.18f;
+  return base * (1.0f - wood_mix) + wood * wood_mix;
 }
 
 vkpt::pathtracer::Vec3 apply_material_effect(const vkpt::pathtracer::RTMaterial& material,
@@ -286,8 +323,11 @@ vkpt::pathtracer::Vec3 apply_material_effect(const vkpt::pathtracer::RTMaterial&
       color = color * (0.25f + 0.45f * bands) + Vec3{0.48f, 0.56f, 0.68f} * (0.18f + 0.32f * rim);
       break;
     }
-    case 16u: {  // procedural wood/parquet grain
-      color = procedural_wood_albedo(color, position);
+    case 16u:
+    case 17u:
+    case 18u:
+    case 19u: {  // procedural wood species/layout grain
+      color = procedural_wood_albedo(color, position, material.roughness, material.clearcoat, material.material_effect);
       break;
     }
     default:
