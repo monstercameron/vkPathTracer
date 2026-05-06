@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-06 (session 29)
+
+### C++ decomposition guardrail completion
+
+- Replaced artificial numbered source chunks with named decomposition modules and runtime fragments for the app runtime, Qt platform, dock panels, benchmark runtime, asset importers, scalar CPU tracer, scripting bindings, D3D12 backend, and DXR pipeline setup.
+- Reduced every tracked `.cpp` source below 1000 LOC and verified that no `*.part*.cpp` files remain.
+- Consolidated scalar CPU render jobs back into one shared job-system singleton after the render split, and fixed split-related benchmark, Qt dock, scripting, and D3D12 compile issues.
+- Verified desktop Clang, desktop Qt, and Windows clang-cl D3D12+Qt builds plus scripting, UI model, source-size, TODO audit, and scene-validation smoke checks.
+
 ## 2026-05-06 (session 28)
 
 ### Performance fixes and decomposition checkpoint
