@@ -1,8 +1,34 @@
 #pragma once
 
-#include "scene/Scene.h"
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+#include "scene/SceneTypes.h"
 
 namespace vkpt::scene {
+
+struct JsonValue;
+
+class JsonParser {
+ public:
+  [[nodiscard]] static std::optional<JsonValue> parse(std::string_view text);
+  [[nodiscard]] static std::string stringify(const JsonValue& value);
+};
+
+struct JsonValue {
+  enum class Kind : std::uint8_t { Null, Boolean, Number, String, Array, Object };
+
+  Kind kind = Kind::Null;
+  bool boolean = false;
+  double number = 0.0;
+  std::string string;
+  std::vector<JsonValue> array;
+  std::unordered_map<std::string, JsonValue> object;
+};
 
 std::string stringify(const JsonValue& value, bool pretty = false);
 

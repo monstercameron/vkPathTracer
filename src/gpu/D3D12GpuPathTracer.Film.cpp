@@ -122,7 +122,7 @@ bool D3D12GpuPathTracer::create_film_buffer() {
   LogDebug("create_film_buffer pixels=" + std::to_string(m_filmPixels) + " bytes=" + std::to_string(filmSize));
 
   // Default heap (GPU-visible UAV)
-  D3D12_HEAP_PROPERTIES defhp{D3D12_HEAP_TYPE_DEFAULT};
+  const D3D12_HEAP_PROPERTIES defhp = MakeHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
   D3D12_RESOURCE_DESC   rd{};
   rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
   rd.Width            = filmSize;
@@ -142,7 +142,7 @@ bool D3D12GpuPathTracer::create_film_buffer() {
   }
 
   // Readback buffer
-  D3D12_HEAP_PROPERTIES rdhp{D3D12_HEAP_TYPE_READBACK};
+  const D3D12_HEAP_PROPERTIES rdhp = MakeHeapProperties(D3D12_HEAP_TYPE_READBACK);
   D3D12_RESOURCE_DESC   rd2{};
   rd2.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
   rd2.Width            = filmSize;

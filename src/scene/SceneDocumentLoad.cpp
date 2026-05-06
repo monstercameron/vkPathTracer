@@ -1,5 +1,6 @@
 #include "scene/Scene.h"
 
+#include "core/Logging.h"
 #include "assets/SceneAssetLoader.h"
 #include "scene/Json.h"
 #include "scene/SceneInternal.h"

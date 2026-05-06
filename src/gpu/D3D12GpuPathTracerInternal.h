@@ -24,6 +24,16 @@ inline constexpr uint32_t kInvalidTextureIndex = 0xffffffffu;
 inline constexpr uint32_t kMaxTextureDimension = 512u;
 inline constexpr uint32_t kGpuInstanceStrideU32 = 24u;
 
+inline D3D12_HEAP_PROPERTIES MakeHeapProperties(D3D12_HEAP_TYPE type) noexcept {
+  D3D12_HEAP_PROPERTIES props{};
+  props.Type = type;
+  props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+  props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+  props.CreationNodeMask = 1u;
+  props.VisibleNodeMask = 1u;
+  return props;
+}
+
 extern uint64_t g_d3d12RenderBatchCalls;
 extern uint64_t g_d3d12SceneUploadCalls;
 
@@ -103,9 +113,6 @@ D3D12_RAYTRACING_INSTANCE_DESC MakeDxrInstanceDesc(
     vkpt::pathtracer::Quat4 rotation,
     const vkpt::pathtracer::Vec3& scale);
 void StoreEmptyBvh(std::vector<float>& gpu_bvh);
-uint32_t BuildDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>& insts,
-                                                    uint32_t instanceCount,
-                                                    std::vector<float>& outBvh);
 
 }  // namespace vkpt::gpu
 

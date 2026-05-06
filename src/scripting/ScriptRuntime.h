@@ -31,6 +31,14 @@ enum class ScriptDiagnosticSeverity : std::uint8_t {
 };
 
 struct ScriptExecutionContext {
+  struct InputState {
+    std::vector<int> active_keys;
+    float mouse_delta_x = 0.0f;
+    float mouse_delta_y = 0.0f;
+    float mouse_wheel_delta = 0.0f;
+    bool viewport_focused = true;
+  };
+
   vkpt::core::FrameIndex frame = 0;
   double elapsed_seconds = 0.0;
   double delta_seconds = 0.0;
@@ -39,6 +47,7 @@ struct ScriptExecutionContext {
   bool scripts_enabled = true;
   bool benchmark_mode = false;
   bool allow_benchmark_scripts = false;
+  InputState input;
 };
 
 struct ScriptBinding {

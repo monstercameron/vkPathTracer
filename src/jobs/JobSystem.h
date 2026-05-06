@@ -21,6 +21,19 @@ namespace vkpt::jobs {
 using JobFunction = std::function<void()>;
 using IndexedRangeJobFunction = std::function<void(std::size_t)>;
 
+enum class WorkerThreadPriority {
+  Normal,
+  Background,
+};
+
+struct JobSystemConfig {
+  std::size_t worker_count = 0u;
+  WorkerThreadPriority worker_priority = WorkerThreadPriority::Normal;
+  bool waiting_thread_runs_jobs = true;
+};
+
+void ApplyCurrentThreadPriority(WorkerThreadPriority priority);
+
 class IJobSystem {
  public:
   virtual ~IJobSystem() = default;
@@ -45,6 +58,7 @@ class IJobSystem {
 class JobSystem final : public IJobSystem {
  public:
   explicit JobSystem(std::size_t workerCount = 0u);
+  explicit JobSystem(JobSystemConfig config);
   ~JobSystem() override;
 
   vkpt::core::JobHandle submit_job(JobFunction job) override;
@@ -87,6 +101,8 @@ class JobSystem final : public IJobSystem {
   std::deque<vkpt::core::JobHandle> m_queue;
   std::deque<vkpt::core::JobHandle> m_mainQueue;
   std::vector<std::thread> m_workers;
+  WorkerThreadPriority m_workerPriority = WorkerThreadPriority::Normal;
+  bool m_waitingThreadRunsJobs = true;
   std::atomic_bool m_stopped{false};
   std::atomic_bool m_deterministic{false};
   std::atomic<vkpt::core::JobHandle> m_nextJobId{1u};

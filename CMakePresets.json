@@ -9,8 +9,9 @@
       "binaryDir": "${sourceDir}/build/presets/desktop-clang-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang++.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang.exe",
+        "CMAKE_RC_COMPILER": "C:/Program Files/LLVM/bin/llvm-rc.exe",
         "CMAKE_CXX_STANDARD": "23",
         "PT_ENABLE_CPU_RAYTRACER": "ON",
         "PT_ENABLE_AVX2": "ON",
@@ -28,8 +29,9 @@
       "binaryDir": "${sourceDir}/build/presets/desktop-clang-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang++.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang.exe",
+        "CMAKE_RC_COMPILER": "C:/Program Files/LLVM/bin/llvm-rc.exe",
         "CMAKE_CXX_STANDARD": "23",
         "PT_ENABLE_CPU_RAYTRACER": "ON",
         "PT_ENABLE_BENCHMARK": "OFF",
@@ -45,12 +47,15 @@
       "binaryDir": "${sourceDir}/build/presets/desktop-clang-qt-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang++.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang.exe",
+        "CMAKE_RC_COMPILER": "C:/Program Files/LLVM/bin/llvm-rc.exe",
         "CMAKE_CXX_STANDARD": "23",
         "PT_ENABLE_CPU_RAYTRACER": "ON",
         "PT_ENABLE_QT": "ON",
         "PT_ENABLE_QT_EDITOR": "ON",
+        "PT_ENABLE_LUA": "ON",
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64",
         "PT_ENABLE_SANITIZERS": "OFF",
         "PT_SANITIZER": "disabled"
       }
@@ -63,12 +68,15 @@
       "binaryDir": "${sourceDir}/build/presets/desktop-clang-qt-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang++.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang.exe",
+        "CMAKE_RC_COMPILER": "C:/Program Files/LLVM/bin/llvm-rc.exe",
         "CMAKE_CXX_STANDARD": "23",
         "PT_ENABLE_CPU_RAYTRACER": "ON",
         "PT_ENABLE_QT": "ON",
         "PT_ENABLE_QT_EDITOR": "ON",
+        "PT_ENABLE_LUA": "ON",
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64",
         "PT_ENABLE_SANITIZERS": "OFF",
         "PT_SANITIZER": "disabled"
       }
@@ -81,8 +89,9 @@
       "binaryDir": "${sourceDir}/build/presets/desktop-clang-benchmark",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang++.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang.exe",
+        "CMAKE_RC_COMPILER": "C:/Program Files/LLVM/bin/llvm-rc.exe",
         "CMAKE_CXX_STANDARD": "23",
         "PT_ENABLE_BENCHMARK": "ON",
         "PT_ENABLE_CPU_RAYTRACER": "ON",
@@ -98,8 +107,9 @@
       "binaryDir": "${sourceDir}/build/presets/desktop-clang-asan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang++.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang.exe",
+        "CMAKE_RC_COMPILER": "C:/Program Files/LLVM/bin/llvm-rc.exe",
         "CMAKE_CXX_STANDARD": "23",
         "PT_ENABLE_SANITIZERS": "ON",
         "PT_SANITIZER": "address"
@@ -113,8 +123,9 @@
       "binaryDir": "${sourceDir}/build/presets/desktop-clang-tsan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang++.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang.exe",
+        "CMAKE_RC_COMPILER": "C:/Program Files/LLVM/bin/llvm-rc.exe",
         "CMAKE_CXX_STANDARD": "23",
         "PT_ENABLE_SANITIZERS": "ON",
         "PT_SANITIZER": "thread"
@@ -128,8 +139,9 @@
       "binaryDir": "${sourceDir}/build/presets/windows-clang-vulkan-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "C:/Program Files/LLVM/bin/clang++.exe",
+        "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang.exe",
+        "CMAKE_RC_COMPILER": "C:/Program Files/LLVM/bin/llvm-rc.exe",
         "CMAKE_CXX_STANDARD": "23",
         "PT_ENABLE_VULKAN": "ON",
         "PT_ENABLE_CPU_RAYTRACER": "ON",
@@ -182,6 +194,7 @@
         "PT_ENABLE_JOLT": "ON",
         "PT_ENABLE_QT": "ON",
         "PT_ENABLE_QT_EDITOR": "ON",
+        "PT_ENABLE_LUA": "ON",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64"
       }
     },
@@ -206,6 +219,7 @@
         "PT_ENABLE_JOLT": "ON",
         "PT_ENABLE_QT": "ON",
         "PT_ENABLE_QT_EDITOR": "ON",
+        "PT_ENABLE_LUA": "ON",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64"
       }
     },

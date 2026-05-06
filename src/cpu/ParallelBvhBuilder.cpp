@@ -2,30 +2,9 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <limits>
 
 namespace vkpt::cpu {
-
-namespace {
-
-float aabb_surface_area(const BvhAabb& a) {
-  const float dx = a.max[0] - a.min[0];
-  const float dy = a.max[1] - a.min[1];
-  const float dz = a.max[2] - a.min[2];
-  return 2.0f * (dx * dy + dy * dz + dz * dx);
-}
-
-BvhAabb merge_aabb(const BvhAabb& a, const BvhAabb& b) {
-  BvhAabb out;
-  for (int i = 0; i < 3; ++i) {
-    out.min[i] = std::min(a.min[i], b.min[i]);
-    out.max[i] = std::max(a.max[i], b.max[i]);
-  }
-  return out;
-}
-
-}  // namespace
 
 // static
 BvhAabb ParallelBvhBuilder::compute_aabb(

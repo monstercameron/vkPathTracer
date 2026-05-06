@@ -182,7 +182,7 @@ bool D3D12GpuPathTracer::init_device() {
 
   // Upload buffer — 64 MB
   m_uploadSize = 256ull * 1024 * 1024;
-  D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
+  const D3D12_HEAP_PROPERTIES hp = MakeHeapProperties(D3D12_HEAP_TYPE_UPLOAD);
   D3D12_RESOURCE_DESC   rd{};
   rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
   rd.Width            = m_uploadSize;

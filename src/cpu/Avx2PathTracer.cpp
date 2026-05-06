@@ -325,12 +325,31 @@ bool Avx2CpuPathTracer::update_camera(const vkpt::pathtracer::Vec3& pos,
   if (!configured_ || !has_scene_) {
     return false;
   }
-  scene_.camera_position = pos;
-  scene_.camera_target = target;
-  scene_.camera_up = up;
-  scene_.camera_fov_deg = fov_deg;
+  auto camera = vkpt::pathtracer::ExtractCameraState(scene_);
+  camera.position = pos;
+  camera.target = target;
+  camera.up = up;
+  camera.fov_deg = fov_deg;
+  return update_camera_state(camera);
+}
+
+bool Avx2CpuPathTracer::update_camera_state(const vkpt::pathtracer::RTCameraState& camera) {
+  if (!configured_ || !has_scene_) {
+    return false;
+  }
+  vkpt::pathtracer::ApplyCameraState(scene_, camera);
+  m_film.set_resolve_settings(
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(settings_.film_resolve, scene_));
   set_camera_basis();
   return true;
+}
+
+bool Avx2CpuPathTracer::update_instance_transforms(
+    const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) {
+  if (!configured_ || !has_scene_) {
+    return false;
+  }
+  return vkpt::pathtracer::ApplyInstanceTransformUpdates(scene_, updates);
 }
 
 bool Avx2CpuPathTracer::reset_accumulation() {

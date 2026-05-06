@@ -35,6 +35,9 @@ class TiledCpuPathTracer final : public vkpt::pathtracer::IPathTracer, public vk
                      const vkpt::pathtracer::Vec3& target,
                      const vkpt::pathtracer::Vec3& up,
                      float fov_deg) override;
+  bool update_camera_state(const vkpt::pathtracer::RTCameraState& camera) override;
+  bool update_instance_transforms(
+      const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
   bool render_sample_batch_cancellable(uint32_t start_y,
                                        uint32_t end_y,
