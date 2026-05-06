@@ -2463,9 +2463,23 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       if (const auto animNode = item.object.find("animation"); animNode != item.object.end()) {
         read_string(animNode->second, "clip", entity.animation.clip);
         read_bool(animNode->second, "looping", entity.animation.looping);
+        read_float(animNode->second, "duration_seconds", entity.animation.duration_seconds);
+        read_float(animNode->second, "duration", entity.animation.duration_seconds);
+        read_float(animNode->second, "playback_speed", entity.animation.playback_speed);
+        read_float(animNode->second, "speed", entity.animation.playback_speed);
+        read_vec3(animNode->second, "translation_amplitude", entity.animation.translation_amplitude);
+        read_vec3(animNode->second, "rotation_degrees", entity.animation.rotation_degrees);
+        read_vec3(animNode->second, "scale_amplitude", entity.animation.scale_amplitude);
       }
       if (const auto scriptNode = item.object.find("script"); scriptNode != item.object.end()) {
         read_string(scriptNode->second, "source", entity.script.script);
+        if (entity.script.script.empty()) {
+          read_string(scriptNode->second, "path", entity.script.script);
+        }
+        read_string(scriptNode->second, "language", entity.script.language);
+        read_string(scriptNode->second, "entry", entity.script.entry);
+        read_bool(scriptNode->second, "enabled", entity.script.enabled);
+        read_bool(scriptNode->second, "reload_on_save", entity.script.reload_on_save);
       }
       if (const auto benchmarkNode = item.object.find("benchmark"); benchmarkNode != item.object.end()) {
         entity.has_benchmark_tag = true;
@@ -2777,6 +2791,15 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
          entity.light.beam_angle_degrees <= 0.0f || !std::isfinite(entity.light.blend) ||
          entity.light.blend < 0.0f)) {
       report("entity light has invalid values " + std::to_string(entity.id));
+    }
+    if (!entity.animation.clip.empty() &&
+        (!std::isfinite(entity.animation.duration_seconds) ||
+         entity.animation.duration_seconds <= 0.0f ||
+         !std::isfinite(entity.animation.playback_speed) ||
+         !finite_vec3(entity.animation.translation_amplitude) ||
+         !finite_vec3(entity.animation.rotation_degrees) ||
+         !finite_vec3(entity.animation.scale_amplitude))) {
+      report("entity animation has invalid values " + std::to_string(entity.id));
     }
   }
   for (const auto& transform : transforms) {
@@ -3181,11 +3204,20 @@ std::string SceneDocument::to_json(bool pretty) const {
       JsonValue animNode = object_value();
       animNode.object["clip"] = string_value(entity.animation.clip);
       animNode.object["looping"] = bool_value(entity.animation.looping);
+      animNode.object["duration_seconds"] = number_value(entity.animation.duration_seconds);
+      animNode.object["playback_speed"] = number_value(entity.animation.playback_speed);
+      animNode.object["translation_amplitude"] = vec3_value(entity.animation.translation_amplitude);
+      animNode.object["rotation_degrees"] = vec3_value(entity.animation.rotation_degrees);
+      animNode.object["scale_amplitude"] = vec3_value(entity.animation.scale_amplitude);
       item.object["animation"] = std::move(animNode);
     }
     if (!entity.script.script.empty()) {
       JsonValue scriptNode = object_value();
       scriptNode.object["source"] = string_value(entity.script.script);
+      scriptNode.object["language"] = string_value(entity.script.language);
+      scriptNode.object["entry"] = string_value(entity.script.entry);
+      scriptNode.object["enabled"] = bool_value(entity.script.enabled);
+      scriptNode.object["reload_on_save"] = bool_value(entity.script.reload_on_save);
       item.object["script"] = std::move(scriptNode);
     }
     if (entity.has_benchmark_tag) {

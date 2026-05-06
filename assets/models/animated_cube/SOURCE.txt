@@ -1,0 +1,9 @@
+AnimatedCube glTF sample
+
+Source: https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/AnimatedCube
+Files:
+- AnimatedCube.gltf
+- AnimatedCube.bin
+- AnimatedCube_BaseColor.png
+
+License: CC0 1.0 Universal. The upstream README credits UX3D and Norbert Nopper.
