@@ -16,6 +16,7 @@
 #include "pathtracer/PathTracer.h"
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -94,6 +95,12 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   /// Uploads dynamic instance transforms and refreshes the software BVH or DXR TLAS.
   bool update_instance_transforms(
       const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) override;
+  vkpt::pathtracer::InstanceTransformUpdatePlan plan_instance_transform_update(
+      std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+      const vkpt::pathtracer::InstanceTransformUpdateOptions& options) const override;
+  vkpt::pathtracer::InstanceTransformUpdateResult apply_instance_transform_update(
+      std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+      const vkpt::pathtracer::InstanceTransformUpdateOptions& options) override;
   /// Applies material/light-only deltas that do not require triangle repacking.
   bool update_scene_delta(const vkpt::pathtracer::RTSceneDeltaUpdate& update) override;
   /// Dispatches one GPU sample batch and optionally readbacks the LDR display buffer.
@@ -126,6 +133,17 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool        packed_triangle_buffer_enabled() const { return m_packedTriangleBufferEnabled; }
 
  private:
+  struct DynamicInstanceTransformUpdateStage {
+    vkpt::pathtracer::RTSceneData scene;
+    std::vector<uint32_t> gpu_instances;
+    std::vector<float> gpu_dynamic_bvh;
+    std::vector<D3D12_RAYTRACING_INSTANCE_DESC> dxr_instance_descs;
+    uint32_t dynamic_instance_count = 0u;
+    uint32_t matched_count = 0u;
+    uint32_t first_changed_instance = 0u;
+    uint32_t changed_instance_count = 0u;
+  };
+
   /// Creates the DXGI factory, device, queue, command list, fence, and upload heap.
   bool init_device();
   /// Creates DXR-specific queue/list/fence objects after device capability probing.
@@ -145,6 +163,10 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   /// Uploads dynamic instance changes and the dynamic-instance BVH.
   bool upload_instance_buffer(uint32_t firstInstance = 0u,
                               uint32_t instanceCount = std::numeric_limits<uint32_t>::max());
+  bool upload_instance_buffer_from(const std::vector<uint32_t>& gpuInstances,
+                                   const std::vector<float>& gpuDynamicBvh,
+                                   uint32_t firstInstance = 0u,
+                                   uint32_t instanceCount = std::numeric_limits<uint32_t>::max());
   /// Uploads material and/or light buffers for small scene deltas.
   bool upload_material_light_buffers(bool uploadMaterials, bool uploadLights);
   bool build_texture_buffers();
@@ -161,6 +183,9 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool build_dxr_acceleration_structures();
   /// Refits the TLAS after dynamic instance transforms change.
   bool update_dxr_instance_buffer_and_tlas();
+  bool update_dxr_instance_buffer_and_tlas_from(
+      const std::vector<uint32_t>& gpuInstances,
+      std::vector<D3D12_RAYTRACING_INSTANCE_DESC>& dxrInstanceDescs);
   bool create_dxr_desc_heap();
   /// Dispatches the hardware ray tracing path and shared postprocess/readback chain.
   bool dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_idx, bool doReadback);
@@ -298,6 +323,9 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool m_dynamicInstanceTransformsEnabled = false;
   uint32_t m_staticTriangleCount = 0;
   uint32_t m_dynamicInstanceCount = 0;
+  bool stage_dynamic_instance_transform_update(
+      std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+      DynamicInstanceTransformUpdateStage& out) const;
   mutable uint32_t m_lastSampleIdx = 0;
   mutable vkpt::pathtracer::FilmLdr m_ldrResolve; // latest GPU-tonemapped frame
 };

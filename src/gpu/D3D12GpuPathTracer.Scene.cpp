@@ -182,6 +182,31 @@ bool D3D12GpuPathTracer::update_camera_state(
 
 bool D3D12GpuPathTracer::update_instance_transforms(
     const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) {
+  DynamicInstanceTransformUpdateStage stage;
+  if (!stage_dynamic_instance_transform_update(updates, stage)) {
+    return false;
+  }
+  const bool updateDxrTlas = (m_preferDxr || m_usingDxrDispatch);
+  const bool uploaded = updateDxrTlas
+      ? update_dxr_instance_buffer_and_tlas_from(stage.gpu_instances, stage.dxr_instance_descs)
+      : upload_instance_buffer_from(stage.gpu_instances,
+                                    stage.gpu_dynamic_bvh,
+                                    stage.first_changed_instance,
+                                    stage.changed_instance_count);
+  if (uploaded) {
+    m_sceneData = std::move(stage.scene);
+    m_gpuInsts = std::move(stage.gpu_instances);
+    m_gpuDynamicBvh = std::move(stage.gpu_dynamic_bvh);
+    m_dxrInstanceDescs = std::move(stage.dxr_instance_descs);
+    m_dynamicInstanceCount = stage.dynamic_instance_count;
+    m_temporalHistoryValid = false;
+  }
+  return uploaded;
+}
+
+bool D3D12GpuPathTracer::stage_dynamic_instance_transform_update(
+    std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+    DynamicInstanceTransformUpdateStage& out) const {
   if (!m_sceneUploaded || !m_instBuf || updates.empty()) {
     return false;
   }
@@ -196,13 +221,19 @@ bool D3D12GpuPathTracer::update_instance_transforms(
     return false;
   }
 
+  out.scene = m_sceneData;
+  out.gpu_instances = m_gpuInsts;
+  out.gpu_dynamic_bvh = m_gpuDynamicBvh;
+  out.dxr_instance_descs = m_dxrInstanceDescs;
+  out.dynamic_instance_count = m_dynamicInstanceCount;
+
   auto findInstanceIndex = [&](const vkpt::pathtracer::RTInstanceTransformUpdate& update) {
-    if (update.instance_index < m_sceneData.instances.size()) {
+    if (update.instance_index < out.scene.instances.size()) {
       return update.instance_index;
     }
     if (update.entity_id != 0u) {
-      for (std::size_t index = 0; index < m_sceneData.instances.size(); ++index) {
-        if (m_sceneData.instances[index].entity_id == update.entity_id) {
+      for (std::size_t index = 0; index < out.scene.instances.size(); ++index) {
+        if (out.scene.instances[index].entity_id == update.entity_id) {
           return static_cast<uint32_t>(index);
         }
       }
@@ -215,10 +246,10 @@ bool D3D12GpuPathTracer::update_instance_transforms(
   uint32_t lastChangedInstance = 0u;
   for (const auto& update : updates) {
     const uint32_t instanceIndex = findInstanceIndex(update);
-    if (instanceIndex >= m_sceneData.instances.size()) {
+    if (instanceIndex >= out.scene.instances.size()) {
       continue;
     }
-    auto& instance = m_sceneData.instances[instanceIndex];
+    auto& instance = out.scene.instances[instanceIndex];
     if (!instance.has_flag(vkpt::pathtracer::kRTInstanceFlagDynamicTransform)) {
       continue;
     }
@@ -229,18 +260,19 @@ bool D3D12GpuPathTracer::update_instance_transforms(
     instance.transform_revision = update.transform_revision;
 
     const std::size_t base = static_cast<std::size_t>(instanceIndex) * kGpuInstanceStrideU32;
-    m_gpuInsts[base + 3u] = instance.flags;
-    m_gpuInsts[base + 4u] = FloatBits(instance.translation.x);
-    m_gpuInsts[base + 5u] = FloatBits(instance.translation.y);
-    m_gpuInsts[base + 6u] = FloatBits(instance.translation.z);
-    m_gpuInsts[base + 8u] = FloatBits(instance.rotation.x);
-    m_gpuInsts[base + 9u] = FloatBits(instance.rotation.y);
-    m_gpuInsts[base + 10u] = FloatBits(instance.rotation.z);
-    m_gpuInsts[base + 11u] = FloatBits(instance.rotation.w);
-    m_gpuInsts[base + 12u] = FloatBits(instance.scale.x);
-    m_gpuInsts[base + 13u] = FloatBits(instance.scale.y);
-    m_gpuInsts[base + 14u] = FloatBits(instance.scale.z);
+    out.gpu_instances[base + 3u] = instance.flags;
+    out.gpu_instances[base + 4u] = FloatBits(instance.translation.x);
+    out.gpu_instances[base + 5u] = FloatBits(instance.translation.y);
+    out.gpu_instances[base + 6u] = FloatBits(instance.translation.z);
+    out.gpu_instances[base + 8u] = FloatBits(instance.rotation.x);
+    out.gpu_instances[base + 9u] = FloatBits(instance.rotation.y);
+    out.gpu_instances[base + 10u] = FloatBits(instance.rotation.z);
+    out.gpu_instances[base + 11u] = FloatBits(instance.rotation.w);
+    out.gpu_instances[base + 12u] = FloatBits(instance.scale.x);
+    out.gpu_instances[base + 13u] = FloatBits(instance.scale.y);
+    out.gpu_instances[base + 14u] = FloatBits(instance.scale.z);
     changed = true;
+    ++out.matched_count;
     firstChangedInstance = std::min(firstChangedInstance, instanceIndex);
     lastChangedInstance = std::max(lastChangedInstance, instanceIndex);
   }
@@ -249,27 +281,156 @@ bool D3D12GpuPathTracer::update_instance_transforms(
     return false;
   }
   const uint32_t refitDynamicCount = RefitDynamicInstanceBvhFromPackedInstances(
-      m_gpuInsts,
-      static_cast<uint32_t>(m_sceneData.instances.size()),
-      m_gpuDynamicBvh);
+      out.gpu_instances,
+      static_cast<uint32_t>(out.scene.instances.size()),
+      out.gpu_dynamic_bvh);
   if (refitDynamicCount == 0u || refitDynamicCount != m_dynamicInstanceCount) {
-    m_dynamicInstanceCount = BuildDynamicInstanceBvhFromPackedInstances(
-        m_gpuInsts,
-        static_cast<uint32_t>(m_sceneData.instances.size()),
-        m_gpuDynamicBvh);
+    out.dynamic_instance_count = BuildDynamicInstanceBvhFromPackedInstances(
+        out.gpu_instances,
+        static_cast<uint32_t>(out.scene.instances.size()),
+        out.gpu_dynamic_bvh);
   } else {
-    m_dynamicInstanceCount = refitDynamicCount;
+    out.dynamic_instance_count = refitDynamicCount;
   }
-  const uint32_t changedInstanceCount = firstChangedInstance <= lastChangedInstance
+  out.first_changed_instance = firstChangedInstance;
+  out.changed_instance_count = firstChangedInstance <= lastChangedInstance
       ? (lastChangedInstance - firstChangedInstance + 1u)
       : std::numeric_limits<uint32_t>::max();
-  const bool uploaded = updateDxrTlas
-      ? update_dxr_instance_buffer_and_tlas()
-      : upload_instance_buffer(firstChangedInstance, changedInstanceCount);
-  if (uploaded) {
-    m_temporalHistoryValid = false;
+  return out.dynamic_instance_count > 0u;
+}
+
+vkpt::pathtracer::InstanceTransformUpdatePlan D3D12GpuPathTracer::plan_instance_transform_update(
+    std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+    const vkpt::pathtracer::InstanceTransformUpdateOptions& /*options*/) const {
+  if (!m_sceneUploaded || !m_instBuf || updates.empty()) {
+    return {
+        vkpt::pathtracer::InstanceTransformUpdateStatus::Unsupported,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "D3D12 dynamic transform buffers are not ready"};
   }
-  return uploaded;
+  if (!m_dynamicInstanceTransformsEnabled) {
+    return {
+        vkpt::pathtracer::InstanceTransformUpdateStatus::Unsupported,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "D3D12 dynamic instance transforms are disabled"};
+  }
+  if (m_gpuInsts.size() < m_sceneData.instances.size() * kGpuInstanceStrideU32) {
+    return {
+        vkpt::pathtracer::InstanceTransformUpdateStatus::Failed,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "D3D12 packed instance mirror is invalid"};
+  }
+  const bool updateDxrTlas = (m_preferDxr || m_usingDxrDispatch);
+  if (updateDxrTlas && (!m_dxrAccelReady || m_dxrInstanceDescs.empty())) {
+    return {
+        vkpt::pathtracer::InstanceTransformUpdateStatus::Unsupported,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "D3D12 DXR TLAS is not ready for dynamic transform updates"};
+  }
+
+  std::uint32_t matched = 0u;
+  for (const auto& update : updates) {
+    bool found = false;
+    if (update.instance_index < m_sceneData.instances.size()) {
+      found = m_sceneData.instances[update.instance_index].has_flag(
+          vkpt::pathtracer::kRTInstanceFlagDynamicTransform);
+    } else if (update.entity_id != 0u) {
+      for (const auto& instance : m_sceneData.instances) {
+        if (instance.entity_id == update.entity_id &&
+            instance.has_flag(vkpt::pathtracer::kRTInstanceFlagDynamicTransform)) {
+          found = true;
+          break;
+        }
+      }
+    }
+    if (found) {
+      ++matched;
+    }
+  }
+
+  if (matched == 0u) {
+    return {
+        vkpt::pathtracer::InstanceTransformUpdateStatus::Failed,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "D3D12 transform update matched no dynamic instances"};
+  }
+
+  return {
+      vkpt::pathtracer::InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate,
+      static_cast<std::uint32_t>(updates.size()),
+      matched,
+      "D3D12 dynamic instance transform update can use dynamic acceleration path"};
+}
+
+vkpt::pathtracer::InstanceTransformUpdateResult D3D12GpuPathTracer::apply_instance_transform_update(
+    std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+    const vkpt::pathtracer::InstanceTransformUpdateOptions& options) {
+  const auto plan = plan_instance_transform_update(updates, options);
+  if (!plan.can_apply_without_full_fallback()) {
+    return {
+        plan.status,
+        plan.requested_count,
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        plan.message};
+  }
+
+  DynamicInstanceTransformUpdateStage stage;
+  if (!stage_dynamic_instance_transform_update(updates, stage)) {
+    return {
+        vkpt::pathtracer::InstanceTransformUpdateStatus::Failed,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        "D3D12 dynamic transform update staging failed"};
+  }
+
+  const bool updateDxrTlas = (m_preferDxr || m_usingDxrDispatch);
+  const bool uploaded = updateDxrTlas
+      ? update_dxr_instance_buffer_and_tlas_from(stage.gpu_instances, stage.dxr_instance_descs)
+      : upload_instance_buffer_from(stage.gpu_instances,
+                                    stage.gpu_dynamic_bvh,
+                                    stage.first_changed_instance,
+                                    stage.changed_instance_count);
+  if (!uploaded) {
+    return {
+        vkpt::pathtracer::InstanceTransformUpdateStatus::Failed,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        "D3D12 dynamic transform update upload failed"};
+  }
+
+  m_sceneData = std::move(stage.scene);
+  m_gpuInsts = std::move(stage.gpu_instances);
+  m_gpuDynamicBvh = std::move(stage.gpu_dynamic_bvh);
+  m_dxrInstanceDescs = std::move(stage.dxr_instance_descs);
+  m_dynamicInstanceCount = stage.dynamic_instance_count;
+  m_temporalHistoryValid = false;
+
+  return {
+      vkpt::pathtracer::InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate,
+      static_cast<std::uint32_t>(updates.size()),
+      stage.matched_count,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      "D3D12 dynamic transform update committed"};
 }
 
 bool D3D12GpuPathTracer::update_scene_delta(
@@ -1188,11 +1349,18 @@ bool D3D12GpuPathTracer::upload_material_light_buffers(bool uploadMaterials,
 
 bool D3D12GpuPathTracer::upload_instance_buffer(uint32_t firstInstance,
                                                 uint32_t instanceCount) {
-  if (!m_instBuf || !m_dynamicBvhBuf || m_gpuInsts.empty() || m_gpuDynamicBvh.empty()) {
+  return upload_instance_buffer_from(m_gpuInsts, m_gpuDynamicBvh, firstInstance, instanceCount);
+}
+
+bool D3D12GpuPathTracer::upload_instance_buffer_from(const std::vector<uint32_t>& gpuInstances,
+                                                     const std::vector<float>& gpuDynamicBvh,
+                                                     uint32_t firstInstance,
+                                                     uint32_t instanceCount) {
+  if (!m_instBuf || !m_dynamicBvhBuf || gpuInstances.empty() || gpuDynamicBvh.empty()) {
     return false;
   }
   const uint32_t totalInstances = static_cast<uint32_t>(
-      m_gpuInsts.size() / kGpuInstanceStrideU32);
+      gpuInstances.size() / kGpuInstanceStrideU32);
   if (totalInstances == 0u) {
     return false;
   }
@@ -1206,7 +1374,7 @@ bool D3D12GpuPathTracer::upload_instance_buffer(uint32_t firstInstance,
   const UINT64 instStrideBytes = static_cast<UINT64>(kGpuInstanceStrideU32) * sizeof(uint32_t);
   const UINT64 instOffset = static_cast<UINT64>(firstInstance) * instStrideBytes;
   const UINT64 instSize = static_cast<UINT64>(instanceCount) * instStrideBytes;
-  const UINT64 tlasSize = static_cast<UINT64>(m_gpuDynamicBvh.size()) * sizeof(float);
+  const UINT64 tlasSize = static_cast<UINT64>(gpuDynamicBvh.size()) * sizeof(float);
   const auto align = [](UINT64 x) { return (x + 255ull) & ~255ull; };
   const UINT64 tlasOffset = align(instSize);
   if (tlasOffset + tlasSize > m_uploadSize) {
@@ -1227,10 +1395,10 @@ bool D3D12GpuPathTracer::upload_instance_buffer(uint32_t firstInstance,
 
   // Instance transforms and the dynamic-instance BVH must update together so
   // shader traversal never observes mismatched transform and bounds data.
-  const auto* instanceBytes = reinterpret_cast<const uint8_t*>(m_gpuInsts.data()) + instOffset;
+  const auto* instanceBytes = reinterpret_cast<const uint8_t*>(gpuInstances.data()) + instOffset;
   std::memcpy(m_uploadPtr, instanceBytes, static_cast<std::size_t>(instSize));
   std::memcpy(static_cast<uint8_t*>(m_uploadPtr) + tlasOffset,
-              m_gpuDynamicBvh.data(),
+              gpuDynamicBvh.data(),
               static_cast<std::size_t>(tlasSize));
   D3D12_RESOURCE_BARRIER toCopy[2]{};
   ID3D12Resource* resources[2] = {m_instBuf.Get(), m_dynamicBvhBuf.Get()};

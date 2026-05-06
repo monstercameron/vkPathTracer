@@ -16,7 +16,7 @@ bool D3D12GpuPathTracer::create_dxr_desc_heap() {
   // 7 descriptors: slots 0-5 → scene SRVs (t1-t6), slot 6 → film UAV (u0)
   D3D12_DESCRIPTOR_HEAP_DESC dh{};
   dh.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  dh.NumDescriptors = 12;
+  dh.NumDescriptors = 13;
   dh.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   const HRESULT hr = m_device->CreateDescriptorHeap(&dh, IID_PPV_ARGS(&m_dxrDescHeap));
   if (FAILED(hr)) {
@@ -49,12 +49,13 @@ bool D3D12GpuPathTracer::create_dxr_desc_heap() {
   makeSrv(8, m_texMetaBuf.Get(), m_gpuTextureMeta.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
   makeSrv(9, m_envBuf.Get(), m_gpuEnv.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
   makeSrv(10, m_envMetaBuf.Get(), m_gpuEnvMeta.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+  makeSrv(11, m_sdfBuf.Get(), m_gpuSdfs.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
 
   const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
   D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(filmSize);
-  D3D12_CPU_DESCRIPTOR_HANDLE h11 = cpu;
-  h11.ptr += 11 * inc;
-  m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h11);
+  D3D12_CPU_DESCRIPTOR_HANDLE h12 = cpu;
+  h12.ptr += 12 * inc;
+  m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h12);
   LogDebug("DXR descriptor heap created");
   return true;
 }
@@ -364,13 +365,19 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
 }
 
 bool D3D12GpuPathTracer::update_dxr_instance_buffer_and_tlas() {
+  return update_dxr_instance_buffer_and_tlas_from(m_gpuInsts, m_dxrInstanceDescs);
+}
+
+bool D3D12GpuPathTracer::update_dxr_instance_buffer_and_tlas_from(
+    const std::vector<uint32_t>& gpuInstances,
+    std::vector<D3D12_RAYTRACING_INSTANCE_DESC>& dxrInstanceDescs) {
   if (!m_device5 || !m_cmdList || !m_tlasBuffer || !m_tlasScratch ||
-      !m_tlasInstanceBuf || m_dxrInstanceDescs.empty()) {
+      !m_tlasInstanceBuf || dxrInstanceDescs.empty()) {
     m_error = "update_dxr_instance_buffer_and_tlas: DXR TLAS resources are not ready";
     LogError(m_error);
     return false;
   }
-  if (m_gpuInsts.size() < m_sceneData.instances.size() * kGpuInstanceStrideU32) {
+  if (gpuInstances.size() < m_sceneData.instances.size() * kGpuInstanceStrideU32) {
     m_error = "update_dxr_instance_buffer_and_tlas: instance buffer is incomplete";
     LogError(m_error);
     return false;
@@ -378,7 +385,7 @@ bool D3D12GpuPathTracer::update_dxr_instance_buffer_and_tlas() {
 
   // Only instance transforms change here. BLAS geometry addresses remain stable,
   // so the TLAS can be updated in place with PERFORM_UPDATE.
-  for (auto& desc : m_dxrInstanceDescs) {
+  for (auto& desc : dxrInstanceDescs) {
     if (desc.InstanceID == kDxrStaticInstanceId) {
       continue;
     }
@@ -388,31 +395,31 @@ bool D3D12GpuPathTracer::update_dxr_instance_buffer_and_tlas() {
     }
     const std::size_t ib = static_cast<std::size_t>(instanceIndex) * kGpuInstanceStrideU32;
     const vkpt::pathtracer::Vec3 translation{
-        UintBitsToFloat(m_gpuInsts[ib + 4u]),
-        UintBitsToFloat(m_gpuInsts[ib + 5u]),
-        UintBitsToFloat(m_gpuInsts[ib + 6u])};
+        UintBitsToFloat(gpuInstances[ib + 4u]),
+        UintBitsToFloat(gpuInstances[ib + 5u]),
+        UintBitsToFloat(gpuInstances[ib + 6u])};
     const vkpt::pathtracer::Quat4 rotation{
-        UintBitsToFloat(m_gpuInsts[ib + 8u]),
-        UintBitsToFloat(m_gpuInsts[ib + 9u]),
-        UintBitsToFloat(m_gpuInsts[ib + 10u]),
-        UintBitsToFloat(m_gpuInsts[ib + 11u])};
+        UintBitsToFloat(gpuInstances[ib + 8u]),
+        UintBitsToFloat(gpuInstances[ib + 9u]),
+        UintBitsToFloat(gpuInstances[ib + 10u]),
+        UintBitsToFloat(gpuInstances[ib + 11u])};
     const vkpt::pathtracer::Vec3 scale{
-        UintBitsToFloat(m_gpuInsts[ib + 12u]),
-        UintBitsToFloat(m_gpuInsts[ib + 13u]),
-        UintBitsToFloat(m_gpuInsts[ib + 14u])};
+        UintBitsToFloat(gpuInstances[ib + 12u]),
+        UintBitsToFloat(gpuInstances[ib + 13u]),
+        UintBitsToFloat(gpuInstances[ib + 14u])};
     const auto blasAddress = desc.AccelerationStructure;
     desc = MakeDxrInstanceDesc(instanceIndex, blasAddress, translation, rotation, scale);
   }
 
   const UINT64 instanceBytes =
-      static_cast<UINT64>(m_dxrInstanceDescs.size()) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+      static_cast<UINT64>(dxrInstanceDescs.size()) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
   void* instancePtr = nullptr;
   if (FAILED(m_tlasInstanceBuf->Map(0, nullptr, &instancePtr))) {
     m_error = "update_dxr_instance_buffer_and_tlas: TLAS instance map failed";
     LogError(m_error);
     return false;
   }
-  std::memcpy(instancePtr, m_dxrInstanceDescs.data(), static_cast<std::size_t>(instanceBytes));
+  std::memcpy(instancePtr, dxrInstanceDescs.data(), static_cast<std::size_t>(instanceBytes));
   m_tlasInstanceBuf->Unmap(0, nullptr);
 
   if (!wait_for_gpu()) {
@@ -438,7 +445,7 @@ bool D3D12GpuPathTracer::update_dxr_instance_buffer_and_tlas() {
       AddDxrBuildFlags(DxrBuildPreferenceFlags(m_dxrBuildMode),
                        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE),
       D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE);
-  tlasInputs.NumDescs = static_cast<UINT>(m_dxrInstanceDescs.size());
+  tlasInputs.NumDescs = static_cast<UINT>(dxrInstanceDescs.size());
   tlasInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
   tlasInputs.InstanceDescs = m_tlasInstanceBuf->GetGPUVirtualAddress();
 
