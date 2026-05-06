@@ -46,6 +46,8 @@ if ($IsWindowsHost) {
 }
 $TodoAudit  = Join-Path (Join-Path $RepoRoot "tools") "todo_audit.ps1"
 $TodoAuditReport = Join-Path (Join-Path (Join-Path $RepoRoot "artifacts") "status") "todo_audit.json"
+$SourceSizeReport = Join-Path (Join-Path $RepoRoot "tools") "source_size_report.ps1"
+$SourceSizeReportJson = Join-Path (Join-Path (Join-Path $RepoRoot "artifacts") "status") "source_size_report.json"
 $StatusFile = Join-Path (Join-Path (Join-Path $RepoRoot "artifacts") "status") "latest_status.json"
 $SmokeExr   = Join-Path (Join-Path $RepoRoot "artifacts") "smoke_out.exr"
 
@@ -223,6 +225,20 @@ try {
         if (-not (Test-Path -LiteralPath $TodoAuditReport)) { throw "todo audit report missing: $TodoAuditReport" }
         $auditJson = Get-Content -LiteralPath $TodoAuditReport -Raw | ConvertFrom-Json
         if ($auditJson.status -ne "ok") { throw "todo audit status unexpected: $($auditJson.status)" }
+    }
+
+    # ---- 11. Warning-only source size guardrails ---------------------------
+    Step "source-size-guardrails" {
+        if (-not (Test-Path $SourceSizeReport)) { throw "source size report tool not found: $SourceSizeReport" }
+        $out = & $SourceSizeReport -Output $SourceSizeReportJson -CheckGuardrails 2>&1
+        if (-not $?) { throw "source size report failed: $out" }
+        if (-not (Test-Path -LiteralPath $SourceSizeReportJson)) {
+            throw "source size report missing: $SourceSizeReportJson"
+        }
+        $sizeJson = Get-Content -LiteralPath $SourceSizeReportJson -Raw | ConvertFrom-Json
+        if ($sizeJson.schema -ne "vkpt.source_size_report.v1") {
+            throw "source size report schema unexpected: $($sizeJson.schema)"
+        }
     }
 
     # ---- Summary ------------------------------------------------------------
