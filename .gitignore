@@ -15,6 +15,7 @@ build.ninja
 *.pdb
 *.idb
 *.obj
+!assets/models/**/*.obj
 *.o
 *.exe
 *.dll
