@@ -69,12 +69,24 @@ DoctorCheckResult CheckBuild() {
          << " git=" << vkpt::build::kGitHash
          << " compiler=" << vkpt::build::kCompilerName
          << " target=" << vkpt::build::kTargetOs << "/" << vkpt::build::kTargetArch
+         << " host=" << vkpt::platform::HostPlatformName(vkpt::platform::HostPlatform())
          << " features=[" << vkpt::build::kEnabledFeatureFlags << "]"
          << " ui_platforms=headless:" << YesNo(true)
          << ",raw:" << YesNo(IsRawPlatformBuilt())
          << ",qt:" << YesNo(IsQtPlatformBuilt())
          << " qt_version=" << QtVersionString()
          << " qt_platform_shell=" << QtPlatformShellString();
+  for (const auto& platform : vkpt::platform::DescribeRuntimePlatforms()) {
+    detail << " platform_" << platform.name
+           << "={built:" << YesNo(platform.built)
+           << ",available:" << YesNo(platform.available)
+           << ",stub:" << YesNo(platform.stub)
+           << ",impl:" << platform.implementation;
+    if (platform.unavailable_reason != nullptr && platform.unavailable_reason[0] != '\0') {
+      detail << ",reason:" << platform.unavailable_reason;
+    }
+    detail << "}";
+  }
 
   // Gate 10 (F17): startup self-test (best-effort; actionable failures).
   const std::filesystem::path outDir = "artifacts/self_test";

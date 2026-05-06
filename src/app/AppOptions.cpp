@@ -98,6 +98,20 @@ std::string_view WindowSystemName(vkpt::platform::RuntimePlatformKind platform) 
   }
 }
 
+std::string PlatformSupportSummary(vkpt::platform::RuntimePlatformKind platform) {
+  const auto support = vkpt::platform::DescribeRuntimePlatform(platform);
+  if (!support.built) {
+    return "disabled";
+  }
+  if (support.available) {
+    return std::string("available:") + support.implementation;
+  }
+  if (support.stub) {
+    return std::string("stub:") + support.implementation;
+  }
+  return "unavailable";
+}
+
 void PrintUsage() {
   std::cout << "ptapp [options]\n";
   std::cout << "  --version             Print build metadata and exit\n";
@@ -153,13 +167,16 @@ void PrintVersionText(vkpt::platform::RuntimePlatformKind platform_shell) {
             << vkpt::build::kCompilerVersion << '\n';
   std::cout << "target: " << vkpt::build::kTargetOs << '/'
             << vkpt::build::kTargetArch << '\n';
+  std::cout << "host platform: "
+            << vkpt::platform::HostPlatformName(vkpt::platform::HostPlatform()) << '\n';
   std::cout << "build type: " << vkpt::build::kBuildType << '\n';
   std::cout << "features: " << vkpt::build::kEnabledFeatureFlags << '\n';
   std::cout << "platform shell: "
             << vkpt::platform::RuntimePlatformKindName(platform_shell) << '\n';
   std::cout << "window system: " << WindowSystemName(platform_shell) << '\n';
-  std::cout << "platforms: headless=yes raw=" << YesNo(IsRawPlatformBuilt())
-            << " qt=" << YesNo(IsQtPlatformBuilt()) << '\n';
+  std::cout << "platforms: headless=available raw="
+            << PlatformSupportSummary(vkpt::platform::RuntimePlatformKind::Raw)
+            << " qt=" << PlatformSupportSummary(vkpt::platform::RuntimePlatformKind::Qt) << '\n';
   std::cout << "qt: " << QtSupportState()
             << " version=" << QtVersionString()
             << " platform_shell=" << QtPlatformShellString() << '\n';
@@ -180,6 +197,9 @@ void PrintVersionJson(vkpt::platform::RuntimePlatformKind platform_shell) {
             << vkpt::log::EscapeJson(std::string(vkpt::build::kTargetOs) + "/" +
                                       std::string(vkpt::build::kTargetArch))
             << "\",\n";
+  std::cout << "  \"host_platform\": \""
+            << vkpt::log::EscapeJson(vkpt::platform::HostPlatformName(vkpt::platform::HostPlatform()))
+            << "\",\n";
   std::cout << "  \"build_type\": \"" << vkpt::log::EscapeJson(vkpt::build::kBuildType) << "\",\n";
   std::cout << "  \"simd_compile_options\": \""
             << vkpt::log::EscapeJson(vkpt::build::kSimdCompileOptions) << "\",\n";
@@ -199,6 +219,20 @@ void PrintVersionJson(vkpt::platform::RuntimePlatformKind platform_shell) {
   std::cout << "      \"headless\": true,\n";
   std::cout << "      \"raw\": " << JsonBool(IsRawPlatformBuilt()) << ",\n";
   std::cout << "      \"qt\": " << JsonBool(IsQtPlatformBuilt()) << "\n";
+  std::cout << "    },\n";
+  std::cout << "    \"platform_support\": {\n";
+  for (const auto& support : vkpt::platform::DescribeRuntimePlatforms()) {
+    std::cout << "      \"" << vkpt::log::EscapeJson(support.name) << "\": {"
+              << "\"built\": " << JsonBool(support.built)
+              << ", \"available\": " << JsonBool(support.available)
+              << ", \"stub\": " << JsonBool(support.stub)
+              << ", \"implementation\": \"" << vkpt::log::EscapeJson(support.implementation) << "\""
+              << ", \"reason\": \"" << vkpt::log::EscapeJson(support.unavailable_reason) << "\"}";
+    if (support.kind != vkpt::platform::RuntimePlatformKind::Qt) {
+      std::cout << ",";
+    }
+    std::cout << "\n";
+  }
   std::cout << "    },\n";
   std::cout << "    \"qt\": {\n";
   std::cout << "      \"supported\": " << JsonBool(IsQtPlatformBuilt()) << ",\n";
