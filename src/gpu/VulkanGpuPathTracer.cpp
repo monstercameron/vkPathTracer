@@ -192,7 +192,6 @@ bool VulkanGpuPathTracer::build_or_update_acceleration() {
     m_gpuLights[base + 15u] = 0.0f;
   }
 
-  // Upload — use HOST_VISIBLE | HOST_COHERENT buffers (mapped directly)
   // Upload with HOST_VISIBLE | HOST_COHERENT buffers. This favors simple
   // backend behavior over peak throughput; no staging queue is needed.
   destroy_scene_buffers();

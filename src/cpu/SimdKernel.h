@@ -20,7 +20,7 @@ enum class SimdMode : uint8_t {
   AVX512   = 5,  // x86 AVX-512F (512-bit, 16xf32)
 };
 
-// Human-readable name for a SIMD mode.
+/// Human-readable name for a SIMD mode.
 inline const char* SimdModeName(SimdMode m) {
   switch (m) {
     case SimdMode::Scalar: return "scalar";
@@ -33,9 +33,10 @@ inline const char* SimdModeName(SimdMode m) {
   }
 }
 
-// Select the best SIMD mode available for this build and this machine.
-// Prefers: AVX512 > AVX2 > AVX > SSE4 (x86) | SVE > NEON (ARM).
-// Falls back to Scalar if nothing else applies.
+/// Select the best SIMD mode available for this build and this machine.
+///
+/// Compile-time guards ensure the returned mode has code in this binary, while
+/// CpuFeatureSet ensures the current CPU/OS can execute that code.
 inline SimdMode SelectBestSimdMode(const CpuFeatureSet& features) {
   (void)features;
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -64,6 +65,7 @@ enum class PacketLanePolicy : uint8_t {
   PreserveLaneOrder,
 };
 
+/// Static properties for one SIMD packet kernel implementation.
 struct SimdKernelInfo {
   SimdMode mode = SimdMode::Scalar;
   uint32_t lane_width = 1u;
@@ -73,6 +75,10 @@ struct SimdKernelInfo {
   std::string_view name = "scalar";
 };
 
+/// Interface for packet ray/triangle intersection kernels.
+///
+/// Implementations test one triangle against all active lanes in a RayPacket
+/// and update HitPacket only when the new hit is closer than the current lane t.
 class ISimdKernel {
  public:
   virtual ~ISimdKernel() = default;

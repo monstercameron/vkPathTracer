@@ -52,6 +52,7 @@ class IJobSystem {
   virtual void pump_main_thread() = 0;
   virtual bool deterministic() const = 0;
   virtual void set_deterministic(bool enabled) = 0;
+  virtual bool waiting_thread_runs_jobs() const { return true; }
   virtual bool shutdown() = 0;
 };
 
@@ -76,6 +77,7 @@ class JobSystem final : public IJobSystem {
   void pump_main_thread() override;
   bool deterministic() const override;
   void set_deterministic(bool enabled) override;
+  bool waiting_thread_runs_jobs() const override;
   bool shutdown() override;
 
  private:

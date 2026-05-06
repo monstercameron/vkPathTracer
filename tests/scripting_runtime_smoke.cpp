@@ -120,6 +120,8 @@ const vkpt::scene::WorldCommandBuffer::SetTransformCommand* FindSetTransform(
 }  // namespace
 
 int RunScriptingRuntimeSmoke() {
+  // This smoke test exercises the full scripting path at integration scale:
+  // binding discovery, optional Lua execution, scene conversion, and emitted world commands.
   vkpt::scene::SceneWorld world;
 
   const auto moving = world.create_entity("scripted_mover", 101);
@@ -260,6 +262,8 @@ int RunScriptingRuntimeSmoke() {
   }
 
   const auto third_person_scene_path = FindRepoFile("assets/scenes/third_person_action_demo.json");
+  // The third-person demo is the high-level regression target: imported hero,
+  // physics tags, dynamic RT instances, and player-script camera commands must stay wired.
   if (!Check(PathExists(third_person_scene_path), "third-person scripted scene should exist")) {
     return 1;
   }
@@ -539,6 +543,8 @@ int RunScriptingRuntimeSmoke() {
   }
 
   auto static_collision_world_result = third_person_document_result.value().to_world();
+  // Seed overlap scenarios directly in scene space so Lua collision response can
+  // be validated without relying on frame timing or interactive input.
   if (!Check(static_cast<bool>(static_collision_world_result),
              "third-person static collision test should convert scene to world")) {
     return 1;
@@ -631,6 +637,8 @@ int RunScriptingRuntimeSmoke() {
 
 #ifdef PT_ENABLE_JOLT
   auto physics_collision_world_result = third_person_document_result.value().to_world();
+  // When Jolt is available, verify the same authored bodies also participate in
+  // physical collision resolution after the script-controlled pose is synced.
   if (!Check(static_cast<bool>(physics_collision_world_result),
              "third-person physics collision test should convert scene to world")) {
     return 1;

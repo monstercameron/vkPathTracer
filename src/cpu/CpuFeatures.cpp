@@ -89,7 +89,8 @@ CpuFeatureSet QueryCpuFeatures() {
 #elif defined(VKPT_ARCH_X86)
   f.architecture = "x86_64";
 
-  // Probe CPUID leaf 1 for SSE/AVX baseline
+  // Probe CPUID leaf 1 for SSE/AVX baseline. AVX requires both CPU support
+  // and OS-managed XMM/YMM state, so gate it through XGETBV.
   bool os_avx = false;
   bool os_avx512 = false;
   {
@@ -115,7 +116,8 @@ CpuFeatureSet QueryCpuFeatures() {
     }
   }
 
-  // Probe CPUID leaf 7 subleaf 0 for AVX2 / AVX-512
+  // Probe CPUID leaf 7 subleaf 0 for AVX2 / AVX-512. AVX-512 is exposed only
+  // when opmask and ZMM state are enabled by the OS.
   {
     unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
 #if defined(__clang__) || defined(__GNUC__)
@@ -146,6 +148,8 @@ SimdDispatchInfo BuildSimdDispatchInfo(const CpuFeatureSet& f) {
   out.available.push_back(SimdBackend::Scalar);
 
   if (f.architecture == "aarch64") {
+    // Prefer wider or more specialized ARM modes, but keep all supported
+    // backends in the available list for diagnostics and manual selection.
     if (f.neon) {
       out.available.push_back(SimdBackend::ArmNeon);
     }
@@ -169,6 +173,7 @@ SimdDispatchInfo BuildSimdDispatchInfo(const CpuFeatureSet& f) {
   }
 
   if (f.architecture == "x86_64") {
+    // Prefer the widest compiled x86 backend supported by both CPU and OS.
     if (f.sse2)  { out.available.push_back(SimdBackend::X86Sse); }
     if (f.avx)   { out.available.push_back(SimdBackend::X86Avx); }
     if (f.avx2)  { out.available.push_back(SimdBackend::X86Avx2); }

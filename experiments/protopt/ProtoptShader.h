@@ -156,6 +156,8 @@ bool AabbHit(
 
 bool SceneHit(float3 ro, float3 rd, out HitInfo hit)
 {
+    // Brute-force the tiny analytic Cornell scene and keep the nearest surface;
+    // this makes shader changes easy to inspect without BVH or asset plumbing.
     bool any = false;
     hit.t = 1e30;
     hit.albedo = float3(0.0, 0.0, 0.0);
@@ -295,6 +297,8 @@ float3 Background(float3 rd)
 
 float4 PSMain(VsOut input) : SV_Target
 {
+    // One stochastic path is traced per pixel per frame; the app blends
+    // successive frames to converge while keeping the shader single-pass.
     uint pixelX = uint(max(input.pos.x, 0.0));
     uint pixelY = uint(max(input.pos.y, 0.0));
     uint seed = pixelX * 1973u + pixelY * 9277u + uint(frameIndex) * 26699u;
@@ -347,7 +351,7 @@ float4 PSMain(VsOut input) : SV_Target
 
         if (hit.matType < 0.5)
         {
-            // --- Diffuse: NEE + cosine sample ---
+            // Diffuse: next-event sample the area light, then continue with a cosine-weighted bounce.
             float r1 = Random(sampleSeed);
             float r2 = Random(sampleSeed);
             float3 lightPos = float3(lerp(lightXMin, lightXMax, r1),

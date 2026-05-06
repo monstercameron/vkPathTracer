@@ -1,9 +1,11 @@
 #include "pathtracer/ImageIo.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -18,20 +20,25 @@ uint32_t crc32_for_byte(uint32_t r) {
   return r;
 }
 
-uint32_t crc32_update(const uint8_t* data, std::size_t size) {
-  static uint32_t table[256];
-  static bool inited = false;
-  if (!inited) {
+uint32_t crc32_update(uint32_t crc, const uint8_t* data, std::size_t size) {
+  static const auto table = [] {
+    std::array<uint32_t, 256u> values{};
     for (uint32_t i = 0; i < 256; ++i) {
-      table[i] = crc32_for_byte(i);
+      values[static_cast<std::size_t>(i)] = crc32_for_byte(i);
     }
-    inited = true;
-  }
+    return values;
+  }();
 
-  uint32_t crc = 0xffffffffu;
   for (std::size_t i = 0; i < size; ++i) {
     crc = table[(crc ^ data[i]) & 0xffu] ^ (crc >> 8);
   }
+  return crc;
+}
+
+uint32_t crc32_chunk(std::string_view type, const std::vector<uint8_t>& data) {
+  uint32_t crc = 0xffffffffu;
+  crc = crc32_update(crc, reinterpret_cast<const uint8_t*>(type.data()), type.size());
+  crc = crc32_update(crc, data.data(), data.size());
   return crc ^ 0xffffffffu;
 }
 
@@ -62,14 +69,30 @@ void append_chunk(std::vector<uint8_t>& out, std::string_view type, const std::v
   write_u32_be(out, static_cast<uint32_t>(data.size()));
   out.insert(out.end(), type.begin(), type.end());
   out.insert(out.end(), data.begin(), data.end());
-  std::vector<uint8_t> crcSeed;
-  crcSeed.reserve(4 + data.size());
-  crcSeed.insert(crcSeed.end(), type.begin(), type.end());
-  crcSeed.insert(crcSeed.end(), data.begin(), data.end());
-  write_u32_be(out, crc32_update(crcSeed.data(), crcSeed.size()));
+  write_u32_be(out, crc32_chunk(type, data));
+}
+
+bool checked_mul_size(std::size_t lhs, std::size_t rhs, std::size_t& out) {
+  if (lhs != 0u && rhs > std::numeric_limits<std::size_t>::max() / lhs) {
+    return false;
+  }
+  out = lhs * rhs;
+  return true;
+}
+
+bool checked_image_sizes(uint32_t width,
+                         uint32_t height,
+                         std::size_t bytes_per_pixel,
+                         std::size_t& pixels,
+                         std::size_t& bytes) {
+  pixels = 0u;
+  bytes = 0u;
+  return checked_mul_size(static_cast<std::size_t>(width), static_cast<std::size_t>(height), pixels) &&
+         checked_mul_size(pixels, bytes_per_pixel, bytes);
 }
 
 std::vector<uint8_t> encode_deflate_stored(const std::vector<uint8_t>& raw) {
+  // Compatibility PNG writer uses zlib stored blocks, avoiding a dependency on a compression library.
   std::vector<uint8_t> out;
   out.reserve(raw.size() * 2);
   out.push_back(0x78);
@@ -98,21 +121,37 @@ bool SavePngCompat(const std::string& path, const FilmLdr& image, std::string* e
     if (error) *error = "empty image";
     return false;
   }
+  std::size_t pixels = 0u;
+  std::size_t rgba_bytes = 0u;
+  std::size_t raw_bytes = 0u;
+  if (!checked_image_sizes(image.width, image.height, 4u, pixels, rgba_bytes) ||
+      static_cast<std::size_t>(image.height) > std::numeric_limits<std::size_t>::max() - rgba_bytes ||
+      image.rgba8.size() < rgba_bytes) {
+    if (error) *error = "image dimensions or data size are invalid";
+    return false;
+  }
+  raw_bytes = rgba_bytes + static_cast<std::size_t>(image.height);
+  if (raw_bytes > std::numeric_limits<uint32_t>::max()) {
+    if (error) *error = "image too large for PNG compatibility writer";
+    return false;
+  }
 
-  std::vector<uint8_t> raw;
-  raw.reserve(static_cast<std::size_t>(image.width) * image.height * 5u);
+  // PNG scanlines are filter byte + RGBA payload; filter 0 keeps output deterministic.
+  std::vector<uint8_t> raw(raw_bytes);
+  std::size_t writeOffset = 0u;
+  std::size_t readOffset = 0u;
+  const std::size_t rowBytes = static_cast<std::size_t>(image.width) * 4u;
   for (uint32_t y = 0; y < image.height; ++y) {
-    raw.push_back(0);
-    const auto row = static_cast<std::size_t>(y) * image.width * 4u;
-    for (uint32_t x = 0; x < image.width; ++x) {
-      const auto idx = row + static_cast<std::size_t>(x) * 4u;
-      raw.push_back(image.rgba8[idx + 0]);
-      raw.push_back(image.rgba8[idx + 1]);
-      raw.push_back(image.rgba8[idx + 2]);
-      raw.push_back(image.rgba8[idx + 3]);
-    }
+    raw[writeOffset++] = 0;
+    std::copy_n(image.rgba8.data() + readOffset, rowBytes, raw.data() + writeOffset);
+    readOffset += rowBytes;
+    writeOffset += rowBytes;
   }
   const std::vector<uint8_t> compressed = encode_deflate_stored(raw);
+  if (compressed.size() > std::numeric_limits<uint32_t>::max()) {
+    if (error) *error = "compressed image too large for PNG compatibility writer";
+    return false;
+  }
 
   std::vector<uint8_t> ihdr;
   write_u32_be(ihdr, image.width);
@@ -146,6 +185,13 @@ bool SaveExrCompat(const std::string& path, const FilmHdr& image, std::string* e
     if (error) *error = "empty image";
     return false;
   }
+  std::size_t pixels = 0u;
+  std::size_t rgb_values = 0u;
+  if (!checked_image_sizes(image.width, image.height, 3u, pixels, rgb_values) ||
+      image.rgbf.size() < rgb_values) {
+    if (error) *error = "image dimensions or data size are invalid";
+    return false;
+  }
   std::ofstream out(path, std::ios::binary);
   if (!out.is_open()) {
     if (error) {
@@ -153,9 +199,10 @@ bool SaveExrCompat(const std::string& path, const FilmHdr& image, std::string* e
     }
     return false;
   }
+  // Placeholder text output preserves HDR samples for tests until real OpenEXR writing is available.
   out << "# EXR-compatible placeholder written by vkpt path tracer.\n";
   out << image.width << " " << image.height << "\n";
-  for (std::size_t i = 0; i < image.rgbf.size(); i += 3) {
+  for (std::size_t i = 0; i < rgb_values; i += 3) {
     out << image.rgbf[i] << " " << image.rgbf[i + 1] << " " << image.rgbf[i + 2] << "\n";
   }
   return true;

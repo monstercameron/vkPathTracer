@@ -18,14 +18,19 @@ enum class SimdBackend : std::uint8_t {
   X86Amx,
 };
 
+/// Ordered SIMD backend choices derived from one CpuFeatureSet.
 struct SimdDispatchInfo {
   SimdBackend preferred = SimdBackend::Scalar;
   std::vector<SimdBackend> available;
 };
 
+/// Return the stable telemetry name for a SIMD backend.
 std::string ToString(SimdBackend backend);
 
-// Runtime-detected CPU SIMD feature flags.
+/// Runtime-detected CPU SIMD feature flags.
+///
+/// x86 AVX-family flags are true only when both CPUID and OS XSAVE state allow
+/// the register file to be used safely by application code.
 struct CpuFeatureSet {
   // Architecture string: "aarch64", "x86_64", or "unknown"
   std::string architecture = "unknown";
@@ -52,11 +57,13 @@ struct CpuFeatureSet {
   bool dot_product = false;
 };
 
-// Query CPU features at runtime. Result is stable for the process lifetime.
+/// Query CPU features at runtime. Result is stable for the process lifetime.
 CpuFeatureSet QueryCpuFeatures();
+
+/// Build a preferred/available backend list from detected CPU features.
 SimdDispatchInfo BuildSimdDispatchInfo(const CpuFeatureSet& features);
 
-// Serialize feature set as a JSON object string.
+/// Serialize feature set as a JSON object string for diagnostics.
 std::string SerializeCpuFeatures(const CpuFeatureSet& features);
 
 }  // namespace vkpt::cpu

@@ -241,6 +241,8 @@ class NullPhysicsWorld final : public IPhysicsWorld {
 
     const int substeps = std::max(1, config.collision_steps);
     const float dt = config.fixed_dt / static_cast<float>(substeps);
+    // The fallback backend is intentionally simple but deterministic: stable
+    // entity ordering keeps headless tests reproducible without Jolt.
     for (int step = 0; step < substeps; ++step) {
       integrate_dynamic_bodies(ids, dt);
       if (config.collision_detection_enabled) {
@@ -560,6 +562,8 @@ class ThreadedPhysicsWorld final : public IPhysicsWorld {
       return std::forward<Fn>(fn)();
     }
 
+    // Public calls are serialized onto the physics worker so backend state is
+    // never touched concurrently with simulation.
     auto task = std::make_shared<std::packaged_task<Result()>>(std::forward<Fn>(fn));
     auto future = task->get_future();
     {

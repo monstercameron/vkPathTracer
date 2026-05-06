@@ -3,18 +3,22 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
 #include <vector>
 
 #include "jobs/JobSystem.h"
 
 namespace vkpt::cpu {
 
+/// Axis-aligned bounds for one primitive or one BVH node.
 struct BvhAabb {
   float min[3] = {0.f, 0.f, 0.f};
   float max[3] = {0.f, 0.f, 0.f};
 };
 
+/// Compact binary BVH node.
+///
+/// Internal nodes reference child indices in BvhBuildResult::nodes. Leaf nodes
+/// reference a contiguous primitive range in BvhBuildResult::prim_indices.
 struct BvhNode {
   BvhAabb aabb{};
   int32_t left_child = -1;   // index into nodes; -1 if leaf
@@ -25,6 +29,7 @@ struct BvhNode {
   bool is_leaf() const { return prim_count > 0; }
 };
 
+/// Output from ParallelBvhBuilder::build.
 struct BvhBuildResult {
   std::vector<BvhNode> nodes;
   std::vector<uint32_t> prim_indices;  // leaf primitive order
@@ -33,6 +38,7 @@ struct BvhBuildResult {
   bool deterministic = false;
 };
 
+/// Summary counters for the most recent BVH build.
 struct BvhBuildStats {
   std::size_t node_count = 0;
   std::size_t leaf_count = 0;
@@ -42,6 +48,10 @@ struct BvhBuildStats {
   bool deterministic = false;
 };
 
+/// Builds a binary BVH over primitive AABBs using midpoint centroid splits.
+///
+/// The builder owns no scene data; callers keep triangle/material payloads and
+/// use prim_indices to map leaf ranges back to their payload arrays.
 class ParallelBvhBuilder {
  public:
   // Primitives below this threshold form a leaf.
@@ -49,8 +59,11 @@ class ParallelBvhBuilder {
   // Subtrees with more primitives than this threshold are split in parallel.
   static constexpr std::size_t kParallelThreshold = 256u;
 
-  // Build a BVH from a list of AABBs. Optionally uses a job system for parallelism.
-  // When deterministic=true, submits jobs through the job system's serialized path.
+  /// Build a BVH from a list of primitive AABBs.
+  ///
+  /// If a job system is provided, large subtrees may build concurrently. When
+  /// deterministic is true, stable partitioning preserves primitive order for
+  /// reproducible leaf contents.
   BvhBuildResult build(
       const std::vector<BvhAabb>& prim_aabbs,
       vkpt::jobs::IJobSystem* jobs = nullptr,
@@ -65,7 +78,6 @@ class ParallelBvhBuilder {
     std::vector<BvhNode>* nodes = nullptr;
     std::vector<uint32_t>* prim_indices = nullptr;
     std::atomic<int32_t>* node_alloc = nullptr;
-    std::mutex* nodes_mutex = nullptr;
     vkpt::jobs::IJobSystem* jobs = nullptr;
     bool deterministic = false;
     std::size_t leaf_threshold = kDefaultLeafThreshold;

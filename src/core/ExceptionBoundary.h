@@ -72,6 +72,8 @@ inline int ReportUnhandledException(std::string_view subsystem,
 
   try {
     auto& recorder = vkpt::diagnostics::CrashRecorder::instance();
+    // Record enough crash context before returning the caller's exit code; all
+    // failures here are swallowed so exception reporting never throws again.
     recorder.set_last_error(error);
     recorder.record_checkpoint(
         "unhandled_exception", 0, subsystem, context, false);

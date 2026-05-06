@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
+#include <string>
 #include <utility>
+
+#include "core/Logging.h"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -188,6 +192,8 @@ void JobSystem::complete_job(const std::shared_ptr<JobState>& state, std::except
   state->cv.notify_all();
 
   if (parent) {
+    // Child jobs decrement the parent group exactly once so wait(group) observes
+    // the whole dependency tree without enqueueing a separate completion job.
     complete_job(parent, failure);
   }
 }
@@ -202,7 +208,25 @@ void JobSystem::run_job(const std::shared_ptr<JobState>& state) {
     if (state->job) {
       state->job();
     }
+  } catch (const std::exception& ex) {
+    try {
+      vkpt::log::Logger::instance().log(
+          vkpt::log::Severity::Error,
+          "jobs",
+          "job failed with exception",
+          {{"job_id", std::to_string(state->id)}, {"error", ex.what()}});
+    } catch (...) {
+    }
+    failure = std::current_exception();
   } catch (...) {
+    try {
+      vkpt::log::Logger::instance().log(
+          vkpt::log::Severity::Error,
+          "jobs",
+          "job failed with non-standard exception",
+          {{"job_id", std::to_string(state->id)}});
+    } catch (...) {
+    }
     failure = std::current_exception();
   }
   complete_job(state, failure);
@@ -260,6 +284,8 @@ vkpt::core::JobHandle JobSystem::submit_indexed_range_job(std::size_t begin,
   }
 
   if (m_deterministic.load(std::memory_order_acquire) || worker_count() <= 1u || iterations == 1u) {
+    // Deterministic mode preserves submission order by collapsing a range into
+    // one queued job instead of racing chunks across workers.
     return submit_internal([begin, stride, iterations, job = std::move(job)]() mutable {
       for (std::size_t ordinal = 0u; ordinal < iterations; ++ordinal) {
         job(begin + ordinal * stride);
@@ -357,6 +383,10 @@ bool JobSystem::deterministic() const {
 void JobSystem::set_deterministic(bool enabled) {
   m_deterministic.store(enabled, std::memory_order_release);
   m_jobsCv.notify_all();
+}
+
+bool JobSystem::waiting_thread_runs_jobs() const {
+  return m_waitingThreadRunsJobs;
 }
 
 bool JobSystem::shutdown() {

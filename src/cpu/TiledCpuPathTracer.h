@@ -11,15 +11,18 @@
 
 namespace vkpt::cpu {
 
+/// Runtime configuration for TiledCpuPathTracer.
 struct TiledRenderConfig {
-  uint32_t tile_height = 16;   // rows per tile
-  uint32_t worker_count = 0;   // 0 = use hardware concurrency
+  uint32_t tile_height = 16;   ///< Rows per tile.
+  uint32_t worker_count = 0;   ///< 0 = use hardware concurrency.
   bool deterministic = false;
 };
 
-// Implements IPathTracer using a tile-based multithreaded render via IJobSystem.
-// Each tile renders a horizontal band of rows on its own ScalarCpuPathTracer instance
-// to avoid data races on the film buffer. Tiles are merged after each render_sample_batch.
+/// Tile-based CPU path tracer backed by IJobSystem.
+///
+/// Each tile owns a ScalarCpuPathTracer for a horizontal row band. Tiles share
+/// one accelerator when available, render independently, and merge their film
+/// buffers after each sample batch to avoid concurrent writes to m_film.
 class TiledCpuPathTracer final : public vkpt::pathtracer::IPathTracer, public vkpt::pathtracer::ICpuRayKernel {
  public:
   using vkpt::pathtracer::IPathTracer::configure;
@@ -38,6 +41,7 @@ class TiledCpuPathTracer final : public vkpt::pathtracer::IPathTracer, public vk
   bool update_camera_state(const vkpt::pathtracer::RTCameraState& camera) override;
   bool update_instance_transforms(
       const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) override;
+  bool update_scene_delta(const vkpt::pathtracer::RTSceneDeltaUpdate& update) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
   bool render_sample_batch_cancellable(uint32_t start_y,
                                        uint32_t end_y,
@@ -52,7 +56,7 @@ class TiledCpuPathTracer final : public vkpt::pathtracer::IPathTracer, public vk
   const vkpt::pathtracer::FilmBuffer& film() const override { return m_film; }
   void shutdown() override;
 
-  // Parallel BVH stats from the last build_or_update_acceleration call.
+  /// Parallel BVH stats from the last build_or_update_acceleration call.
   BvhBuildStats bvh_stats() const { return m_bvhStats; }
 
   std::size_t worker_count() const;
@@ -78,6 +82,7 @@ class TiledCpuPathTracer final : public vkpt::pathtracer::IPathTracer, public vk
     uint32_t start_y = 0;
     uint32_t end_y = 0;
     std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer;
+    vkpt::pathtracer::ICpuRayKernel* kernel = nullptr;
   };
   std::vector<TileState> m_tiles;
   bool m_initialized = false;

@@ -32,6 +32,8 @@ const char* ToString(SdfFeature feature) {
 }
 
 const std::vector<SdfFeatureDescriptor>& GetSdfFeatureInventory() {
+  // Central SDF feature list for UI/reporting; "implemented" means callable by
+  // the current path tracer, not merely planned in scene metadata.
   static const std::vector<SdfFeatureDescriptor> s_inventory = {
     {SdfFeature::Sphere,            "sphere",             "Sphere",             true,  "intersect_sphere() — analytic ray-sphere"},
     {SdfFeature::Box,               "box",                "Box",                true,  "intersect_box() — slab-test AABB"},
