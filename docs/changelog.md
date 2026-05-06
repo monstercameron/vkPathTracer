@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-06 (session 32)
+
+### Runtime scene controls, HDRI lighting, and render cleanup
+
+- Added Qt scene graph visibility toggles, entity visibility load/export support, snapshot filtering, and safer transform-only runtime scene updates that preserve scene state.
+- Refined third-person camera input with damped mouse look, camera-relative movement, continuous orbit WASD movement, and scripting smoke coverage for controlled aiming.
+- Added Radiance RGBE HDRI loading, scene-relative standalone image resolution, RT environment map storage/sampling, and CPU/D3D12 compute/DXR miss shader sampling.
+- Added the Lisa HDRI sun/floor scene graph using the Poly Haven Kiara dawn HDRI, with source notes beside the asset.
+- Improved CPU/render hot paths and material behavior with faster film resolve/image output, unrolled BVH bounds reductions, lower-cost power helpers, transmissive shadow/refraction handling, SDF box intersections, procedural wood support, and an expanded glass lab scene.
+- Verified scene validation, CPU scalar/tiled renders, D3D12 compute HDRI output, Windows clang-cl D3D12 `ptbench`, and the Qt D3D12 `ptapp` target.
+
 ## 2026-05-06 (session 31)
 
 ### Third-person scene, render deltas, and C++ cache cleanup
