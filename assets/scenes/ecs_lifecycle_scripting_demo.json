@@ -1,0 +1,404 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "ECS Lifecycle Scripting Demo",
+    "author": "vkPathTracer",
+    "created": "2026-05-05"
+  },
+  "materials": [
+    {
+      "id": 7101,
+      "name": "Lifecycle matte floor",
+      "family": "diffuse",
+      "albedo": [
+        0.36,
+        0.38,
+        0.40
+      ],
+      "roughness": 0.9,
+      "double_sided": true
+    },
+    {
+      "id": 7102,
+      "name": "Mover cyan",
+      "family": "diffuse",
+      "albedo": [
+        0.08,
+        0.70,
+        0.86
+      ],
+      "roughness": 0.58,
+      "double_sided": true
+    },
+    {
+      "id": 7103,
+      "name": "Spawner amber",
+      "family": "diffuse",
+      "albedo": [
+        0.94,
+        0.60,
+        0.16
+      ],
+      "roughness": 0.5,
+      "double_sided": true
+    },
+    {
+      "id": 7104,
+      "name": "Dormant violet",
+      "family": "diffuse",
+      "albedo": [
+        0.58,
+        0.32,
+        0.78
+      ],
+      "roughness": 0.62,
+      "double_sided": true
+    },
+    {
+      "id": 7105,
+      "name": "Lifecycle softbox",
+      "family": "emissive",
+      "albedo": [
+        1.0,
+        0.95,
+        0.86
+      ],
+      "emission": [
+        1.0,
+        0.94,
+        0.82
+      ],
+      "emission_intensity": 3.0,
+      "roughness": 1.0,
+      "double_sided": true
+    }
+  ],
+  "geometry": [
+    {
+      "id": 7201,
+      "name": "lifecycle_backdrop_quad",
+      "primitive": "triangle",
+      "material_id": 7101,
+      "vertices": [
+        [
+          -2.4,
+          -0.25,
+          0.0
+        ],
+        [
+          2.4,
+          -0.25,
+          0.0
+        ],
+        [
+          2.4,
+          1.75,
+          0.0
+        ],
+        [
+          -2.4,
+          1.75,
+          0.0
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    },
+    {
+      "id": 7202,
+      "name": "lifecycle_actor_quad",
+      "primitive": "triangle",
+      "material_id": 7102,
+      "vertices": [
+        [
+          -0.35,
+          0.0,
+          0.0
+        ],
+        [
+          0.35,
+          0.0,
+          0.0
+        ],
+        [
+          0.35,
+          0.8,
+          0.0
+        ],
+        [
+          -0.35,
+          0.8,
+          0.0
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    },
+    {
+      "id": 7203,
+      "name": "lifecycle_softbox_quad",
+      "primitive": "triangle",
+      "material_id": 7105,
+      "vertices": [
+        [
+          -0.5,
+          0.0,
+          0.0
+        ],
+        [
+          0.5,
+          0.0,
+          0.0
+        ],
+        [
+          0.5,
+          0.35,
+          0.0
+        ],
+        [
+          -0.5,
+          0.35,
+          0.0
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "id": 7300,
+      "name": "Lifecycle Demo Root",
+      "hierarchy": {
+        "parent": 0,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 7301,
+      "name": "Lifecycle Camera",
+      "transform": {
+        "translation": [
+          0.0,
+          0.75,
+          3.5
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "camera": {
+        "fov": 42.0,
+        "near_plane": 0.05,
+        "far_plane": 100.0,
+        "focus_distance": 3.5,
+        "f_stop": 5.6
+      },
+      "hierarchy": {
+        "parent": 7300,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 7302,
+      "name": "Lifecycle Key Light",
+      "transform": {
+        "translation": [
+          0.0,
+          1.45,
+          1.2
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "mesh_id": 7203,
+        "material_id": 7105
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [
+          1.0,
+          0.92,
+          0.78
+        ],
+        "intensity": 5.0,
+        "radius": 0.55
+      },
+      "script": {
+        "source": "assets/scripts/ecs_lifecycle_light.lua",
+        "language": "lua",
+        "entry": "default",
+        "enabled": true,
+        "reload_on_save": true
+      },
+      "hierarchy": {
+        "parent": 7300,
+        "sibling_order": 1
+      }
+    },
+    {
+      "id": 7303,
+      "name": "Lifecycle Backdrop",
+      "mesh": {
+        "mesh_id": 7201,
+        "material_id": 7101
+      },
+      "hierarchy": {
+        "parent": 7300,
+        "sibling_order": 2
+      }
+    },
+    {
+      "id": 7310,
+      "name": "Scripted Mover - on_spawn and on_update",
+      "transform": {
+        "translation": [
+          -1.15,
+          0.05,
+          -0.02
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "mesh_id": 7202,
+        "material_id": 7102
+      },
+      "script": {
+        "source": "assets/scripts/ecs_lifecycle_mover.lua",
+        "language": "lua",
+        "entry": "default",
+        "enabled": true,
+        "reload_on_save": true
+      },
+      "hierarchy": {
+        "parent": 7300,
+        "sibling_order": 3
+      }
+    },
+    {
+      "id": 7311,
+      "name": "Scripted Spawner - on_spawn command probe",
+      "transform": {
+        "translation": [
+          0.0,
+          0.05,
+          -0.01
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "mesh_id": 7202,
+        "material_id": 7103
+      },
+      "script": {
+        "source": "assets/scripts/ecs_lifecycle_spawner.lua",
+        "language": "lua",
+        "entry": "default",
+        "enabled": true,
+        "reload_on_save": true
+      },
+      "hierarchy": {
+        "parent": 7300,
+        "sibling_order": 4
+      }
+    },
+    {
+      "id": 7312,
+      "name": "Dormant Script - disabled binding",
+      "transform": {
+        "translation": [
+          1.15,
+          0.05,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "mesh": {
+        "mesh_id": 7202,
+        "material_id": 7104
+      },
+      "script": {
+        "source": "assets/scripts/ecs_lifecycle_dormant.lua",
+        "language": "lua",
+        "entry": "default",
+        "enabled": false,
+        "reload_on_save": true
+      },
+      "hierarchy": {
+        "parent": 7300,
+        "sibling_order": 5
+      }
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 64,
+    "warmup_frames": 4
+  }
+}

@@ -67,6 +67,7 @@
 #include "platform/PlatformFactory.h"
 #include "physics/PhysicsWorld.h"
 #include "scene/Scene.h"
+#include "scripting/ScriptRuntime.h"
 #include "render/backends/BackendFactory.h"
 #include "render/backends/D3D12Backend.h"
 #include "render/backends/VulkanBackend.h"
@@ -1471,6 +1472,20 @@ struct QtDockFrameStats {
   bool fps_player_running = false;
   float fps_player_speed = 0.0f;
   float fps_player_eye_height = 0.0f;
+};
+
+struct QtDockScriptRuntimeState {
+  bool scripts_enabled = true;
+  bool playing = false;
+  bool benchmark_scripts_allowed = false;
+  std::string status = "idle";
+  std::string last_hook = "none";
+  vkpt::core::FrameIndex last_frame = 0u;
+  std::uint64_t dispatch_count = 0u;
+  vkpt::scripting::ScriptBindingSummary binding_summary{};
+  vkpt::scripting::ScriptDispatchSummary last_dispatch{};
+  std::vector<vkpt::scripting::ScriptBinding> bindings;
+  std::vector<vkpt::scripting::ScriptDiagnostic> diagnostics;
 };
 
 struct QtDockRayDeviceMetric {
@@ -3156,7 +3171,16 @@ QtDockPanelContent BuildQtLightsDock(const vkpt::scene::SceneDocument& document,
                                      const vkpt::pathtracer::RTSceneData& scene,
                                      const vkpt::editor::UiLayoutDocument& layout) {
   auto panel = MakeQtDockPanel(layout, "lights", "Lights", true, 360.0f, 360.0f);
-  QtDockAddProperty(panel, "authored lights", std::to_string(document.lights.size()));
+  const auto lightObjectCount = static_cast<std::size_t>(std::count_if(
+      document.entities.begin(),
+      document.entities.end(),
+      [](const vkpt::scene::SceneEntityDefinition& entity) {
+        return entity.has_light;
+      })) + document.lights.size();
+  QtDockAddProperty(panel, "light objects", std::to_string(lightObjectCount));
+  if (!document.lights.empty()) {
+    QtDockAddProperty(panel, "legacy lights", std::to_string(document.lights.size()));
+  }
   QtDockAddProperty(panel, "runtime lights", std::to_string(scene.lights.size()));
   for (const auto& entity : document.entities) {
     if (!entity.has_light) {
@@ -3631,18 +3655,75 @@ QtDockPanelContent BuildQtTimelineDock(const vkpt::scene::SceneDocument& documen
 }
 
 QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
-                                     const vkpt::editor::UiLayoutDocument& layout) {
-  auto panel = MakeQtDockPanel(layout, "script_panel", "Scripts", false, 520.0f, 420.0f);
+                                     const vkpt::editor::UiLayoutDocument& layout,
+                                     const QtDockScriptRuntimeState* runtime = nullptr) {
+  auto panel = MakeQtDockPanel(layout, "script_panel", "Scripting", true, 560.0f, 460.0f);
   std::size_t scripted = 0u;
   for (const auto& entity : document.entities) {
     if (!entity.script.script.empty()) {
       ++scripted;
-      QtDockAddRow(panel, QtEntityDisplayName(entity) + " script=" + entity.script.script);
     }
   }
-  QtDockAddProperty(panel, "scripted entities", std::to_string(scripted));
+  QtDockAddToggleGroupedProperty(panel,
+                                 "script.runtime.enabled",
+                                 "Runtime",
+                                 "Scripts enabled",
+                                 runtime == nullptr || runtime->scripts_enabled);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "script.runtime.playing",
+                                 "Runtime",
+                                 "Playing",
+                                 runtime != nullptr && runtime->playing);
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.play", "Controls", "Play", "Play");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.pause", "Controls", "Pause", "Pause");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.step", "Controls", "Step update", "Step");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.reload", "Controls", "Reload bindings", "Reload");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_on_load", "Hooks", "on_load", "Fire");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_fixed_update", "Hooks", "on_fixed_update", "Fire");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_late_update", "Hooks", "on_late_update", "Fire");
+
+  QtDockAddProperty(panel, "authored script entities", std::to_string(scripted));
+  if (runtime != nullptr) {
+    QtDockAddProperty(panel, "runtime status", runtime->status);
+    QtDockAddProperty(panel, "lua compiled", QtDockBool(runtime->binding_summary.lua_compiled_in));
+    QtDockAddProperty(panel, "execution available", QtDockBool(runtime->binding_summary.execution_available));
+    QtDockAddProperty(panel, "bindings", std::to_string(runtime->binding_summary.binding_count));
+    QtDockAddProperty(panel, "runnable", std::to_string(runtime->binding_summary.runnable_count));
+    QtDockAddProperty(panel, "disabled", std::to_string(runtime->binding_summary.disabled_count));
+    QtDockAddProperty(panel,
+                      "unsupported language",
+                      std::to_string(runtime->binding_summary.unsupported_language_count));
+    QtDockAddProperty(panel, "last hook", runtime->last_hook);
+    QtDockAddProperty(panel, "last frame", std::to_string(runtime->last_frame));
+    QtDockAddProperty(panel, "dispatches", std::to_string(runtime->dispatch_count));
+    QtDockAddProperty(panel, "last hook calls", std::to_string(runtime->last_dispatch.hook_call_count));
+    QtDockAddProperty(panel, "last skipped", std::to_string(runtime->last_dispatch.skipped_count));
+    QtDockAddProperty(panel,
+                      "last commands",
+                      std::to_string(runtime->last_dispatch.command_count_before) + " -> " +
+                          std::to_string(runtime->last_dispatch.command_count_after));
+    std::size_t index = 0u;
+    for (const auto& binding : runtime->bindings) {
+      QtDockAddProperty(panel,
+                        "binding " + std::to_string(++index),
+                        (binding.enabled ? std::string("on ") : std::string("off ")) +
+                            binding.entity_name + " #" + std::to_string(binding.entity) +
+                            " " + binding.language + ":" + binding.entry +
+                            " " + binding.source);
+    }
+    const std::size_t diagnostic_count = std::min<std::size_t>(runtime->diagnostics.size(), 6u);
+    for (std::size_t i = 0; i < diagnostic_count; ++i) {
+      const auto& diagnostic = runtime->diagnostics[runtime->diagnostics.size() - diagnostic_count + i];
+      QtDockAddProperty(panel,
+                        std::string("diagnostic ") + std::to_string(i + 1u),
+                        std::string(vkpt::scripting::to_string(diagnostic.severity)) + " " +
+                            std::string(vkpt::scripting::to_string(diagnostic.hook)) +
+                            " #" + std::to_string(diagnostic.entity) +
+                            " " + diagnostic.message);
+    }
+  }
   if (scripted == 0u) {
-    QtDockAddRow(panel, "No scripts attached");
+    QtDockAddProperty(panel, "bindings", "No scripts attached");
   }
   return panel;
 }
@@ -3700,7 +3781,8 @@ std::vector<QtDockPanelContent> BuildQtDockPanels(
     const QtDockFrameStats& frame_stats,
     const QtDockDeviceStats& device_stats,
     int active_camera_shot_slot,
-    const std::array<bool, 4>& saved_camera_shot_slots) {
+    const std::array<bool, 4>& saved_camera_shot_slots,
+    const QtDockScriptRuntimeState* script_runtime = nullptr) {
   std::vector<QtDockPanelContent> panels;
   panels.reserve(15u);
   panels.push_back(BuildQtSceneTreeDock(document, selection, layout));
@@ -3722,7 +3804,7 @@ std::vector<QtDockPanelContent> BuildQtDockPanels(
   panels.push_back(BuildQtDebugViewsDock(runtime, layout));
   panels.push_back(BuildQtAssetBrowserDock(document, scene, layout));
   panels.push_back(BuildQtTimelineDock(document, layout));
-  panels.push_back(BuildQtScriptDock(document, layout));
+  panels.push_back(BuildQtScriptDock(document, layout, script_runtime));
   panels.push_back(BuildQtPhysicsDock(document, layout));
   return panels;
 }
@@ -3974,6 +4056,52 @@ vkpt::scene::Quat QuatFromAxisAngle(const vkpt::pathtracer::Vec3& axis, float ra
   const float half = radians * 0.5f;
   const float s = std::sin(half);
   return NormalizeQuat({normalized.x * s, normalized.y * s, normalized.z * s, std::cos(half)});
+}
+
+vkpt::scene::Quat QuatFromCameraForwardUp(const vkpt::pathtracer::Vec3& forwardIn,
+                                          const vkpt::pathtracer::Vec3& upIn) {
+  const auto forward = PtNormalize(forwardIn, {0.0f, 0.0f, -1.0f});
+  const auto right = PtNormalize(PtCross(forward, upIn), {1.0f, 0.0f, 0.0f});
+  const auto up = PtNormalize(PtCross(right, forward), {0.0f, 1.0f, 0.0f});
+
+  const float m00 = right.x;
+  const float m01 = up.x;
+  const float m02 = -forward.x;
+  const float m10 = right.y;
+  const float m11 = up.y;
+  const float m12 = -forward.y;
+  const float m20 = right.z;
+  const float m21 = up.z;
+  const float m22 = -forward.z;
+
+  vkpt::scene::Quat q;
+  const float trace = m00 + m11 + m22;
+  if (trace > 0.0f) {
+    const float s = std::sqrt(trace + 1.0f) * 2.0f;
+    q.w = 0.25f * s;
+    q.x = (m21 - m12) / s;
+    q.y = (m02 - m20) / s;
+    q.z = (m10 - m01) / s;
+  } else if (m00 > m11 && m00 > m22) {
+    const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
+    q.w = (m21 - m12) / s;
+    q.x = 0.25f * s;
+    q.y = (m01 + m10) / s;
+    q.z = (m02 + m20) / s;
+  } else if (m11 > m22) {
+    const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
+    q.w = (m02 - m20) / s;
+    q.x = (m01 + m10) / s;
+    q.y = 0.25f * s;
+    q.z = (m12 + m21) / s;
+  } else {
+    const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
+    q.w = (m10 - m01) / s;
+    q.x = (m02 + m20) / s;
+    q.y = (m12 + m21) / s;
+    q.z = 0.25f * s;
+  }
+  return NormalizeQuat(q);
 }
 
 vkpt::pathtracer::Vec3 RotatePointByQuat(const vkpt::pathtracer::Vec3& point,
@@ -4887,6 +5015,31 @@ bool IntersectTriangleDoubleSided(const ViewportRay& ray,
   return true;
 }
 
+bool BoundsOverlapsAabb(const vkpt::editor::Bounds& bounds,
+                        const vkpt::pathtracer::Vec3& queryMin,
+                        const vkpt::pathtracer::Vec3& queryMax) {
+  if (!bounds.valid) {
+    return true;
+  }
+  return bounds.max.x >= queryMin.x && bounds.min.x <= queryMax.x &&
+         bounds.max.y >= queryMin.y && bounds.min.y <= queryMax.y &&
+         bounds.max.z >= queryMin.z && bounds.min.z <= queryMax.z;
+}
+
+bool TriangleOverlapsAabb(const ViewportPickable::Triangle& triangle,
+                          const vkpt::pathtracer::Vec3& queryMin,
+                          const vkpt::pathtracer::Vec3& queryMax) {
+  const float minX = std::min({triangle.v0.x, triangle.v1.x, triangle.v2.x});
+  const float minY = std::min({triangle.v0.y, triangle.v1.y, triangle.v2.y});
+  const float minZ = std::min({triangle.v0.z, triangle.v1.z, triangle.v2.z});
+  const float maxX = std::max({triangle.v0.x, triangle.v1.x, triangle.v2.x});
+  const float maxY = std::max({triangle.v0.y, triangle.v1.y, triangle.v2.y});
+  const float maxZ = std::max({triangle.v0.z, triangle.v1.z, triangle.v2.z});
+  return maxX >= queryMin.x && minX <= queryMax.x &&
+         maxY >= queryMin.y && minY <= queryMax.y &&
+         maxZ >= queryMin.z && minZ <= queryMax.z;
+}
+
 FpsCollisionHit TraceFpsGround(const std::vector<ViewportPickable>& pickables,
                                const vkpt::pathtracer::Vec3& origin,
                                float maxDistance,
@@ -4894,15 +5047,31 @@ FpsCollisionHit TraceFpsGround(const std::vector<ViewportPickable>& pickables,
   FpsCollisionHit best{};
   float bestDistance = maxDistance;
   const ViewportRay ray{origin, {0.0f, -1.0f, 0.0f}};
+  constexpr float kQueryPad = 0.08f;
+  const vkpt::pathtracer::Vec3 queryMin{
+      origin.x - kQueryPad,
+      origin.y - maxDistance - kQueryPad,
+      origin.z - kQueryPad};
+  const vkpt::pathtracer::Vec3 queryMax{
+      origin.x + kQueryPad,
+      origin.y + kQueryPad,
+      origin.z + kQueryPad};
   for (const auto& pickable : pickables) {
     if (pickable.triangles.empty()) {
       continue;
     }
+    if (!BoundsOverlapsAabb(pickable.bounds, queryMin, queryMax)) {
+      continue;
+    }
     float boundsDistance = 0.0f;
-    if (pickable.bounds.valid && !IntersectBounds(ray, pickable.bounds, boundsDistance)) {
+    if (pickable.bounds.valid &&
+        (!IntersectBounds(ray, pickable.bounds, boundsDistance) || boundsDistance >= bestDistance)) {
       continue;
     }
     for (const auto& triangle : pickable.triangles) {
+      if (!TriangleOverlapsAabb(triangle, queryMin, queryMax)) {
+        continue;
+      }
       float distance = 0.0f;
       vkpt::pathtracer::Vec3 normal{};
       if (!IntersectTriangleDoubleSided(ray, triangle, bestDistance, distance, normal)) {
@@ -4929,15 +5098,32 @@ FpsCollisionHit TraceFpsWall(const std::vector<ViewportPickable>& pickables,
   FpsCollisionHit best{};
   float bestDistance = maxDistance;
   const ViewportRay ray{origin, PtNormalize(direction, {1.0f, 0.0f, 0.0f})};
+  constexpr float kQueryPad = 0.08f;
+  const auto end = PtAdd(origin, PtMul(ray.direction, maxDistance));
+  const vkpt::pathtracer::Vec3 queryMin{
+      std::min(origin.x, end.x) - kQueryPad,
+      std::min(origin.y, end.y) - kQueryPad,
+      std::min(origin.z, end.z) - kQueryPad};
+  const vkpt::pathtracer::Vec3 queryMax{
+      std::max(origin.x, end.x) + kQueryPad,
+      std::max(origin.y, end.y) + kQueryPad,
+      std::max(origin.z, end.z) + kQueryPad};
   for (const auto& pickable : pickables) {
     if (pickable.triangles.empty()) {
       continue;
     }
+    if (!BoundsOverlapsAabb(pickable.bounds, queryMin, queryMax)) {
+      continue;
+    }
     float boundsDistance = 0.0f;
-    if (pickable.bounds.valid && !IntersectBounds(ray, pickable.bounds, boundsDistance)) {
+    if (pickable.bounds.valid &&
+        (!IntersectBounds(ray, pickable.bounds, boundsDistance) || boundsDistance >= bestDistance)) {
       continue;
     }
     for (const auto& triangle : pickable.triangles) {
+      if (!TriangleOverlapsAabb(triangle, queryMin, queryMax)) {
+        continue;
+      }
       float distance = 0.0f;
       vkpt::pathtracer::Vec3 normal{};
       if (!IntersectTriangleDoubleSided(ray, triangle, bestDistance, distance, normal)) {
@@ -6549,6 +6735,79 @@ bool RunUiModelSmokeTests() {
                              return property.id == "camera.focus.selected" &&
                                     property.editor == "button";
                            }));
+    check_true("camera dock has fps toggle",
+               cameraPanel != cameraDockPanels.end() &&
+               std::any_of(cameraPanel->properties.begin(),
+                           cameraPanel->properties.end(),
+                           [](const QtDockProperty& property) {
+                             return property.id == "camera.mode.fps_toggle" &&
+                                    property.editor == "button";
+                           }));
+    QtDockFrameStats fpsFrame;
+    fpsFrame.camera_mode = "fps";
+    fpsFrame.fps_player_grounded = true;
+    fpsFrame.fps_player_crouching = true;
+    fpsFrame.fps_player_running = false;
+    fpsFrame.fps_player_speed = 1.5f;
+    fpsFrame.fps_player_eye_height = 1.1f;
+    const auto fpsCameraDockPanels = BuildQtDockPanels(cameraDoc,
+                                                       cameraDockScene.value(),
+                                                       vkpt::pathtracer::RenderSettings{},
+                                                       UiRuntimeState{},
+                                                       SelectionState{},
+                                                       CreateDefaultLayout(),
+                                                       BenchmarkPanelModel{},
+                                                       fpsFrame,
+                                                       QtDockDeviceStats{},
+                                                       0,
+                                                       std::array<bool, 4>{});
+    const auto fpsCameraPanel = std::find_if(fpsCameraDockPanels.begin(),
+                                             fpsCameraDockPanels.end(),
+                                             [](const QtDockPanelContent& panel) {
+                                               return panel.id == "camera";
+                                             });
+    check_true("camera dock exposes fps player state",
+               fpsCameraPanel != fpsCameraDockPanels.end() &&
+               std::any_of(fpsCameraPanel->properties.begin(),
+                           fpsCameraPanel->properties.end(),
+                           [](const QtDockProperty& property) {
+                             return property.label == "FPS body" &&
+                                    property.value == "grounded";
+                           }) &&
+               std::any_of(fpsCameraPanel->properties.begin(),
+                           fpsCameraPanel->properties.end(),
+                           [](const QtDockProperty& property) {
+                             return property.id == "camera.mode.fps_toggle" &&
+                                    property.value == "Exit FPS";
+                           }));
+  }
+
+  {
+    ViewportPickable floor;
+    floor.require_triangle_hit = true;
+    floor.triangles.push_back({{-1.0f, 0.0f, -1.0f},
+                               { 1.0f, 0.0f, -1.0f},
+                               { 0.0f, 0.0f,  1.0f}});
+    ExpandBounds(floor.bounds, {-1.0f, 0.0f, -1.0f});
+    ExpandBounds(floor.bounds, { 1.0f, 0.0f,  1.0f});
+    const auto ground = TraceFpsGround({floor}, {0.0f, 1.0f, 0.0f}, 2.0f, 0.62f);
+    check_true("fps ground trace hits floor",
+               ground.hit && std::fabs(ground.position.y) < 0.001f);
+
+    ViewportPickable wall;
+    wall.require_triangle_hit = true;
+    wall.triangles.push_back({{-1.0f, 0.0f, 0.0f},
+                              { 1.0f, 0.0f, 0.0f},
+                              { 0.0f, 2.0f, 0.0f}});
+    ExpandBounds(wall.bounds, {-1.0f, 0.0f, 0.0f});
+    ExpandBounds(wall.bounds, { 1.0f, 2.0f, 0.0f});
+    const auto wallHit = TraceFpsWall({wall},
+                                      {0.0f, 1.0f, -1.0f},
+                                      {0.0f, 0.0f, 1.0f},
+                                      2.0f,
+                                      0.62f);
+    check_true("fps wall trace hits vertical surface",
+               wallHit.hit && std::fabs(wallHit.position.z) < 0.001f);
   }
 
   {
@@ -8181,6 +8440,9 @@ int main(int argc, char** argv) {
       auto qtCameraForward = [&]() {
         return PtNormalize(PtSub(qtCameraPose.target, qtCameraPose.position));
       };
+      std::function<void()> qtSyncActiveCameraObjectFromPose;
+      std::function<std::string()> qtActiveCameraObjectName;
+      std::chrono::steady_clock::time_point qtLastFpsCameraObjectSync{};
       float qtFpsYaw = 0.0f;
       float qtFpsPitch = 0.0f;
       auto syncQtFpsAnglesFromPose = [&]() {
@@ -8196,8 +8458,11 @@ int main(int argc, char** argv) {
             std::cos(qtFpsYaw) * cosPitch});
       };
       auto qtLastCameraInputTime = std::chrono::steady_clock::time_point{};
-      auto applyQtCameraPose = [&](std::string_view reason) {
+      auto applyQtCameraPose = [&](std::string_view reason, bool syncSceneCameraObject = true) {
         qtLastCameraInputTime = std::chrono::steady_clock::now();
+        if (syncSceneCameraObject && qtSyncActiveCameraObjectFromPose) {
+          qtSyncActiveCameraObjectFromPose();
+        }
         qtScene.camera_position = qtCameraPose.position;
         qtScene.camera_target = qtCameraPose.target;
         qtScene.camera_up = qtCameraPose.up;
@@ -8364,6 +8629,8 @@ int main(int argc, char** argv) {
       float qtClickDragPixels = 0.0f;
       float qtLastMouseX = 0.0f;
       float qtLastMouseY = 0.0f;
+      float qtPendingFpsLookDx = 0.0f;
+      float qtPendingFpsLookDy = 0.0f;
       bool qtDockPanelsDirty = true;
       struct QtGizmoDragEntityStart {
         vkpt::core::StableId entity_id = 0;
@@ -8415,6 +8682,11 @@ int main(int argc, char** argv) {
       auto qtSetViewportCursor = [&](vkpt::platform::QtViewportCursor cursor) {
         if (qtWindow != nullptr) {
           qtWindow->set_viewport_cursor(cursor);
+        }
+      };
+      auto qtSetViewportMouseLocked = [&](bool locked) {
+        if (qtWindow != nullptr) {
+          qtWindow->set_viewport_mouse_locked(locked);
         }
       };
       auto qtUpdateGizmoHoverCursor = [&](float x, float y) {
@@ -8495,6 +8767,205 @@ int main(int argc, char** argv) {
                                      });
         return it == qtSceneDocument.sdf_primitives.end() ? nullptr : &*it;
       };
+      auto qtFindTransformEntry = [&](vkpt::core::StableId id) -> const vkpt::scene::SceneTransformEntry* {
+        const auto it = std::find_if(qtSceneDocument.transforms.begin(),
+                                     qtSceneDocument.transforms.end(),
+                                     [id](const vkpt::scene::SceneTransformEntry& entry) {
+                                       return entry.id == id;
+                                     });
+        return it == qtSceneDocument.transforms.end() ? nullptr : &*it;
+      };
+      auto qtNextSceneObjectId = [&]() {
+        vkpt::core::StableId next = 1u;
+        auto observe = [&](vkpt::core::StableId id) {
+          if (id >= next) {
+            next = id + 1u;
+          }
+        };
+        for (const auto& entity : qtSceneDocument.entities) {
+          observe(entity.id);
+        }
+        for (const auto& entry : qtSceneDocument.transforms) {
+          observe(entry.id);
+        }
+        for (const auto& camera : qtSceneDocument.cameras) {
+          observe(camera.id);
+        }
+        for (const auto& light : qtSceneDocument.lights) {
+          observe(light.id);
+        }
+        for (const auto& primitive : qtSceneDocument.sdf_primitives) {
+          observe(primitive.id);
+        }
+        return next;
+      };
+      auto qtApplyLegacyTransformToEntity = [&](vkpt::scene::SceneEntityDefinition& entity) {
+        if (const auto* entry = qtFindTransformEntry(entity.id)) {
+          if (!entity.has_transform) {
+            entity.has_transform = true;
+            entity.transform = entry->transform;
+          }
+          if (entry->parent != 0u && !entity.has_hierarchy) {
+            entity.has_hierarchy = true;
+            entity.hierarchy.parent = entry->parent;
+          }
+        }
+      };
+      auto qtRemoveLegacyTransformEntry = [&](vkpt::core::StableId id) {
+        qtSceneDocument.transforms.erase(
+            std::remove_if(qtSceneDocument.transforms.begin(),
+                           qtSceneDocument.transforms.end(),
+                           [id](const vkpt::scene::SceneTransformEntry& entry) {
+                             return entry.id == id;
+                           }),
+            qtSceneDocument.transforms.end());
+      };
+      auto qtEnsureSceneObjectEntity = [&](vkpt::core::StableId requestedId,
+                                           std::string_view fallbackName)
+          -> vkpt::scene::SceneEntityDefinition& {
+        const auto id = requestedId != 0u ? requestedId : qtNextSceneObjectId();
+        if (auto* entity = qtFindEntity(id)) {
+          if (entity->name.empty()) {
+            entity->name = std::string(fallbackName);
+          }
+          qtApplyLegacyTransformToEntity(*entity);
+          return *entity;
+        }
+        vkpt::scene::SceneEntityDefinition entity{};
+        entity.id = id;
+        entity.name = std::string(fallbackName);
+        qtApplyLegacyTransformToEntity(entity);
+        qtSceneDocument.entities.push_back(std::move(entity));
+        return qtSceneDocument.entities.back();
+      };
+      auto qtPromoteSceneObjectCamerasAndLights = [&]() {
+        if (!qtSceneDocument.cameras.empty()) {
+          const auto legacyCameras = std::move(qtSceneDocument.cameras);
+          qtSceneDocument.cameras.clear();
+          for (const auto& camera : legacyCameras) {
+            auto& entity = qtEnsureSceneObjectEntity(camera.id, "Camera");
+            entity.has_camera = true;
+            entity.camera = camera.camera;
+            qtRemoveLegacyTransformEntry(entity.id);
+          }
+        }
+        if (!qtSceneDocument.lights.empty()) {
+          const auto legacyLights = std::move(qtSceneDocument.lights);
+          qtSceneDocument.lights.clear();
+          for (const auto& light : legacyLights) {
+            auto& entity = qtEnsureSceneObjectEntity(light.id, "Light");
+            entity.has_light = true;
+            entity.light = light.light;
+            qtRemoveLegacyTransformEntry(entity.id);
+          }
+        }
+      };
+      auto qtDocumentHasLightObject = [&]() {
+        return std::any_of(qtSceneDocument.entities.begin(),
+                           qtSceneDocument.entities.end(),
+                           [](const vkpt::scene::SceneEntityDefinition& entity) {
+                             return entity.has_light;
+                           });
+      };
+      auto qtRuntimeSceneHasEmissiveMaterial = [&]() {
+        return std::any_of(qtScene.materials.begin(),
+                           qtScene.materials.end(),
+                           [](const vkpt::pathtracer::RTMaterial& material) {
+                             return material.is_emissive();
+                           });
+      };
+      auto qtEnsureRuntimeLightObject = [&]() {
+        qtPromoteSceneObjectCamerasAndLights();
+        if (qtDocumentHasLightObject()) {
+          return;
+        }
+        vkpt::scene::SceneEntityDefinition* entity = nullptr;
+        if (!qtScene.lights.empty()) {
+          const auto& runtimeLight = qtScene.lights.front();
+          auto& lightEntity = qtEnsureSceneObjectEntity(0u, "Key Light");
+          lightEntity.has_transform = true;
+          lightEntity.transform.translation = ToSceneVec3(runtimeLight.position);
+          lightEntity.transform.dirty = true;
+          lightEntity.has_light = true;
+          lightEntity.light.type = "point";
+          lightEntity.light.color = ToSceneVec3(runtimeLight.color);
+          lightEntity.light.intensity = runtimeLight.intensity;
+          lightEntity.light.radius = runtimeLight.radius;
+          lightEntity.light.direction = ToSceneVec3(runtimeLight.direction);
+          entity = &lightEntity;
+        } else if (!qtRuntimeSceneHasEmissiveMaterial() &&
+                   (PtLength(qtScene.environment_color) > 1.0e-6f)) {
+          auto& lightEntity = qtEnsureSceneObjectEntity(0u, "Environment Light");
+          lightEntity.has_light = true;
+          lightEntity.light.type = "environment";
+          lightEntity.light.color = ToSceneVec3(qtScene.environment_color);
+          lightEntity.light.intensity = 1.0f;
+          entity = &lightEntity;
+        }
+        if (entity != nullptr) {
+          qtRemoveLegacyTransformEntry(entity->id);
+        }
+      };
+      auto qtFindActiveCameraEntity = [&]() -> vkpt::scene::SceneEntityDefinition* {
+        const auto it = std::find_if(qtSceneDocument.entities.begin(),
+                                     qtSceneDocument.entities.end(),
+                                     [](const vkpt::scene::SceneEntityDefinition& entity) {
+                                       return entity.has_camera;
+                                     });
+        return it == qtSceneDocument.entities.end() ? nullptr : &*it;
+      };
+      auto qtEnsureActiveCameraEntity = [&]() -> vkpt::scene::SceneEntityDefinition* {
+        qtPromoteSceneObjectCamerasAndLights();
+        if (auto* entity = qtFindActiveCameraEntity()) {
+          if (entity->name.empty()) {
+            entity->name = "Camera";
+          }
+          return entity;
+        }
+        auto& entity = qtEnsureSceneObjectEntity(0u, "Camera");
+        entity.has_camera = true;
+        entity.camera.fov = qtCameraPose.fov_deg;
+        entity.camera.focus_distance = qtCameraFocusDistance;
+        return &entity;
+      };
+      auto qtWriteActiveCameraObjectFromPose = [&]() {
+        auto* entity = qtEnsureActiveCameraEntity();
+        if (entity == nullptr) {
+          return;
+        }
+        entity->has_camera = true;
+        entity->camera.fov = qtCameraPose.fov_deg;
+        entity->camera.focus_distance = qtCameraFocusDistance;
+        entity->has_transform = true;
+        entity->transform.translation = ToSceneVec3(qtCameraPose.position);
+        entity->transform.rotation = QuatFromCameraForwardUp(qtCameraForward(), qtCameraPose.up);
+        entity->transform.dirty = true;
+        qtRemoveLegacyTransformEntry(entity->id);
+      };
+      qtSyncActiveCameraObjectFromPose = qtWriteActiveCameraObjectFromPose;
+      qtActiveCameraObjectName = [&]() {
+        qtPromoteSceneObjectCamerasAndLights();
+        if (const auto* entity = qtFindActiveCameraEntity()) {
+          return QtEntityDisplayName(*entity) + " #" + std::to_string(entity->id);
+        }
+        return std::string("runtime camera");
+      };
+      auto qtMaybeSyncFpsCameraObject = [&](bool force) {
+        if (!qtSyncActiveCameraObjectFromPose) {
+          return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!force &&
+            qtLastFpsCameraObjectSync != std::chrono::steady_clock::time_point{} &&
+            now - qtLastFpsCameraObjectSync < std::chrono::milliseconds(250)) {
+          return;
+        }
+        qtSyncActiveCameraObjectFromPose();
+        qtLastFpsCameraObjectSync = now;
+      };
+      qtPromoteSceneObjectCamerasAndLights();
+      qtEnsureRuntimeLightObject();
+      qtSyncActiveCameraObjectFromPose();
       auto qtApplySceneLightingFallback = [&]() {
         bool hasLight = !qtScene.lights.empty();
         bool hasEmissive = false;
@@ -8508,7 +8979,100 @@ int main(int argc, char** argv) {
           qtScene.environment_color = {0.35f, 0.4f, 0.5f};
         }
       };
+      auto qtScriptRuntime = vkpt::scripting::CreateScriptRuntime();
+      QtDockScriptRuntimeState qtScriptState;
+      const auto qtScriptRuntimeStartTime = std::chrono::steady_clock::now();
+      auto qtReloadScriptsFromDocument = [&](std::string_view reason) {
+        auto worldResult = qtSceneDocument.to_world();
+        if (!worldResult) {
+          qtScriptState.status = "world build failed";
+          ui_runtime_state.last_warning_or_error = "script reload failed: world build";
+          qtDockPanelsDirty = true;
+          return false;
+        }
+        auto world = std::move(worldResult.value());
+        world.recompute_world_transforms();
+        qtScriptState.binding_summary = qtScriptRuntime->reload_bindings(world);
+        qtScriptState.bindings = qtScriptRuntime->bindings();
+        qtScriptState.diagnostics = qtScriptRuntime->diagnostics();
+        qtScriptState.status = std::string("bindings reloaded") +
+            (reason.empty() ? std::string{} : " (" + std::string(reason) + ")");
+        qtScriptState.last_hook = "reload";
+        qtScriptState.last_frame = qtFrameCount;
+        qtDockPanelsDirty = true;
+        return true;
+      };
+      auto qtDispatchScriptHook =
+          [&](vkpt::scripting::ScriptLifecycleHook hook,
+              vkpt::core::FrameIndex frameIndex,
+              double dtSeconds,
+              std::string_view source) {
+        auto worldResult = qtSceneDocument.to_world();
+        if (!worldResult) {
+          qtScriptState.status = "dispatch failed: world build";
+          ui_runtime_state.last_warning_or_error = qtScriptState.status;
+          qtDockPanelsDirty = true;
+          return false;
+        }
+        auto world = std::move(worldResult.value());
+        world.recompute_world_transforms();
+        vkpt::scene::WorldCommandBuffer commands;
+        vkpt::scripting::ScriptExecutionContext context;
+        context.frame = frameIndex;
+        context.delta_seconds = dtSeconds;
+        context.elapsed_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - qtScriptRuntimeStartTime).count();
+        context.scripts_enabled = qtScriptState.scripts_enabled;
+        context.benchmark_mode = qtSceneDocument.benchmark.enabled;
+        context.allow_benchmark_scripts = qtScriptState.benchmark_scripts_allowed;
+        qtScriptState.last_dispatch =
+            qtScriptRuntime->dispatch_hook(world, hook, context, commands);
+        qtScriptState.binding_summary = vkpt::scripting::SummarizeScriptBindings(
+            qtScriptRuntime->bindings(),
+            qtScriptRuntime->lua_compiled_in(),
+            qtScriptRuntime->execution_available());
+        qtScriptState.bindings = qtScriptRuntime->bindings();
+        qtScriptState.diagnostics = qtScriptRuntime->diagnostics();
+        qtScriptState.last_hook = std::string(vkpt::scripting::to_string(hook));
+        qtScriptState.last_frame = frameIndex;
+        ++qtScriptState.dispatch_count;
+        qtScriptState.status =
+            std::string(source) + " " + qtScriptState.last_hook +
+            " runnable=" + std::to_string(qtScriptState.last_dispatch.runnable_count) +
+            " skipped=" + std::to_string(qtScriptState.last_dispatch.skipped_count);
+        if (!commands.commands().empty()) {
+          qtScriptState.status += " commands=pending";
+        }
+        ui_runtime_state.status_message = qtScriptState.status;
+        qtDockPanelsDirty = true;
+        return true;
+      };
+      qtReloadScriptsFromDocument("startup");
+      auto qtLastScriptAutoDispatch = std::chrono::steady_clock::time_point{};
+      auto qtApplyScriptPlayback =
+          [&](std::chrono::steady_clock::time_point now,
+              vkpt::core::FrameIndex frameIndex,
+              double dtSeconds) {
+        if (!qtScriptState.playing) {
+          return false;
+        }
+        const auto interval = qtScriptRuntime->execution_available()
+            ? std::chrono::milliseconds(16)
+            : std::chrono::milliseconds(500);
+        if (qtLastScriptAutoDispatch != std::chrono::steady_clock::time_point{} &&
+            now - qtLastScriptAutoDispatch < interval) {
+          return false;
+        }
+        qtLastScriptAutoDispatch = now;
+        return qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+                                    frameIndex,
+                                    dtSeconds,
+                                    "script playback");
+      };
       auto qtReloadEditedScene = [&](std::string_view reason) {
+        if (qtFpsMode) {
+          qtMaybeSyncFpsCameraObject(true);
+        }
         auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(qtSceneDocument);
         if (!sceneResult) {
           ui_runtime_state.status_message = "scene edit failed: rebuild scene data";
@@ -8517,10 +9081,15 @@ int main(int argc, char** argv) {
         }
         qtScene = std::move(sceneResult.value());
         qtApplySceneLightingFallback();
-        qtScene.camera_position = qtCameraPose.position;
-        qtScene.camera_target = qtCameraPose.target;
-        qtScene.camera_up = qtCameraPose.up;
-        qtScene.camera_fov_deg = qtCameraPose.fov_deg;
+        syncQtCameraPoseFromScene();
+        syncQtFpsAnglesFromPose();
+        qtCameraFocusDistance = std::max(
+            0.25f,
+            qtScene.camera_focus_distance > 0.0f
+                ? qtScene.camera_focus_distance
+                : PtLength(PtSub(qtCameraPose.target, qtCameraPose.position)));
+        qtCameraFocusPoint =
+            PtAdd(qtCameraPose.position, PtMul(qtCameraForward(), qtCameraFocusDistance));
         qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
         RebuildSelectionBounds(ui_selection_state, qtPickables);
         qtPublishedSample.store(0u, std::memory_order_relaxed);
@@ -8534,6 +9103,7 @@ int main(int argc, char** argv) {
         }
         qtDockPanelsDirty = true;
         qtSyncPhysicsFromSceneDocument();
+        qtReloadScriptsFromDocument("scene edited");
         qtPreviewStatus = qtTracerReady ? "scene edited" : "scene edit renderer reload failed";
         ui_runtime_state.status_message = reason == std::string_view{"animation playback"}
             ? std::string("animation playback")
@@ -8681,17 +9251,9 @@ int main(int argc, char** argv) {
       auto qtSetAuthoredCameraFocusDistance = [&](float distance, std::string_view reason) {
         const float focusDistance = ClampFloat(distance, 0.0f, 100000.0f);
         bool wroteAuthoredCamera = false;
-        for (auto& entity : qtSceneDocument.entities) {
-          if (entity.has_camera) {
-            entity.camera.focus_distance = focusDistance;
-            wroteAuthoredCamera = true;
-            break;
-          }
-        }
-        for (auto& camera : qtSceneDocument.cameras) {
-          camera.camera.focus_distance = focusDistance;
+        if (auto* entity = qtEnsureActiveCameraEntity()) {
+          entity->camera.focus_distance = focusDistance;
           wroteAuthoredCamera = true;
-          break;
         }
         qtCameraFocusDistance = std::max(0.25f, focusDistance);
         qtCameraFocusPoint = PtAdd(qtCameraPose.position, PtMul(qtCameraForward(), qtCameraFocusDistance));
@@ -8765,7 +9327,60 @@ int main(int argc, char** argv) {
           return false;
         };
 
-        if (parts.size() >= 2u && parts[0] == "camera") {
+        if (parts.size() >= 2u && parts[0] == "script") {
+          if (parts.size() >= 3u && parts[1] == "runtime") {
+            if (parts[2] == "enabled") {
+              bool value = false;
+              if (!QtParseBool(edit.value, value)) {
+                return failEdit("expected true or false");
+              }
+              qtScriptState.scripts_enabled = value;
+              qtScriptState.status = value ? "scripts enabled" : "scripts disabled";
+            } else if (parts[2] == "playing") {
+              bool value = false;
+              if (!QtParseBool(edit.value, value)) {
+                return failEdit("expected true or false");
+              }
+              qtScriptState.playing = value;
+              qtScriptState.status = value ? "script playback running" : "script playback paused";
+            } else if (parts[2] == "play") {
+              qtScriptState.playing = true;
+              qtScriptState.scripts_enabled = true;
+              qtScriptState.status = "script playback running";
+            } else if (parts[2] == "pause") {
+              qtScriptState.playing = false;
+              qtScriptState.status = "script playback paused";
+            } else if (parts[2] == "step") {
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+                                   frameIndex,
+                                   1.0 / 60.0,
+                                   "script step");
+            } else if (parts[2] == "reload") {
+              qtReloadScriptsFromDocument("dock");
+            } else if (parts[2] == "dispatch_on_load") {
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLoad,
+                                   frameIndex,
+                                   0.0,
+                                   "script manual");
+            } else if (parts[2] == "dispatch_fixed_update") {
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnFixedUpdate,
+                                   frameIndex,
+                                   1.0 / 60.0,
+                                   "script manual");
+            } else if (parts[2] == "dispatch_late_update") {
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLateUpdate,
+                                   frameIndex,
+                                   0.0,
+                                   "script manual");
+            } else {
+              return failEdit("unknown script runtime property");
+            }
+          } else {
+            return failEdit("unknown script property");
+          }
+          changed = true;
+          qtDockPanelsDirty = true;
+        } else if (parts.size() >= 2u && parts[0] == "camera") {
           if (parts.size() == 3u && parts[1] == "mode" && parts[2] == "fps_toggle") {
             if (qtSetFpsMode) {
               qtSetFpsMode(!qtFpsMode, frameIndex, "dock");
@@ -9545,6 +10160,32 @@ int main(int argc, char** argv) {
         return std::max(1.0f, PtLength(extent) * 0.25f);
       };
       const float qtCameraMoveUnitsPerSecond = qtSceneScale();
+      const float qtFpsUnitScale = ClampFloat(qtCameraMoveUnitsPerSecond * 0.10f, 0.65f, 2.25f);
+      const float qtFpsStandEyeHeight = 1.62f * qtFpsUnitScale;
+      const float qtFpsCrouchEyeHeight = 1.05f * qtFpsUnitScale;
+      const float qtFpsRadius = 0.32f * qtFpsUnitScale;
+      const float qtFpsStepHeight = 0.38f * qtFpsUnitScale;
+      const float qtFpsSkin = 0.03f * qtFpsUnitScale;
+      const float qtFpsWalkSpeed = ClampFloat(qtCameraMoveUnitsPerSecond * 0.45f,
+                                              1.45f * qtFpsUnitScale,
+                                              4.25f * qtFpsUnitScale);
+      const float qtFpsRunSpeed = qtFpsWalkSpeed * 1.65f;
+      const float qtFpsCrouchSpeed = qtFpsWalkSpeed * 0.45f;
+      const float qtFpsAirControlScale = 0.45f;
+      const float qtFpsGravity = 18.0f * qtFpsUnitScale;
+      const float qtFpsJumpSpeed = 5.2f * std::sqrt(qtFpsUnitScale);
+      auto qtFpsEyePosition = [&]() {
+        return PtAdd(qtFpsPlayer.feet_position, {0.0f, qtFpsPlayer.eye_height, 0.0f});
+      };
+      auto qtFpsFlatForward = [&]() {
+        return PtNormalize(vkpt::pathtracer::Vec3{
+            std::sin(qtFpsYaw),
+            0.0f,
+            std::cos(qtFpsYaw)}, {0.0f, 0.0f, -1.0f});
+      };
+      auto qtFpsFlatRight = [&]() {
+        return PtNormalize(PtCross(qtFpsFlatForward(), {0.0f, 1.0f, 0.0f}), {1.0f, 0.0f, 0.0f});
+      };
       auto qtRefreshCameraFocusFromPose = [&]() {
         const auto forward = qtCameraForward();
         const float targetDistance = PtLength(PtSub(qtCameraPose.target, qtCameraPose.position));
@@ -9565,9 +10206,89 @@ int main(int argc, char** argv) {
         qtCameraFocusPoint = PtAdd(qtCameraFocusPoint, delta);
       };
       qtRefreshCameraFocusFromPose();
+      auto qtSyncCameraFromFpsPlayer = [&](std::string_view reason) {
+        const auto eye = qtFpsEyePosition();
+        const auto forward = qtFpsForwardFromAngles();
+        qtCameraPose.position = eye;
+        qtCameraPose.target = PtAdd(eye, PtMul(forward, std::max(1.0f, qtCameraFocusDistance)));
+        qtCameraPose.up = {0.0f, 1.0f, 0.0f};
+        qtCameraFocusPoint = qtCameraPose.target;
+        qtCameraFocusDistance = PtLength(PtSub(qtCameraFocusPoint, qtCameraPose.position));
+        qtMaybeSyncFpsCameraObject(false);
+        applyQtCameraPose(reason, false);
+      };
+      auto qtInitializeFpsPlayerFromPose = [&]() {
+        qtFpsPlayer = {};
+        qtFpsPlayer.initialized = true;
+        qtFpsPlayer.eye_height = qtFpsStandEyeHeight;
+        qtFpsPlayer.feet_position = {
+            qtCameraPose.position.x,
+            qtCameraPose.position.y - qtFpsStandEyeHeight,
+            qtCameraPose.position.z};
+        const auto groundProbeOrigin = PtAdd(qtCameraPose.position, {0.0f, qtFpsStepHeight, 0.0f});
+        const auto ground = TraceFpsGround(qtPickables,
+                                           groundProbeOrigin,
+                                           qtFpsStandEyeHeight + qtFpsStepHeight + qtFpsSkin,
+                                           0.62f);
+        if (ground.hit) {
+          qtFpsPlayer.feet_position.y = ground.position.y;
+          qtFpsPlayer.grounded = true;
+        }
+        qtFpsPlayer.current_speed = 0.0f;
+      };
+      auto qtResolveFpsHorizontalDelta = [&](const vkpt::pathtracer::Vec3& feetPosition,
+                                             const vkpt::pathtracer::Vec3& desiredDelta) {
+        vkpt::pathtracer::Vec3 resolved{};
+        vkpt::pathtracer::Vec3 remaining = desiredDelta;
+        for (int iteration = 0; iteration < 3; ++iteration) {
+          const float remainingDistance = PtLength(remaining);
+          if (remainingDistance <= 1.0e-5f) {
+            break;
+          }
+          const auto direction = PtNormalize(remaining, {1.0f, 0.0f, 0.0f});
+          FpsCollisionHit nearest{};
+          float nearestDistance = remainingDistance + qtFpsRadius + qtFpsSkin;
+          const std::array<float, 3> probeHeights{
+              std::max(qtFpsRadius, qtFpsSkin),
+              std::max(qtFpsRadius, qtFpsPlayer.eye_height * 0.55f),
+              std::max(qtFpsRadius, qtFpsPlayer.eye_height - qtFpsRadius * 0.5f)};
+          for (const float height : probeHeights) {
+            const auto origin = PtAdd(PtAdd(feetPosition, resolved), {0.0f, height, 0.0f});
+            const auto hit = TraceFpsWall(qtPickables,
+                                          origin,
+                                          direction,
+                                          nearestDistance,
+                                          0.62f);
+            if (hit.hit && hit.distance < nearestDistance) {
+              nearest = hit;
+              nearestDistance = hit.distance;
+            }
+          }
+          if (!nearest.hit || nearest.distance > remainingDistance + qtFpsRadius + qtFpsSkin) {
+            resolved = PtAdd(resolved, remaining);
+            break;
+          }
+
+          const float allowedDistance =
+              ClampFloat(nearest.distance - qtFpsRadius - qtFpsSkin, 0.0f, remainingDistance);
+          resolved = PtAdd(resolved, PtMul(direction, allowedDistance));
+          auto slide = PtMul(direction, remainingDistance - allowedDistance);
+          auto wallNormal = vkpt::pathtracer::Vec3{nearest.normal.x, 0.0f, nearest.normal.z};
+          wallNormal = PtNormalize(wallNormal, {});
+          if (PtLength(wallNormal) <= 1.0e-5f) {
+            break;
+          }
+          const float intoWall = PtDot(slide, wallNormal);
+          if (intoWall < 0.0f) {
+            slide = PtSub(slide, PtMul(wallNormal, intoWall));
+          }
+          remaining = slide;
+        }
+        return resolved;
+      };
       auto qtApplyFpsLookDelta = [&](float dx, float dy) {
         constexpr float kLookSensitivity = 0.0045f;
-        qtFpsYaw += dx * kLookSensitivity;
+        qtFpsYaw -= dx * kLookSensitivity;
         qtFpsPitch = ClampFloat(qtFpsPitch - dy * kLookSensitivity, -1.45f, 1.45f);
         const auto forward = qtFpsForwardFromAngles();
         qtCameraPose.target = PtAdd(qtCameraPose.position,
@@ -9575,7 +10296,8 @@ int main(int argc, char** argv) {
         qtCameraFocusPoint = qtCameraPose.target;
         qtCameraFocusDistance = PtLength(PtSub(qtCameraFocusPoint, qtCameraPose.position));
         qtCameraPose.up = {0.0f, 1.0f, 0.0f};
-        applyQtCameraPose("fps look");
+        qtMaybeSyncFpsCameraObject(false);
+        applyQtCameraPose("fps look", false);
       };
       auto qtApplyOrbitDrag = [&](float dx, float dy) {
         constexpr float kOrbitSensitivity = 0.006f;
@@ -9616,13 +10338,18 @@ int main(int argc, char** argv) {
         if (std::fabs(wheelDelta) <= 1.0e-4f) {
           return;
         }
-        const auto forward = qtCameraForward();
         if (qtFpsMode) {
-          const float distance = wheelDelta * qtCameraMoveUnitsPerSecond * 0.35f;
-          const auto delta = PtMul(forward, distance);
-          qtCameraPose.position = PtAdd(qtCameraPose.position, PtMul(forward, distance));
-          qtCameraPose.target = PtAdd(qtCameraPose.target, PtMul(forward, distance));
-          qtMoveCameraFocusBy(delta);
+          if (!qtFpsPlayer.initialized) {
+            qtInitializeFpsPlayerFromPose();
+          }
+          const auto delta = qtResolveFpsHorizontalDelta(
+              qtFpsPlayer.feet_position,
+              PtMul(qtFpsFlatForward(), wheelDelta * qtFpsWalkSpeed * 0.35f));
+          qtFpsPlayer.feet_position = PtAdd(qtFpsPlayer.feet_position, delta);
+          qtFpsPlayer.current_speed = 0.0f;
+          qtSyncCameraFromFpsPlayer("fps dolly");
+          qtDockPanelsDirty = true;
+          return;
         } else {
           const auto offset = PtSub(qtCameraPose.position, qtCameraFocusPoint);
           const float scale = std::pow(0.88f, wheelDelta);
@@ -9642,37 +10369,157 @@ int main(int argc, char** argv) {
         if (!qtFpsMode || dtSeconds <= 0.0f) {
           return;
         }
-        const auto forward = qtFpsForwardFromAngles();
-        const auto right = PtNormalize(PtCross(forward, qtCameraPose.up), {1.0f, 0.0f, 0.0f});
-        const auto up = vkpt::pathtracer::Vec3{0.0f, 1.0f, 0.0f};
-        vkpt::pathtracer::Vec3 move{};
+        if (!qtFpsPlayer.initialized) {
+          qtInitializeFpsPlayerFromPose();
+        }
+
+        const auto oldEye = qtFpsEyePosition();
+        const auto oldFeet = qtFpsPlayer.feet_position;
+        const bool oldGrounded = qtFpsPlayer.grounded;
+        const bool oldCrouching = qtFpsPlayer.crouching;
+        const bool oldRunning = qtFpsPlayer.running;
+        const float oldEyeHeight = qtFpsPlayer.eye_height;
+
+        qtFpsPlayer.crouching =
+            qtKeyActive(kQtKeyControl) || qtKeyActive(17) || qtKeyActive('C');
+        qtFpsPlayer.running =
+            !qtFpsPlayer.crouching && (qtKeyActive(kQtKeyShift) || qtKeyActive(16));
+
+        const float targetEyeHeight =
+            qtFpsPlayer.crouching ? qtFpsCrouchEyeHeight : qtFpsStandEyeHeight;
+        const float crouchBlend = ClampFloat(dtSeconds * 12.0f, 0.0f, 1.0f);
+        qtFpsPlayer.eye_height =
+            qtFpsPlayer.eye_height + (targetEyeHeight - qtFpsPlayer.eye_height) * crouchBlend;
+
+        if (qtFpsPlayer.jump_queued && qtFpsPlayer.grounded) {
+          qtFpsPlayer.velocity.y = qtFpsJumpSpeed;
+          qtFpsPlayer.grounded = false;
+        }
+        qtFpsPlayer.jump_queued = false;
+
+        vkpt::pathtracer::Vec3 wishMove{};
         if (qtKeyActive('W') || qtKeyActive(kQtKeyUp)) {
-          move = PtAdd(move, forward);
+          wishMove = PtAdd(wishMove, qtFpsFlatForward());
         }
         if (qtKeyActive('S') || qtKeyActive(kQtKeyDown)) {
-          move = PtSub(move, forward);
+          wishMove = PtSub(wishMove, qtFpsFlatForward());
         }
         if (qtKeyActive('D') || qtKeyActive(kQtKeyRight)) {
-          move = PtAdd(move, right);
+          wishMove = PtAdd(wishMove, qtFpsFlatRight());
         }
         if (qtKeyActive('A') || qtKeyActive(kQtKeyLeft)) {
-          move = PtSub(move, right);
+          wishMove = PtSub(wishMove, qtFpsFlatRight());
         }
-        if (qtKeyActive('E')) {
-          move = PtAdd(move, up);
+
+        vkpt::pathtracer::Vec3 horizontalDelta{};
+        if (PtLength(wishMove) > 1.0e-5f) {
+          float speed = qtFpsWalkSpeed;
+          if (qtFpsPlayer.crouching) {
+            speed = qtFpsCrouchSpeed;
+          } else if (qtFpsPlayer.running) {
+            speed = qtFpsRunSpeed;
+          }
+          if (!qtFpsPlayer.grounded) {
+            speed *= qtFpsAirControlScale;
+          }
+          const auto desiredDelta = PtMul(PtNormalize(wishMove), speed * dtSeconds);
+          horizontalDelta = qtResolveFpsHorizontalDelta(qtFpsPlayer.feet_position, desiredDelta);
+          qtFpsPlayer.feet_position = PtAdd(qtFpsPlayer.feet_position, horizontalDelta);
+          qtFpsPlayer.current_speed = PtLength(horizontalDelta) / std::max(dtSeconds, 1.0e-5f);
+        } else {
+          qtFpsPlayer.current_speed = 0.0f;
         }
-        if (qtKeyActive('Q')) {
-          move = PtSub(move, up);
+
+        if (!qtFpsPlayer.grounded) {
+          qtFpsPlayer.velocity.y -= qtFpsGravity * dtSeconds;
+        } else if (qtFpsPlayer.velocity.y < 0.0f) {
+          qtFpsPlayer.velocity.y = 0.0f;
         }
-        if (PtLength(move) <= 1.0e-5f) {
+        qtFpsPlayer.feet_position.y += qtFpsPlayer.velocity.y * dtSeconds;
+
+        const float fallDistance = std::max(0.0f, oldFeet.y - qtFpsPlayer.feet_position.y);
+        const float groundProbeStartY =
+            std::max(oldFeet.y, qtFpsPlayer.feet_position.y) + qtFpsStepHeight + qtFpsSkin;
+        const float verticalProbe =
+            (groundProbeStartY - qtFpsPlayer.feet_position.y) + qtFpsStepHeight + qtFpsSkin * 2.0f;
+        const auto groundOrigin = vkpt::pathtracer::Vec3{
+            qtFpsPlayer.feet_position.x,
+            groundProbeStartY,
+            qtFpsPlayer.feet_position.z};
+        const auto ground = TraceFpsGround(qtPickables, groundOrigin, verticalProbe, 0.62f);
+        const bool sweptThroughGround =
+            ground.hit && ground.position.y >= qtFpsPlayer.feet_position.y - qtFpsSkin * 2.0f &&
+            ground.position.y <= oldFeet.y + qtFpsStepHeight + fallDistance + qtFpsSkin;
+        if (ground.hit &&
+            qtFpsPlayer.velocity.y <= 0.0f &&
+            (qtFpsPlayer.feet_position.y <= ground.position.y + qtFpsStepHeight + qtFpsSkin ||
+             sweptThroughGround)) {
+          qtFpsPlayer.feet_position.y = ground.position.y;
+          qtFpsPlayer.velocity.y = 0.0f;
+          qtFpsPlayer.grounded = true;
+        } else {
+          qtFpsPlayer.grounded = false;
+        }
+
+        const auto newEye = qtFpsEyePosition();
+        const bool poseChanged =
+            PtLength(PtSub(newEye, oldEye)) > 1.0e-4f ||
+            std::fabs(qtFpsPlayer.eye_height - oldEyeHeight) > 1.0e-4f;
+        const bool stateChanged =
+            oldGrounded != qtFpsPlayer.grounded ||
+            oldCrouching != qtFpsPlayer.crouching ||
+            oldRunning != qtFpsPlayer.running;
+        if (poseChanged || stateChanged) {
+          qtUserCameraActive = true;
+          qtSyncCameraFromFpsPlayer("fps physics");
+          qtDockPanelsDirty = true;
+        }
+      };
+      qtSetFpsMode = [&](bool enabled,
+                         vkpt::core::FrameIndex frameIndex,
+                         std::string_view source) {
+        if (qtFpsMode == enabled && (!enabled || qtFpsPlayer.initialized)) {
           return;
         }
-        const float speed = qtCameraMoveUnitsPerSecond * (qtKeyActive(kQtKeyShift) || qtKeyActive(16) ? 3.0f : 1.0f);
-        const auto delta = PtMul(PtNormalize(move), speed * dtSeconds);
-        qtCameraPose.position = PtAdd(qtCameraPose.position, delta);
-        qtCameraPose.target = PtAdd(qtCameraPose.target, delta);
-        qtMoveCameraFocusBy(delta);
-        applyQtCameraPose("fps move");
+        qtFpsMode = enabled;
+        qtUserCameraActive = true;
+        ui_runtime_state.active_viewport_tool = qtFpsMode
+            ? vkpt::editor::ViewportTool::Fps
+            : vkpt::editor::ViewportTool::Select;
+        if (qtFpsMode) {
+          syncQtFpsAnglesFromPose();
+          qtInitializeFpsPlayerFromPose();
+          qtLeftMouseDown = false;
+          qtRightMouseDown = false;
+          qtMiddleMouseDown = false;
+          qtPotentialClick = false;
+          qtPendingFpsLookDx = 0.0f;
+          qtPendingFpsLookDy = 0.0f;
+          qtGizmoDrag = {};
+          qtHoveredGizmoHit = std::nullopt;
+          ui_runtime_state.active_gizmo_mode = vkpt::editor::GizmoMode::None;
+          qtSetViewportMouseLocked(true);
+          qtSyncCameraFromFpsPlayer("fps enter");
+        } else {
+          qtPendingFpsLookDx = 0.0f;
+          qtPendingFpsLookDy = 0.0f;
+          qtMaybeSyncFpsCameraObject(true);
+          qtFpsPlayer.jump_queued = false;
+          syncQtFpsAnglesFromPose();
+          qtSetViewportMouseLocked(false);
+          qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
+        }
+        ui_runtime_state.status_message = qtFpsMode ? "fps camera mode" : "select camera mode";
+        PushUiEvent(ui_event_log,
+                    "viewport_camera_mode",
+                    "viewport",
+                    std::string(source),
+                    frameIndex,
+                    {},
+                    qtFpsMode ? "fps" : "select",
+                    ui_runtime_state.status_message);
+        qtDockPanelsDirty = true;
+        updateQtSelectionOverlay();
       };
       auto qtCaptureGizmoDrag = [&](const ViewportGizmoHit& hit, float x, float y) {
         qtGizmoDrag = {};
@@ -9851,6 +10698,13 @@ int main(int argc, char** argv) {
         }
       };
       auto qtApplyViewportPick = [&](float x, float y, vkpt::core::FrameIndex frameIndex) {
+        if (qtFpsMode) {
+          qtPotentialClick = false;
+          qtGizmoDrag = {};
+          qtHoveredGizmoHit = std::nullopt;
+          updateQtSelectionOverlay();
+          return;
+        }
         const auto frameRect = qtViewportImageRect();
         const auto localPoint = qtViewportLocalPoint(x, y);
         const auto picked = localPoint
@@ -10203,6 +11057,11 @@ int main(int argc, char** argv) {
         stats.camera_mode = qtFpsMode
             ? std::string("fps")
             : (qtEnableAutoOrbit ? std::string("orbit") : std::string("authored"));
+        stats.fps_player_grounded = qtFpsPlayer.grounded;
+        stats.fps_player_crouching = qtFpsPlayer.crouching;
+        stats.fps_player_running = qtFpsPlayer.running;
+        stats.fps_player_speed = qtFpsPlayer.current_speed;
+        stats.fps_player_eye_height = qtFpsPlayer.eye_height;
         if (qtWindow != nullptr) {
           const auto windowStats = qtWindow->framebuffer_stats();
           stats.window_received = windowStats.received;
@@ -10280,6 +11139,7 @@ int main(int argc, char** argv) {
         const auto frameStats = qtBuildFrameStats();
         ui_runtime_state.active_scene =
             config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value;
+        ui_runtime_state.active_camera = qtActiveCameraObjectName ? qtActiveCameraObjectName() : "runtime camera";
         ui_runtime_state.active_renderer_backend = config.backend.value;
         ui_runtime_state.active_renderer_path = qtUseBg ? "cpu_tiled_background" : config.backend.value;
         ui_runtime_state.spp_accumulated = frameStats.sample_count;
@@ -10306,7 +11166,8 @@ int main(int argc, char** argv) {
                                                  qtSavedCameraShots[0].valid,
                                                  qtSavedCameraShots[1].valid,
                                                  qtSavedCameraShots[2].valid,
-                                                 qtSavedCameraShots[3].valid});
+                                                 qtSavedCameraShots[3].valid},
+                                             &qtScriptState);
         ApplyQtDockPanelsToWindow(qtWindow, qtLastDockPanels);
         qtLastDockPanelSync = now;
         qtDockPanelsDirty = false;
@@ -10797,24 +11658,13 @@ int main(int argc, char** argv) {
               } else if (key == 'P' || rawKey == 'P') {
                 qtPickFocusAt(qtLastMouseX, qtLastMouseY, qtFrameCount, "keyboard", true);
               } else if (key == 'V' || rawKey == 'V') {
-                qtFpsMode = !qtFpsMode;
-                qtUserCameraActive = true;
-                ui_runtime_state.active_viewport_tool = qtFpsMode
-                    ? vkpt::editor::ViewportTool::Fps
-                    : vkpt::editor::ViewportTool::Select;
-                if (qtFpsMode) {
-                  syncQtFpsAnglesFromPose();
+                if (qtSetFpsMode) {
+                  qtSetFpsMode(!qtFpsMode, qtFrameCount, "keyboard");
                 }
-                ui_runtime_state.status_message = qtFpsMode ? "fps camera mode" : "select camera mode";
-                PushUiEvent(ui_event_log,
-                            "viewport_camera_mode",
-                            "viewport",
-                            "keyboard",
-                            qtFrameCount,
-                            {},
-                            qtFpsMode ? "fps" : "select",
-                            ui_runtime_state.status_message);
-              } else if (key == 'C' || rawKey == 'C') {
+              } else if (qtFpsMode && (key == kQtKeySpace || rawKey == kQtKeySpace)) {
+                qtFpsPlayer.jump_queued = true;
+                qtUserCameraActive = true;
+              } else if (!qtFpsMode && (key == 'C' || rawKey == 'C')) {
                 qtPhysicsCollisionDetectionEnabled = !qtPhysicsCollisionDetectionEnabled;
                 qtPhysicsStepConfig.collision_detection_enabled = qtPhysicsCollisionDetectionEnabled;
                 qtDockPanelsDirty = true;
@@ -10838,7 +11688,11 @@ int main(int argc, char** argv) {
               } else if (!qtFpsMode && (key == 'G' || rawKey == 'G')) {
                 qtSetGizmoMode(vkpt::editor::GizmoMode::Universal, "keyboard", qtFrameCount);
               } else if (key == kQtKeyEscape || rawKey == 27) {
-                qtFpsMode = false;
+                if (qtSetFpsMode) {
+                  qtSetFpsMode(false, qtFrameCount, "keyboard");
+                } else {
+                  qtFpsMode = false;
+                }
                 ui_runtime_state.active_viewport_tool = vkpt::editor::ViewportTool::Select;
                 ui_runtime_state.active_gizmo_mode = vkpt::editor::GizmoMode::None;
                 qtHoveredGizmoHit = std::nullopt;
@@ -10858,6 +11712,15 @@ int main(int argc, char** argv) {
             case vkpt::platform::InputEventType::MouseButtonDown:
               qtLastMouseX = event.x;
               qtLastMouseY = event.y;
+              if (qtFpsMode) {
+                qtUserCameraActive = true;
+                qtLeftMouseDown = false;
+                qtRightMouseDown = false;
+                qtMiddleMouseDown = false;
+                qtPotentialClick = false;
+                qtGizmoDrag = {};
+                break;
+              }
               if (event.code == 0) {
                 qtUserCameraActive = true;
                 qtLeftMouseDown = true;
@@ -10911,6 +11774,14 @@ int main(int argc, char** argv) {
               }
               break;
             case vkpt::platform::InputEventType::MouseButtonUp:
+              if (qtFpsMode) {
+                qtLeftMouseDown = false;
+                qtRightMouseDown = false;
+                qtMiddleMouseDown = false;
+                qtPotentialClick = false;
+                qtGizmoDrag = {};
+                break;
+              }
               if (event.code == 0) {
                 qtLeftMouseDown = false;
                 if (qtGizmoDrag.active) {
@@ -10934,6 +11805,12 @@ int main(int argc, char** argv) {
             case vkpt::platform::InputEventType::MouseMove: {
               qtLastMouseX = event.x;
               qtLastMouseY = event.y;
+              if (qtFpsMode) {
+                qtUserCameraActive = true;
+                qtPendingFpsLookDx += event.delta_x;
+                qtPendingFpsLookDy += event.delta_y;
+                break;
+              }
               if (qtLeftMouseDown && qtGizmoDrag.active) {
                 qtApplyGizmoDrag(event.x, event.y, qtFrameCount);
                 qtClickDragPixels = std::max(qtClickDragPixels,
@@ -10943,7 +11820,7 @@ int main(int argc, char** argv) {
                 const float dy = event.y - qtClickY;
                 qtClickDragPixels = std::max(qtClickDragPixels, std::sqrt(dx * dx + dy * dy));
               }
-              if (qtRightMouseDown && !qtGizmoDrag.active) {
+              if ((qtRightMouseDown || qtFpsMode) && !qtGizmoDrag.active) {
                 qtUserCameraActive = true;
                 if (qtFpsMode) {
                   qtApplyFpsLookDelta(event.delta_x, event.delta_y);
@@ -10960,6 +11837,9 @@ int main(int argc, char** argv) {
               break;
             }
             case vkpt::platform::InputEventType::MouseWheel:
+              if (qtFpsMode) {
+                break;
+              }
               qtUserCameraActive = true;
               qtApplyDolly(event.delta_z);
               break;
@@ -10973,6 +11853,13 @@ int main(int argc, char** argv) {
               }
               break;
             case vkpt::platform::InputEventType::FocusLost:
+              if (qtSetFpsMode && qtFpsMode) {
+                qtSetFpsMode(false, qtFrameCount, "focus");
+              } else {
+                qtSetViewportMouseLocked(false);
+              }
+              qtPendingFpsLookDx = 0.0f;
+              qtPendingFpsLookDy = 0.0f;
               qtKeysDown.clear();
               qtLeftMouseDown = false;
               qtRightMouseDown = false;
@@ -11014,9 +11901,16 @@ int main(int argc, char** argv) {
                                          ui_event_log,
                                          ui_command_history);
         }
+        if (qtFpsMode &&
+            (std::fabs(qtPendingFpsLookDx) > 0.0f || std::fabs(qtPendingFpsLookDy) > 0.0f)) {
+          qtApplyFpsLookDelta(qtPendingFpsLookDx, qtPendingFpsLookDy);
+          qtPendingFpsLookDx = 0.0f;
+          qtPendingFpsLookDy = 0.0f;
+        }
         qtApplyContinuousFpsMovement(qtInputDt);
         qtApplyPhysicsSimulation(qtFrameStart);
         qtApplySceneAnimation(qtFrameStart);
+        qtApplyScriptPlayback(qtFrameStart, qtFrameCount, qtInputDt);
         updateQtSelectionOverlay();
 #endif
 

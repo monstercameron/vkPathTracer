@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-05-06 (session 27)
+
+### FPS-safe animated scene floor and scripting runtime dock
+
+- Enlarged the Animated Cube test scene floor and backdrop so FPS traversal has a much larger walkable surface.
+- Added a Qt Scripting dock beside the inspector group with runtime enable/play/pause/step/reload controls, lifecycle hook buttons, binding counts, dispatch stats, and recent script diagnostics.
+- Wired the Qt runtime panel to the no-Lua scripting runtime shell so script bindings can be inspected and lifecycle dispatches are reported even when script execution is unavailable.
+
 ## 2026-05-05 (session 26)
 
 ### glTF animation playback and animated test asset

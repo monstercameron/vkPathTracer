@@ -1757,6 +1757,27 @@ class QtViewportWindow final : public QWidget {
     applyViewportCursor();
   }
 
+  void setMouseLocked(bool locked) {
+    if (m_mouseLocked == locked) {
+      return;
+    }
+    m_mouseLocked = locked;
+    m_ignoreNextLockedMouseMove = false;
+    if (m_mouseLocked) {
+      setFocus(Qt::MouseFocusReason);
+      if (!m_mouseGrabbed) {
+        grabMouse();
+        m_mouseGrabbed = true;
+      }
+      m_forceClosedHandCursor = false;
+      centerLockedMouse();
+    } else if (m_mouseGrabbed && QGuiApplication::mouseButtons() == Qt::NoButton) {
+      releaseMouse();
+      m_mouseGrabbed = false;
+    }
+    applyViewportCursor();
+  }
+
   void clearFrameOnUiThread() {
     dropUnpresentedFrame();
     m_frame = QImage();
@@ -1995,6 +2016,23 @@ class QtViewportWindow final : public QWidget {
   void mouseMoveEvent(QMouseEvent* event) override {
     if (m_owner != nullptr) {
       const QPointF pos = event->position();
+      if (m_mouseLocked) {
+        const QPoint center = lockedMouseCenter();
+        const float dx = static_cast<float>(pos.x() - center.x());
+        const float dy = static_cast<float>(pos.y() - center.y());
+        if (m_ignoreNextLockedMouseMove && std::fabs(dx) < 0.5f && std::fabs(dy) < 0.5f) {
+          m_ignoreNextLockedMouseMove = false;
+          event->accept();
+          return;
+        }
+        m_ignoreNextLockedMouseMove = false;
+        if (std::fabs(dx) >= 0.5f || std::fabs(dy) >= 0.5f) {
+          m_owner->emit_mouse_move_delta(center.x(), center.y(), dx, dy);
+          centerLockedMouse();
+        }
+        event->accept();
+        return;
+      }
       m_owner->emit_mouse_move(static_cast<int>(pos.x()), static_cast<int>(pos.y()));
     }
     event->accept();
@@ -2006,7 +2044,7 @@ class QtViewportWindow final : public QWidget {
       grabMouse();
       m_mouseGrabbed = true;
     }
-    if (event->button() == Qt::RightButton || event->button() == Qt::MiddleButton) {
+    if (!m_mouseLocked && (event->button() == Qt::RightButton || event->button() == Qt::MiddleButton)) {
       m_forceClosedHandCursor = true;
       applyViewportCursor();
     }
@@ -2028,7 +2066,7 @@ class QtViewportWindow final : public QWidget {
                                  static_cast<int>(pos.x()),
                                  static_cast<int>(pos.y()));
     }
-    if (event->buttons() == Qt::NoButton) {
+    if (!m_mouseLocked && event->buttons() == Qt::NoButton) {
       releaseMouseGrab();
     }
     event->accept();
@@ -2055,16 +2093,34 @@ class QtViewportWindow final : public QWidget {
       releaseMouse();
       m_mouseGrabbed = false;
     }
+    m_mouseLocked = false;
+    m_ignoreNextLockedMouseMove = false;
     m_forceClosedHandCursor = false;
     applyViewportCursor();
   }
 
   void applyViewportCursor() {
+    if (m_mouseLocked) {
+      setCursor(Qt::BlankCursor);
+      return;
+    }
     if (m_forceClosedHandCursor) {
       setCursor(Qt::ClosedHandCursor);
       return;
     }
     setCursor(CursorForViewportCursor(m_viewportCursor));
+  }
+
+  QPoint lockedMouseCenter() const {
+    return QPoint(std::max(0, width() / 2), std::max(0, height() / 2));
+  }
+
+  void centerLockedMouse() {
+    if (!isVisible()) {
+      return;
+    }
+    m_ignoreNextLockedMouseMove = true;
+    QCursor::setPos(mapToGlobal(lockedMouseCenter()));
   }
 
   void dropUnpresentedFrame() {
@@ -2106,6 +2162,8 @@ class QtViewportWindow final : public QWidget {
   QtViewportCursor m_viewportCursor = QtViewportCursor::Default;
   bool m_dirty = false;
   bool m_mouseGrabbed = false;
+  bool m_mouseLocked = false;
+  bool m_ignoreNextLockedMouseMove = false;
   bool m_forceClosedHandCursor = false;
 };
 
@@ -2367,6 +2425,12 @@ void QtWindow::set_selection_overlay_boxes(const std::vector<QtSelectionOverlayB
 void QtWindow::set_viewport_cursor(QtViewportCursor cursor) {
   if (m_widget != nullptr) {
     static_cast<QtViewportWindow*>(m_widget)->setViewportCursor(cursor);
+  }
+}
+
+void QtWindow::set_viewport_mouse_locked(bool locked) {
+  if (m_widget != nullptr) {
+    static_cast<QtViewportWindow*>(m_widget)->setMouseLocked(locked);
   }
 }
 
@@ -2865,6 +2929,16 @@ void QtWindow::emit_mouse_move(int x, int y) {
       static_cast<float>(y),
       static_cast<float>(x - m_lastMouseX),
       static_cast<float>(y - m_lastMouseY)));
+  m_lastMouseX = x;
+  m_lastMouseY = y;
+}
+
+void QtWindow::emit_mouse_move_delta(int x, int y, float dx, float dy) {
+  queue_event(InputEventNormalizer::mouse_move(
+      static_cast<float>(x),
+      static_cast<float>(y),
+      dx,
+      dy));
   m_lastMouseX = x;
   m_lastMouseY = y;
 }
