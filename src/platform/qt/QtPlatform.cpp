@@ -72,6 +72,7 @@
 #include <QRectF>
 #include <QRegularExpression>
 #include <QResizeEvent>
+#include <QScrollBar>
 #include <QScreen>
 #include <QSettings>
 #include <QSizePolicy>
