@@ -178,6 +178,7 @@ MenuBar BuildDefaultMenuBar() {
   top.back().children.push_back(MenuItemNode("scene.animation_settings", "Animation Settings"));
 
   top.push_back(MenuItemNode("render", "Render"));
+  top.back().children.push_back(MenuItemNode("render.start_render", "Start Render..."));
   top.back().children.push_back(MenuItemNode("render.backend", "Backend"));
   top.back().children.push_back(MenuItemNode("render.renderer_path", "Renderer Path"));
   top.back().children.push_back(MenuItemNode("render.quality_presets", "Quality Presets"));

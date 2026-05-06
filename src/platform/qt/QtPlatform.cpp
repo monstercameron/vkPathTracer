@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <initializer_list>
 #include <limits>
 #include <memory>
@@ -30,11 +31,15 @@
 #include <QContextMenuEvent>
 #include <QCoreApplication>
 #include <QCursor>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QEventLoop>
+#include <QFileDialog>
 #include <QFocusEvent>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QFormLayout>
 #include <QGuiApplication>
 #include <QHeaderView>
 #include <QHBoxLayout>
@@ -79,6 +84,7 @@
 #include <QSizePolicy>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QString>
 #include <QStringList>

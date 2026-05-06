@@ -27,6 +27,16 @@ struct QtFramebufferStats {
   std::size_t latestPresentedHeight = 0;
 };
 
+struct QtRenderDialogSettings {
+  std::uint32_t width = 1920;
+  std::uint32_t height = 1080;
+  std::uint64_t max_rays = 67108864ull;
+  std::string aspect_ratio = "16:9";
+  std::string quality = "High";
+  std::string format = "png";
+  std::string output_path = "artifacts/renders/render.png";
+};
+
 struct QtSelectionOverlayBox {
   struct Line {
     float x0 = 0.0f;
@@ -197,6 +207,7 @@ class QtWindow final : public IWindow {
   void set_status_bar_text(const QtStatusBarText& status);
   void set_viewport_mouse_locked(bool locked);
   bool confirm_scene_replacement(std::string_view scene_path);
+  bool request_render_settings(QtRenderDialogSettings& settings);
 
   void set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba,
                             std::size_t width, std::size_t height);

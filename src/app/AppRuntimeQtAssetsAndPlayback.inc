@@ -454,6 +454,143 @@
         qtPreviewStatus = qtTracerReady ? std::string(reason) : "render settings reload failed";
         return qtTracerReady;
       };
+      std::string qtLastRenderMenuStatus;
+      auto qtStartRenderToFile = [&](uint32_t frame) {
+        qtLastRenderMenuStatus.clear();
+        if (qtWindow == nullptr) {
+          qtLastRenderMenuStatus = "Qt render dialog unavailable";
+          return false;
+        }
+        if (qtUseBg || !qtTracer) {
+          qtLastRenderMenuStatus = "start render requires the synchronous GPU preview renderer";
+          qtPreviewStatus = qtLastRenderMenuStatus;
+          return false;
+        }
+        if (!qtTracerReady) {
+          qtLastRenderMenuStatus = "renderer is not ready";
+          qtPreviewStatus = qtLastRenderMenuStatus;
+          return false;
+        }
+
+        vkpt::platform::QtRenderDialogSettings dialogSettings{};
+        dialogSettings.width = qtSettings.width;
+        dialogSettings.height = qtSettings.height;
+        dialogSettings.max_rays = std::max<std::uint64_t>(
+            1ull,
+            static_cast<std::uint64_t>(qtSettings.width) *
+                static_cast<std::uint64_t>(qtSettings.height) * 128ull);
+        dialogSettings.output_path = "artifacts/renders/render.png";
+        if (!qtWindow->request_render_settings(dialogSettings)) {
+          qtLastRenderMenuStatus = "start render canceled";
+          return false;
+        }
+
+        const std::uint64_t pixelCount =
+            std::max<std::uint64_t>(1ull,
+                                    static_cast<std::uint64_t>(dialogSettings.width) *
+                                        static_cast<std::uint64_t>(dialogSettings.height));
+        const std::uint64_t requestedSamples64 =
+            std::max<std::uint64_t>(1ull, (dialogSettings.max_rays + pixelCount - 1ull) / pixelCount);
+        const auto renderSamples = static_cast<std::uint32_t>(
+            std::min<std::uint64_t>(requestedSamples64, std::numeric_limits<std::uint32_t>::max()));
+
+        auto outputPath = std::filesystem::path(dialogSettings.output_path);
+        const std::string format = dialogSettings.format == "exr" ? "exr" : "png";
+        const std::string expectedExtension = "." + format;
+        if (outputPath.extension().string() != expectedExtension) {
+          outputPath.replace_extension(format);
+        }
+        const auto parent = outputPath.parent_path();
+        if (!parent.empty()) {
+          std::filesystem::create_directories(parent);
+        }
+
+        auto renderSettings = qtSettings;
+        const auto previousSettings = qtSettings;
+        renderSettings.width = dialogSettings.width;
+        renderSettings.height = dialogSettings.height;
+        renderSettings.spp = renderSamples;
+        if (dialogSettings.quality == "Draft") {
+          renderSettings.max_depth = std::min<std::uint32_t>(renderSettings.max_depth, 3u);
+          renderSettings.enable_denoiser = false;
+          renderSettings.enable_temporal_aa = false;
+        } else if (dialogSettings.quality == "Preview") {
+          renderSettings.max_depth = std::max<std::uint32_t>(4u, std::min<std::uint32_t>(renderSettings.max_depth, 5u));
+          renderSettings.enable_temporal_aa = false;
+        } else if (dialogSettings.quality == "Final") {
+          renderSettings.max_depth = std::max<std::uint32_t>(renderSettings.max_depth, 8u);
+          renderSettings.enable_denoiser = true;
+          renderSettings.enable_temporal_aa = true;
+        } else {
+          renderSettings.max_depth = std::max<std::uint32_t>(renderSettings.max_depth, 6u);
+          renderSettings.enable_denoiser = true;
+        }
+
+        qtPreviewStatus = "rendering still image";
+        qtWindow->set_status_bar_text("Rendering still image...");
+        qtTracerReady = qtTracer->configure(renderSettings) &&
+                        qtTracer->load_scene_snapshot(qtScene) &&
+                        qtTracer->build_or_update_acceleration() &&
+                        qtTracer->reset_accumulation();
+        if (!qtTracerReady) {
+          qtSettings = previousSettings;
+          qtReloadRenderSettings("render restore after failed still setup");
+          qtLastRenderMenuStatus = "still render setup failed";
+          return false;
+        }
+
+        bool rendered = true;
+        for (std::uint32_t sample = 0u; sample < renderSamples; ++sample) {
+          if (!qtTracer->render_sample_batch(0, renderSettings.height, sample, frame)) {
+            rendered = false;
+            qtLastRenderMenuStatus = "still render sample failed";
+            break;
+          }
+
+          const bool publishFrame = sample < 4u || ((sample + 1u) % 4u) == 0u || (sample + 1u) == renderSamples;
+          if (publishFrame) {
+            auto ldr = qtTracer->resolve_ldr();
+            qtPublishedSample.store(sample + 1u, std::memory_order_relaxed);
+            qtPublishedWidth.store(ldr.width, std::memory_order_relaxed);
+            qtPublishedHeight.store(ldr.height, std::memory_order_relaxed);
+            qtPublishedRays.store(qtTracer->read_counters().rays, std::memory_order_relaxed);
+            qtWindow->set_framebuffer_rgba(std::move(ldr.rgba8), ldr.width, ldr.height);
+            qtPublishedFrames.fetch_add(1u, std::memory_order_relaxed);
+            qtWindow->set_status_bar_text("Rendering still image " +
+                                          std::to_string(sample + 1u) + "/" +
+                                          std::to_string(renderSamples) + " spp");
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 2);
+            if (!window->is_open()) {
+              rendered = false;
+              qtLastRenderMenuStatus = "window closed during still render";
+              break;
+            }
+          }
+        }
+
+        if (rendered) {
+          std::string saveError;
+          const auto ldr = qtTracer->resolve_ldr();
+          const auto hdr = qtTracer->resolve_hdr();
+          if (format == "exr") {
+            rendered = vkpt::pathtracer::SaveExrCompat(outputPath.string(), hdr, &saveError);
+          } else {
+            rendered = vkpt::pathtracer::SavePngCompat(outputPath.string(), ldr, &saveError);
+          }
+          if (!rendered) {
+            qtLastRenderMenuStatus = "still render save failed: " + saveError;
+          } else {
+            qtLastRenderMenuStatus = "still render saved: " + outputPath.string();
+          }
+        }
+
+        qtSettings = previousSettings;
+        qtReloadRenderSettings(rendered ? "still render complete" : "still render failed");
+        qtDockPanelsDirty = true;
+        qtPreviewStatus = qtLastRenderMenuStatus;
+        qtWindow->set_status_bar_text(qtLastRenderMenuStatus);
+        return rendered;
+      };
       auto qtReloadCameraSettings =
           [&](vkpt::core::StableId entityId,
               std::string_view reason,

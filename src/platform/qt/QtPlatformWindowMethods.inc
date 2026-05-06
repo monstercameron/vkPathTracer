@@ -269,6 +269,169 @@ bool QtWindow::confirm_scene_replacement(std::string_view scene_path) {
   return dialog.exec() == QMessageBox::Open;
 }
 
+bool QtWindow::request_render_settings(QtRenderDialogSettings& settings) {
+  if (m_shell == nullptr) {
+    return false;
+  }
+
+  QDialog dialog(static_cast<QWidget*>(m_shell));
+  dialog.setWindowTitle(QStringLiteral("Start Render"));
+  dialog.setModal(true);
+
+  auto* layout = new QVBoxLayout(&dialog);
+  auto* form = new QFormLayout();
+
+  auto* width = new QSpinBox(&dialog);
+  width->setRange(16, 16384);
+  width->setSingleStep(64);
+  width->setValue(static_cast<int>(settings.width));
+
+  auto* height = new QSpinBox(&dialog);
+  height->setRange(16, 16384);
+  height->setSingleStep(64);
+  height->setValue(static_cast<int>(settings.height));
+
+  auto* aspect = new QComboBox(&dialog);
+  aspect->addItems(QStringList{QStringLiteral("16:9"),
+                               QStringLiteral("4:3"),
+                               QStringLiteral("3:2"),
+                               QStringLiteral("1:1"),
+                               QStringLiteral("21:9"),
+                               QStringLiteral("Custom")});
+  const int aspectIndex = aspect->findText(ToQString(settings.aspect_ratio));
+  aspect->setCurrentIndex(aspectIndex >= 0 ? aspectIndex : 0);
+
+  auto* quality = new QComboBox(&dialog);
+  quality->addItems(QStringList{QStringLiteral("Draft"),
+                                QStringLiteral("Preview"),
+                                QStringLiteral("High"),
+                                QStringLiteral("Final")});
+  const int qualityIndex = quality->findText(ToQString(settings.quality));
+  quality->setCurrentIndex(qualityIndex >= 0 ? qualityIndex : 2);
+
+  auto* format = new QComboBox(&dialog);
+  format->addItems(QStringList{QStringLiteral("png"), QStringLiteral("exr")});
+  const int formatIndex = format->findText(ToQString(settings.format));
+  format->setCurrentIndex(formatIndex >= 0 ? formatIndex : 0);
+
+  auto* maxRays = new QLineEdit(ToQString(std::to_string(settings.max_rays)), &dialog);
+  maxRays->setPlaceholderText(QStringLiteral("67108864"));
+
+  auto* outputRow = new QWidget(&dialog);
+  auto* outputLayout = new QHBoxLayout(outputRow);
+  outputLayout->setContentsMargins(0, 0, 0, 0);
+  auto* outputPath = new QLineEdit(ToQString(settings.output_path), outputRow);
+  auto* browse = new QPushButton(QStringLiteral("Browse..."), outputRow);
+  outputLayout->addWidget(outputPath, 1);
+  outputLayout->addWidget(browse);
+
+  const auto applyAspect = [&]() {
+    const QString ratio = aspect->currentText();
+    if (ratio == QStringLiteral("Custom")) {
+      return;
+    }
+    const auto parts = ratio.split(QStringLiteral(":"));
+    if (parts.size() != 2) {
+      return;
+    }
+    bool okA = false;
+    bool okB = false;
+    const double a = parts[0].toDouble(&okA);
+    const double b = parts[1].toDouble(&okB);
+    if (!okA || !okB || a <= 0.0 || b <= 0.0) {
+      return;
+    }
+    const int adjustedHeight = std::clamp(
+        static_cast<int>(std::lround(static_cast<double>(width->value()) * b / a)),
+        height->minimum(),
+        height->maximum());
+    const QSignalBlocker blocker(height);
+    height->setValue(adjustedHeight);
+  };
+
+  const auto applyQualityRays = [&]() {
+    const QString q = quality->currentText();
+    const std::uint64_t pixels =
+        static_cast<std::uint64_t>(width->value()) * static_cast<std::uint64_t>(height->value());
+    std::uint64_t samples = 128ull;
+    if (q == QStringLiteral("Draft")) {
+      samples = 8ull;
+    } else if (q == QStringLiteral("Preview")) {
+      samples = 32ull;
+    } else if (q == QStringLiteral("Final")) {
+      samples = 256ull;
+    }
+    maxRays->setText(ToQString(std::to_string(std::max<std::uint64_t>(pixels, pixels * samples))));
+  };
+
+  const auto normalizedOutputWithFormat = [&]() {
+    std::filesystem::path path(outputPath->text().toStdString());
+    const auto extension = path.extension().string();
+    if (extension.empty() || extension == ".png" || extension == ".exr") {
+      path.replace_extension(format->currentText().toStdString());
+      outputPath->setText(ToQString(path.string()));
+    }
+  };
+
+  QObject::connect(width, qOverload<int>(&QSpinBox::valueChanged), &dialog, applyAspect);
+  QObject::connect(aspect, &QComboBox::currentTextChanged, &dialog, applyAspect);
+  QObject::connect(quality, &QComboBox::currentTextChanged, &dialog, applyQualityRays);
+  QObject::connect(format, &QComboBox::currentTextChanged, &dialog, normalizedOutputWithFormat);
+  QObject::connect(browse, &QPushButton::clicked, &dialog, [&]() {
+    const QString filter = format->currentText() == QStringLiteral("exr")
+        ? QStringLiteral("OpenEXR (*.exr)")
+        : QStringLiteral("PNG Image (*.png)");
+    const QString selected = QFileDialog::getSaveFileName(&dialog,
+                                                          QStringLiteral("Save Render"),
+                                                          outputPath->text(),
+                                                          filter);
+    if (!selected.isEmpty()) {
+      outputPath->setText(selected);
+    }
+  });
+
+  form->addRow(QStringLiteral("Width"), width);
+  form->addRow(QStringLiteral("Height"), height);
+  form->addRow(QStringLiteral("Aspect Ratio"), aspect);
+  form->addRow(QStringLiteral("Image Quality"), quality);
+  form->addRow(QStringLiteral("Image Format"), format);
+  form->addRow(QStringLiteral("Max Rays"), maxRays);
+  form->addRow(QStringLiteral("File Path"), outputRow);
+  layout->addLayout(form);
+
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Ok, &dialog);
+  buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Render"));
+  layout->addWidget(buttons);
+
+  QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+    bool raysOk = false;
+    const auto rays = maxRays->text().trimmed().toULongLong(&raysOk);
+    if (!raysOk || rays == 0ull) {
+      QMessageBox::warning(&dialog,
+                           QStringLiteral("Start Render"),
+                           QStringLiteral("Max rays must be a positive integer."));
+      return;
+    }
+    if (outputPath->text().trimmed().isEmpty()) {
+      QMessageBox::warning(&dialog,
+                           QStringLiteral("Start Render"),
+                           QStringLiteral("Choose a file path for the render."));
+      return;
+    }
+    settings.width = static_cast<std::uint32_t>(width->value());
+    settings.height = static_cast<std::uint32_t>(height->value());
+    settings.max_rays = static_cast<std::uint64_t>(rays);
+    settings.aspect_ratio = aspect->currentText().toStdString();
+    settings.quality = quality->currentText().toStdString();
+    settings.format = format->currentText().toStdString();
+    settings.output_path = outputPath->text().trimmed().toStdString();
+    dialog.accept();
+  });
+
+  return dialog.exec() == QDialog::Accepted;
+}
+
 void QtWindow::set_menu_bar(const std::vector<QtMenuItem>& menus) {
   if (m_shell == nullptr) {
     return;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -52,6 +53,48 @@ std::uint64_t BenchmarkActionNowMs() {
       duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
 }
 
+std::string ReadProcessEnv(std::string_view name) {
+  const std::string key(name);
+#if defined(_WIN32)
+  char* valueBuffer = nullptr;
+  size_t valueLength = 0u;
+  if (_dupenv_s(&valueBuffer, &valueLength, key.c_str()) == 0 && valueBuffer != nullptr) {
+    std::string value(valueBuffer, valueLength > 0u ? valueLength - 1u : 0u);
+    std::free(valueBuffer);
+    return value;
+  }
+  return {};
+#else
+  const char* value = std::getenv(key.c_str());
+  return value == nullptr ? std::string{} : std::string(value);
+#endif
+}
+
+bool ParseEnvBool(std::string_view name, bool fallback) {
+  std::string value = ReadProcessEnv(name);
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (value == "1" || value == "true" || value == "yes" || value == "on") {
+    return true;
+  }
+  if (value == "0" || value == "false" || value == "no" || value == "off") {
+    return false;
+  }
+  return fallback;
+}
+
+vkpt::render::AcceleratorSelectionPreset ParseAcceleratorPresetFromEnv() {
+  std::string value = ReadProcessEnv("PT_D3D12_ACCELERATOR_PRESET");
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (value == "high-performance" || value == "high_performance" || value == "all") {
+    return vkpt::render::AcceleratorSelectionPreset::HighPerformance;
+  }
+  return vkpt::render::AcceleratorSelectionPreset::Auto;
+}
+
 }  // namespace
 
 
@@ -85,7 +128,10 @@ void PrintBackendDiagnostics() {
 
 void PrintAcceleratorDiagnostics(uint32_t width, uint32_t height) {
   std::cout << "accelerators:\n";
-  const auto accelerators = vkpt::render::EnumerateD3D12Accelerators(true, true);
+  const bool includeCpu = ParseEnvBool("PT_D3D12_INCLUDE_CPU", true);
+  const bool includeIntegratedGpu = ParseEnvBool("PT_D3D12_INCLUDE_INTEGRATED_GPU", true);
+  const bool includeWarp = ParseEnvBool("PT_D3D12_INCLUDE_WARP", true);
+  const auto accelerators = vkpt::render::EnumerateD3D12Accelerators(includeCpu, includeWarp);
   if (accelerators.empty()) {
     std::cout << "  (none)\n";
   } else {
@@ -102,9 +148,9 @@ void PrintAcceleratorDiagnostics(uint32_t width, uint32_t height) {
   request.polygon_frame_budget_ms = 16.6667;
   request.reserved_polygon_ms = 5.0;
   request.merge_budget_ms = 1.0;
-  request.include_cpu = true;
-  request.include_integrated_gpu = true;
-  request.include_warp = false;
+  request.include_cpu = includeCpu;
+  request.include_integrated_gpu = includeIntegratedGpu;
+  request.include_warp = includeWarp;
   request.require_ray_tracing = false;
   const auto printPlan = [](std::string_view label, const vkpt::render::RayBudgetRequest& planRequest) {
     const auto plan = vkpt::render::BuildD3D12RayBudgetPlan(planRequest);
@@ -114,8 +160,8 @@ void PrintAcceleratorDiagnostics(uint32_t width, uint32_t height) {
   };
   request.accelerator_preset = vkpt::render::AcceleratorSelectionPreset::Auto;
   printPlan("auto", request);
-  request.accelerator_preset = vkpt::render::AcceleratorSelectionPreset::HighPerformance;
-  printPlan("high-performance", request);
+  request.accelerator_preset = ParseAcceleratorPresetFromEnv();
+  printPlan(std::string(vkpt::render::AcceleratorSelectionPresetToString(request.accelerator_preset)), request);
 }
 
 

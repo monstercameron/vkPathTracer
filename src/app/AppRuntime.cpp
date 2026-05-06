@@ -52,6 +52,7 @@
 #include "diagnostics/CrashHooks.h"
 #include "diagnostics/CrashRecorder.h"
 #include "diagnostics/StatusFile.h"
+#include "pathtracer/ImageIo.h"
 #include "pathtracer/PathTracer.h"
 #include "cpu/TiledCpuPathTracer.h"
 #ifdef PT_ENABLE_VULKAN
