@@ -106,6 +106,7 @@ struct FpsMovementResult {
   FpsPlayerState player{};
   bool pose_changed = false;
   bool state_changed = false;
+  double solve_ms = 0.0;
 };
 
 class FpsCollisionWorker final {

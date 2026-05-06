@@ -23,10 +23,10 @@
       const float qtFpsRadius = 0.32f * qtFpsUnitScale;
       const float qtFpsStepHeight = 0.38f * qtFpsUnitScale;
       const float qtFpsSkin = 0.03f * qtFpsUnitScale;
-      const float qtFpsWalkSpeed = ClampFloat(qtCameraMoveUnitsPerSecond * 0.45f,
+      const float qtFpsWalkSpeed = ClampFloat(qtCameraMoveUnitsPerSecond,
                                               1.45f * qtFpsUnitScale,
-                                              4.25f * qtFpsUnitScale);
-      const float qtFpsRunSpeed = qtFpsWalkSpeed * 1.65f;
+                                              6.5f * qtFpsUnitScale);
+      const float qtFpsRunSpeed = qtFpsWalkSpeed * 2.5f;
       const float qtFpsCrouchSpeed = qtFpsWalkSpeed * 0.45f;
       const float qtFpsAirControlScale = 0.45f;
       const float qtFpsGravity = 18.0f * qtFpsUnitScale;
@@ -253,6 +253,21 @@
         }
 
         if (auto result = qtFpsCollisionWorker.take_latest_result()) {
+          const auto now = std::chrono::steady_clock::now();
+          if (result->solve_ms > 4.0 &&
+              (qtLastFpsSlowLog == std::chrono::steady_clock::time_point{} ||
+               now - qtLastFpsSlowLog > std::chrono::seconds(1))) {
+            logger.log(vkpt::log::Severity::Warning,
+                       "viewport",
+                       "slow fps movement solve",
+                       {
+                           {"stack", "qtApplyContinuousFpsMovement -> FpsCollisionWorker::run -> SolveFpsMovement -> TraceFpsBodyWallWithProbeHeights/TraceFpsGround"},
+                           {"solve_ms", std::to_string(result->solve_ms)},
+                           {"pickables", std::to_string(qtPickables.size())},
+                           {"sequence", std::to_string(result->sequence)}
+                       });
+            qtLastFpsSlowLog = now;
+          }
           const bool freshCollision = result->collision_revision ==
               qtFpsCollisionWorker.collision_revision();
           const bool freshSequence = result->sequence > qtFpsAppliedMoveSequence;

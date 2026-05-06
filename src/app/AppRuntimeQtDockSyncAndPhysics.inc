@@ -251,7 +251,7 @@
       };
       vkpt::physics::PhysicsStepConfig qtPhysicsStepConfig;
       qtPhysicsStepConfig.fixed_dt = 1.0f / 60.0f;
-      qtPhysicsStepConfig.collision_steps = 6;
+      qtPhysicsStepConfig.collision_steps = 2;
       qtPhysicsStepConfig.deterministic = true;
       bool qtPhysicsCollisionDetectionEnabled = true;
       float qtPhysicsAccumulatorSeconds = 0.0f;
@@ -269,6 +269,7 @@
       };
       std::unordered_map<vkpt::core::StableId, QtPhysicsRenderPose> qtPhysicsRenderPoses;
       double qtPhysicsSceneReloadMs = 0.0;
+      auto qtLastPhysicsSlowLog = std::chrono::steady_clock::time_point{};
       auto qtLerpSceneVec3 = [](const vkpt::scene::Vec3& lhs,
                                 const vkpt::scene::Vec3& rhs,
                                 float alpha) {
@@ -337,8 +338,7 @@
       auto qtPhysicsPublishInterval = [&](bool cameraRecentlyActive) {
         if (qtPhysicsTransformUpdateSupported) {
           (void)cameraRecentlyActive;
-          return qtUseBg ? std::chrono::milliseconds(33)
-                         : std::chrono::milliseconds(16);
+          return std::chrono::milliseconds(16);
         }
         if (cameraRecentlyActive) {
           const double targetMs = qtPhysicsSceneReloadMs > 0.0
@@ -451,11 +451,16 @@
 
         bool stepped = false;
         int steps = 0;
+        double physicsStepMs = 0.0;
         constexpr int kMaxPhysicsStepsPerUiFrame = 4;
         qtPhysicsStepConfig.collision_detection_enabled = qtPhysicsCollisionDetectionEnabled;
         while (qtPhysicsAccumulatorSeconds >= qtPhysicsStepConfig.fixed_dt &&
                steps < kMaxPhysicsStepsPerUiFrame) {
+          const auto stepStart = std::chrono::steady_clock::now();
           const auto stepResult = qtPhysics->step_fixed(qtPhysicsStepConfig);
+          physicsStepMs += std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - stepStart)
+                               .count();
           if (!stepResult) {
             qtPreviewStatus = "physics step failed";
             ui_runtime_state.status_message = "physics step failed";
@@ -482,6 +487,12 @@
 
         if (stepped) {
           bool sceneChanged = false;
+          double physicsExtractMs = 0.0;
+          const auto extractStart = std::chrono::steady_clock::now();
+          const auto physicsWrites = qtPhysics->extract_transform_writes();
+          physicsExtractMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - extractStart)
+                                 .count();
           std::optional<vkpt::scene::SceneWorld> preWriteWorldSnapshot;
           auto preWriteWorldFor = [&](const vkpt::scene::SceneEntityDefinition& entity)
               -> const vkpt::scene::SceneWorld* {
@@ -493,7 +504,7 @@
             }
             return preWriteWorldSnapshot ? &preWriteWorldSnapshot.value() : nullptr;
           };
-          for (const auto& write : qtPhysics->extract_transform_writes()) {
+          for (const auto& write : physicsWrites) {
             auto* entity = qtFindEntity(write.entity);
             if (entity == nullptr) {
               continue;
@@ -575,6 +586,23 @@
             qtPhysicsTransformUpdateSupported = false;
             qtPreviewStatus = "physics transform update blocked";
             ui_runtime_state.status_message = "physics transform update blocked";
+          }
+          const auto slowNow = std::chrono::steady_clock::now();
+          if ((physicsStepMs > 4.0 || physicsExtractMs > 2.0 || physicsWrites.size() > 64u) &&
+              (qtLastPhysicsSlowLog == std::chrono::steady_clock::time_point{} ||
+               slowNow - qtLastPhysicsSlowLog > std::chrono::seconds(1))) {
+            logger.log(vkpt::log::Severity::Warning,
+                       "physics",
+                       "slow qt physics simulation slice",
+                       {
+                           {"stack", "qtApplyPhysicsSimulation -> ThreadedPhysicsWorld::step_fixed/extract_transform_writes -> qtPublishInstanceTransformUpdates"},
+                           {"steps", std::to_string(steps)},
+                           {"step_ms", std::to_string(physicsStepMs)},
+                           {"extract_ms", std::to_string(physicsExtractMs)},
+                           {"writes", std::to_string(physicsWrites.size())},
+                           {"collision_steps", std::to_string(qtPhysicsStepConfig.collision_steps)}
+                       });
+            qtLastPhysicsSlowLog = slowNow;
           }
         }
       };
