@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <thread>
+#include <utility>
 
 namespace vkpt::cpu {
 
@@ -68,6 +69,8 @@ bool TiledCpuPathTracer::load_scene_snapshot(const vkpt::pathtracer::RTSceneData
 bool TiledCpuPathTracer::build_or_update_acceleration() {
   const bool deterministic = m_config.deterministic || m_settings.deterministic;
   if (m_externalAccelerator) {
+    // External accelerators are rebuilt in place so callers can own lifetime
+    // while tiles still receive the same shared ICpuRayKernel pointer.
     m_sharedAccelerator.reset();
     if (!m_externalAccelerator->build(m_scene, deterministic)) {
       m_bvhStats = {};
@@ -75,6 +78,8 @@ bool TiledCpuPathTracer::build_or_update_acceleration() {
     }
     m_bvhStats = to_bvh_build_stats(m_externalAccelerator->build_info(), worker_count());
   } else {
+    // Default path: create one BVH accelerator and share it across all tile
+    // tracers instead of rebuilding a per-tile copy.
     m_sharedAccelerator = vkpt::pathtracer::CreateCpuBvhAccelerator();
     if (!m_sharedAccelerator || !m_sharedAccelerator->build(m_scene, deterministic)) {
       m_sharedAccelerator.reset();
@@ -84,7 +89,8 @@ bool TiledCpuPathTracer::build_or_update_acceleration() {
     m_bvhStats = to_bvh_build_stats(m_sharedAccelerator->build_info(), worker_count());
   }
 
-  // Initialize tile tracers
+  // Recreate tile tracers after acceleration changes so each tile sees the
+  // current scene snapshot, camera, and accelerator pointer.
   init_tile_tracers();
   return m_initialized;
 }
@@ -105,13 +111,17 @@ void TiledCpuPathTracer::init_tile_tracers() {
     m_tiles[i].start_y = start_y;
     m_tiles[i].end_y = end_y;
 
-    m_tiles[i].tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+    auto tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+    m_tiles[i].kernel = tracer.get();
+    m_tiles[i].tracer = std::move(tracer);
     auto tileSettings = m_settings;
+    // Tile-local deterministic settings make repeated tiled runs stable even
+    // when worker scheduling changes.
     tileSettings.deterministic = true;
     initialized = m_tiles[i].tracer->configure(tileSettings) && initialized;
     if (activeAccelerator) {
-      if (auto* kernel = dynamic_cast<vkpt::pathtracer::ICpuRayKernel*>(m_tiles[i].tracer.get())) {
-        initialized = kernel->set_accelerator(activeAccelerator) && initialized;
+      if (m_tiles[i].kernel != nullptr) {
+        initialized = m_tiles[i].kernel->set_accelerator(activeAccelerator) && initialized;
       } else {
         initialized = false;
       }
@@ -151,8 +161,7 @@ bool TiledCpuPathTracer::set_accelerator(vkpt::pathtracer::IRayAccelerator* acce
     if (!tile.tracer) {
       continue;
     }
-    auto* kernel = dynamic_cast<vkpt::pathtracer::ICpuRayKernel*>(tile.tracer.get());
-    applied = kernel != nullptr && kernel->set_accelerator(activeAccelerator) && applied;
+    applied = tile.kernel != nullptr && tile.kernel->set_accelerator(activeAccelerator) && applied;
   }
   return applied;
 }
@@ -184,8 +193,8 @@ bool TiledCpuPathTracer::update_camera_state(const vkpt::pathtracer::RTCameraSta
       bool tileOk = false;
       const bool loaded = tile.tracer->load_scene_snapshot(m_scene);
       if (loaded && activeAccelerator) {
-        if (auto* kernel = dynamic_cast<vkpt::pathtracer::ICpuRayKernel*>(tile.tracer.get())) {
-          tileOk = kernel->set_accelerator(activeAccelerator) &&
+        if (tile.kernel != nullptr) {
+          tileOk = tile.kernel->set_accelerator(activeAccelerator) &&
                    tile.tracer->update_camera_state(camera);
         }
       } else if (loaded) {
@@ -234,8 +243,8 @@ bool TiledCpuPathTracer::update_instance_transforms(
     }
     bool tileOk = tile.tracer->load_scene_snapshot(m_scene);
     if (tileOk && activeAccelerator) {
-      if (auto* kernel = dynamic_cast<vkpt::pathtracer::ICpuRayKernel*>(tile.tracer.get())) {
-        tileOk = kernel->set_accelerator(activeAccelerator);
+      if (tile.kernel != nullptr) {
+        tileOk = tile.kernel->set_accelerator(activeAccelerator);
       } else {
         tileOk = false;
       }
@@ -243,6 +252,28 @@ bool TiledCpuPathTracer::update_instance_transforms(
       tileOk = tile.tracer->build_or_update_acceleration();
     }
     ok = tileOk && ok;
+  }
+  return ok;
+}
+
+bool TiledCpuPathTracer::update_scene_delta(
+    const vkpt::pathtracer::RTSceneDeltaUpdate& update) {
+  if (!m_initialized) {
+    return false;
+  }
+  auto nextScene = m_scene;
+  if (!vkpt::pathtracer::ApplySceneDeltaUpdate(nextScene, update)) {
+    return false;
+  }
+  bool ok = true;
+  for (auto& tile : m_tiles) {
+    if (!tile.tracer) {
+      continue;
+    }
+    ok = tile.tracer->update_scene_delta(update) && ok;
+  }
+  if (ok) {
+    m_scene = std::move(nextScene);
   }
   return ok;
 }
@@ -272,7 +303,7 @@ bool TiledCpuPathTracer::render_sample_batch_cancellable(
   handles.reserve(m_tiles.size());
 
   for (auto& tile : m_tiles) {
-    // Only render tile rows that overlap [start_y, end_y)
+    // Only render tile rows that overlap [start_y, end_y).
     const uint32_t tile_start = std::max(tile.start_y, start_y);
     const uint32_t tile_end = std::min(tile.end_y, end_y);
     if (tile_start >= tile_end) {
@@ -301,6 +332,8 @@ void TiledCpuPathTracer::merge_tiles() {
       continue;
     }
     m_film.import_tile(tile.tracer->film(), tile.start_y, tile.end_y);
+    // Counters are reduced after all jobs finish; tile tracers never mutate
+    // the aggregate counters directly.
     const auto tc = tile.tracer->read_counters();
     m_counters.samples += tc.samples;
     m_counters.rays += tc.rays;

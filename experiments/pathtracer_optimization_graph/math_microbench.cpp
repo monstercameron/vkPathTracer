@@ -3,11 +3,13 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -347,6 +349,8 @@ std::vector<Aabb> make_aabbs(std::size_t count) {
 
 template <typename Fn>
 double time_ms(Fn&& fn, int repeats = 1) {
+  // Use the best repeat as the timing signal while checksums keep each loop
+  // observable and catch candidates that drift from the reference contract.
   double best = std::numeric_limits<double>::infinity();
   for (int r = 0; r < repeats; ++r) {
     const auto start = std::chrono::steady_clock::now();
@@ -409,6 +413,8 @@ std::string serialize_json(const std::vector<EdgeResult>& rows) {
 }
 
 void finalize(EdgeResult& row) {
+  // Edges are only promoted when they clear both the accuracy gate and a small
+  // speedup margin; this avoids encoding noise from the standalone runner.
   row.speedup = row.candidate_ms > 0.0 ? row.baseline_ms / row.candidate_ms : 0.0;
   if (!row.accuracy_pass) {
     row.decision = "reject_accuracy";
@@ -421,7 +427,7 @@ void finalize(EdgeResult& row) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int RunMicrobench(int argc, char** argv) {
   std::filesystem::path output = "microbench_results.json";
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
@@ -435,6 +441,8 @@ int main(int argc, char** argv) {
   constexpr std::size_t kRayCount = 4096u;
   constexpr std::size_t kPairs = 1u << 21u;
 
+  // Deterministic fixtures let graph runs compare algorithm variants without
+  // result churn from input generation or platform RNG differences.
   const auto vectors = make_vectors(kVecCount);
   const auto triangles = make_triangles(kTriCount);
   const auto cached_triangles = cache_triangles(triangles);
@@ -721,12 +729,23 @@ int main(int argc, char** argv) {
     row.accuracy_pass = row.max_abs_error <= 2.0e-3;
     finalize(row);
     if (row.decision == "take_candidate") {
+      // RNG speed alone is not enough: callers also depend on statistical and
+      // reproducibility contracts, so the graph records this as a follow-up.
       row.decision = "candidate_requires_rng_contract_update";
     }
     rows.push_back(row);
   }
 
-  std::filesystem::create_directories(output.parent_path());
+  const auto output_parent = output.parent_path();
+  if (!output_parent.empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(output_parent, ec);
+    if (ec) {
+      std::cerr << "failed to create output directory: "
+                << output_parent.string() << ": " << ec.message() << "\n";
+      return 2;
+    }
+  }
   std::ofstream file(output);
   if (!file.is_open()) {
     std::cerr << "failed to open output: " << output.string() << "\n";
@@ -741,3 +760,15 @@ int main(int argc, char** argv) {
   return 0;
 }
 
+int main(int argc, char** argv) {
+  try {
+    return RunMicrobench(argc, argv);
+  } catch (const std::bad_alloc& ex) {
+    std::cerr << "math microbench: out of memory: " << ex.what() << "\n";
+  } catch (const std::exception& ex) {
+    std::cerr << "math microbench: unhandled exception: " << ex.what() << "\n";
+  } catch (...) {
+    std::cerr << "math microbench: unhandled non-standard exception\n";
+  }
+  return 1;
+}

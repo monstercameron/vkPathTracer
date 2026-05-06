@@ -573,6 +573,7 @@ add_executable(ptapp
   src/app/AppOptions.cpp
   src/app/AppRuntime.cpp
   src/app/AppRuntimeSupport.cpp
+  src/cpu/BvhTriangleIntersector.cpp
   ${PT_CPU_SOURCES}
 )
 
@@ -644,6 +645,7 @@ add_executable(ptbench
   src/benchmark/BenchmarkTraceProfiler.cpp
   src/benchmark/BenchmarkSchema.cpp
   src/benchmark/BenchmarkSchemaCapabilities.cpp
+  src/cpu/BvhTriangleIntersector.cpp
   ${PT_CPU_SOURCES}
 )
 

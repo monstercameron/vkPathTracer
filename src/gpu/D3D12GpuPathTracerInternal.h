@@ -18,10 +18,13 @@ namespace vkpt::gpu {
 inline constexpr UINT kPathTraceRoot32BitValues =
     static_cast<UINT>(sizeof(PathTraceConstants) / sizeof(uint32_t));
 inline constexpr uint32_t kGpuSdfStrideFloats = 16u;
+/// Packed triangle record consumed by compute and DXR shaders: v0, edges,
+/// material/double-sided flags, and per-vertex UVs.
 inline constexpr uint32_t kGpuTriDataStrideFloats = 18u;
 inline constexpr uint32_t kDxrStaticInstanceId = 0x00ffffffu;
 inline constexpr uint32_t kInvalidTextureIndex = 0xffffffffu;
 inline constexpr uint32_t kMaxTextureDimension = 512u;
+/// Instance buffer stride in uint32_t words, including transform payload slots.
 inline constexpr uint32_t kGpuInstanceStrideU32 = 24u;
 
 inline D3D12_HEAP_PROPERTIES MakeHeapProperties(D3D12_HEAP_TYPE type) noexcept {
@@ -100,7 +103,9 @@ uint64_t EstimateLogicalRaysPerD3D12Sample(const vkpt::pathtracer::RenderSetting
                                            bool usingDxrDispatch);
 D3D12_UNORDERED_ACCESS_VIEW_DESC MakeRawBufferUavDesc(UINT64 byteSize);
 D3D12TemporalCameraState MakeTemporalCameraState(const PathTraceConstants& pc);
+/// Writes the previous camera block used by temporal reprojection shaders.
 void FillPreviousCameraConstants(PathTraceConstants& pc, const D3D12TemporalCameraState& state);
+/// Creates a full-resource transition barrier for buffer resources.
 D3D12_RESOURCE_BARRIER MakeTransitionBarrier(ID3D12Resource* resource,
                                              D3D12_RESOURCE_STATES before,
                                              D3D12_RESOURCE_STATES after);

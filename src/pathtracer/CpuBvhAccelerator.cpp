@@ -1,5 +1,7 @@
 #include "pathtracer/RayAccelerator.h"
 
+#include "cpu/BvhTriangleIntersector.h"
+#include "cpu/CpuFeatures.h"
 #include "cpu/ParallelBvhBuilder.h"
 
 #include <algorithm>
@@ -72,6 +74,9 @@ bool intersect_aabb(const vkpt::cpu::BvhAabb& aabb,
                     const RayAabbQuery& ray,
                     float max_t,
                     float& t_near) {
+  // Slab intersection with precomputed reciprocal direction. max_t is the
+  // current closest triangle hit, so whole subtrees beyond that distance can be
+  // rejected before visiting leaves.
   float t_min = kEpsilon;
   float t_max = max_t;
   for (std::size_t axis = 0; axis < 3u; ++axis) {
@@ -98,12 +103,24 @@ bool intersect_aabb(const vkpt::cpu::BvhAabb& aabb,
 
 class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
  public:
+  CpuBvhAccelerator()
+      : m_triangle_intersector(vkpt::cpu::SelectBvhTriangleIntersectorMode(vkpt::cpu::QueryCpuFeatures())) {}
+
   bool build(const vkpt::pathtracer::RTSceneData& scene, bool deterministic) override {
     reset();
-    m_vertices = scene.vertices;
     m_info.deterministic = deterministic;
+    const auto& vertices = scene.vertices;
 
+    std::size_t triangle_capacity = 0u;
+    for (const auto& instance : scene.instances) {
+      triangle_capacity += instance.triangle_count;
+    }
     std::vector<vkpt::cpu::BvhAabb> primitive_aabbs;
+    primitive_aabbs.reserve(triangle_capacity);
+    m_primitives.reserve(triangle_capacity);
+    // Flatten render instances into one primitive array. The BVH stores only
+    // primitive indices; material and edge data stay in m_primitives so leaves
+    // can execute Moller-Trumbore tests without chasing scene instance ranges.
     for (const auto& instance : scene.instances) {
       for (uint32_t triangle = 0; triangle < instance.triangle_count; ++triangle) {
         const uint32_t base_tri = (instance.first_triangle + triangle) * 3u;
@@ -115,13 +132,13 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
             scene.indices[base_tri + 1u],
             scene.indices[base_tri + 2u],
         };
-        if (tri.i0 >= m_vertices.size() || tri.i1 >= m_vertices.size() || tri.i2 >= m_vertices.size()) {
+        if (tri.i0 >= vertices.size() || tri.i1 >= vertices.size() || tri.i2 >= vertices.size()) {
           continue;
         }
 
-        const auto& v0 = m_vertices[tri.i0];
-        const auto& v1 = m_vertices[tri.i1];
-        const auto& v2 = m_vertices[tri.i2];
+        const auto& v0 = vertices[tri.i0];
+        const auto& v1 = vertices[tri.i1];
+        const auto& v2 = vertices[tri.i2];
         vkpt::cpu::BvhAabb aabb{};
         aabb.min[0] = std::min({v0.x, v1.x, v2.x}) - kEpsilon;
         aabb.min[1] = std::min({v0.y, v1.y, v2.y}) - kEpsilon;
@@ -132,8 +149,7 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
 
         const auto e1 = sub_vec3(v1, v0);
         const auto e2 = sub_vec3(v2, v0);
-        m_primitives.push_back({tri,
-                                instance.material_index,
+        m_primitives.push_back({instance.material_index,
                                 static_cast<uint32_t>(m_primitives.size()),
                                 v0,
                                 e1,
@@ -149,7 +165,11 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
       return true;
     }
 
-    m_bvh = m_builder.build(primitive_aabbs, nullptr, deterministic);
+    const std::size_t leaf_threshold =
+        m_triangle_intersector == vkpt::cpu::BvhTriangleIntersectorMode::X86Avx2
+            ? vkpt::cpu::kBvhTriangleBatchWidth
+            : vkpt::cpu::ParallelBvhBuilder::kDefaultLeafThreshold;
+    m_bvh = m_builder.build(primitive_aabbs, nullptr, deterministic, leaf_threshold);
     const auto stats = m_builder.last_stats();
     m_info.built = true;
     m_info.node_count = stats.node_count;
@@ -168,13 +188,29 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
 
     float best_t = std::numeric_limits<float>::infinity();
     const RayAabbQuery aabb_ray = make_ray_aabb_query(ray);
-    std::vector<int32_t> stack;
-    stack.reserve(64u);
-    stack.push_back(0);
+    std::array<int32_t, 128u> stack{};
+    std::vector<int32_t> overflow_stack;
+    std::size_t stack_size = 0u;
+    stack[stack_size++] = 0;
+    auto push_node = [&](int32_t child) {
+      if (stack_size < stack.size()) {
+        stack[stack_size++] = child;
+      } else {
+        overflow_stack.push_back(child);
+      }
+    };
 
-    while (!stack.empty()) {
-      const int32_t node_index = stack.back();
-      stack.pop_back();
+    while (stack_size > 0u || !overflow_stack.empty()) {
+      // Depth-first traversal keeps a small fixed stack hot for normal trees
+      // and spills only unusually deep cases to the vector. Children are pushed
+      // far-first so the nearer child is tested next and can tighten best_t.
+      const int32_t node_index = stack_size > 0u
+          ? stack[--stack_size]
+          : [&]() {
+              const int32_t value = overflow_stack.back();
+              overflow_stack.pop_back();
+              return value;
+            }();
       if (node_index < 0 || static_cast<std::size_t>(node_index) >= m_bvh.nodes.size()) {
         continue;
       }
@@ -192,46 +228,44 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
         if (stats) {
           ++stats->bvh_leaf_visits;
         }
-        for (int32_t i = 0; i < node.prim_count; ++i) {
-          const int32_t ordered_index = node.first_prim + i;
-          if (ordered_index < 0 || static_cast<std::size_t>(ordered_index) >= m_bvh.prim_indices.size()) {
-            continue;
+        const vkpt::cpu::BvhTriangleRay triangle_ray{
+            ray.origin.x, ray.origin.y, ray.origin.z,
+            ray.direction.x, ray.direction.y, ray.direction.z};
+        for (int32_t i = 0; i < node.prim_count;) {
+          vkpt::cpu::BvhTriangleBatch batch{};
+          std::array<uint32_t, vkpt::cpu::kBvhTriangleBatchWidth> primitive_lanes{};
+          while (i < node.prim_count && batch.count < vkpt::cpu::kBvhTriangleBatchWidth) {
+            const int32_t ordered_index = node.first_prim + i;
+            ++i;
+            if (ordered_index < 0 || static_cast<std::size_t>(ordered_index) >= m_bvh.prim_indices.size()) {
+              continue;
+            }
+            const uint32_t primitive_index = m_bvh.prim_indices[static_cast<std::size_t>(ordered_index)];
+            if (primitive_index >= m_primitives.size()) {
+              continue;
+            }
+            const std::uint32_t lane = batch.count++;
+            primitive_lanes[lane] = primitive_index;
+            write_triangle_lane(batch, lane, m_primitives[primitive_index]);
           }
-          const uint32_t primitive_index = m_bvh.prim_indices[static_cast<std::size_t>(ordered_index)];
-          if (primitive_index >= m_primitives.size()) {
-            continue;
-          }
-          if (stats) {
-            ++stats->triangle_tests;
-          }
-          const auto& primitive = m_primitives[primitive_index];
-          const Vec3 h = cross_vec3(ray.direction, primitive.e2);
-          const float det = dot_vec3(primitive.e1, h);
-          if (std::fabs(det) < kEpsilon) {
-            continue;
-          }
-          const float inv_det = 1.0f / det;
-          const Vec3 s = sub_vec3(ray.origin, primitive.v0);
-          const float u = dot_vec3(s, h) * inv_det;
-          if (u < 0.0f || u > 1.0f) {
-            continue;
-          }
-          const Vec3 q = cross_vec3(s, primitive.e1);
-          const float v = dot_vec3(ray.direction, q) * inv_det;
-          if (v < 0.0f || u + v > 1.0f) {
-            continue;
-          }
-          const float t = dot_vec3(primitive.e2, q) * inv_det;
-          if (t <= kEpsilon || t >= best_t) {
+          if (batch.count == 0u) {
             continue;
           }
           if (stats) {
-            ++stats->triangle_hits;
+            stats->triangle_tests += batch.count;
           }
-          best_t = t;
+          const auto hit = vkpt::cpu::IntersectBvhTriangleBatch(m_triangle_intersector, triangle_ray, batch, best_t);
+          if (!hit.hit) {
+            continue;
+          }
+          if (stats) {
+            stats->triangle_hits += hit.accepted_hits;
+          }
+          const auto& primitive = m_primitives[primitive_lanes[hit.lane]];
+          best_t = hit.t;
           out.hit = true;
-          out.t = t;
-          out.position = add_vec3(ray.origin, mul_vec3(ray.direction, t));
+          out.t = hit.t;
+          out.position = add_vec3(ray.origin, mul_vec3(ray.direction, hit.t));
           out.normal = primitive.normal;
           out.material_index = primitive.material_index;
           out.primitive_index = primitive.primitive_index;
@@ -247,16 +281,16 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
           intersect_aabb(m_bvh.nodes[static_cast<std::size_t>(node.right_child)].aabb, aabb_ray, best_t, right_t);
       if (hit_left && hit_right) {
         if (left_t <= right_t) {
-          stack.push_back(node.right_child);
-          stack.push_back(node.left_child);
+          push_node(node.right_child);
+          push_node(node.left_child);
         } else {
-          stack.push_back(node.left_child);
-          stack.push_back(node.right_child);
+          push_node(node.left_child);
+          push_node(node.right_child);
         }
       } else if (hit_left) {
-        stack.push_back(node.left_child);
+        push_node(node.left_child);
       } else if (hit_right) {
-        stack.push_back(node.right_child);
+        push_node(node.right_child);
       }
     }
 
@@ -268,7 +302,6 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
   }
 
   void reset() override {
-    m_vertices.clear();
     m_primitives.clear();
     m_bvh = {};
     m_info = {};
@@ -276,7 +309,6 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
 
  private:
   struct Primitive {
-    vkpt::pathtracer::RTTriangle triangle{};
     uint32_t material_index = 0;
     uint32_t primitive_index = 0;
     Vec3 v0{};
@@ -285,11 +317,25 @@ class CpuBvhAccelerator final : public vkpt::pathtracer::IRayAccelerator {
     Vec3 normal{};
   };
 
-  std::vector<Vec3> m_vertices;
+  static void write_triangle_lane(vkpt::cpu::BvhTriangleBatch& batch,
+                                  std::uint32_t lane,
+                                  const Primitive& primitive) {
+    batch.v0x[lane] = primitive.v0.x;
+    batch.v0y[lane] = primitive.v0.y;
+    batch.v0z[lane] = primitive.v0.z;
+    batch.e1x[lane] = primitive.e1.x;
+    batch.e1y[lane] = primitive.e1.y;
+    batch.e1z[lane] = primitive.e1.z;
+    batch.e2x[lane] = primitive.e2.x;
+    batch.e2y[lane] = primitive.e2.y;
+    batch.e2z[lane] = primitive.e2.z;
+  }
+
   std::vector<Primitive> m_primitives;
   vkpt::cpu::ParallelBvhBuilder m_builder;
   vkpt::cpu::BvhBuildResult m_bvh;
   vkpt::pathtracer::RayAcceleratorBuildInfo m_info{};
+  vkpt::cpu::BvhTriangleIntersectorMode m_triangle_intersector = vkpt::cpu::BvhTriangleIntersectorMode::Scalar;
 };
 
 }  // namespace

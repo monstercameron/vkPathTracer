@@ -385,6 +385,9 @@
               qtRightMouseDown = false;
               qtMiddleMouseDown = false;
               qtPotentialClick = false;
+              if (qtGizmoDrag.active) {
+                qtCommitGizmoDrag();
+              }
               qtGizmoDrag = {};
               qtHoveredGizmoHit = std::nullopt;
               qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);

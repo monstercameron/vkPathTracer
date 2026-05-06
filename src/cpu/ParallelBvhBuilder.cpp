@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#include <numeric>
 
 namespace vkpt::cpu {
 
@@ -56,19 +57,15 @@ void ParallelBvhBuilder::build_node(
 
   const BvhAabb bounds = compute_aabb(*ctx.prim_aabbs, indices, count);
 
-  // Write node aabb (each node_idx is unique per invocation — no lock needed)
-  {
-    std::scoped_lock lock(*ctx.nodes_mutex);
-    (*ctx.nodes)[static_cast<std::size_t>(node_idx)].aabb = bounds;
-  }
+  // Each node_idx is unique per invocation, so this write does not need a lock.
+  (*ctx.nodes)[static_cast<std::size_t>(node_idx)].aabb = bounds;
 
   if (count <= ctx.leaf_threshold) {
     // Determine where these primitives sit in the prim_indices array.
-    // indices is already a subrange of ctx.prim_indices — compute offset.
+    // indices is already a subrange of ctx.prim_indices; compute offset.
     const int32_t first = static_cast<int32_t>(
         indices - ctx.prim_indices->data());
 
-    std::scoped_lock lock(*ctx.nodes_mutex);
     auto& node = (*ctx.nodes)[static_cast<std::size_t>(node_idx)];
     node.left_child = -1;
     node.right_child = -1;
@@ -77,7 +74,8 @@ void ParallelBvhBuilder::build_node(
     return;
   }
 
-  // Find longest axis of centroid AABB to split on
+  // Split along the widest centroid extent; this is cheap to compute and keeps
+  // construction deterministic when paired with stable_partition below.
   const BvhAabb centroid_bounds = compute_centroid_aabb(*ctx.prim_aabbs, indices, count);
   int best_axis = 0;
   float best_extent = centroid_bounds.max[0] - centroid_bounds.min[0];
@@ -89,7 +87,8 @@ void ParallelBvhBuilder::build_node(
     }
   }
 
-  // Midpoint split on the best axis
+  // Midpoint split on the selected axis. Degenerate distributions are handled
+  // after partitioning so all leaves continue to make progress.
   const float split = 0.5f * (centroid_bounds.min[best_axis] + centroid_bounds.max[best_axis]);
 
   // Partition in-place (stable for deterministic mode)
@@ -113,27 +112,28 @@ void ParallelBvhBuilder::build_node(
   const std::size_t left_count = static_cast<std::size_t>(split_it - indices);
   const std::size_t right_count = count - left_count;
 
-  // Guard against degenerate splits (all on same side)
+  // Guard against degenerate splits where all centroids fall on one side.
   const std::size_t safe_left = (left_count == 0 || right_count == 0) ? count / 2 : left_count;
   const std::size_t safe_right = count - safe_left;
 
-  // Allocate child node slots atomically
+  // Allocate child slots atomically because the two recursive calls below may
+  // run on different worker threads.
   const int32_t left_idx = ctx.node_alloc->fetch_add(1, std::memory_order_relaxed);
   const int32_t right_idx = ctx.node_alloc->fetch_add(1, std::memory_order_relaxed);
 
-  {
-    std::scoped_lock lock(*ctx.nodes_mutex);
-    auto& node = (*ctx.nodes)[static_cast<std::size_t>(node_idx)];
-    node.left_child = left_idx;
-    node.right_child = right_idx;
-    node.first_prim = -1;
-    node.prim_count = 0;
-  }
+  auto& node = (*ctx.nodes)[static_cast<std::size_t>(node_idx)];
+  node.left_child = left_idx;
+  node.right_child = right_idx;
+  node.first_prim = -1;
+  node.prim_count = 0;
 
-  const bool use_parallel = (ctx.jobs != nullptr) && (count >= kParallelThreshold);
+  const bool use_parallel = (ctx.jobs != nullptr) &&
+      ctx.jobs->waiting_thread_runs_jobs() &&
+      (count >= kParallelThreshold);
 
   if (use_parallel) {
-    // Submit left and right as parallel jobs, then wait
+    // Build sibling subtrees in parallel once the subtree is large enough to
+    // amortize job overhead. The wait path can run work-stealing jobs.
     uint32_t* left_indices = indices;
     uint32_t* right_indices = indices + safe_left;
     const auto left_sz = safe_left;
@@ -145,7 +145,8 @@ void ParallelBvhBuilder::build_node(
     auto right_handle = ctx.jobs->submit_job([&ctx, right_idx, right_indices, right_sz]() {
       build_node(ctx, right_idx, right_indices, right_sz);
     });
-    ctx.jobs->wait_group({left_handle, right_handle});
+    (void)ctx.jobs->wait(left_handle);
+    (void)ctx.jobs->wait(right_handle);
   } else {
     build_node(ctx, left_idx, indices, safe_left);
     build_node(ctx, right_idx, indices + safe_left, safe_right);
@@ -170,24 +171,20 @@ BvhBuildResult ParallelBvhBuilder::build(
   }
 
   const std::size_t n = prim_aabbs.size();
-  // Maximum nodes in a binary tree with n leaves is 2n-1
-  const std::size_t max_nodes = 2u * n;
+  // Maximum nodes in a binary tree with n leaves is 2n-1.
+  const std::size_t max_nodes = 2u * n - 1u;
 
   result.nodes.resize(max_nodes);
   result.prim_indices.resize(n);
-  for (std::size_t i = 0; i < n; ++i) {
-    result.prim_indices[i] = static_cast<uint32_t>(i);
-  }
+  std::iota(result.prim_indices.begin(), result.prim_indices.end(), 0u);
 
   std::atomic<int32_t> node_alloc{1};  // root is at index 0
-  std::mutex nodes_mutex;
 
   BuildContext ctx;
   ctx.prim_aabbs = &prim_aabbs;
   ctx.nodes = &result.nodes;
   ctx.prim_indices = &result.prim_indices;
   ctx.node_alloc = &node_alloc;
-  ctx.nodes_mutex = &nodes_mutex;
   ctx.jobs = jobs;
   ctx.deterministic = deterministic;
   ctx.leaf_threshold = (leaf_threshold == 0u) ? kDefaultLeafThreshold : leaf_threshold;

@@ -52,7 +52,7 @@ struct JsonValue {
 
 std::string stringify(const JsonValue& value, bool pretty = false);
 
-/// Typed object-field readers. Missing keys or wrong types leave `out` unchanged and return false.
+/// Typed object-field readers. Scalar readers leave `out` unchanged on failure; list readers clear before filling.
 bool read_string(const JsonValue& object, std::string_view key, std::string& out);
 bool read_u64(const JsonValue& object, std::string_view key, std::uint64_t& out);
 bool read_u32(const JsonValue& object, std::string_view key, std::uint32_t& out);

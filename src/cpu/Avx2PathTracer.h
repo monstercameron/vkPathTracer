@@ -30,6 +30,7 @@ class Avx2CpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool update_camera_state(const vkpt::pathtracer::RTCameraState& camera) override;
   bool update_instance_transforms(
       const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) override;
+  bool update_scene_delta(const vkpt::pathtracer::RTSceneDeltaUpdate& update) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y,
                            uint32_t sample_index, uint32_t frame_index) override;
   vkpt::pathtracer::FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }

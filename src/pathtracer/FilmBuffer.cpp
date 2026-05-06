@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <sstream>
 
 namespace vkpt::pathtracer {
@@ -12,6 +13,18 @@ namespace {
 
 Vec3 add_vec3(const Vec3& lhs, const Vec3& rhs) {
   return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
+}
+
+bool checked_mul_size(std::size_t lhs, std::size_t rhs, std::size_t& out) {
+  if (lhs != 0u && rhs > std::numeric_limits<std::size_t>::max() / lhs) {
+    return false;
+  }
+  out = lhs * rhs;
+  return true;
+}
+
+bool checked_pixel_count(uint32_t width, uint32_t height, std::size_t& out) {
+  return checked_mul_size(static_cast<std::size_t>(width), static_cast<std::size_t>(height), out);
 }
 
 Vec3 ColorTemperatureToRgb(float kelvin) {
@@ -42,11 +55,20 @@ FilmBuffer::FilmBuffer(uint32_t width, uint32_t height) {
 }
 
 void FilmBuffer::resize(uint32_t width, uint32_t height) {
+  std::size_t pixel_count = 0u;
+  if (!checked_pixel_count(width, height, pixel_count)) {
+    m_width = 0u;
+    m_height = 0u;
+    m_accumulation.clear();
+    m_sampleCounts.clear();
+    m_invalidSamples.clear();
+    return;
+  }
   m_width = width;
   m_height = height;
-  m_accumulation.assign(static_cast<std::size_t>(width) * height, Vec3{});
-  m_sampleCounts.assign(static_cast<std::size_t>(width) * height, 0);
-  m_invalidSamples.assign(static_cast<std::size_t>(width) * height, 0.0f);
+  m_accumulation.assign(pixel_count, Vec3{});
+  m_sampleCounts.assign(pixel_count, 0);
+  m_invalidSamples.assign(pixel_count, 0.0f);
 }
 
 void FilmBuffer::clear() {
@@ -72,17 +94,23 @@ void FilmBuffer::import_tile(const FilmBuffer& src, uint32_t start_y, uint32_t e
   if (m_width != src.m_width || m_height == 0 || src.m_height == 0) {
     return;
   }
+  const uint32_t clamped_start = std::min(start_y, std::min(m_height, src.m_height));
   const uint32_t clamped_end = std::min(end_y, std::min(m_height, src.m_height));
-  for (uint32_t y = start_y; y < clamped_end; ++y) {
-    for (uint32_t x = 0; x < m_width; ++x) {
-      const std::size_t dst_idx = static_cast<std::size_t>(y) * m_width + x;
-      const std::size_t src_idx = static_cast<std::size_t>(y) * src.m_width + x;
-      if (dst_idx < m_accumulation.size() && src_idx < src.m_accumulation.size()) {
-        m_accumulation[dst_idx] = src.m_accumulation[src_idx];
-        m_sampleCounts[dst_idx] = src.m_sampleCounts[src_idx];
-        m_invalidSamples[dst_idx] = src.m_invalidSamples[src_idx];
-      }
-    }
+  if (clamped_start >= clamped_end) {
+    return;
+  }
+  const std::size_t row_width = m_width;
+  for (uint32_t y = clamped_start; y < clamped_end; ++y) {
+    const std::size_t offset = static_cast<std::size_t>(y) * row_width;
+    std::copy_n(src.m_accumulation.begin() + static_cast<std::ptrdiff_t>(offset),
+                row_width,
+                m_accumulation.begin() + static_cast<std::ptrdiff_t>(offset));
+    std::copy_n(src.m_sampleCounts.begin() + static_cast<std::ptrdiff_t>(offset),
+                row_width,
+                m_sampleCounts.begin() + static_cast<std::ptrdiff_t>(offset));
+    std::copy_n(src.m_invalidSamples.begin() + static_cast<std::ptrdiff_t>(offset),
+                row_width,
+                m_invalidSamples.begin() + static_cast<std::ptrdiff_t>(offset));
   }
 }
 
@@ -98,16 +126,23 @@ FilmHdr FilmBuffer::resolve_hdr() const {
   FilmHdr out;
   out.width = m_width;
   out.height = m_height;
-  out.rgbf.resize(static_cast<std::size_t>(m_width) * m_height * 3, 0.0f);
-  for (uint32_t y = 0; y < m_height; ++y) {
-    for (uint32_t x = 0; x < m_width; ++x) {
-      const auto idx = static_cast<std::size_t>(y) * m_width + x;
-      const float invSamples = 1.0f / std::max(1u, m_sampleCounts[idx]);
-      const auto base = static_cast<std::size_t>(y) * m_width * 3 + static_cast<std::size_t>(x) * 3;
-      out.rgbf[base + 0] = m_accumulation[idx].x * invSamples;
-      out.rgbf[base + 1] = m_accumulation[idx].y * invSamples;
-      out.rgbf[base + 2] = m_accumulation[idx].z * invSamples;
-    }
+  std::size_t num_pixels = 0u;
+  std::size_t rgb_count = 0u;
+  if (!checked_pixel_count(m_width, m_height, num_pixels) ||
+      !checked_mul_size(num_pixels, 3u, rgb_count)) {
+    out.width = 0u;
+    out.height = 0u;
+    return out;
+  }
+  out.rgbf.resize(rgb_count, 0.0f);
+  // HDR resolve averages valid accumulated samples and leaves exposure/tone mapping to ApplyFilmResolve.
+  std::size_t rgb = 0u;
+  for (std::size_t idx = 0u; idx < num_pixels; ++idx) {
+    const float invSamples = 1.0f / std::max(1u, m_sampleCounts[idx]);
+    const auto& sample = m_accumulation[idx];
+    out.rgbf[rgb++] = sample.x * invSamples;
+    out.rgbf[rgb++] = sample.y * invSamples;
+    out.rgbf[rgb++] = sample.z * invSamples;
   }
   return out;
 }
@@ -125,6 +160,7 @@ Vec3 WhiteBalanceScale(float kelvin) {
 FilmResolveSettings CameraAdjustedFilmResolveSettings(const FilmResolveSettings& base,
                                                        const RTSceneData& scene) {
   FilmResolveSettings out = base;
+  // Convert camera exposure controls into a scalar multiplier before tone mapping.
   if (std::isfinite(scene.camera_f_stop) &&
       std::isfinite(scene.camera_shutter_seconds) &&
       std::isfinite(scene.camera_iso) &&
@@ -154,9 +190,18 @@ FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings
   FilmLdr ldr;
   ldr.width = hdr.width;
   ldr.height = hdr.height;
-  const std::size_t num_pixels = static_cast<std::size_t>(hdr.width) * hdr.height;
-  ldr.rgba8.resize(num_pixels * 4u, 255u);
-  if (hdr.rgbf.size() < num_pixels * 3u) {
+  std::size_t num_pixels = 0u;
+  std::size_t rgba_count = 0u;
+  std::size_t rgb_count = 0u;
+  if (!checked_pixel_count(hdr.width, hdr.height, num_pixels) ||
+      !checked_mul_size(num_pixels, 4u, rgba_count) ||
+      !checked_mul_size(num_pixels, 3u, rgb_count)) {
+    ldr.width = 0u;
+    ldr.height = 0u;
+    return ldr;
+  }
+  ldr.rgba8.resize(rgba_count, 255u);
+  if (hdr.rgbf.size() < rgb_count) {
     std::fill(ldr.rgba8.begin(), ldr.rgba8.end(), 0u);
     for (std::size_t i = 0; i < num_pixels; ++i) {
       ldr.rgba8[i * 4u + 3u] = 255u;
@@ -166,33 +211,35 @@ FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings
 
   const float inv_gamma = 1.0f / std::max(0.01f, settings.gamma);
   const Vec3 white_balance = WhiteBalanceScale(settings.white_balance_kelvin);
+  // The resolve path applies exposure, white balance, tone map, then output transform in that order.
+  auto tonemap = [&](float x) -> float {
+    switch (settings.tone_map) {
+      case ToneMapMode::Reinhard:
+        return x / (1.0f + x);
+      case ToneMapMode::FilmicApprox: {
+        auto F = [](float v) -> float {
+          const float A = 0.15f, B = 0.50f, C = 0.10f, D = 0.20f, E = 0.02f, F_ = 0.30f;
+          return ((v * (A * v + C * B) + D * E) / (v * (A * v + B) + D * F_)) - E / F_;
+        };
+        const float W = 11.2f;
+        return F(x) / F(W);
+      }
+      case ToneMapMode::AcesApprox:
+        return (x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f);
+      default:
+        return x;
+    }
+  };
 
+  std::size_t rgb = 0u;
+  std::size_t rgba = 0u;
   for (std::size_t i = 0; i < num_pixels; ++i) {
-    float r = hdr.rgbf[i * 3u + 0u] * settings.exposure * white_balance.x;
-    float g = hdr.rgbf[i * 3u + 1u] * settings.exposure * white_balance.y;
-    float b = hdr.rgbf[i * 3u + 2u] * settings.exposure * white_balance.z;
+    float r = hdr.rgbf[rgb++] * settings.exposure * white_balance.x;
+    float g = hdr.rgbf[rgb++] * settings.exposure * white_balance.y;
+    float b = hdr.rgbf[rgb++] * settings.exposure * white_balance.z;
     if (!std::isfinite(r)) r = 0.0f;
     if (!std::isfinite(g)) g = 0.0f;
     if (!std::isfinite(b)) b = 0.0f;
-
-    auto tonemap = [&](float x) -> float {
-      switch (settings.tone_map) {
-        case ToneMapMode::Reinhard:
-          return x / (1.0f + x);
-        case ToneMapMode::FilmicApprox: {
-          auto F = [](float v) -> float {
-            const float A = 0.15f, B = 0.50f, C = 0.10f, D = 0.20f, E = 0.02f, F_ = 0.30f;
-            return ((v * (A * v + C * B) + D * E) / (v * (A * v + B) + D * F_)) - E / F_;
-          };
-          const float W = 11.2f;
-          return F(x) / F(W);
-        }
-        case ToneMapMode::AcesApprox:
-          return (x * (2.51f * x + 0.03f)) / (x * (2.43f * x + 0.59f) + 0.14f);
-        default:
-          return x;
-      }
-    };
 
     r = tonemap(r);
     g = tonemap(g);
@@ -210,10 +257,10 @@ FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings
       b = std::min(1.0f, std::max(0.0f, b));
     }
 
-    ldr.rgba8[i * 4u + 0u] = static_cast<uint8_t>(r * 255.0f + 0.5f);
-    ldr.rgba8[i * 4u + 1u] = static_cast<uint8_t>(g * 255.0f + 0.5f);
-    ldr.rgba8[i * 4u + 2u] = static_cast<uint8_t>(b * 255.0f + 0.5f);
-    ldr.rgba8[i * 4u + 3u] = 255u;
+    ldr.rgba8[rgba++] = static_cast<uint8_t>(r * 255.0f + 0.5f);
+    ldr.rgba8[rgba++] = static_cast<uint8_t>(g * 255.0f + 0.5f);
+    ldr.rgba8[rgba++] = static_cast<uint8_t>(b * 255.0f + 0.5f);
+    ldr.rgba8[rgba++] = 255u;
   }
   return ldr;
 }

@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
+#include <new>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -79,8 +80,17 @@ std::wstring Utf8ToWide(const std::string& s)
     if (s.empty())
         return L"";
     const int count = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (count <= 0)
+    {
+        Log("Utf8ToWide failed with GetLastError=" + std::to_string(GetLastError()));
+        return L"";
+    }
     std::wstring out(static_cast<size_t>(count), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), count);
+    if (MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), count) <= 0)
+    {
+        Log("Utf8ToWide conversion failed with GetLastError=" + std::to_string(GetLastError()));
+        return L"";
+    }
     return out;
 }
 
@@ -89,8 +99,17 @@ std::string WideToUtf8(const wchar_t* ws)
     if (!ws || !*ws)
         return {};
     const int count = WideCharToMultiByte(CP_UTF8, 0, ws, -1, nullptr, 0, nullptr, nullptr);
+    if (count <= 0)
+    {
+        Log("WideToUtf8 failed with GetLastError=" + std::to_string(GetLastError()));
+        return {};
+    }
     std::string out(static_cast<size_t>(count), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws, -1, out.data(), count, nullptr, nullptr);
+    if (WideCharToMultiByte(CP_UTF8, 0, ws, -1, out.data(), count, nullptr, nullptr) <= 0)
+    {
+        Log("WideToUtf8 conversion failed with GetLastError=" + std::to_string(GetLastError()));
+        return {};
+    }
     if (!out.empty() && out.back() == '\0')
         out.pop_back();
     return out;
@@ -123,6 +142,29 @@ struct FrameConstants
 class ProtoptApp
 {
 public:
+    ~ProtoptApp()
+    {
+        try
+        {
+            WaitForGpu();
+        }
+        catch (...)
+        {
+            Log("protopt cleanup: WaitForGpu failed");
+        }
+        if (m_fenceEvent)
+        {
+            CloseHandle(m_fenceEvent);
+            m_fenceEvent = nullptr;
+        }
+        if (m_hwnd && IsWindow(m_hwnd))
+        {
+            SetWindowLongPtrW(m_hwnd, GWLP_USERDATA, 0);
+            DestroyWindow(m_hwnd);
+        }
+        m_hwnd = nullptr;
+    }
+
     int Run(HINSTANCE instance, int showCommand)
     {
         Log("protopt startup");
@@ -499,6 +541,8 @@ private:
         raster.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
 
         D3D12_RENDER_TARGET_BLEND_DESC rtBlend{};
+        // Accumulate path samples directly in the swapchain target; the blend factor
+        // below supplies the running average weight without a separate history texture.
         rtBlend.BlendEnable = TRUE;
         rtBlend.LogicOpEnable = FALSE;
         rtBlend.SrcBlend = D3D12_BLEND_BLEND_FACTOR;
@@ -635,7 +679,7 @@ private:
             m_commandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
         }
         m_commandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        const double blendStep = std::min<uint64_t>(frameAccumCount + 1, 32ull);
+        const double blendStep = static_cast<double>(std::min<uint64_t>(frameAccumCount + 1, 32ull));
         const FLOAT blendFactor[4] = {
             static_cast<FLOAT>(1.0 / blendStep),
             static_cast<FLOAT>(1.0 / blendStep),
@@ -669,6 +713,8 @@ private:
 
     void MoveToNextFrame()
     {
+        // Track one fence value per back buffer so allocator reuse waits only
+        // for the GPU work that last touched the buffer we are about to record.
         const UINT64 currentFence = m_nextFenceValue;
         ThrowIfFailed(m_commandQueue->Signal(m_fence.Get(), currentFence), "CommandQueue::Signal");
         m_fenceValues[m_frameIndex] = currentFence;
@@ -730,10 +776,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
         ProtoptApp app;
         return app.Run(instance, showCommand);
     }
+    catch (const std::bad_alloc& e)
+    {
+        const std::string message = std::string("out of memory: ") + e.what();
+        Log(std::string("FATAL: ") + message);
+        MessageBoxA(nullptr, message.c_str(), "protopt fatal error", MB_ICONERROR | MB_OK);
+        return 1;
+    }
     catch (const std::exception& e)
     {
         Log(std::string("FATAL: ") + e.what());
         MessageBoxA(nullptr, e.what(), "protopt fatal error", MB_ICONERROR | MB_OK);
+        return 1;
+    }
+    catch (...)
+    {
+        Log("FATAL: non-standard exception");
+        MessageBoxA(nullptr, "non-standard exception", "protopt fatal error", MB_ICONERROR | MB_OK);
         return 1;
     }
 }

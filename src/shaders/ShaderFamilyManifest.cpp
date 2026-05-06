@@ -39,6 +39,8 @@ const char* ToString(ShaderStage stage) {
 }
 
 const std::vector<ShaderFamilyDescriptor>& GetShaderFamilyManifest() {
+  // Inventory used by diagnostics and schema export; entries describe shipped
+  // families even when the current backend implements them on the CPU.
   static const std::vector<ShaderFamilyDescriptor> s_manifest = {
     {ShaderFamily::RayGeneration,        "ray_generation",        "Ray Generation",        ShaderStage::RayGen,     true,  "CPU scalar: main render loop generates primary rays"},
     {ShaderFamily::CameraSampling,       "camera_sampling",       "Camera Sampling",       ShaderStage::Compute,    true,  "CPU scalar: camera_rays() builds stratified samples"},

@@ -26,6 +26,8 @@ inline const ISimdKernel& ScalarKernelInstance() {
   return kernel;
 }
 
+/// Return the compiled kernel for a requested mode, falling back to scalar when
+/// the mode was not enabled in this binary.
 inline const ISimdKernel& KernelForMode(SimdMode mode) {
   switch (mode) {
 #if defined(__AVX512F__)
