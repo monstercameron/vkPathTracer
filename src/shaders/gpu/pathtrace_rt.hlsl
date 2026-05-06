@@ -19,6 +19,7 @@ cbuffer PCBuf : register(b0) {
     float  iris_roundness; float anamorphic_squeeze; uint tone_map; uint output_transform;
     float  gamma; uint clamp_output; float white_balance_r; float white_balance_g;
     float  white_balance_b; uint denoiser_enabled; float denoiser_strength; float denoiser_color_sigma;
+    uint   static_bvh_node_count; uint dynamic_bvh_node_count; float _rt_pad0; float _rt_pad1;
 };
 
 // ---- Resources -------------------------------------------------------------
@@ -35,6 +36,9 @@ Buffer<uint>     TexMetaBuf : register(t9, space0);
 Buffer<float>    EnvBuf : register(t10, space0);
 Buffer<uint>     EnvMetaBuf : register(t11, space0);
 Buffer<float>    SdfBuf : register(t12, space0);
+Buffer<float>    BvhBuf : register(t13, space0);
+Buffer<float>    DynamicBvhBuf : register(t14, space0);
+Buffer<float>    LocalBvhBuf : register(t15, space0);
 RWByteAddressBuffer FilmBuf : register(u0, space0);
 
 // ---- Payload (56 bytes; must match MaxPayloadSizeInBytes in PSO) ------------
@@ -255,9 +259,12 @@ float3 ProceduralWoodAlbedo(float3 base, float3 p, float roughness, float clearc
     return base * (1.0 - woodMix) + wood * woodMix;
 }
 
-float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
+float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd, float roughness, float clearcoat) {
     float3 color = MatAlbedo(idx);
     uint effect = MatEffect(idx);
+    if (effect == 0u) {
+        return clamp(color, 0.0, 1.5);
+    }
     float h = Hash01(p, float(effect));
     if (effect == 1u) {
         float rim = Pow2Fast(saturate(1.0 - abs(dot(n, -rd))));
@@ -296,7 +303,7 @@ float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
         float rim = pow(saturate(1.0 - abs(dot(n, -rd))), 1.5);
         color = color * (0.25 + 0.45 * bands) + float3(0.48, 0.56, 0.68) * (0.18 + 0.32 * rim);
     } else if (effect >= 16u && effect <= 19u) {
-        color = ProceduralWoodAlbedo(color, p, MatRoughness(idx), MatClearcoat(idx), effect);
+        color = ProceduralWoodAlbedo(color, p, roughness, clearcoat, effect);
     }
     return clamp(color, 0.0, 1.5);
 }
@@ -469,6 +476,14 @@ bool IntersectLocalInstanceBounds(uint ib, float3 roLocal, float3 rdLocal, float
     return tExit >= 1.0e-4f && tEnter <= tExit && tEnter <= maxT;
 }
 
+bool IntersectWorldBounds(float3 bmin, float3 bmax, float3 ro, float3 invRd, float maxT) {
+    float3 t0 = (bmin - ro) * invRd;
+    float3 t1 = (bmax - ro) * invRd;
+    float tEnter = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
+    float tExit = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
+    return tExit >= 1.0e-4f && tEnter <= tExit && tEnter <= maxT;
+}
+
 bool IntersectPackedTriAnyLocal(float3 ro, float3 rd, uint tri, bool instanceDoubleSided, float maxT) {
     uint b = tri * kPackedTriStride;
     float3 v0;
@@ -501,25 +516,133 @@ bool MaterialCastsShadow(uint matIdx) {
     return MatModel(matIdx) != 5u && MatTransmission(matIdx) <= 0.05f && dot(MatEmissive(matIdx), 1.0.xxx) <= 0.0f;
 }
 
-bool OccludedSceneShader(float3 ro, float3 rd, float maxT) {
-    if (maxT <= 1.0e-4f) return false;
-    [loop]
-    for (uint inst = 0u; inst < num_insts; ++inst) {
-        uint ib = inst * kInstStride;
-        uint firstTri = InstBuf[ib + 0u];
-        uint triCount = InstBuf[ib + 1u];
-        uint matIdx = InstBuf[ib + 2u];
-        if (triCount == 0u || !MaterialCastsShadow(matIdx)) continue;
-        float3 roLocal = InstanceWorldToLocalPoint(ib, ro);
-        float3 rdLocal = InstanceWorldToLocalVector(ib, rd);
-        if (!IntersectLocalInstanceBounds(ib, roLocal, rdLocal, maxT)) continue;
-        bool doubleSided = MatDoubleSided(matIdx);
+bool OccludedDynamicInstanceShader(uint instanceIndex, float3 ro, float3 rd, float maxT) {
+    uint ib = instanceIndex * kInstStride;
+    uint flags = InstBuf[ib + 3u];
+    if ((flags & kInstFlagDynamicTransform) == 0u) return false;
+    uint firstTri = InstBuf[ib + 0u];
+    uint triCount = InstBuf[ib + 1u];
+    uint matIdx = InstBuf[ib + 2u];
+    uint localBvhFirst = InstBuf[ib + 7u];
+    uint localBvhCount = InstBuf[ib + 15u];
+    float3 roLocal = InstanceWorldToLocalPoint(ib, ro);
+    float3 rdLocal = InstanceWorldToLocalVector(ib, rd);
+    if (!IntersectLocalInstanceBounds(ib, roLocal, rdLocal, maxT)) return false;
+    bool doubleSided = MatDoubleSided(matIdx);
+
+    if (localBvhCount > 0u) {
+        float3 invLocalRd = float3(
+            abs(rdLocal.x) > 1.0e-8f ? 1.0f / rdLocal.x : 1.0e30f,
+            abs(rdLocal.y) > 1.0e-8f ? 1.0f / rdLocal.y : 1.0e30f,
+            abs(rdLocal.z) > 1.0e-8f ? 1.0f / rdLocal.z : 1.0e30f);
+        uint stack[64];
+        uint sp = 0u;
+        stack[sp++] = localBvhFirst;
+        uint localBvhEnd = localBvhFirst + localBvhCount;
         [loop]
-        for (uint ti = 0u; ti < triCount; ++ti) {
-            if (IntersectPackedTriAnyLocal(roLocal, rdLocal, firstTri + ti, doubleSided, maxT)) {
-                return true;
+        while (sp > 0u) {
+            uint ni = stack[--sp];
+            if (ni < localBvhFirst || ni >= localBvhEnd) continue;
+            uint nb = ni * 8u;
+            float3 bmin = float3(LocalBvhBuf[nb + 0u], LocalBvhBuf[nb + 1u], LocalBvhBuf[nb + 2u]);
+            float3 bmax = float3(LocalBvhBuf[nb + 3u], LocalBvhBuf[nb + 4u], LocalBvhBuf[nb + 5u]);
+            if (!IntersectWorldBounds(bmin, bmax, roLocal, invLocalRd, maxT)) continue;
+            uint lf = asuint(LocalBvhBuf[nb + 6u]);
+            uint rc = asuint(LocalBvhBuf[nb + 7u]);
+            bool isLeaf = (lf & 0x80000000u) != 0u;
+            if (isLeaf) {
+                uint leafFirstTri = lf & 0x7FFFFFFFu;
+                [loop]
+                for (uint ti = 0u; ti < rc; ++ti) {
+                    if (IntersectPackedTriAnyLocal(roLocal, rdLocal, leafFirstTri + ti, doubleSided, maxT)) {
+                        return true;
+                    }
+                }
+            } else if (sp + 2u <= 64u) {
+                stack[sp++] = rc;
+                stack[sp++] = lf;
             }
         }
+        return false;
+    }
+
+    [loop]
+    for (uint ti = 0u; ti < triCount; ++ti) {
+        if (IntersectPackedTriAnyLocal(roLocal, rdLocal, firstTri + ti, doubleSided, maxT)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool OccludedSceneShader(float3 ro, float3 rd, float maxT) {
+    if (maxT <= 1.0e-4f) return false;
+    float3 invRd = float3(
+        abs(rd.x) > 1.0e-8f ? 1.0f / rd.x : 1.0e30f,
+        abs(rd.y) > 1.0e-8f ? 1.0f / rd.y : 1.0e30f,
+        abs(rd.z) > 1.0e-8f ? 1.0f / rd.z : 1.0e30f);
+
+    uint stack[128];
+    uint sp = 0u;
+    if (static_bvh_node_count > 0u) {
+        stack[sp++] = 0u;
+        [loop]
+        while (sp > 0u) {
+            uint ni = stack[--sp];
+            if (ni >= static_bvh_node_count) continue;
+            uint nb = ni * 8u;
+            float3 bmin = float3(BvhBuf[nb + 0u], BvhBuf[nb + 1u], BvhBuf[nb + 2u]);
+            float3 bmax = float3(BvhBuf[nb + 3u], BvhBuf[nb + 4u], BvhBuf[nb + 5u]);
+            if (!IntersectWorldBounds(bmin, bmax, ro, invRd, maxT)) continue;
+            uint lf = asuint(BvhBuf[nb + 6u]);
+            uint rc = asuint(BvhBuf[nb + 7u]);
+            bool isLeaf = (lf & 0x80000000u) != 0u;
+            if (isLeaf) {
+                uint firstTri = lf & 0x7FFFFFFFu;
+                [loop]
+                for (uint ti = 0u; ti < rc; ++ti) {
+                    if (IntersectPackedTriAnyLocal(ro, rd, firstTri + ti, false, maxT)) {
+                        return true;
+                    }
+                }
+            } else if (sp + 2u <= 128u) {
+                stack[sp++] = rc;
+                stack[sp++] = lf;
+            }
+        }
+    }
+
+    sp = 0u;
+    if (dynamic_bvh_node_count > 0u) {
+        stack[sp++] = 0u;
+        [loop]
+        while (sp > 0u) {
+            uint ni = stack[--sp];
+            if (ni >= dynamic_bvh_node_count) continue;
+            uint nb = ni * 8u;
+            float3 bmin = float3(DynamicBvhBuf[nb + 0u], DynamicBvhBuf[nb + 1u], DynamicBvhBuf[nb + 2u]);
+            float3 bmax = float3(DynamicBvhBuf[nb + 3u], DynamicBvhBuf[nb + 4u], DynamicBvhBuf[nb + 5u]);
+            if (!IntersectWorldBounds(bmin, bmax, ro, invRd, maxT)) continue;
+            uint lf = asuint(DynamicBvhBuf[nb + 6u]);
+            uint rc = asuint(DynamicBvhBuf[nb + 7u]);
+            bool isLeaf = (lf & 0x80000000u) != 0u;
+            if (isLeaf) {
+                if (rc == 0u) continue;
+                uint instanceIndex = lf & 0x7FFFFFFFu;
+                if (OccludedDynamicInstanceShader(instanceIndex, ro, rd, maxT)) {
+                    return true;
+                }
+            } else if (sp + 2u <= 128u) {
+                stack[sp++] = rc;
+                stack[sp++] = lf;
+            }
+        }
+    }
+
+    Hit sdfHit = IntersectSdfScene(ro, rd);
+    if (sdfHit.ok && sdfHit.t < maxT) {
+        uint shadowMat = (num_mats > 0u) ? min(sdfHit.mat, num_mats - 1u) : 0u;
+        if (MaterialCastsShadow(shadowMat)) return true;
     }
     return false;
 }
@@ -634,20 +757,27 @@ void Miss(inout PathPayload payload) {
 void ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal, uint matIdx, float3 rayDir) {
     bool enteringSurface = dot(rayDir, surfaceNormal) < 0.0f;
     float3 n = enteringSurface ? surfaceNormal : -surfaceNormal;
-    float3 albedo = MatSurfaceAlbedo(matIdx, hitPos, n, rayDir);
     float3 emissive = MatEmissive(matIdx);
-    payload.radiance += payload.throughput * emissive;
 
     float roughness = MatRoughness(matIdx);
     uint model = MatModel(matIdx);
+    float metallic = MatMetallic(matIdx);
+    float transmission = MatTransmission(matIdx);
+    float clearcoat = MatClearcoat(matIdx);
+    float3 albedo = MatSurfaceAlbedo(matIdx, hitPos, n, rayDir, roughness, clearcoat);
     bool isMirror = (model == 2u) || (roughness <= 0.001);
-    bool isMetallic = (model == 4u) || (MatMetallic(matIdx) > 0.65);
-    bool isTransmissive = (model == 5u) || (MatTransmission(matIdx) > 0.05);
+    bool isMetallic = (model == 4u) || (metallic > 0.65);
+    bool isTransmissive = (model == 5u) || (transmission > 0.05);
     bool isDiffuse = (roughness >= 0.999) && !isMirror && !isMetallic && !isTransmissive;
     bool isSheen = (model == 6u);
-    bool isClearcoat = (model == 7u) || (MatClearcoat(matIdx) > 0.05);
+    bool isClearcoat = (model == 7u) || (clearcoat > 0.05);
     bool isToon = (model == 8u);
     uint rng = payload.rng;
+    uint depth = PayloadDepth(payload);
+
+    if (depth == 0u || num_lights == 0u) {
+        payload.radiance += payload.throughput * emissive;
+    }
 
     if (num_lights > 0u) {
         uint li = uint(RandF(rng) * float(num_lights));
@@ -730,8 +860,8 @@ void ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal
                     f0 *= f0;
                     float fresnel = f0 + (1.0 - f0) * Pow5Fast(1.0 - cosView);
                     float specStrength = saturate((1.0 - roughness) * 0.8 +
-                                                  MatMetallic(matIdx) * 0.45 +
-                                                  MatClearcoat(matIdx) * 0.35 +
+                                                  metallic * 0.45 +
+                                                  clearcoat * 0.35 +
                                                   (isMirror ? 0.75 : 0.0) +
                                                   (isTransmissive ? fresnel : 0.0));
                     float3 specTint = lerp(float3(1.0, 1.0, 1.0), albedo, isMetallic ? 0.85 : 0.12);
@@ -743,10 +873,9 @@ void ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal
         }
     }
 
-    uint depth = PayloadDepth(payload);
-    if (depth >= 2u) {
+    if (depth >= 3u) {
         float q = max(payload.throughput.x, max(payload.throughput.y, payload.throughput.z));
-        q = clamp(q, 0.05f, 0.95f);
+        q = clamp(q, 0.1f, 0.99f);
         if (RandF(rng) > q) { payload.rng = rng; PayloadSetDone(payload); return; }
         payload.throughput /= q;
     }
@@ -760,7 +889,7 @@ void ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal
         float r0 = (1.0 - ior) / (1.0 + ior);
         r0 *= r0;
         float fresnel = r0 + (1.0 - r0) * Pow5Fast(1.0 - cosN);
-        if (RandF(rng) < min(0.98, fresnel + MatClearcoat(matIdx) * 0.015)) {
+        if (RandF(rng) < min(0.98, fresnel + clearcoat * 0.015)) {
             nextDir = rayDir - 2.0 * dot(n, rayDir) * n;
         } else {
             float eta = enteringSurface ? (1.0 / ior) : ior;
@@ -800,12 +929,12 @@ void ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal
     }
     float3 bounceWeight = albedo;
     if (isMetallic || isMirror) {
-        bounceWeight = albedo * (0.65 + 0.35 * MatMetallic(matIdx));
+        bounceWeight = albedo * (0.65 + 0.35 * metallic);
     } else if (isTransmissive) {
-        float tintStrength = saturate(MatAlpha(matIdx)) * MatTransmission(matIdx);
+        float tintStrength = saturate(MatAlpha(matIdx)) * transmission;
         bounceWeight = lerp(float3(1.0, 1.0, 1.0), albedo, tintStrength);
         if (refractedBounce) {
-            bounceWeight *= max(0.55, MatTransmission(matIdx));
+            bounceWeight *= max(0.55, transmission);
         }
     }
     if (isToon) {
@@ -814,7 +943,7 @@ void ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal
     payload.throughput *= bounceWeight;
     payload.rng = rng;
     payload.next_dir = normalize(nextDir);
-    payload.next_origin = hitPos + payload.next_dir * 1.0e-4f;
+    payload.next_origin = hitPos + payload.next_dir * 0.002f;
     PayloadSetBounceState(payload, depth + 1u);
 }
 
@@ -886,9 +1015,11 @@ void AnyHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttributes 
     float a = dot(we1, cross(WorldRayDirection(), we2));
     if ((!doubleSided && a > -1.0e-5f) || (doubleSided && abs(a) < 1.0e-5f)) {
         IgnoreHit();
+        return;
     }
     if (MatModel(matIdx) == 5u || MatTransmission(matIdx) > 0.05f || dot(MatEmissive(matIdx), 1.0.xxx) > 0.0f) {
         IgnoreHit();
+        return;
     }
 }
 

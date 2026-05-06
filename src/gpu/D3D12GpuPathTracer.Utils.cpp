@@ -420,14 +420,14 @@ bool D3D12VerboseLoggingEnabled() {
 std::string SelectDxrBuildMode() {
   const std::string valueText = ReadEnvString("PT_D3D12_DXR_BUILD_MODE");
   if (valueText.empty()) {
-    return "fast_trace";
+    return "fast_build";
   }
   if (valueText == "fast_trace" || valueText == "fast_build" || valueText == "none") {
     return valueText;
   }
   LogError("ignoring invalid PT_D3D12_DXR_BUILD_MODE=" + valueText +
            " (expected fast_trace, fast_build, or none)");
-  return "fast_trace";
+  return "fast_build";
 }
 
 uint32_t SelectBvhLeafSize() {
