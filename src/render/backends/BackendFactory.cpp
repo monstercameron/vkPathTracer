@@ -193,7 +193,12 @@ std::string NormalizeBackendName(std::string_view backend_name) {
 
 std::vector<BackendCandidateDesc> DescribeBackendCandidates() {
   std::vector<BackendCandidateDesc> candidates;
+#if defined(PT_ENABLE_VULKAN)
   candidates.push_back(MakeCandidate("vulkan", BackendKind::VulkanCompute, 10u, true, true, true, false, true, false, false));
+#else
+  candidates.push_back(MakeCandidate("vulkan", BackendKind::VulkanCompute, 10u, false, false, true, false, true, false, false,
+                                     "PT_ENABLE_VULKAN is disabled"));
+#endif
 
 #if defined(PT_ENABLE_D3D12)
   const bool has_d3d12_dxr = HasD3D12RayTracingAccelerator();
@@ -300,7 +305,11 @@ BackendSelectionDecision SelectBackend(const BackendSelectionRequest& request) {
 }
 
 std::vector<std::string> AvailableBackendNames() {
-  std::vector<std::string> names = {"auto", "null", "vulkan", "vulkan-compute"};
+  std::vector<std::string> names = {"auto", "null"};
+#if defined(PT_ENABLE_VULKAN)
+  names.push_back("vulkan");
+  names.push_back("vulkan-compute");
+#endif
 #if defined(PT_ENABLE_D3D12)
   names.push_back("d3d12");
   names.push_back("d3d12-dxr");
@@ -332,7 +341,11 @@ std::unique_ptr<IRenderBackend> CreateBackend(std::string_view backend_name) {
     return std::make_unique<NullBackend>();
   }
   if (normalized == "vulkan" || normalized == "vulkan-compute") {
+#if defined(PT_ENABLE_VULKAN)
     return std::make_unique<VulkanComputeBackend>();
+#else
+    return {};
+#endif
   }
   if (normalized == "vulkan-rt") {
     return {};

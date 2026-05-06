@@ -28,6 +28,21 @@
 
 namespace vkpt::gpu {
 
+namespace {
+
+constexpr std::size_t kVulkanMaterialStrideFloats = 16u;
+constexpr std::size_t kVulkanInstanceStrideU32 = 24u;
+constexpr std::size_t kVulkanLightStrideFloats = 16u;
+constexpr std::size_t kVulkanSdfStrideFloats = 16u;
+
+uint32_t VkFloatBits(float value) {
+  uint32_t bits = 0u;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+}  // namespace
+
 // ============================================================================
 // Construction / destruction
 // ============================================================================
@@ -104,13 +119,12 @@ bool VulkanGpuPathTracer::load_scene_snapshot(
 
 bool VulkanGpuPathTracer::build_or_update_acceleration() {
   if (!m_hasScene) return false;
+  return recreate_scene_buffers_from_snapshot();
+}
 
+bool VulkanGpuPathTracer::recreate_scene_buffers_from_snapshot() {
   // Pack RTSceneData into flat arrays matching pathtrace.comp storage-buffer
   // contracts. Dummy entries keep descriptor ranges non-empty for empty scenes.
-  constexpr std::size_t kMaterialStrideFloats = 16u;
-  constexpr std::size_t kInstanceStrideU32 = 4u;
-  constexpr std::size_t kLightStrideFloats = 16u;
-
   m_gpuVerts.clear();
   if (m_sceneData.vertices.empty()) {
     m_gpuVerts.assign(3u, 0.0f);
@@ -129,12 +143,12 @@ bool VulkanGpuPathTracer::build_or_update_acceleration() {
   if (m_gpuIdx.empty()) m_gpuIdx.push_back(0u);
 
   m_gpuMats.clear();
-  m_gpuMats.resize(std::max<std::size_t>(kMaterialStrideFloats,
-                                         m_sceneData.materials.size() * kMaterialStrideFloats),
+  m_gpuMats.resize(std::max<std::size_t>(kVulkanMaterialStrideFloats,
+                                         m_sceneData.materials.size() * kVulkanMaterialStrideFloats),
                    0.0f);
   for (std::size_t i = 0u; i < m_sceneData.materials.size(); ++i) {
     const auto& m = m_sceneData.materials[i];
-    const std::size_t base = i * kMaterialStrideFloats;
+    const std::size_t base = i * kVulkanMaterialStrideFloats;
     const uint32_t packed_effect = (m.material_effect & 1023u) | ((m.material_flags & 1u) ? 1024u : 0u);
     m_gpuMats[base + 0u] = m.albedo.x;
     m_gpuMats[base + 1u] = m.albedo.y;
@@ -155,25 +169,45 @@ bool VulkanGpuPathTracer::build_or_update_acceleration() {
   }
 
   m_gpuInsts.clear();
-  m_gpuInsts.resize(std::max<std::size_t>(kInstanceStrideU32,
-                                          m_sceneData.instances.size() * kInstanceStrideU32),
+  m_gpuInsts.resize(std::max<std::size_t>(kVulkanInstanceStrideU32,
+                                          m_sceneData.instances.size() * kVulkanInstanceStrideU32),
                     0u);
   for (std::size_t i = 0u; i < m_sceneData.instances.size(); ++i) {
     const auto& inst = m_sceneData.instances[i];
-    const std::size_t base = i * kInstanceStrideU32;
+    const std::size_t base = i * kVulkanInstanceStrideU32;
     m_gpuInsts[base + 0u] = inst.first_triangle;
     m_gpuInsts[base + 1u] = inst.triangle_count;
     m_gpuInsts[base + 2u] = inst.material_index;
-    m_gpuInsts[base + 3u] = 0u;
+    m_gpuInsts[base + 3u] = inst.flags;
+    m_gpuInsts[base + 4u] = VkFloatBits(inst.translation.x);
+    m_gpuInsts[base + 5u] = VkFloatBits(inst.translation.y);
+    m_gpuInsts[base + 6u] = VkFloatBits(inst.translation.z);
+    m_gpuInsts[base + 7u] = inst.transform_revision;
+    m_gpuInsts[base + 8u] = VkFloatBits(inst.rotation.x);
+    m_gpuInsts[base + 9u] = VkFloatBits(inst.rotation.y);
+    m_gpuInsts[base + 10u] = VkFloatBits(inst.rotation.z);
+    m_gpuInsts[base + 11u] = VkFloatBits(inst.rotation.w);
+    m_gpuInsts[base + 12u] = VkFloatBits(inst.scale.x);
+    m_gpuInsts[base + 13u] = VkFloatBits(inst.scale.y);
+    m_gpuInsts[base + 14u] = VkFloatBits(inst.scale.z);
+    m_gpuInsts[base + 15u] = 0u;
+    m_gpuInsts[base + 16u] = 0u;
+    m_gpuInsts[base + 17u] = 0u;
+    m_gpuInsts[base + 18u] = 0u;
+    m_gpuInsts[base + 19u] = 0u;
+    m_gpuInsts[base + 20u] = 0u;
+    m_gpuInsts[base + 21u] = 0u;
+    m_gpuInsts[base + 22u] = 0u;
+    m_gpuInsts[base + 23u] = 0u;
   }
 
   m_gpuLights.clear();
-  m_gpuLights.resize(std::max<std::size_t>(kLightStrideFloats,
-                                           m_sceneData.lights.size() * kLightStrideFloats),
+  m_gpuLights.resize(std::max<std::size_t>(kVulkanLightStrideFloats,
+                                           m_sceneData.lights.size() * kVulkanLightStrideFloats),
                      0.0f);
   for (std::size_t i = 0u; i < m_sceneData.lights.size(); ++i) {
     const auto& lt = m_sceneData.lights[i];
-    const std::size_t base = i * kLightStrideFloats;
+    const std::size_t base = i * kVulkanLightStrideFloats;
     m_gpuLights[base + 0u] = lt.position.x;
     m_gpuLights[base + 1u] = lt.position.y;
     m_gpuLights[base + 2u] = lt.position.z;
@@ -192,6 +226,59 @@ bool VulkanGpuPathTracer::build_or_update_acceleration() {
     m_gpuLights[base + 15u] = 0.0f;
   }
 
+  m_gpuSdfs.clear();
+  m_gpuSdfs.resize(std::max<std::size_t>(kVulkanSdfStrideFloats,
+                                         m_sceneData.sdf_primitives.size() * kVulkanSdfStrideFloats),
+                   0.0f);
+  for (std::size_t i = 0u; i < m_sceneData.sdf_primitives.size(); ++i) {
+    const auto& sdf = m_sceneData.sdf_primitives[i];
+    const std::size_t base = i * kVulkanSdfStrideFloats;
+    m_gpuSdfs[base + 0u] = static_cast<float>(sdf.shape);
+    m_gpuSdfs[base + 1u] = static_cast<float>(sdf.material_index);
+    m_gpuSdfs[base + 2u] = sdf.radius;
+    m_gpuSdfs[base + 3u] = sdf.param_a;
+    m_gpuSdfs[base + 4u] = sdf.position.x;
+    m_gpuSdfs[base + 5u] = sdf.position.y;
+    m_gpuSdfs[base + 6u] = sdf.position.z;
+    m_gpuSdfs[base + 7u] = sdf.param_b;
+    m_gpuSdfs[base + 8u] = sdf.scale.x;
+    m_gpuSdfs[base + 9u] = sdf.scale.y;
+    m_gpuSdfs[base + 10u] = sdf.scale.z;
+    m_gpuSdfs[base + 11u] = 0.0f;
+    m_gpuSdfs[base + 12u] = sdf.rotation.x;
+    m_gpuSdfs[base + 13u] = sdf.rotation.y;
+    m_gpuSdfs[base + 14u] = sdf.rotation.z;
+    m_gpuSdfs[base + 15u] = 0.0f;
+  }
+
+  m_gpuEnvMeta = {
+    m_sceneData.environment_map_width,
+    m_sceneData.environment_map_height,
+    0u,
+    0u,
+  };
+  m_gpuEnv.clear();
+  const uint64_t envPixelCount =
+      static_cast<uint64_t>(m_sceneData.environment_map_width) *
+      static_cast<uint64_t>(m_sceneData.environment_map_height);
+  if (envPixelCount > 0u &&
+      envPixelCount <= static_cast<uint64_t>(std::numeric_limits<std::size_t>::max() / 3u) &&
+      m_sceneData.environment_map.size() >= static_cast<std::size_t>(envPixelCount)) {
+    const auto scale = m_sceneData.environment_map_scale;
+    m_gpuEnv.resize(static_cast<std::size_t>(envPixelCount) * 3u);
+    for (std::size_t i = 0u; i < static_cast<std::size_t>(envPixelCount); ++i) {
+      const auto& texel = m_sceneData.environment_map[i];
+      const std::size_t base = i * 3u;
+      m_gpuEnv[base + 0u] = texel.x * scale.x;
+      m_gpuEnv[base + 1u] = texel.y * scale.y;
+      m_gpuEnv[base + 2u] = texel.z * scale.z;
+    }
+    m_gpuEnvMeta[2u] = 1u;
+  } else {
+    m_gpuEnv.assign(3u, 0.0f);
+    m_gpuEnvMeta = {0u, 0u, 0u, 0u};
+  }
+
   // Upload with HOST_VISIBLE | HOST_COHERENT buffers. This favors simple
   // backend behavior over peak throughput; no staging queue is needed.
   destroy_scene_buffers();
@@ -203,6 +290,9 @@ bool VulkanGpuPathTracer::build_or_update_acceleration() {
     {m_gpuMats.data(),   m_gpuMats.size()   * sizeof(float),    &m_matBuf,  &m_matMem},
     {m_gpuInsts.data(),  m_gpuInsts.size()  * sizeof(uint32_t), &m_instBuf, &m_instMem},
     {m_gpuLights.data(), m_gpuLights.size() * sizeof(float),    &m_ltBuf,   &m_ltMem},
+    {m_gpuSdfs.data(),   m_gpuSdfs.size()   * sizeof(float),    &m_sdfBuf,  &m_sdfMem},
+    {m_gpuEnv.data(),    m_gpuEnv.size()    * sizeof(float),    &m_envBuf,  &m_envMem},
+    {m_gpuEnvMeta.data(), m_gpuEnvMeta.size() * sizeof(uint32_t), &m_envMetaBuf, &m_envMetaMem},
   };
   for (const auto& u : ups) {
     if (!make_buffer(u.sz,
@@ -233,6 +323,169 @@ bool VulkanGpuPathTracer::reset_accumulation() {
   m_cpuFilmDirty = false;
   m_counters = {};
   return true;
+}
+
+bool VulkanGpuPathTracer::update_camera(const vkpt::pathtracer::Vec3& pos,
+                                        const vkpt::pathtracer::Vec3& target,
+                                        const vkpt::pathtracer::Vec3& up,
+                                        float fov_deg) {
+  if (!m_sceneUploaded) {
+    return false;
+  }
+  auto camera = vkpt::pathtracer::ExtractCameraState(m_sceneData);
+  camera.position = pos;
+  camera.target = target;
+  camera.up = up;
+  camera.fov_deg = fov_deg;
+  return update_camera_state(camera);
+}
+
+bool VulkanGpuPathTracer::update_camera_state(
+    const vkpt::pathtracer::RTCameraState& camera) {
+  if (!m_sceneUploaded) {
+    return false;
+  }
+  vkpt::pathtracer::ApplyCameraState(m_sceneData, camera);
+  m_film.set_resolve_settings(
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
+  m_cpuFilmDirty = false;
+  return true;
+}
+
+bool VulkanGpuPathTracer::update_instance_transforms(
+    const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) {
+  if (!m_sceneUploaded || updates.empty()) {
+    return false;
+  }
+  for (const auto& update : updates) {
+    uint32_t instanceIndex = update.instance_index;
+    if (instanceIndex >= m_sceneData.instances.size() && update.entity_id != 0u) {
+      for (std::size_t index = 0u; index < m_sceneData.instances.size(); ++index) {
+        if (m_sceneData.instances[index].entity_id == update.entity_id) {
+          instanceIndex = static_cast<uint32_t>(index);
+          break;
+        }
+      }
+    }
+    if (instanceIndex >= m_sceneData.instances.size()) {
+      continue;
+    }
+    const auto& instance = m_sceneData.instances[instanceIndex];
+    if (!instance.has_flag(vkpt::pathtracer::kRTInstanceFlagDynamicTransform) ||
+        instance.local_vertex_count == 0u ||
+        instance.local_index_count < 3u) {
+      return false;
+    }
+  }
+  if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(m_sceneData, updates)) {
+    return false;
+  }
+  return recreate_scene_buffers_from_snapshot();
+}
+
+vkpt::pathtracer::InstanceTransformUpdatePlan VulkanGpuPathTracer::plan_instance_transform_update(
+    std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+    const vkpt::pathtracer::InstanceTransformUpdateOptions& /*options*/) const {
+  if (!m_sceneUploaded || updates.empty()) {
+    return {
+        vkpt::pathtracer::InstanceTransformUpdateStatus::Unsupported,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "Vulkan scene buffers are not ready for transform updates"};
+  }
+
+  std::uint32_t matched = 0u;
+  for (const auto& update : updates) {
+    uint32_t instanceIndex = update.instance_index;
+    if (instanceIndex >= m_sceneData.instances.size() && update.entity_id != 0u) {
+      for (std::size_t index = 0u; index < m_sceneData.instances.size(); ++index) {
+        if (m_sceneData.instances[index].entity_id == update.entity_id) {
+          instanceIndex = static_cast<uint32_t>(index);
+          break;
+        }
+      }
+    }
+    if (instanceIndex >= m_sceneData.instances.size()) {
+      continue;
+    }
+    const auto& instance = m_sceneData.instances[instanceIndex];
+    if (!instance.has_flag(vkpt::pathtracer::kRTInstanceFlagDynamicTransform) ||
+        instance.local_vertex_count == 0u ||
+        instance.local_index_count < 3u) {
+      return {
+          vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild,
+          static_cast<std::uint32_t>(updates.size()),
+          matched,
+          "Vulkan transform update requires a full scene buffer rebuild"};
+    }
+    ++matched;
+  }
+
+  if (matched == 0u) {
+    return {
+        vkpt::pathtracer::InstanceTransformUpdateStatus::Failed,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "Vulkan transform update matched no instances"};
+  }
+
+  return {
+      vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild,
+      static_cast<std::uint32_t>(updates.size()),
+      matched,
+      "Vulkan transform update is valid but requires scene buffer rebuild"};
+}
+
+vkpt::pathtracer::InstanceTransformUpdateResult VulkanGpuPathTracer::apply_instance_transform_update(
+    std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+    const vkpt::pathtracer::InstanceTransformUpdateOptions& options) {
+  const auto plan = plan_instance_transform_update(updates, options);
+  if (!vkpt::pathtracer::TransformUpdateStatusAllowedByPolicy(plan.status,
+                                                              options.fallback_policy)) {
+    return {
+        plan.status,
+        plan.requested_count,
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        plan.message};
+  }
+  const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updateVec(updates.begin(), updates.end());
+  if (!update_instance_transforms(updateVec)) {
+    return {
+        vkpt::pathtracer::InstanceTransformUpdateStatus::Failed,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        "Vulkan transform update rebuild failed"};
+  }
+  return {
+      vkpt::pathtracer::InstanceTransformUpdateStatus::AppliedFullStaticAccelRebuild,
+      static_cast<std::uint32_t>(updates.size()),
+      plan.matched_count,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      "Vulkan transform update rebuilt scene buffers"};
+}
+
+bool VulkanGpuPathTracer::update_scene_delta(
+    const vkpt::pathtracer::RTSceneDeltaUpdate& update) {
+  if (!m_sceneUploaded) {
+    return false;
+  }
+  if (!vkpt::pathtracer::ApplySceneDeltaUpdate(m_sceneData, update)) {
+    return false;
+  }
+  m_film.set_resolve_settings(
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
+  return recreate_scene_buffers_from_snapshot();
 }
 
 bool VulkanGpuPathTracer::render_sample_batch(
@@ -274,7 +527,7 @@ bool VulkanGpuPathTracer::render_sample_batch(
   pc.aspect        = static_cast<float>(m_settings.width) /
                      std::max(1.0f, static_cast<float>(m_settings.height));
   pc.cam_right[0]  = rn[0];  pc.cam_right[1]  = rn[1];  pc.cam_right[2]  = rn[2];
-  pc.pad0          = 0.0f;
+  pc.num_sdfs      = static_cast<uint32_t>(sc.sdf_primitives.size());
   pc.cam_up[0]     = un[0];  pc.cam_up[1]     = un[1];  pc.cam_up[2]     = un[2];
   pc.sample_index  = sample_idx;
   pc.num_insts     = static_cast<uint32_t>(sc.instances.size());
@@ -530,18 +783,18 @@ bool VulkanGpuPathTracer::create_pipeline() {
   smci.pCode    = spv.data();
   VK_CHK(vkCreateShaderModule(m_device, &smci, nullptr, &m_shaderMod));
 
-  // Descriptor set layout — 6 storage buffers
-  // Descriptor set layout: vertex, index, material, instance, light, and film
-  // buffers. The binding order is fixed by pathtrace.comp.
-  VkDescriptorSetLayoutBinding binds[6]{};
-  for (uint32_t i = 0; i < 6; ++i) {
+  // Descriptor set layout: vertex, index, material, instance, light, film, SDF,
+  // environment map, and environment metadata buffers. The binding order is
+  // fixed by pathtrace.comp.
+  VkDescriptorSetLayoutBinding binds[9]{};
+  for (uint32_t i = 0; i < 9; ++i) {
     binds[i].binding         = i;
     binds[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     binds[i].descriptorCount = 1;
     binds[i].stageFlags      = VK_SHADER_STAGE_COMPUTE_BIT;
   }
   VkDescriptorSetLayoutCreateInfo dsli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  dsli.bindingCount = 6;
+  dsli.bindingCount = 9;
   dsli.pBindings    = binds;
   VK_CHK(vkCreateDescriptorSetLayout(m_device, &dsli, nullptr, &m_dsLayout));
 
@@ -574,7 +827,7 @@ bool VulkanGpuPathTracer::create_pipeline() {
 bool VulkanGpuPathTracer::create_descriptors() {
   // Create descriptor pool on first call
   if (m_dsPool == VK_NULL_HANDLE) {
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 36};
     VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     dpci.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     dpci.maxSets       = 8;
@@ -599,14 +852,19 @@ bool VulkanGpuPathTracer::create_descriptors() {
   const std::size_t szIn = m_gpuInsts.size()   * sizeof(uint32_t);
   const std::size_t szL  = m_gpuLights.size()  * sizeof(float);
   const std::size_t szF  = static_cast<std::size_t>(m_filmPixels) * 4u * sizeof(float);
+  const std::size_t szS  = m_gpuSdfs.size()    * sizeof(float);
+  const std::size_t szE  = m_gpuEnv.size()     * sizeof(float);
+  const std::size_t szEM = m_gpuEnvMeta.size() * sizeof(uint32_t);
 
-  const VkDescriptorBufferInfo dbi[6] = {
+  const VkDescriptorBufferInfo dbi[9] = {
     {m_vertBuf, 0, szV},  {m_idxBuf, 0, szI},
     {m_matBuf,  0, szM},  {m_instBuf, 0, szIn},
     {m_ltBuf,   0, szL},  {m_filmBuf, 0, szF},
+    {m_sdfBuf,  0, szS},  {m_envBuf,  0, szE},
+    {m_envMetaBuf, 0, szEM},
   };
-  VkWriteDescriptorSet writes[6]{};
-  for (uint32_t i = 0; i < 6; ++i) {
+  VkWriteDescriptorSet writes[9]{};
+  for (uint32_t i = 0; i < 9; ++i) {
     writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[i].dstSet          = m_ds;
     writes[i].dstBinding      = i;
@@ -614,7 +872,7 @@ bool VulkanGpuPathTracer::create_descriptors() {
     writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[i].pBufferInfo     = &dbi[i];
   }
-  vkUpdateDescriptorSets(m_device, 6, writes, 0, nullptr);
+  vkUpdateDescriptorSets(m_device, 9, writes, 0, nullptr);
   return true;
 }
 
@@ -737,6 +995,8 @@ void VulkanGpuPathTracer::destroy_scene_buffers() {
   del(m_vertBuf, m_vertMem); del(m_idxBuf, m_idxMem);
   del(m_matBuf,  m_matMem);  del(m_instBuf, m_instMem);
   del(m_ltBuf,   m_ltMem);
+  del(m_sdfBuf,  m_sdfMem);  del(m_envBuf,  m_envMem);
+  del(m_envMetaBuf, m_envMetaMem);
   m_sceneUploaded = false;
 }
 
