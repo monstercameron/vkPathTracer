@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <optional>
 #include <string>
 
 namespace vkpt::app {
@@ -326,7 +327,8 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     check_true("hidden authored light does not create fallback lighting",
                hiddenLightScene &&
                hiddenLightScene.value().instances.size() == 1u &&
-               hiddenLightScene.value().lights.empty());
+               hiddenLightScene.value().lights.size() == 1u &&
+               hiddenLightScene.value().lights.front().intensity <= 1.0e-6f);
   }
 
   {
@@ -354,6 +356,42 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                std::max({unlitScene.value().environment_color.x,
                          unlitScene.value().environment_color.y,
                          unlitScene.value().environment_color.z}) <= 1.0e-6f);
+  }
+
+  {
+    vkpt::scene::SceneDocument lightToggleDoc;
+    vkpt::scene::SceneGeometryDefinition tri;
+    tri.id = 370;
+    tri.vertices = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    tri.indices = {0, 1, 2};
+    lightToggleDoc.geometry.push_back(tri);
+    vkpt::scene::SceneEntityDefinition mesh;
+    mesh.id = 371;
+    mesh.name = "Mesh";
+    mesh.has_mesh = true;
+    mesh.mesh.mesh_id = tri.id;
+    vkpt::scene::SceneEntityDefinition light;
+    light.id = 372;
+    light.name = "Key Light";
+    light.has_light = true;
+    light.light.intensity = 12.0f;
+    lightToggleDoc.entities = {mesh, light};
+    const auto visibleLightScene = vkpt::pathtracer::BuildSceneDataFromDocument(lightToggleDoc);
+    lightToggleDoc.entities.back().visible = false;
+    const auto hiddenLightScene = vkpt::pathtracer::BuildSceneDataFromDocument(lightToggleDoc);
+    const auto lightDelta = visibleLightScene && hiddenLightScene
+        ? vkpt::pathtracer::BuildSceneDeltaUpdate(visibleLightScene.value(), hiddenLightScene.value())
+        : std::optional<vkpt::pathtracer::RTSceneDeltaUpdate>{};
+    check_true("light visibility toggle remains a render light delta",
+               visibleLightScene &&
+               hiddenLightScene &&
+               visibleLightScene.value().lights.size() == hiddenLightScene.value().lights.size() &&
+               !hiddenLightScene.value().lights.empty() &&
+               hiddenLightScene.value().lights.front().intensity <= 1.0e-6f &&
+               lightDelta &&
+               lightDelta->lights.size() == 1u &&
+               lightDelta->materials.empty() &&
+               !lightDelta->environment_color_changed);
   }
 
   {
@@ -394,7 +432,8 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                fallbackGroup != fallbackLightingDoc.entities.end() &&
                !fallbackGroup->visible &&
                hiddenFallbackScene &&
-               hiddenFallbackScene.value().lights.empty());
+               hiddenFallbackScene.value().lights.size() == 1u &&
+               hiddenFallbackScene.value().lights.front().intensity <= 1.0e-6f);
     if (fallbackGroup != fallbackLightingDoc.entities.end()) {
       fallbackGroup->visible = true;
     }

@@ -32,8 +32,10 @@ class QtMainWindow final : public QMainWindow {
           existingSignature->second != signature ||
           dock->widget() == nullptr) {
         QPointer<QWidget> oldWidget = dock->widget();
+        const auto treeViewState = captureDockTreeViewState(oldWidget);
         dock->setWidget(buildDockWidget(panel));
         m_panelContentSignatures[panel.id] = signature;
+        restoreDockTreeViewState(dock->widget(), treeViewState);
         if (!oldWidget.isNull()) {
           oldWidget->deleteLater();
         }
@@ -250,6 +252,111 @@ class QtMainWindow final : public QMainWindow {
   QDockWidget* dockById(std::string_view id) const {
     const auto it = m_docks.find(std::string(id));
     return it == m_docks.end() ? nullptr : it->second;
+  }
+
+  struct DockTreeViewState {
+    bool valid = false;
+    int vertical = 0;
+    int horizontal = 0;
+    QString top_row_id;
+  };
+
+  static QString dockTreeItemRowId(const QTreeWidgetItem* item) {
+    return item == nullptr ? QString{} : item->data(0, Qt::UserRole).toString();
+  }
+
+  static QTreeWidgetItem* findDockTreeItemByRowId(QTreeWidgetItem* item,
+                                                   const QString& rowId) {
+    if (item == nullptr || rowId.isEmpty()) {
+      return nullptr;
+    }
+    if (dockTreeItemRowId(item) == rowId) {
+      return item;
+    }
+    for (int childIndex = 0; childIndex < item->childCount(); ++childIndex) {
+      if (auto* found = findDockTreeItemByRowId(item->child(childIndex), rowId)) {
+        return found;
+      }
+    }
+    return nullptr;
+  }
+
+  static QTreeWidgetItem* findDockTreeItemByRowId(QTreeWidget* tree,
+                                                   const QString& rowId) {
+    if (tree == nullptr || rowId.isEmpty()) {
+      return nullptr;
+    }
+    for (int index = 0; index < tree->topLevelItemCount(); ++index) {
+      if (auto* found = findDockTreeItemByRowId(tree->topLevelItem(index), rowId)) {
+        return found;
+      }
+    }
+    return nullptr;
+  }
+
+  static DockTreeViewState captureDockTreeViewState(QWidget* root) {
+    DockTreeViewState state;
+    if (root == nullptr) {
+      return state;
+    }
+    auto* tree = root->findChild<QTreeWidget*>();
+    if (tree == nullptr) {
+      return state;
+    }
+    state.valid = true;
+    if (auto* scrollBar = tree->verticalScrollBar()) {
+      state.vertical = scrollBar->value();
+    }
+    if (auto* scrollBar = tree->horizontalScrollBar()) {
+      state.horizontal = scrollBar->value();
+    }
+    if (auto* topItem = tree->itemAt(QPoint(1, 1))) {
+      state.top_row_id = dockTreeItemRowId(topItem);
+    }
+    return state;
+  }
+
+  static bool applyDockTreeViewState(QTreeWidget* tree,
+                                     const DockTreeViewState& state) {
+    if (tree == nullptr || !state.valid) {
+      return false;
+    }
+    if (!state.top_row_id.isEmpty()) {
+      auto* topItem = findDockTreeItemByRowId(tree, state.top_row_id);
+      if (topItem == nullptr) {
+        return false;
+      }
+      tree->scrollToItem(topItem, QAbstractItemView::PositionAtTop);
+    }
+    if (auto* scrollBar = tree->verticalScrollBar()) {
+      scrollBar->setValue(std::clamp(state.vertical,
+                                     scrollBar->minimum(),
+                                     scrollBar->maximum()));
+    }
+    if (auto* scrollBar = tree->horizontalScrollBar()) {
+      scrollBar->setValue(std::clamp(state.horizontal,
+                                     scrollBar->minimum(),
+                                     scrollBar->maximum()));
+    }
+    return true;
+  }
+
+  static void restoreDockTreeViewState(QWidget* root,
+                                       const DockTreeViewState& state) {
+    if (root == nullptr || !state.valid) {
+      return;
+    }
+    auto* tree = root->findChild<QTreeWidget*>();
+    if (tree == nullptr) {
+      return;
+    }
+    applyDockTreeViewState(tree, state);
+    QPointer<QTreeWidget> treePtr(tree);
+    QTimer::singleShot(0, tree, [treePtr, state]() {
+      if (!treePtr.isNull()) {
+        applyDockTreeViewState(treePtr, state);
+      }
+    });
   }
 
   void tabifyDockIds(std::initializer_list<std::string_view> ids) {

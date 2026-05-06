@@ -768,10 +768,12 @@
                                     "script playback");
       };
       qtReloadEditedScene = [&](std::string_view reason) {
+        const auto reloadStart = std::chrono::steady_clock::now();
         if (qtFpsMode) {
           qtMaybeSyncFpsCameraObject(true);
         }
         auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(qtSceneDocument);
+        const auto conversionEnd = std::chrono::steady_clock::now();
         if (!sceneResult) {
           ui_runtime_state.status_message = "scene edit failed: rebuild scene data";
           qtPreviewStatus = "scene edit failed";
@@ -779,6 +781,7 @@
         }
         auto nextScene = std::move(sceneResult.value());
         const auto sceneDelta = vkpt::pathtracer::BuildSceneDeltaUpdate(qtScene, nextScene);
+        const auto deltaEnd = std::chrono::steady_clock::now();
         const bool hasSceneDeltaWork =
             sceneDelta.has_value() &&
             (!sceneDelta->materials.empty() ||
@@ -800,8 +803,10 @@
         qtLastViewportPickablesRefresh = std::chrono::steady_clock::now();
         qtFpsCollisionWorker.set_pickables(qtPickables);
         RebuildSelectionBounds(ui_selection_state, qtPickables);
+        const auto pickablesEnd = std::chrono::steady_clock::now();
         bool rendererUpdatedIncrementally = false;
         bool accumulationReset = false;
+        const auto rendererStart = std::chrono::steady_clock::now();
         if (hasSceneDeltaWork) {
           if (qtUseBg && qtRenderCoordinator) {
             qtRenderCoordinator->post_scene_delta(*sceneDelta);
@@ -832,6 +837,7 @@
             accumulationReset = qtTracerReady;
           }
         }
+        const auto rendererEnd = std::chrono::steady_clock::now();
         qtDockPanelsDirty = true;
         qtSyncPhysicsFromSceneDocument();
         qtReloadScriptsFromDocument("scene edited");
@@ -856,6 +862,26 @@
           qtPublishedSample.store(0u, std::memory_order_relaxed);
           qtPublishedRays.store(0u, std::memory_order_relaxed);
         }
+        const auto reloadEnd = std::chrono::steady_clock::now();
+        auto ms = [](auto begin, auto end) {
+          return std::to_string(
+              std::chrono::duration<double, std::milli>(end - begin).count());
+        };
+        logger.log(vkpt::log::Severity::Debug,
+                   "app",
+                   "Qt scene edit reload timings",
+                   {{"reason", std::string(reason)},
+                    {"entities", std::to_string(qtSceneDocument.entities.size())},
+                    {"rt_instances", std::to_string(qtScene.instances.size())},
+                    {"rt_lights", std::to_string(qtScene.lights.size())},
+                    {"delta", sceneDelta.has_value() ? "true" : "false"},
+                    {"delta_lights", sceneDelta ? std::to_string(sceneDelta->lights.size()) : "0"},
+                    {"full_reload", rendererUpdatedIncrementally ? "false" : "true"},
+                    {"conversion_ms", ms(reloadStart, conversionEnd)},
+                    {"delta_ms", ms(conversionEnd, deltaEnd)},
+                    {"pickables_ms", ms(deltaEnd, pickablesEnd)},
+                    {"renderer_ms", ms(rendererStart, rendererEnd)},
+                    {"total_ms", ms(reloadStart, reloadEnd)}});
         updateQtSelectionOverlay();
         return qtTracerReady;
       };
