@@ -6508,6 +6508,30 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** A new user can write a script that moves an entity without reading C++ source.
 
+## [ ] LUA23 - Add third-person action scene prototype
+
+**Deliverable:** Add a third-person playable demo scene with a human character, follow camera, action-game movement feel, and visible walk/run state changes authored through Lua scripts.
+
+**Implementation hints:** Keep gameplay rules in Lua. C++ should only expose generic script host APIs for input, transform/camera/light commands, entity lookup, and deterministic command replay. Do not hardcode the third-person controller into `main.cpp` or the editor FPS camera path.
+
+**Acceptance:** Loading the scene in the Qt preview and enabling script playback lets the player move a human character with WASD/arrow input while the camera follows from a third-person view.
+
+## [ ] LUA24 - Add Lua-driven humanoid walk animation prototype
+
+**Deliverable:** Add an articulated humanoid character made from engine-supported renderable parts and animate idle/walk/run poses from Lua until full skinned skeletal animation exists.
+
+**Implementation hints:** Use stable child entity ids for torso, head, arms, and legs. Lua should drive limb transforms based on movement state and elapsed time. Keep this separate from glTF skeletal animation, which needs a later asset/runtime task.
+
+**Acceptance:** The human character visibly transitions from idle to a walking/running cycle when movement input is active, without adding gameplay animation rules to C++.
+
+## [ ] LUA25 - Add Lua action-game controller API coverage
+
+**Deliverable:** Extend the scripting smoke path to cover Lua-enabled transform writes, camera assignment, input snapshots, entity lookup, and command replay needed by the third-person scene.
+
+**Implementation hints:** No-Lua builds should keep the existing skip diagnostics. Lua-enabled checks should be conditional and report missing Lua as a configure/runtime capability issue, not as a default-build failure.
+
+**Acceptance:** Focused smoke tests prove that the third-person scene's required host APIs work before relying on manual Qt preview testing.
+
 ---
 
 # 18. Codebase decomposition backlog
@@ -6801,13 +6825,17 @@ When D3D12 or Qt app code is touched, also validate the relevant Windows D3D12/Q
 
 **Validation:** `cmake --build --preset windows-clangcl-d3d12-debug`
 
-## [ ] DECOMP23 - Split app option parsing from `main.cpp`
+## [x] DECOMP23 - Split app option parsing from `main.cpp`
 
 **Deliverable:** Move CLI usage text, option parsing, environment/config resolution, version printing, and runtime option structs into `src/app/AppOptions.h` and `src/app/AppOptions.cpp`.
 
 **Implementation hints:** Keep accepted flags and defaults identical. Keep `main.cpp` as the entry point that calls the parser.
 
 **Acceptance:** `ptapp --help`, `ptapp --version`, `ptapp --version --json`, and `ptapp --dump-config` output equivalent data.
+
+**Evidence:** Added `src/app/AppOptions.h` and `src/app/AppOptions.cpp` for app option defaults, accepted flag parsing, parse-time validation, usage text, version text/JSON, and platform capability strings. `AppRuntime.cpp` now consumes `AppOptions` instead of parsing flags inline.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptapp`; `build\presets\desktop-clang-debug\bin\ptapp.exe --help`; `build\presets\desktop-clang-debug\bin\ptapp.exe --version`; `build\presets\desktop-clang-debug\bin\ptapp.exe --version --json`; `build\presets\desktop-clang-debug\bin\ptapp.exe --dump-config`
 
 ## [x] DECOMP24 - Split doctor checks from `main.cpp`
 
@@ -6857,7 +6885,7 @@ When D3D12 or Qt app code is touched, also validate the relevant Windows D3D12/Q
 
 **Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset desktop-clang-qt-debug`; `build\presets\desktop-clang-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\desktop-clang-debug\bin\ptapp.exe --ui-release-gate --json`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`
 
-## [ ] DECOMP28 - Split app runtime orchestration from `main.cpp`
+## [x] DECOMP28 - Split app runtime orchestration from `main.cpp`
 
 **Deliverable:** Move render loop helpers, backend startup/shutdown orchestration, runtime panel sync, benchmark launch helpers, status/crash artifact state updates, and scene-world snapshot helpers into `src/app/AppRuntime.cpp`.
 
@@ -6865,7 +6893,11 @@ When D3D12 or Qt app code is touched, also validate the relevant Windows D3D12/Q
 
 **Acceptance:** Headless render, windowed Qt launch, benchmark menu actions, crash artifact updates, and runtime status updates continue to work.
 
-## [ ] DECOMP29 - Reduce `main.cpp` to an entrypoint and command router
+**Evidence:** Added `src/app/AppRuntime.h` and `src/app/AppRuntime.cpp`; moved app startup, resolved-config setup, status/crash artifact updates, non-GUI command dispatch, render path, and window runtime orchestration out of `main.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptapp`; `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `build\presets\desktop-clang-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\desktop-clang-debug\bin\ptapp.exe --render --scene assets\scenes\cornell_native.json --width 16 --height 16 --spp 1 --max-depth 1 --output artifacts\validation\decomp_app_runtime_render.png`
+
+## [x] DECOMP29 - Reduce `main.cpp` to an entrypoint and command router
 
 **Deliverable:** `src/app/main.cpp` should own `main()`, top-level command selection, and minimal startup wiring only.
 
@@ -6873,7 +6905,11 @@ When D3D12 or Qt app code is touched, also validate the relevant Windows D3D12/Q
 
 **Acceptance:** The app still supports all existing CLI modes and launch paths, while `main.cpp` is readable as an application flow overview.
 
-## [ ] DECOMP30 - Split editor UI model files by panel/domain
+**Evidence:** Reduced `src/app/main.cpp` to the executable entrypoint that delegates to `vkpt::app::RunApp()`. The application flow now lives in named app modules instead of an anonymous namespace in the entrypoint file.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptapp`; `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\source_size_report.ps1 -CheckGuardrails`
+
+## [x] DECOMP30 - Split editor UI model files by panel/domain
 
 **Deliverable:** Review `src/editor/UiModels.cpp`, `src/editor/UiModels.h`, and `src/editor/QtPanelModels.cpp`; split large panel-specific builders, release-gate models, event logs, and state reducers into focused files.
 
@@ -6881,13 +6917,21 @@ When D3D12 or Qt app code is touched, also validate the relevant Windows D3D12/Q
 
 **Acceptance:** Editor model tests and Qt dock panel builders compile with no behavior change.
 
-## [ ] DECOMP31 - Split Qt platform implementation by responsibility
+**Evidence:** Split editor model implementations into focused files for state/layout, panels, benchmark models, command handling, menu models, event logs, release gates, and serialization. Split public declarations into `UiModelsCore.h`, `UiModelsContracts.h`, and the transitional `UiModels.h` umbrella while preserving command payload and model compatibility.
+
+**Validation:** `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`; `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`
+
+## [x] DECOMP31 - Split Qt platform implementation by responsibility
 
 **Deliverable:** Review `src/platform/qt/QtPlatform.cpp`; split window creation, dock rendering, input translation, viewport overlay rendering, menu/status-bar handling, and lifecycle pumping into focused Qt platform files.
 
 **Implementation hints:** Keep the public `QtPlatform.h` stable. Avoid leaking Qt types into non-Qt modules.
 
 **Acceptance:** Qt windowed mode launches, handles input, renders docks/overlays, and shuts down cleanly.
+
+**Evidence:** Split Qt platform startup styling/splash helpers into `QtPlatformStyle.*`, platform service adapters into `QtPlatformAdapters.cpp`, and Qt event emission/drain methods into `QtPlatformEvents.cpp`. Kept `QtPlatform.h` stable while preserving dock, input, framebuffer, menu, status-bar, and lifecycle entry points.
+
+**Validation:** `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\source_size_report.ps1 -CheckGuardrails`
 
 ## [x] DECOMP32 - Add decomposition regression checklist
 
@@ -6899,13 +6943,17 @@ When D3D12 or Qt app code is touched, also validate the relevant Windows D3D12/Q
 
 **Evidence:** Added `docs/decomposition_checklist.md` with pre-edit checks, move-only rules, validation commands, and review steps.
 
-## [ ] DECOMP33 - Add include-boundary cleanup after move-only splits
+## [x] DECOMP33 - Add include-boundary cleanup after move-only splits
 
 **Deliverable:** After major files are split and builds are green, replace unnecessary umbrella includes with focused headers in a separate cleanup pass.
 
 **Implementation hints:** Use compiler errors and `rg` to migrate one module at a time. Do not combine include cleanup with code moves.
 
 **Acceptance:** Incremental builds touch fewer files when editing film, scene JSON, app options, or backend-specific implementation files.
+
+**Evidence:** Added focused app headers for options/runtime entry points and focused Qt platform implementation files with local Qt/Core includes. Kept transitional umbrellas where broader cleanup would create unrelated churn, but new code no longer adds to the original `main.cpp`, `QtPlatform.cpp`, or benchmark umbrella boundaries.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptapp`; `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\todo_audit.ps1`
 
 ## [x] DECOMP34 - Add file-size guardrails to CI or release gate
 
@@ -6918,3 +6966,276 @@ When D3D12 or Qt app code is touched, also validate the relevant Windows D3D12/Q
 **Evidence:** `tools/source_size_report.ps1 -CheckGuardrails` reports warning-only size findings, and `tools/smoke.ps1` now runs the source-size guardrail step while preserving non-blocking warning behavior.
 
 **Validation:** `powershell -NoProfile -File tools/source_size_report.ps1 -CheckGuardrails`
+
+## Large-file guardrail coverage note
+
+`tools/source_size_report.ps1 -CheckGuardrails` should have an explicit decomposition todo for every file it reports as `warn` or `requires_note`. Existing coverage:
+
+```text
+src/app/AppRuntime.cpp              DECOMP28, DECOMP29, DECOMP43, DECOMP45, DECOMP48, DECOMP55
+src/platform/qt/QtPlatform.cpp      DECOMP31, DECOMP42, DECOMP47, DECOMP49
+```
+
+Cleared guardrail findings from this decomposition pass:
+
+```text
+src/benchmark/BenchmarkRuntime.cpp  DECOMP35, DECOMP41, DECOMP44, DECOMP46, DECOMP50
+src/pathtracer/PathTracer.cpp       DECOMP03, DECOMP04, DECOMP05, DECOMP06, DECOMP07, DECOMP51
+src/app/UiValidation.cpp            DECOMP52
+src/assets/SceneAssetLoader.cpp     DECOMP38, DECOMP53
+src/gpu/D3D12GpuPathTracer.Scene.cpp DECOMP54
+```
+
+The following todos cover the remaining current guardrail findings.
+
+## [x] DECOMP35 - Split benchmark CLI and run orchestration from `ptbench.cpp`
+
+**Deliverable:** Move benchmark command parsing, command dispatch, run orchestration, scene validation commands, artifact directory setup, and report writing out of `src/benchmark/ptbench.cpp` into focused benchmark CLI/runtime files.
+
+**Implementation hints:** Keep `ptbench` command names, flags, JSON schemas, stdout/stderr text, and artifact paths stable. Move code by command domain first; do not change benchmark scoring, validation semantics, or image comparison behavior in this task.
+
+**Acceptance:** `src/benchmark/ptbench.cpp` no longer requires a >3,000-line guardrail note, and `ptbench --help`, `ptbench validate-scene`, representative CPU benchmark runs, and benchmark artifact JSON remain equivalent.
+
+**Evidence:** Reduced `ptbench.cpp` to the executable entrypoint, moved CLI dispatch to `BenchmarkCli.*`, moved benchmark runtime command handling to `BenchmarkRuntime.*`, and split experiment/release-check commands to `BenchmarkExperiments.cpp`. `ptbench.cpp` no longer appears in source-size guardrail findings.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptbench`; `build\presets\desktop-clang-debug\bin\ptbench.exe --help`; `build\presets\desktop-clang-debug\bin\ptbench.exe validate-scene --scene assets\scenes\cornell_native.json --json`; `build\presets\desktop-clang-debug\bin\ptbench.exe run --scene assets\scenes\cornell_native.json --backend cpu --renderer-path cpu-scalar --resolution 64x64 --spp 1 --max-depth 2 --output artifacts\validation\decomp_ptbench_cpu --json`; `build\presets\desktop-clang-debug\bin\ptbench.exe validate-artifacts --dir artifacts\validation\decomp_ptbench_cpu --json`
+
+## [x] DECOMP36 - Split Qt dock panel builders by panel domain
+
+**Deliverable:** Move large dock content builders out of `src/app/QtDockPanels.cpp` into focused files for scene/inspector panels, render/device/performance panels, asset/script/timeline/physics panels, and conversion/status helpers.
+
+**Implementation hints:** Preserve `QtDockPanelContent` and `BuildQtDockPanels()` as the compatibility entry points. Keep Qt-free model construction in `src/app`; do not move actual Qt widget code into these files.
+
+**Acceptance:** `src/app/QtDockPanels.cpp` falls below the `.cpp` warning threshold, the Qt shell displays the same dock panel content, and `ptapp --ui-model-smoke` still passes.
+
+**Evidence:** Split dock panel construction into focused `QtDockPanelsShared.cpp`, `QtDockPanelsScene.cpp`, `QtDockPanelsRender.cpp`, `QtDockPanelsAssets.cpp`, `QtDockPanelsPlatform.cpp`, and `QtDockPanelsInternal.h` while keeping `BuildQtDockPanels()` as the compatibility entry point.
+
+**Validation:** `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`
+
+## [x] DECOMP37 - Split viewport interaction helpers by responsibility
+
+**Deliverable:** Split `src/app/ViewportInteraction.cpp` into focused files for camera/orbit/FPS math, picking and ray tests, selection overlays, gizmo hit testing/drawing, and animation/physics interaction helpers.
+
+**Implementation hints:** Keep public viewport interaction structs and call sites stable until the move-only split is green. Do not change picking priority, gizmo drag math, camera controls, animation sampling, or collision behavior during the split.
+
+**Acceptance:** `src/app/ViewportInteraction.cpp` falls below the `.cpp` warning threshold, and viewport picking, selection overlays, gizmo hover/drag, FPS navigation, and animation playback behave unchanged in the Qt shell.
+
+**Evidence:** Split viewport code into focused math, picking, overlay, gizmo, FPS/physics, and dynamic-physics gate implementation files behind `ViewportInteractionInternal.h`, leaving `ViewportInteraction.cpp` as a small module anchor.
+
+**Validation:** `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`
+
+## [x] DECOMP38 - Move scene asset loading implementation out of `SceneAssetLoader.h`
+
+**Deliverable:** Split `src/assets/SceneAssetLoader.h` into a small public header plus `.cpp` implementation files for scene asset expansion, mesh/material conversion, path resolution, and diagnostics.
+
+**Implementation hints:** Preserve existing include paths initially with a transitional umbrella header if needed. Avoid changing accepted scene asset schemas, importer behavior, or diagnostics text.
+
+**Acceptance:** `src/assets/SceneAssetLoader.h` falls below the header warning threshold, checked-in scenes still validate and expand to equivalent geometry/material data, and existing call sites compile without broad include churn.
+
+**Evidence:** Moved scene asset expansion helpers and `ExpandSceneAssetReferences()` implementation to `src/assets/SceneAssetLoader.cpp`; kept `SceneAssetLoader.h` as a small transitional API.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset desktop-clang-debug --target pt_scripting_smoke`; `build\presets\desktop-clang-debug\bin\pt_scripting_smoke.exe`; `build\presets\desktop-clang-debug\bin\ptapp.exe --check-scene-schema`
+
+## [x] DECOMP39 - Move asset importer implementation out of `AssetImporters.h`
+
+**Deliverable:** Split `src/assets/AssetImporters.h` into focused public declarations and `.cpp` implementation files for OBJ/MTL, glTF/GLB, texture metadata, and importer capability helpers.
+
+**Implementation hints:** Keep importer result types and registry-facing APIs stable. Do not change supported extensions, fallback material behavior, texture metadata interpretation, or asset hash generation in this move.
+
+**Acceptance:** `src/assets/AssetImporters.h` falls below the header warning threshold, asset importer smoke coverage still passes, and representative OBJ/MTL and glTF/GLB scenes expand equivalently.
+
+**Evidence:** Moved importer registry, fake importer, glTF/GLB, OBJ/MTL, texture metadata, EXR policy, helper parsing, and capability matrix implementations to `src/assets/AssetImporters.cpp`; kept declarations in `AssetImporters.h`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `build\presets\desktop-clang-debug\bin\ptapp.exe --check-assets`; `build\presets\desktop-clang-debug\bin\ptapp.exe --check-scene-schema`; `build\presets\desktop-clang-debug\bin\ptapp.exe --render --scene assets\scenes\animated_cube_test.json --width 16 --height 16 --spp 1 --max-depth 1 --output artifacts\decomp39_animated_cube_smoke.png`
+
+## [x] DECOMP40 - Split scene public contracts from `Scene.h`
+
+**Deliverable:** Split `src/scene/Scene.h` into focused headers for JSON values, scene document schema, ECS/world runtime types, frame lifecycle contracts, and render extraction contracts.
+
+**Implementation hints:** Keep `Scene.h` as a transitional umbrella include until call sites can migrate safely. Do this after the scene `.cpp` splits are stable; avoid public type renames and serialization-order changes.
+
+**Acceptance:** `src/scene/Scene.h` falls below the header warning threshold, old includes still compile during the transition, focused headers are available for new code, and scene load/serialize tests remain unchanged.
+
+**Evidence:** Split scene public contracts into `Json.h`, `SceneTypes.h`, `SceneDocumentSchema.h`, `SceneDocument.h`, `SceneWorld.h`, `FrameLifecycle.h`, and `RenderExtraction.h`; kept `Scene.h` as a transitional umbrella include.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `ctest --test-dir build/presets/desktop-clang-debug --output-on-failure`; `cmake --build --preset desktop-clang-debug --target pt_scripting_smoke`; `build\presets\desktop-clang-debug\bin\pt_scripting_smoke.exe`
+
+## [x] DECOMP41 - Split benchmark sweep commands from `BenchmarkRuntime.cpp`
+
+**Deliverable:** Move thread-count, SIMD-kernel, and tile-size sweep command implementations out of `src/benchmark/BenchmarkRuntime.cpp` into a focused benchmark sweep module.
+
+**Implementation hints:** Keep command names, flags, JSON output fields, artifact paths, and shared runtime helpers stable. Expose only narrow internal helpers needed by moved benchmark command files.
+
+**Acceptance:** `BenchmarkRuntime.cpp` is smaller, sweep commands still compile into `ptbench`, and the source-size guardrail coverage note has an explicit todo for the remaining benchmark runtime warning.
+
+**Evidence:** Added `BenchmarkSweeps.cpp` for `thread-sweep`, `simd-sweep`, and `tile-sweep`; added `BenchmarkRuntimeInternal.h` for shared internal parsing, JSON, directory, and benchmark-run helpers; wired the new source into `ptbench`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptbench`; `build\presets\desktop-clang-debug\bin\ptbench.exe simd-sweep --rays 1024 --triangles 16 --output artifacts\validation\decomp41_simd_sweep`; `build\presets\desktop-clang-debug\bin\ptbench.exe thread-sweep --scene assets\scenes\cornell_native.json --workers 1 --spp 1 --resolution 16x16 --output artifacts\validation\decomp41_thread_sweep`; `build\presets\desktop-clang-debug\bin\ptbench.exe tile-sweep --scene assets\scenes\cornell_native.json --workers 1 --spp 1 --resolution 16x16 --output artifacts\validation\decomp41_tile_sweep`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\source_size_report.ps1 -CheckGuardrails`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\todo_audit.ps1`
+
+## [x] DECOMP42 - Split Qt startup style and splash helpers from `QtPlatform.cpp`
+
+**Deliverable:** Move Qt startup palette, stylesheet, surface setup, and splash-screen widget implementation out of `src/platform/qt/QtPlatform.cpp` into a focused Qt platform startup/style module.
+
+**Implementation hints:** Keep `QtPlatform.h` unchanged. Hide the concrete splash widget type behind Qt-only factory/helper functions so the main platform implementation does not need to name it.
+
+**Acceptance:** `QtPlatform.cpp` no longer requires a >3,000-line guardrail note, Qt startup splash calls still compile, and the Qt app smoke command remains green.
+
+**Evidence:** Added `QtPlatformStyle.h/.cpp` for startup palette/style helpers and splash lifecycle helpers, changed `QtPlatform.cpp` to call the new helper API, and wired the new source into `pt_platform_qt`.
+
+**Validation:** `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\source_size_report.ps1 -CheckGuardrails`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\todo_audit.ps1`
+
+## [x] DECOMP43 - Split app benchmark actions from `AppRuntime.cpp`
+
+**Deliverable:** Move backend/accelerator diagnostics, benchmark menu action resolution, benchmark launch command construction, latest-result discovery, and explorer/open helpers out of `src/app/AppRuntime.cpp` into a focused app benchmark action module.
+
+**Implementation hints:** Keep non-GUI command output, benchmark menu action IDs, fallback scene selection, artifact directory naming, and `ptbench run` command construction stable. Do not change UI model command routing during this move.
+
+**Acceptance:** `AppRuntime.cpp` no longer owns benchmark action helper implementations, `ptapp` still exposes backend and accelerator diagnostics, and UI model smoke coverage still reaches benchmark menu action wiring.
+
+**Evidence:** Added `src/app/AppBenchmarkActions.h` and `src/app/AppBenchmarkActions.cpp`; moved `PrintBackendDiagnostics()`, `PrintAcceleratorDiagnostics()`, benchmark backend/renderer/path helpers, `LaunchBenchmarkRun()`, latest benchmark result discovery, explorer open helper, and benchmark command resolution; wired the new source into `ptapp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptapp`; `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp`; `build\presets\desktop-clang-debug\bin\ptapp.exe --list-backends`; `build\presets\desktop-clang-debug\bin\ptapp.exe --list-accelerators`; `build\presets\desktop-clang-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`
+
+## [x] DECOMP44 - Split benchmark image comparison helpers from `BenchmarkRuntime.cpp`
+
+**Deliverable:** Move tolerance parsing, PNG/EXR placeholder loading, image comparison, and diff heatmap generation out of `src/benchmark/BenchmarkRuntime.cpp` into a focused benchmark image helper module.
+
+**Implementation hints:** Keep reference-image tolerance semantics, supported image extensions, heatmap output paths, and benchmark JSON fields stable. Expose only the narrow internal helper types/functions needed by benchmark runtime and release-check code.
+
+**Acceptance:** `BenchmarkRuntime.cpp` is smaller, benchmark commands can still load reference/candidate images, and diff heatmap generation remains wired into both single-run comparison and artifact validation flows.
+
+**Evidence:** Added `src/benchmark/BenchmarkImages.cpp`; moved `ParseTolerance()`, image loading helpers, `CompareImages()`, and `SaveDiffHeatmap()`; added shared image comparison contracts to `BenchmarkRuntimeInternal.h`; wired the new source into `ptbench`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptbench`; `build\presets\desktop-clang-debug\bin\ptbench.exe run --scene assets\scenes\cornell_native.json --backend cpu --renderer-path cpu-scalar --resolution 16x16 --spp 1 --max-depth 1 --output artifacts\validation\decomp44_ptbench_run --json`; `build\presets\desktop-clang-debug\bin\ptbench.exe validate-artifacts --dir artifacts\validation\decomp44_ptbench_run --json`; `build\presets\desktop-clang-debug\bin\ptbench.exe compare --reference artifacts\validation\decomp44_ptbench_run\beauty.exr --image artifacts\validation\decomp44_ptbench_run\beauty.exr --output artifacts\validation\decomp44_compare`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\source_size_report.ps1 -CheckGuardrails`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\todo_audit.ps1`
+
+## [x] DECOMP45 - Split app runtime startup and window support helpers from `AppRuntime.cpp`
+
+**Deliverable:** Move app runtime startup support, native/Qt menu conversion helpers, window title formatting, runtime metadata logging, optional console setup, logging/crash bootstrap, and Qt event-drain helper code out of `src/app/AppRuntime.cpp`.
+
+**Implementation hints:** Keep `RunApp()` control flow and all CLI/window behavior stable. Reuse existing option helper functions for platform availability and Qt metadata instead of duplicating them.
+
+**Acceptance:** `AppRuntime.cpp` is smaller, app startup diagnostics and window title/status behavior still compile across desktop, Qt, and D3D12 Qt presets, and non-GUI smoke commands still pass.
+
+**Evidence:** Added `src/app/AppRuntimeSupport.h` and `src/app/AppRuntimeSupport.cpp`; moved app runtime support helpers out of `AppRuntime.cpp`; wired the new source into `ptapp`; removed duplicate platform/Qt metadata helper definitions in favor of `AppOptions`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptapp`; `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp`; `build\presets\desktop-clang-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --ui-model-smoke`
+
+## [x] DECOMP46 - Split benchmark inspection commands from `BenchmarkRuntime.cpp`
+
+**Deliverable:** Move benchmark help text, scene/backend/path listing, scene validation, material coverage, capabilities dump, and compare command implementations out of `src/benchmark/BenchmarkRuntime.cpp`.
+
+**Implementation hints:** Keep command names, flags, stdout/stderr text, JSON fields, material coverage output, and compare heatmap behavior stable. Share only narrow internal helpers needed by moved command implementations.
+
+**Acceptance:** `BenchmarkRuntime.cpp` falls below the `.cpp` warning threshold, `ptbench` still dispatches the moved commands, and benchmark run/artifact paths remain unchanged.
+
+**Evidence:** Added `src/benchmark/BenchmarkInspectionCommands.cpp`; moved `PrintHelp()`, `ListScenesCommand()`, `ListBackendsCommand()`, `ListRendererPathsCommand()`, `ValidateSceneCommand()`, `MaterialCoverageCommand()`, `DumpCapabilitiesCommand()`, and `CompareCommand()`; added internal declarations for renderer-path/backend validation helpers; wired the new source into `ptbench`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptbench`; `build\presets\desktop-clang-debug\bin\ptbench.exe --help`; `build\presets\desktop-clang-debug\bin\ptbench.exe list-scenes`; `build\presets\desktop-clang-debug\bin\ptbench.exe validate-scene --scene assets\scenes\cornell_native.json --json`; `build\presets\desktop-clang-debug\bin\ptbench.exe dump-capabilities`; `build\presets\desktop-clang-debug\bin\ptbench.exe compare --reference artifacts\validation\decomp44_ptbench_run\beauty.exr --image artifacts\validation\decomp44_ptbench_run\beauty.exr --output artifacts\validation\decomp46_compare`
+
+## [x] DECOMP47 - Split Qt platform lifecycle and diagnostics from `QtPlatform.cpp`
+
+**Deliverable:** Move Qt platform lifecycle initialization/shutdown, QApplication ownership, Qt message handler diagnostics, and Qt platform accessors out of `src/platform/qt/QtPlatform.cpp`.
+
+**Implementation hints:** Keep `QtPlatform.h` unchanged and leave widget/window behavior in the existing implementation. Preserve Qt message forwarding fields and startup palette behavior.
+
+**Acceptance:** `QtPlatform.cpp` is smaller, `pt_platform_qt` still links, and Qt app smoke coverage passes in both Qt desktop and D3D12 Qt presets.
+
+**Evidence:** Added `src/platform/qt/QtPlatformLifecycle.cpp`; moved Qt message handler installation/restoration, `QtAppRuntime`, `QtPlatform::initialize()`, `QtPlatform::shutdown()`, and platform accessor methods; wired the new source into `pt_platform_qt`.
+
+**Validation:** `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --ui-model-smoke`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\source_size_report.ps1 -CheckGuardrails`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\todo_audit.ps1`
+
+## [x] DECOMP48 - Split editor world support from `AppRuntime.cpp`
+
+**Deliverable:** Move editor-world selection and command entity helper operations out of `src/app/AppRuntime.cpp` into a focused app support module.
+
+**Implementation hints:** Keep UI command routing stable. Avoid changing scene document mutations, command IDs, selected-entity ordering, or status text while moving helpers.
+
+**Acceptance:** `AppRuntime.cpp` is smaller, command entity resolution still compiles through `RunApp()`, and desktop, Qt, and D3D12 Qt UI model smoke coverage remains green.
+
+**Evidence:** Added `src/app/AppEditorWorldSupport.h` and `src/app/AppEditorWorldSupport.cpp`; moved sorted unique entity ID handling and command entity resolution out of `AppRuntime.cpp`; kept the helper API narrow after review showed the old editor-world snapshot helpers were no longer active call sites; wired the new source into `ptapp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptapp`; `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp`; `build\presets\desktop-clang-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --ui-model-smoke`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\source_size_report.ps1 -CheckGuardrails`
+
+## [x] DECOMP49 - Split Qt dock tree widget from `QtPlatform.cpp`
+
+**Deliverable:** Move the Qt dock tree drag/drop, delete-key, and context-menu widget implementation out of `src/platform/qt/QtPlatform.cpp` into a focused Qt platform module.
+
+**Implementation hints:** Keep `QtPlatform.h` stable. Preserve asset browser and scene tree MIME payloads, item role interpretation, extended selection setup, and dock row activation routing.
+
+**Acceptance:** `QtPlatform.cpp` is smaller, `pt_platform_qt` still links, dock tree construction uses the new factory, and Qt desktop plus D3D12 Qt smoke coverage remains green.
+
+**Evidence:** Added `src/platform/qt/QtPlatformDockTree.h` and `src/platform/qt/QtPlatformDockTree.cpp`; moved `QtDockTreeWidget` and shared dock-tree MIME constants into the new module; replaced direct tree construction in `QtMainWindow` with `CreateQtDockTreeWidget()`; wired the new source into `pt_platform_qt`.
+
+**Validation:** `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --ui-model-smoke`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\source_size_report.ps1 -CheckGuardrails`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\todo_audit.ps1`
+
+## [x] DECOMP50 - Split benchmark capture and trace profiler support from `BenchmarkRuntime.cpp`
+
+**Deliverable:** Move benchmark process environment helpers, PIX autorun argument construction, and trace profiler implementation out of `src/benchmark/BenchmarkRuntime.cpp`.
+
+**Implementation hints:** Keep `ptbench` command-line behavior, environment variable names, PIX autorun config keys, profiler trace JSON schema, and D3D12 capture conditionals stable.
+
+**Acceptance:** `BenchmarkRuntime.cpp` is smaller, `ptbench` still dispatches autorun and benchmark run commands, and desktop plus D3D12 Qt `ptbench` builds remain green.
+
+**Evidence:** Added `src/benchmark/BenchmarkCapture.cpp` for process environment helpers, PIX autorun config parsing, and argument view construction; added `src/benchmark/BenchmarkTraceProfiler.h/.cpp` for `TraceProfiler`; added narrow internal declarations for shared environment helpers; wired the new sources into `ptbench`; fixed the Windows `LoadImage` macro collision exposed by the D3D12 `ptbench` build.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptbench`; `cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptbench`; `build\presets\desktop-clang-debug\bin\ptbench.exe --help`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\source_size_report.ps1 -CheckGuardrails`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\todo_audit.ps1`
+
+## [x] DECOMP51 - Split scalar CPU tracer implementation from `PathTracer.cpp`
+
+**Deliverable:** Move `ScalarCpuPathTracer` construction, camera ray generation, ray/SDF intersection, shading, sampling, and render batch execution out of `src/pathtracer/PathTracer.cpp` into a focused scalar CPU tracer module.
+
+**Implementation hints:** Keep the public `IPathTracer` and CPU renderer-path behavior stable. Do not change sampling order, material evaluation, SDF hit priority, or film output while moving code.
+
+**Acceptance:** `PathTracer.cpp` is smaller, CPU scalar renders remain byte-stable or within existing tolerance, and desktop `ptapp`/`ptbench` CPU smoke coverage remains green.
+
+**Evidence:** Added `src/pathtracer/ScalarCpuPathTracer.cpp` for scalar construction, camera rays, ray/SDF intersections, BSDF/direct-light sampling, pixel shading, trace execution, and render-batch code. `src/pathtracer/PathTracer.cpp` now keeps shared/null-tracer and transform-update support only, and no longer appears in source-size guardrail findings.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptapp ptbench`; `build\presets\desktop-clang-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\desktop-clang-debug\bin\ptbench.exe run --scene assets\scenes\cornell_native.json --backend cpu --renderer-path cpu-scalar --resolution 32x32 --spp 1 --max-depth 2 --output artifacts\validation\decomp51_55_cpu --json`; `build\presets\desktop-clang-debug\bin\ptbench.exe validate-artifacts --dir artifacts\validation\decomp51_55_cpu --json`
+
+## [x] DECOMP52 - Split UI validation smoke domains from `UiValidation.cpp`
+
+**Deliverable:** Keep public UI validation entry points stable while moving menu/layout/selection, Qt dock/camera, benchmark/status, asset/drop, and release-gate checks into focused validation files.
+
+**Implementation hints:** Preserve assertion text and release-gate evidence field names. Split by smoke-test domain rather than by arbitrary line ranges.
+
+**Acceptance:** `UiValidation.cpp` is smaller, `ptapp --ui-model-smoke` remains green across desktop, Qt, and D3D12 Qt presets, and release gate evidence JSON stays schema-compatible.
+
+**Evidence:** Added `UiValidationCameraQt.cpp`, `UiValidationAssets.cpp`, `UiValidationBenchmarkStatus.cpp`, `UiValidationSceneTree.cpp`, `UiValidationReleaseGate.cpp`, and `UiValidationInternal.h` so camera/Qt dock, asset/drop import, benchmark/status, ECS scene-tree, and release-gate smoke domains are separate while `RunUiModelSmokeTests()` remains the public orchestrator.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptapp`; `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp`; `build\presets\desktop-clang-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --ui-model-smoke`
+
+## [x] DECOMP53 - Split scene asset format loaders from `SceneAssetLoader.cpp`
+
+**Deliverable:** Move OBJ/MTL and glTF scene asset parsing out of `src/assets/SceneAssetLoader.cpp` into focused scene asset loader files, leaving scene document expansion and mutation orchestration in the original file.
+
+**Implementation hints:** Keep asset path resolution, importer diagnostics, material defaults, and accepted scene asset schemas stable.
+
+**Acceptance:** `SceneAssetLoader.cpp` is smaller, checked-in scenes still validate, and representative OBJ/MTL plus glTF/GLB asset scenes expand equivalently.
+
+**Evidence:** Added `SceneAssetLoaderInternal.h`, `SceneAssetLoaderSupport.cpp`, `SceneAssetObjLoader.cpp`, and `SceneAssetGltfLoader.cpp`. OBJ/MTL and glTF parsing moved out of `SceneAssetLoader.cpp`; path resolution, clamp, identity transform, and parser result contracts are shared through the private internal header; scene document expansion remains in `SceneAssetLoader.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug --target ptapp ptbench pt_scripting_smoke`; `build\presets\desktop-clang-debug\bin\pt_scripting_smoke.exe`; `build\presets\desktop-clang-debug\bin\ptbench.exe validate-scene --scene assets\scenes\cornell_native.json --json`; `build\presets\desktop-clang-debug\bin\ptbench.exe run --scene assets\scenes\cornell_native.json --backend cpu --renderer-path cpu-scalar --resolution 32x32 --spp 1 --max-depth 2 --output artifacts\validation\decomp51_55_cpu --json`
+
+## [x] DECOMP54 - Split D3D12 scene BVH packing helpers from `D3D12GpuPathTracer.Scene.cpp`
+
+**Deliverable:** Move pure CPU BVH build/packing helpers and dynamic instance BVH packing out of `src/gpu/D3D12GpuPathTracer.Scene.cpp` into a D3D12 scene BVH helper module.
+
+**Implementation hints:** Keep GPU buffer layouts, descriptor contracts, upload ordering, and DXR/compute fallback behavior stable. Prefer a pure helper boundary before moving D3D12 resource upload code.
+
+**Acceptance:** `D3D12GpuPathTracer.Scene.cpp` is smaller, D3D12 Qt builds remain green, and D3D12 smoke rendering still produces equivalent artifacts.
+
+**Evidence:** Added `D3D12GpuPathTracer.SceneBvh.h/.cpp` for `BvhTriRef`, `BvhBuildConfig`, triangle BVH construction, dynamic instance BVH packing, quaternion bounds rotation, and dynamic-instance BVH emission. `D3D12GpuPathTracer.Scene.cpp` now keeps scene upload/update orchestration and calls the helper API.
+
+**Validation:** `cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp ptbench`; `build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\windows-clangcl-d3d12-qt-debug\bin\ptbench.exe --help`
+
+## [x] DECOMP55 - Split AppRuntime Qt scene document action handlers
+
+**Deliverable:** Move Qt scene document action handlers for entity lookup/id allocation, transform/camera/light promotion, preserve-world reparenting, scene-tree delete/reparent, and asset-browser scene/model spawn out of `src/app/AppRuntime.cpp`.
+
+**Implementation hints:** Build on `AppEditorWorldSupport` only where the helper is actively used. Avoid reintroducing stale legacy editor-world snapshot APIs.
+
+**Acceptance:** `AppRuntime.cpp` is smaller, scene graph delete/reparent and asset browser spawn actions still work, and UI model smoke coverage remains green.
+
+**Evidence:** Added `AppQtSceneDocumentActions.h/.cpp` for Qt scene-document lookup, SDF lookup, next object ID allocation, legacy transform promotion/removal, scene object ensure, root detection, sibling ordering, cycle checks, preserve-world parent changes, and legacy camera/light promotion. The AppRuntime Qt handlers now call the focused helper API while keeping runtime reloads, command history, event logging, selection updates, and asset-browser UI side effects in the runtime loop.
+
+**Validation:** `cmake --build --preset desktop-clang-qt-debug --target ptapp`; `cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp ptbench`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --ui-model-smoke`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\source_size_report.ps1 -CheckGuardrails`

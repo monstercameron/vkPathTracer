@@ -16,12 +16,15 @@ Two things in one box:
 
 Neither mode is an afterthought. Both are first-class.
 
+The current native focus is the Qt editor shell, the Windows D3D12 path, and the CPU preview/reference path. The important recent work is making those pieces cooperate without the UI thread being held hostage by heavy render, physics, or scripting work.
+
 ---
 
 ## What it runs on
 
 Native backends: Vulkan, D3D12, Metal.  
 Web target: C++ → WebAssembly via Emscripten + WebGPU/WGSL.  
+CPU paths: scalar reference, tiled preview rendering, and AVX2 where enabled.
 All written in C++23, Clang/LLVM first, MSVC as a fallback.
 
 The web version isn't a JavaScript rewrite. It's the same C++ compiled differently.
@@ -40,6 +43,9 @@ The renderer speaks the usual language:
 - Physics via Jolt (deterministic mode available, knowingly costs performance)
 - Lua scripting for anything that doesn't belong in C++
 - Animation timelines with transform, morph, material, light, and camera tracks
+- OBJ and glTF/GLB asset import/expansion with deterministic import hashes
+- Qt editor shell with native docks, menus, status bar, inspector, asset browser, transform gizmos, and persisted dock layout
+- Background render coordination for preview mode: camera/settings updates and dynamic instance transforms can be posted without rebuilding the whole scene
 
 ---
 
@@ -253,7 +259,7 @@ Windows D3D12 Qt preview example:
   --ui-present-hz 30
 ```
 
-The Qt path is a platform/editor shell. Renderer backends receive native handles and capability descriptors; they must not receive `QWidget*`, `QWindow*`, or other Qt objects. The CPU preview path publishes throttled RGBA8 display frames into a latest-wins viewport handoff; `--ui-present-hz` controls that publish cap and defaults to 30 Hz. The D3D12 path uses the Qt viewport only as a native presentation surface. The Qt shell wraps the viewport in a `QMainWindow` with a native menu bar, native status bar, and dock widgets generated from the editor models. In the Qt CPU preview, left-click selects a pickable object through front-facing mesh triangles and shows its projected 3D bounding box with transform gizmos, `T`/`R`/`S`/`G` switch translate/rotate/scale/universal gizmo modes, right or middle drag orbits the camera, the mouse wheel dollies, and `F` toggles FPS camera mode with `W`/`A`/`S`/`D` plus `Q`/`E` movement.
+The Qt path is a platform/editor shell. Renderer backends receive native handles and capability descriptors; they must not receive `QWidget*`, `QWindow*`, or other Qt objects. The CPU preview path publishes throttled RGBA8 display frames into a latest-wins viewport handoff; `--ui-present-hz` controls that publish cap and defaults to 30 Hz. Heavy CPU preview rendering runs behind a render coordinator so the Qt/Win32 event loop can keep processing input. Camera changes, render settings, and dynamic instance transform updates are coalesced and posted to the render side instead of forcing full scene reloads. The D3D12 path uses the Qt viewport only as a native presentation surface. The Qt shell wraps the viewport in a `QMainWindow` with a native menu bar, native status bar, and dock widgets generated from the editor models. In the Qt CPU preview, left-click selects a pickable object through front-facing mesh triangles and shows its projected 3D bounding box with transform gizmos, `T`/`R`/`S`/`G` switch translate/rotate/scale/universal gizmo modes, right or middle drag orbits the camera, the mouse wheel dollies, and `F` toggles FPS camera mode with `W`/`A`/`S`/`D` plus `Q`/`E` movement.
 
 On Windows Qt builds, `ptapp.exe` uses the GUI subsystem and does not open a separate terminal by default. Pass `--console` or `--terminal` only when you want interactive stdout/stderr diagnostics.
 
@@ -372,13 +378,14 @@ Core
 ├── Application lifecycle + mode switching
 ├── ECS + phase-scheduled world
 ├── Scene document → runtime → render proxy pipeline
-├── Asset import (mesh, material, texture, animation)
+├── Asset import (OBJ, glTF/GLB metadata, mesh, material, texture, animation)
 ├── Renderer backends
 │   ├── Vulkan
-│   ├── D3D12
+│   ├── D3D12 compute + DXR runtime objects
 │   ├── Metal
 │   └── WebGPU / WGSL (via Emscripten)
-├── Path tracer (NEE, BSDF sampling, multiple material models)
+├── Path tracer (scalar CPU, tiled CPU, AVX2, NEE, BSDF sampling, multiple material models)
+├── Render coordinator (latest-wins frame handoff, coalesced scene/camera/settings commands)
 ├── Physics (Jolt, deterministic mode available)
 ├── Scripting (Lua)
 ├── Benchmark harness (structured JSON/CSV/EXR output)
@@ -443,6 +450,6 @@ Transform authority is explicit per entity — Physics, Animation, Script, Edito
 
 ## Status
 
-Early prototyping phase. See [`experiments/protopt/`](experiments/protopt/) for the current working spike: a single-file D3D12 Cornell box path tracer with NEE, diffuse/glossy/mirror materials, and a rotating camera — used to validate the D3D12 rendering loop before building the module structure above.
+Active native prototype. The single-file D3D12 spike in [`experiments/protopt/`](experiments/protopt/) is now historical context; the current app has a CMake-driven `ptapp`, Qt/raw/headless platform paths, CPU preview/reference rendering, D3D12 backend work, Jolt physics, Lua scripting, asset import, editor models, benchmark tooling, and self-diagnostics.
 
-Full architecture is specified in [`docs/plan.md`](docs/plan.md).
+Full architecture is specified in [`docs/plan.md`](docs/plan.md), with current implementation notes spread through `docs/qt_*.md`, [`docs/changelog.md`](docs/changelog.md), and [`docs/todos.md`](docs/todos.md).
