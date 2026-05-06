@@ -97,14 +97,14 @@ vkpt::scene::Vec3 RotateByQuat(const vkpt::scene::Vec3& value, const vkpt::scene
   return dot / (forward_len * target_len) > 0.995f;
 }
 
-float DistanceXZ(const vkpt::scene::TransformComponent& lhs,
-                 const vkpt::scene::TransformComponent& rhs) {
+[[maybe_unused]] float DistanceXZ(const vkpt::scene::TransformComponent& lhs,
+                                  const vkpt::scene::TransformComponent& rhs) {
   const float dx = lhs.translation.x - rhs.translation.x;
   const float dz = lhs.translation.z - rhs.translation.z;
   return std::sqrt(dx * dx + dz * dz);
 }
 
-const vkpt::scene::WorldCommandBuffer::SetTransformCommand* FindSetTransform(
+[[maybe_unused]] const vkpt::scene::WorldCommandBuffer::SetTransformCommand* FindSetTransform(
     const vkpt::scene::WorldCommandBuffer& commands,
     vkpt::core::StableId entity_id) {
   for (const auto& command : commands.commands()) {
