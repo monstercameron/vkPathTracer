@@ -105,11 +105,16 @@ std::vector<ViewportPickable>
 BuildViewportPickables(const vkpt::scene::SceneDocument &document,
                        const vkpt::pathtracer::RTSceneData &scene) {
   std::vector<ViewportPickable> pickables;
+  pickables.reserve(document.entities.size() +
+                    document.sdf_primitives.size() +
+                    scene.instances.size() +
+                    scene.sdf_primitives.size());
   const auto worldSnapshot = BuildSceneWorldSnapshot(document);
   const auto *world = worldSnapshot ? &worldSnapshot.value() : nullptr;
   std::unordered_map<vkpt::core::StableId,
                      const vkpt::scene::SceneGeometryDefinition *>
       geometryById;
+  geometryById.reserve(document.geometry.size());
   for (const auto &geometry : document.geometry) {
     geometryById[geometry.id] = &geometry;
   }
@@ -121,6 +126,8 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
   };
   std::vector<MeshPickableRef> meshRefs;
   meshRefs.reserve(document.entities.size());
+  // RT instances are emitted in document mesh order, so keep the same compact
+  // entity list before pairing them with backend geometry below.
   for (const auto &entity : document.entities) {
     if (!entity.has_mesh) {
       continue;
@@ -153,6 +160,9 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
     }
   };
 
+  // Prefer RT-scene geometry when it is available: it reflects tessellation,
+  // dynamic transform flags, and backend-visible triangle ranges. The later
+  // document pass is a fallback for partial or failed RT conversion paths.
   if (!meshRefs.empty() && !scene.instances.empty()) {
     const std::size_t count = std::min(meshRefs.size(), scene.instances.size());
     for (std::size_t instanceIndex = 0; instanceIndex < count;
@@ -161,6 +171,9 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
       const auto &meshRef = meshRefs[instanceIndex];
       if (instance.has_flag(
               vkpt::pathtracer::kRTInstanceFlagDynamicTransform)) {
+        // Dynamic RT instances keep local mesh vertices in the document, so
+        // rebuild pick triangles from the current instance transform instead
+        // of using the flattened RT vertex buffer.
         const auto geometryIt = geometryById.find(meshRef.mesh_id);
         if (geometryIt == geometryById.end() || geometryIt->second == nullptr) {
           continue;
@@ -179,6 +192,7 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
         pickable.bounds = bounds;
         pickable.label = meshRef.label;
         pickable.require_triangle_hit = true;
+        pickable.triangles.reserve(geometry->indices.size() / 3u);
         for (std::size_t index = 0; index + 2u < geometry->indices.size();
              index += 3u) {
           const auto i0 = geometry->indices[index + 0u];
@@ -222,6 +236,7 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
       pickable.bounds = bounds;
       pickable.label = meshRef.label;
       pickable.require_triangle_hit = true;
+      pickable.triangles.reserve(instance.triangle_count);
       for (uint32_t triangle = 0; triangle < instance.triangle_count;
            ++triangle) {
         const uint32_t base = (instance.first_triangle + triangle) * 3u;
@@ -275,6 +290,7 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
       pickable.bounds = bounds;
       pickable.label = PickableLabel(entity.name, entity.id);
       pickable.require_triangle_hit = true;
+      pickable.triangles.reserve(geometry->indices.size() / 3u);
       for (std::size_t index = 0; index + 2u < geometry->indices.size();
            index += 3u) {
         const auto i0 = geometry->indices[index + 0u];
@@ -306,6 +322,8 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
     return pickables;
   }
 
+  // Last resort for generated scenes without document entity ids: expose
+  // stable synthetic ids so viewport selection and labels still work.
   for (std::size_t instanceIndex = 0; instanceIndex < scene.instances.size();
        ++instanceIndex) {
     const auto &instance = scene.instances[instanceIndex];
@@ -330,6 +348,7 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
       pickable.bounds = bounds;
       pickable.label = "instance " + std::to_string(id);
       pickable.require_triangle_hit = true;
+      pickable.triangles.reserve(instance.triangle_count);
       for (uint32_t triangle = 0; triangle < instance.triangle_count;
            ++triangle) {
         const uint32_t base = (instance.first_triangle + triangle) * 3u;
@@ -553,6 +572,8 @@ bool IntersectPickableForSelection(const ViewportRay &ray,
     return true;
   }
 
+  // Bounds choose candidates cheaply, but mesh pickables need triangle hits so
+  // a large AABB cannot select through empty space.
   bool hit = false;
   float bestTriangleDistance = maxDistance;
   for (const auto &triangle : pickable.triangles) {

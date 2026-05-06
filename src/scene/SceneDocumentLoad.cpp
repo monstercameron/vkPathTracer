@@ -29,8 +29,9 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
   SceneDocument doc;
   std::unordered_set<std::uint64_t> usedIds;
   const auto& rootObj = *root;
+  // Sparse documents are allowed, but sections that are present must have the expected JSON kind.
   auto require_kind_if_present = [&](std::string_view key, JsonValue::Kind kind) {
-    const auto it = rootObj.object.find(std::string(key));
+    const auto it = rootObj.object.find(key);
     return it == rootObj.object.end() || it->second.kind == kind;
   };
   if (!require_kind_if_present("schema", JsonValue::Kind::String) ||
@@ -58,12 +59,23 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
 
   if (const auto assetsNode = rootObj.object.find("assets"); assetsNode != rootObj.object.end() &&
       assetsNode->second.kind == JsonValue::Kind::Array) {
+    doc.assets.reserve(assetsNode->second.array.size());
+    usedIds.reserve(assetsNode->second.array.size());
     for (const auto& item : assetsNode->second.array) {
       SceneAssetDefinition asset;
       read_u64(item, "id", asset.id);
       read_string(item, "type", asset.type);
       read_string(item, "uri", asset.uri);
+      read_string(item, "name", asset.name);
+      read_u64(item, "parent", asset.parent);
+      read_u32(item, "sibling_order", asset.sibling_order);
+      read_bool(item, "disable_imported_animation", asset.disable_imported_animation);
+      if (const auto transformNode = item.object.find("transform"); transformNode != item.object.end()) {
+        asset.has_transform = true;
+        asset.transform = read_transform(transformNode->second);
+      }
       if (asset.id == 0) {
+        // Authored assets may omit IDs; allocate locally before later reference validation.
         asset.id = allocate_id(usedIds);
       }
       usedIds.insert(asset.id);
@@ -74,6 +86,8 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
   usedIds.clear();
   if (const auto materialsNode = rootObj.object.find("materials"); materialsNode != rootObj.object.end() &&
       materialsNode->second.kind == JsonValue::Kind::Array) {
+    doc.materials.reserve(materialsNode->second.array.size());
+    usedIds.reserve(materialsNode->second.array.size());
     for (const auto& item : materialsNode->second.array) {
       SceneMaterialDefinition material;
       read_u64(item, "id", material.id);
@@ -84,13 +98,13 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       }
       usedIds.insert(material.id);
       ApplyMaterialFamilyPreset(material, SceneMaterialPresetPolicy::Override);
-      if (item.object.contains("albedo")) {
+      if (item.object.find("albedo") != item.object.end()) {
         read_vec3(item, "albedo", material.albedo);
       }
-      if (item.object.contains("emission")) {
+      if (item.object.find("emission") != item.object.end()) {
         read_vec3(item, "emission", material.emission);
       }
-      if (item.object.contains("emission_intensity")) {
+      if (item.object.find("emission_intensity") != item.object.end()) {
         read_float(item, "emission_intensity", material.emission_intensity);
       }
       read_float(item, "roughness", material.roughness);
@@ -110,6 +124,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
 
   if (const auto geometryNode = rootObj.object.find("geometry"); geometryNode != rootObj.object.end() &&
       geometryNode->second.kind == JsonValue::Kind::Array) {
+    doc.geometry.reserve(geometryNode->second.array.size());
     for (const auto& item : geometryNode->second.array) {
       SceneGeometryDefinition geometry;
       read_u64(item, "id", geometry.id);
@@ -146,6 +161,8 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
   usedIds.clear();
   if (const auto sdfNode = rootObj.object.find("sdf_primitives"); sdfNode != rootObj.object.end() &&
       sdfNode->second.kind == JsonValue::Kind::Array) {
+    doc.sdf_primitives.reserve(sdfNode->second.array.size());
+    usedIds.reserve(sdfNode->second.array.size());
     for (const auto& item : sdfNode->second.array) {
       SceneSdfPrimitiveDefinition primitive;
       read_u64(item, "id", primitive.id);
@@ -170,6 +187,8 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
   usedIds.clear();
   if (const auto entitiesNode = rootObj.object.find("entities"); entitiesNode != rootObj.object.end() &&
       entitiesNode->second.kind == JsonValue::Kind::Array) {
+    doc.entities.reserve(entitiesNode->second.array.size());
+    usedIds.reserve(entitiesNode->second.array.size());
     for (const auto& item : entitiesNode->second.array) {
       SceneEntityDefinition entity;
       read_u64(item, "id", entity.id);
@@ -250,6 +269,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         read_vec3(animNode->second, "scale_amplitude", entity.animation.scale_amplitude);
       }
       if (const auto scriptNode = item.object.find("script"); scriptNode != item.object.end()) {
+        // `path` is a legacy alias. Export normalizes the field back to `source`.
         read_string(scriptNode->second, "source", entity.script.script);
         if (entity.script.script.empty()) {
           read_string(scriptNode->second, "path", entity.script.script);
@@ -269,6 +289,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
 
   if (const auto transformsNode = rootObj.object.find("transforms"); transformsNode != rootObj.object.end() &&
       transformsNode->second.kind == JsonValue::Kind::Array) {
+    doc.transforms.reserve(transformsNode->second.array.size());
     for (const auto& item : transformsNode->second.array) {
       SceneTransformEntry entry;
       read_u64(item, "id", entry.id);
@@ -282,6 +303,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
 
   if (const auto camerasNode = rootObj.object.find("cameras"); camerasNode != rootObj.object.end() &&
       camerasNode->second.kind == JsonValue::Kind::Array) {
+    doc.cameras.reserve(camerasNode->second.array.size());
     for (const auto& item : camerasNode->second.array) {
       SceneCameraDefinition cam;
       read_u64(item, "id", cam.id);
@@ -292,6 +314,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
 
   if (const auto lightsNode = rootObj.object.find("lights"); lightsNode != rootObj.object.end() &&
       lightsNode->second.kind == JsonValue::Kind::Array) {
+    doc.lights.reserve(lightsNode->second.array.size());
     for (const auto& item : lightsNode->second.array) {
       SceneLightDefinition light;
       read_u64(item, "id", light.id);
@@ -334,6 +357,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_file(std::string_view
   auto document = std::move(loaded.value());
   std::vector<std::string> asset_diagnostics;
   vkpt::assets::SceneAssetExpansionStats expansion_stats{};
+  // Disk loads expand relative asset references before the second validation pass.
   if (!vkpt::assets::ExpandSceneAssetReferences(document,
                                                 std::filesystem::path(std::string(path)),
                                                 &expansion_stats,
@@ -375,7 +399,14 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
   std::unordered_set<vkpt::core::StableId> assetIds;
   std::unordered_set<vkpt::core::StableId> sdfIds;
   std::unordered_map<vkpt::core::StableId, vkpt::core::StableId> parentByEntity;
+  entityIds.reserve(entities.size());
+  materialIds.reserve(materials.size());
+  geometryIds.reserve(geometry.size());
+  assetIds.reserve(assets.size());
+  sdfIds.reserve(sdf_primitives.size());
+  parentByEntity.reserve(entities.size() + transforms.size());
 
+  // Lookup sets make the later cross-section checks deterministic and order independent.
   if (metadata.schema.empty()) {
     report("metadata schema is empty");
   } else if (metadata.schema != "1.0") {
@@ -394,6 +425,9 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
     }
     if (asset.uri.empty()) {
       report("asset uri is empty for " + std::to_string(asset.id));
+    }
+    if (asset.has_transform && !valid_transform_values(asset.transform)) {
+      report("asset transform has invalid values " + std::to_string(asset.id));
     }
   }
 
@@ -621,6 +655,7 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
     }
     std::unordered_set<vkpt::core::StableId> visited;
     auto current = child;
+    // Walk parent links for each child; a repeated node marks a hierarchy cycle.
     while (parentByEntity.contains(current)) {
       if (!visited.insert(current).second) {
         report("hierarchy cycle includes entity " + std::to_string(child));
@@ -630,6 +665,12 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
       if (current == 0) {
         break;
       }
+    }
+  }
+
+  for (const auto& asset : assets) {
+    if (asset.parent != 0 && !entityIds.contains(asset.parent)) {
+      report("asset import references missing parent " + std::to_string(asset.parent));
     }
   }
 

@@ -85,9 +85,10 @@
       auto qtBuildBenchmarkPanel = [&](const QtDockFrameStats& frameStats) {
         const std::string scenePath =
             config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value;
-        const std::string rendererPath = qtUseBg
-            ? "cpu_tiled_background"
-            : (config.backend.value.empty() ? std::string("event_loop") : config.backend.value);
+        const std::string rendererPath = qtRendererPath.empty()
+            ? (qtUseBg ? std::string("cpu_tiled_background")
+                       : (config.backend.value.empty() ? std::string("event_loop") : config.backend.value))
+            : qtRendererPath;
         auto desc = vkpt::editor::MakeDefaultBenchmarkRunDesc(
             scenePath,
             config.backend.value.empty() ? "cpu" : config.backend.value,
@@ -153,7 +154,9 @@
             config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value;
         ui_runtime_state.active_camera = qtActiveCameraObjectName ? qtActiveCameraObjectName() : "runtime camera";
         ui_runtime_state.active_renderer_backend = config.backend.value;
-        ui_runtime_state.active_renderer_path = qtUseBg ? "cpu_tiled_background" : config.backend.value;
+        ui_runtime_state.active_renderer_path = qtRendererPath.empty()
+            ? (qtUseBg ? std::string("cpu_tiled_background") : config.backend.value)
+            : qtRendererPath;
         ui_runtime_state.spp_accumulated = frameStats.sample_count;
         ui_runtime_state.frame_ms = frameStats.ui_frame_ms;
         ui_runtime_state.fps = frameStats.ui_frame_ms > 0.0 ? 1000.0 / frameStats.ui_frame_ms : 0.0;
@@ -237,6 +240,7 @@
           return;
         }
         qtWindow->set_overlay_text(std::string_view{});
+        qtMaybeRefreshPendingViewportPickables(std::chrono::steady_clock::now());
         syncQtDockPanels(false);
         updateQtWindowTitle();
       };

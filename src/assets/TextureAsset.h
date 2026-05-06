@@ -67,6 +67,7 @@ struct TextureSamplerDesc {
 };
 
 struct TextureDesc {
+  // Logical texture metadata used for asset records; pixel storage is owned by renderer backends.
   TextureFormat format = TextureFormat::Unknown;
   std::uint32_t width = 0;
   std::uint32_t height = 0;
@@ -242,6 +243,7 @@ inline std::string SerializeTextureDesc(const TextureDesc& desc) {
 inline AssetRecord MakeTextureAssetRecord(std::string_view name,
                                           std::string_view source_uri,
                                           const TextureDesc& desc) {
+  // Preserve the full descriptor in metadata so import manifests can be audited without loading pixels.
   AssetRecord record;
   record.asset_class = AssetClass::Texture;
   record.name = std::string(name);

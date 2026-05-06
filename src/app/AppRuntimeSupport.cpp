@@ -73,13 +73,24 @@ void AppendMenuItems(HMENU menu,
     const auto label = Utf8ToWide(item.label);
     const UINT enabledFlag = item.enabled ? MF_ENABLED : MF_GRAYED;
     if (item.children.empty()) {
-      AppendMenuW(menu, MF_STRING | enabledFlag, commandId, label.c_str());
-      menuCommands.emplace(commandId, item.id);
-      ++commandId;
+      if (AppendMenuW(menu, MF_STRING | enabledFlag, commandId, label.c_str())) {
+        menuCommands.emplace(commandId, item.id);
+        ++commandId;
+      }
     } else {
       auto* submenu = CreatePopupMenu();
+      if (!submenu) {
+        continue;
+      }
+      const NativeMenuId firstChildCommandId = commandId;
       AppendMenuItems(submenu, item.children, commandId, menuCommands);
-      AppendMenuW(menu, MF_POPUP | enabledFlag, reinterpret_cast<UINT_PTR>(submenu), label.c_str());
+      if (!AppendMenuW(menu, MF_POPUP | enabledFlag, reinterpret_cast<UINT_PTR>(submenu), label.c_str())) {
+        for (NativeMenuId id = firstChildCommandId; id < commandId; ++id) {
+          menuCommands.erase(id);
+        }
+        commandId = firstChildCommandId;
+        DestroyMenu(submenu);
+      }
     }
   }
 }
@@ -97,9 +108,16 @@ HMENU BuildNativeMenuBarFromModel(const vkpt::editor::MenuBar& menuModel,
     if (!topMenu) {
       continue;
     }
+    const NativeMenuId firstChildCommandId = commandId;
     AppendMenuItems(topMenu, top.children, commandId, menuCommands);
-    AppendMenuW(menuBar, MF_POPUP, reinterpret_cast<UINT_PTR>(topMenu),
-                Utf8ToWide(top.label).c_str());
+    if (!AppendMenuW(menuBar, MF_POPUP, reinterpret_cast<UINT_PTR>(topMenu),
+                     Utf8ToWide(top.label).c_str())) {
+      for (NativeMenuId id = firstChildCommandId; id < commandId; ++id) {
+        menuCommands.erase(id);
+      }
+      commandId = firstChildCommandId;
+      DestroyMenu(topMenu);
+    }
   }
   return menuBar;
 }
@@ -317,7 +335,12 @@ void EnableOptionalConsole(bool /*requested*/) {}
 void InitializeLogging() {
   auto& logger = vkpt::log::Logger::instance();
   logger.set_min_severity(vkpt::log::Severity::Trace);
-  std::filesystem::create_directories("artifacts/logs");
+  std::error_code logDirEc;
+  std::filesystem::create_directories("artifacts/logs", logDirEc);
+  if (logDirEc) {
+    std::cerr << "failed to create log directory artifacts/logs: "
+              << logDirEc.message() << "\n";
+  }
   logger.add_sink(std::make_unique<vkpt::log::ConsoleSink>(std::cout));
   logger.add_sink(std::make_unique<vkpt::log::PlainTextFileSink>("artifacts/logs/ptapp.log"));
   logger.add_sink(std::make_unique<vkpt::log::PlainTextFileSink>("artifacts/logs/black_canvas_trace.log"));

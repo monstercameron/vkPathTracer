@@ -1,14 +1,17 @@
 #include "benchmark/BenchmarkRuntimeInternal.h"
 
 #include <algorithm>
+#include <charconv>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <sstream>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include "pathtracer/PathTracer.h"
@@ -23,7 +26,7 @@ bool ParseTolerance(std::string_view text, TolerancePolicy& policy, std::string*
   }
 
   policy = {};
-  auto cursor = std::string{text};
+  const std::string_view cursor = text;
   auto start = std::size_t{0};
   bool gotAny = false;
 
@@ -37,9 +40,9 @@ bool ParseTolerance(std::string_view text, TolerancePolicy& policy, std::string*
   };
 
   while (start < cursor.size()) {
-    auto comma = cursor.find(',', start);
-    const auto item = trim(std::string_view{cursor.data() + start, comma == std::string::npos ? cursor.size() - start
-                                                                                : comma - start});
+    const auto comma = cursor.find(',', start);
+    const auto item = trim(cursor.substr(start, comma == std::string_view::npos ? cursor.size() - start
+                                                                                : comma - start));
     if (!item.empty()) {
       auto eq = item.find('=');
       if (eq == std::string_view::npos) {
@@ -56,26 +59,33 @@ bool ParseTolerance(std::string_view text, TolerancePolicy& policy, std::string*
         }
         return false;
       }
-      try {
-        const double v = std::stod(std::string(value));
-        if (key == "abs") {
-          policy.abs = v;
-          gotAny = true;
-        } else if (key == "rel") {
-          policy.rel = v;
-          gotAny = true;
-        } else if (error) {
-          *error = "unsupported tolerance key: " + std::string(key);
-          return false;
-        }
-      } catch (...) {
+      auto numeric = value;
+      if (!numeric.empty() && numeric.front() == '+') {
+        numeric.remove_prefix(1);
+      }
+      double parsed_value = 0.0;
+      const auto parsed = std::from_chars(numeric.data(), numeric.data() + numeric.size(), parsed_value);
+      if (numeric.empty() ||
+          parsed.ec != std::errc{} ||
+          parsed.ptr != numeric.data() + numeric.size() ||
+          !std::isfinite(parsed_value)) {
         if (error) {
           *error = "invalid tolerance number";
         }
         return false;
       }
+      if (key == "abs") {
+        policy.abs = parsed_value;
+        gotAny = true;
+      } else if (key == "rel") {
+        policy.rel = parsed_value;
+        gotAny = true;
+      } else if (error) {
+        *error = "unsupported tolerance key: " + std::string(key);
+        return false;
+      }
     }
-    if (comma == std::string::npos) {
+    if (comma == std::string_view::npos) {
       break;
     }
     start = comma + 1;
@@ -89,6 +99,59 @@ bool ParseTolerance(std::string_view text, TolerancePolicy& policy, std::string*
     policy.abs = 0.001;
   }
   return true;
+}
+
+void SkipAsciiWhitespace(std::string_view text, std::size_t& cursor) {
+  while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor]))) {
+    ++cursor;
+  }
+}
+
+bool ParseU32Token(std::string_view text, std::size_t& cursor, std::uint32_t& out) {
+  SkipAsciiWhitespace(text, cursor);
+  if (cursor >= text.size()) {
+    return false;
+  }
+  const auto begin = cursor;
+  while (cursor < text.size() && !std::isspace(static_cast<unsigned char>(text[cursor]))) {
+    ++cursor;
+  }
+  auto token = text.substr(begin, cursor - begin);
+  if (!token.empty() && token.front() == '+') {
+    token.remove_prefix(1);
+  }
+  if (token.empty()) {
+    return false;
+  }
+  std::uint32_t value = 0u;
+  const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+  if (parsed.ec != std::errc{} || parsed.ptr != token.data() + token.size()) {
+    return false;
+  }
+  out = value;
+  return true;
+}
+
+bool ParseImageDimensionsHeader(std::string_view text, std::uint32_t& width, std::uint32_t& height) {
+  std::size_t cursor = 0u;
+  return ParseU32Token(text, cursor, width) && ParseU32Token(text, cursor, height);
+}
+
+bool CheckedMulSize(std::size_t lhs, std::size_t rhs, std::size_t& out) {
+  if (lhs != 0u && rhs > std::numeric_limits<std::size_t>::max() / lhs) {
+    return false;
+  }
+  out = lhs * rhs;
+  return true;
+}
+
+bool CheckedImageElementCount(std::uint32_t width,
+                              std::uint32_t height,
+                              std::size_t channels,
+                              std::size_t& out) {
+  std::size_t pixels = 0u;
+  return CheckedMulSize(static_cast<std::size_t>(width), static_cast<std::size_t>(height), pixels) &&
+         CheckedMulSize(pixels, channels, out);
 }
 
 uint16_t ReadU16LE(const std::vector<std::uint8_t>& data, std::size_t pos) {
@@ -119,7 +182,7 @@ bool InflateStoredDeflate(const std::vector<std::uint8_t>& compressed, std::vect
       }
       return false;
     }
-    if (pos + 4 > compressed.size()) {
+    if (compressed.size() - pos < 4u) {
       if (error) {
         *error = "truncated stored block";
       }
@@ -134,12 +197,19 @@ bool InflateStoredDeflate(const std::vector<std::uint8_t>& compressed, std::vect
       return false;
     }
     pos += 4;
-    if (pos + len > compressed.size()) {
+    if (len > compressed.size() - pos) {
       if (error) {
         *error = "stored block data truncated";
       }
       return false;
     }
+    if (raw.size() > std::numeric_limits<std::size_t>::max() - len) {
+      if (error) {
+        *error = "decompressed data too large";
+      }
+      return false;
+    }
+    raw.reserve(raw.size() + len);
     raw.insert(raw.end(), compressed.begin() + static_cast<std::ptrdiff_t>(pos),
                compressed.begin() + static_cast<std::ptrdiff_t>(pos + len));
     pos += len;
@@ -172,10 +242,10 @@ bool LoadPng(const Path& path, ImageRgb& image, std::string* error = nullptr) {
   std::vector<std::uint8_t> idat;
   std::uint32_t width = 0;
   std::uint32_t height = 0;
-  while (pos + 8 <= bytes.size()) {
+  while (bytes.size() - pos >= 8u) {
     const std::uint32_t length = ReadU32BE(bytes, pos);
     pos += 4;
-    if (pos + 4 > bytes.size()) {
+    if (bytes.size() - pos < 4u) {
       if (error) *error = "invalid chunk header";
       return false;
     }
@@ -183,7 +253,7 @@ bool LoadPng(const Path& path, ImageRgb& image, std::string* error = nullptr) {
         static_cast<char>(bytes[pos]), static_cast<char>(bytes[pos + 1]), static_cast<char>(bytes[pos + 2]),
         static_cast<char>(bytes[pos + 3])};
     pos += 4;
-    if (pos + length + 4 > bytes.size()) {
+    if (length > bytes.size() - pos || bytes.size() - pos - length < 4u) {
       if (error) {
         *error = "invalid chunk size";
       }
@@ -199,12 +269,19 @@ bool LoadPng(const Path& path, ImageRgb& image, std::string* error = nullptr) {
       width = ReadU32BE(bytes, pos);
       height = ReadU32BE(bytes, pos + 4);
     } else if (type == "IDAT") {
+      if (idat.size() > std::numeric_limits<std::size_t>::max() - length) {
+        if (error) {
+          *error = "png data too large";
+        }
+        return false;
+      }
+      idat.reserve(idat.size() + length);
       idat.insert(idat.end(), bytes.begin() + static_cast<std::ptrdiff_t>(pos),
                   bytes.begin() + static_cast<std::ptrdiff_t>(pos + length));
     } else if (type == "IEND") {
       break;
     }
-    pos += length + 4;  // data + crc
+    pos += static_cast<std::size_t>(length) + 4u;  // data + crc
   }
 
   if (width == 0 || height == 0 || idat.empty()) {
@@ -219,9 +296,17 @@ bool LoadPng(const Path& path, ImageRgb& image, std::string* error = nullptr) {
     return false;
   }
 
-  const std::size_t rowBytes = static_cast<std::size_t>(4u) * width;
-  const std::size_t expected = (static_cast<std::size_t>(1u) + rowBytes) * height;
-  if (raw.size() < expected) {
+  std::size_t rowBytes = 0u;
+  std::size_t expectedRows = 0u;
+  if (!CheckedMulSize(static_cast<std::size_t>(width), 4u, rowBytes) ||
+      rowBytes == std::numeric_limits<std::size_t>::max() ||
+      !CheckedMulSize(rowBytes + 1u, static_cast<std::size_t>(height), expectedRows)) {
+    if (error) {
+      *error = "png dimensions too large";
+    }
+    return false;
+  }
+  if (raw.size() < expectedRows) {
     if (error) {
       *error = "invalid decompressed png size";
     }
@@ -230,7 +315,14 @@ bool LoadPng(const Path& path, ImageRgb& image, std::string* error = nullptr) {
 
   image.width = width;
   image.height = height;
-  image.rgb.resize(static_cast<std::size_t>(width) * height * 3u);
+  std::size_t rgbCount = 0u;
+  if (!CheckedImageElementCount(width, height, 3u, rgbCount)) {
+    if (error) {
+      *error = "png dimensions too large";
+    }
+    return false;
+  }
+  image.rgb.resize(rgbCount);
   std::size_t source = 0;
   std::size_t target = 0;
   for (std::uint32_t y = 0; y < height; ++y) {
@@ -241,7 +333,7 @@ bool LoadPng(const Path& path, ImageRgb& image, std::string* error = nullptr) {
       }
       return false;
     }
-    if (source + rowBytes > raw.size()) {
+    if (rowBytes > raw.size() - source) {
       if (error) {
         *error = "invalid decompressed png row size";
       }
@@ -281,14 +373,11 @@ bool LoadExrPlaceholder(const Path& path, ImageRgb& image, std::string* error = 
     }
     return false;
   }
-  {
-    std::istringstream header(second);
-    if (!(header >> image.width >> image.height)) {
-      if (error) {
-        *error = "invalid exr dimension header";
-      }
-      return false;
+  if (!ParseImageDimensionsHeader(second, image.width, image.height)) {
+    if (error) {
+      *error = "invalid exr dimension header";
     }
+    return false;
   }
   if (image.width == 0 || image.height == 0) {
     if (error) {
@@ -297,7 +386,14 @@ bool LoadExrPlaceholder(const Path& path, ImageRgb& image, std::string* error = 
     return false;
   }
   image.rgb.clear();
-  image.rgb.reserve(static_cast<std::size_t>(image.width) * image.height * 3u);
+  std::size_t expected = 0u;
+  if (!CheckedImageElementCount(image.width, image.height, 3u, expected)) {
+    if (error) {
+      *error = "exr dimensions too large";
+    }
+    return false;
+  }
+  image.rgb.reserve(expected);
   for (float value = 0.0f; input >> value;) {
     image.rgb.push_back(value);
     float value2 = 0.0f;
@@ -311,7 +407,6 @@ bool LoadExrPlaceholder(const Path& path, ImageRgb& image, std::string* error = 
     image.rgb.push_back(value2);
     image.rgb.push_back(value3);
   }
-  const std::size_t expected = static_cast<std::size_t>(image.width) * image.height * 3u;
   if (image.rgb.size() != expected) {
     if (error) {
       *error = "invalid exr pixel count";
@@ -340,11 +435,17 @@ SceneComparison CompareImages(const ImageRgb& left, const ImageRgb& right, const
   if (left.width != right.width || left.height != right.height || left.width == 0 || left.height == 0) {
     return out;
   }
-  const std::size_t count = static_cast<std::size_t>(left.width) * left.height * 3u;
+  std::size_t count = 0u;
+  if (!CheckedImageElementCount(left.width, left.height, 3u, count) ||
+      left.rgb.size() < count ||
+      right.rgb.size() < count) {
+    return out;
+  }
   out.diff.resize(count);
   if (count == 0) {
     return out;
   }
+  (void)policy;
   double sumAbs = 0.0;
   double sumSq = 0.0;
   for (std::size_t i = 0; i < count; ++i) {
@@ -358,12 +459,6 @@ SceneComparison CompareImages(const ImageRgb& left, const ImageRgb& right, const
       continue;
     }
     out.diff[i] = static_cast<float>(e);
-    if (policy.rel > 0.0) {
-      const double rel = std::max(std::abs(a), std::abs(b));
-      const double adj = policy.rel > 0.0 ? std::max(1.0, rel) : 1.0;
-      if (e > policy.rel * adj) {
-      }
-    }
     sumAbs += e;
     sumSq += e * e;
     if (e > out.max_error) {
@@ -386,23 +481,31 @@ bool SaveDiffHeatmap(const Path& path,
     }
     return false;
   }
-  std::vector<float> luma(diffs.size() / 3u);
-  for (std::size_t i = 0; i < luma.size(); ++i) {
-    luma[i] = (diffs[3u * i + 0u] + diffs[3u * i + 1u] + diffs[3u * i + 2u]) / 3.0f;
+  std::size_t requestedPixels = 0u;
+  std::size_t rgbaCount = 0u;
+  if (!CheckedImageElementCount(width, height, 1u, requestedPixels) ||
+      !CheckedImageElementCount(width, height, 4u, rgbaCount)) {
+    if (error) {
+      *error = "heatmap dimensions too large";
+    }
+    return false;
   }
+  const std::size_t pixelCount = std::min(requestedPixels, diffs.size() / 3u);
   float maxDiff = 0.0f;
-  for (float v : luma) {
-    if (v > maxDiff) {
-      maxDiff = v;
+  for (std::size_t i = 0; i < pixelCount; ++i) {
+    const float luma = (diffs[3u * i + 0u] + diffs[3u * i + 1u] + diffs[3u * i + 2u]) / 3.0f;
+    if (luma > maxDiff) {
+      maxDiff = luma;
     }
   }
   const float scale = maxDiff > 0.0f ? 1.0f / maxDiff : 0.0f;
   vkpt::pathtracer::FilmLdr heatmap;
   heatmap.width = width;
   heatmap.height = height;
-  heatmap.rgba8.assign(static_cast<std::size_t>(width) * height * 4u, 0u);
-  for (std::size_t i = 0; i < luma.size(); ++i) {
-    const float t = std::min(1.0f, luma[i] * scale);
+  heatmap.rgba8.assign(rgbaCount, 0u);
+  for (std::size_t i = 0; i < pixelCount; ++i) {
+    const float luma = (diffs[3u * i + 0u] + diffs[3u * i + 1u] + diffs[3u * i + 2u]) / 3.0f;
+    const float t = std::min(1.0f, luma * scale);
     const auto r = static_cast<std::uint8_t>(std::clamp(t, 0.0f, 1.0f) * 255.0f);
     const auto g = static_cast<std::uint8_t>(std::clamp(1.0f - t, 0.0f, 1.0f) * 255.0f);
     heatmap.rgba8[i * 4u + 0u] = r;

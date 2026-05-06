@@ -5,6 +5,22 @@
     "author": "vkPathTracer",
     "created": "2026-05-06"
   },
+  "assets": [
+    {
+      "id": 940,
+      "type": "model/gltf",
+      "uri": "../models/low_poly_hero/character.gltf",
+      "name": "Hero Character Model",
+      "parent": 9110,
+      "sibling_order": 0,
+      "disable_imported_animation": true,
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.31, 0.31, 0.31]
+      }
+    }
+  ],
   "materials": [
     {
       "id": 9201,
@@ -53,6 +69,14 @@
       "albedo": [0.47, 0.35, 0.22],
       "roughness": 0.78,
       "double_sided": true
+    },
+    {
+      "id": 9207,
+      "name": "Physics training balls",
+      "family": "diffuse",
+      "albedo": [0.86, 0.18, 0.11],
+      "roughness": 0.55,
+      "double_sided": true
     }
   ],
   "geometry": [
@@ -79,6 +103,78 @@
         1, 5, 6, 1, 6, 2,
         0, 3, 7, 0, 7, 4
       ]
+    },
+    {
+      "id": 9302,
+      "name": "rounded_lightweight_unit_sphere",
+      "primitive": "sphere_mesh",
+      "material_id": 9207,
+      "vertices": [
+        [-0.525731, 0.850651, 0.000000],
+        [0.525731, 0.850651, 0.000000],
+        [-0.525731, -0.850651, 0.000000],
+        [0.525731, -0.850651, 0.000000],
+        [0.000000, -0.525731, 0.850651],
+        [0.000000, 0.525731, 0.850651],
+        [0.000000, -0.525731, -0.850651],
+        [0.000000, 0.525731, -0.850651],
+        [0.850651, 0.000000, -0.525731],
+        [0.850651, 0.000000, 0.525731],
+        [-0.850651, 0.000000, -0.525731],
+        [-0.850651, 0.000000, 0.525731],
+        [-0.809017, 0.500000, 0.309017],
+        [-0.500000, 0.309017, 0.809017],
+        [-0.309017, 0.809017, 0.500000],
+        [0.309017, 0.809017, 0.500000],
+        [0.000000, 1.000000, 0.000000],
+        [0.309017, 0.809017, -0.500000],
+        [-0.309017, 0.809017, -0.500000],
+        [-0.500000, 0.309017, -0.809017],
+        [-0.809017, 0.500000, -0.309017],
+        [-1.000000, 0.000000, 0.000000],
+        [0.500000, 0.309017, 0.809017],
+        [0.809017, 0.500000, 0.309017],
+        [-0.500000, -0.309017, 0.809017],
+        [0.000000, 0.000000, 1.000000],
+        [-0.809017, -0.500000, -0.309017],
+        [-0.809017, -0.500000, 0.309017],
+        [0.000000, 0.000000, -1.000000],
+        [-0.500000, -0.309017, -0.809017],
+        [0.809017, 0.500000, -0.309017],
+        [0.500000, 0.309017, -0.809017],
+        [0.809017, -0.500000, 0.309017],
+        [0.500000, -0.309017, 0.809017],
+        [0.309017, -0.809017, 0.500000],
+        [-0.309017, -0.809017, 0.500000],
+        [0.000000, -1.000000, 0.000000],
+        [-0.309017, -0.809017, -0.500000],
+        [0.309017, -0.809017, -0.500000],
+        [0.500000, -0.309017, -0.809017],
+        [0.809017, -0.500000, -0.309017],
+        [1.000000, 0.000000, 0.000000]
+      ],
+      "indices": [
+        0, 12, 14, 11, 13, 12, 5, 14, 13, 12, 13, 14,
+        0, 14, 16, 5, 15, 14, 1, 16, 15, 14, 15, 16,
+        0, 16, 18, 1, 17, 16, 7, 18, 17, 16, 17, 18,
+        0, 18, 20, 7, 19, 18, 10, 20, 19, 18, 19, 20,
+        0, 20, 12, 10, 21, 20, 11, 12, 21, 20, 21, 12,
+        1, 15, 23, 5, 22, 15, 9, 23, 22, 15, 22, 23,
+        5, 13, 25, 11, 24, 13, 4, 25, 24, 13, 24, 25,
+        11, 21, 27, 10, 26, 21, 2, 27, 26, 21, 26, 27,
+        10, 19, 29, 7, 28, 19, 6, 29, 28, 19, 28, 29,
+        7, 17, 31, 1, 30, 17, 8, 31, 30, 17, 30, 31,
+        3, 32, 34, 9, 33, 32, 4, 34, 33, 32, 33, 34,
+        3, 34, 36, 4, 35, 34, 2, 36, 35, 34, 35, 36,
+        3, 36, 38, 2, 37, 36, 6, 38, 37, 36, 37, 38,
+        3, 38, 40, 6, 39, 38, 8, 40, 39, 38, 39, 40,
+        3, 40, 32, 8, 41, 40, 9, 32, 41, 40, 41, 32,
+        4, 33, 25, 9, 22, 33, 5, 25, 22, 33, 22, 25,
+        2, 35, 27, 4, 24, 35, 11, 27, 24, 35, 24, 27,
+        6, 37, 29, 2, 26, 37, 10, 29, 26, 37, 26, 29,
+        8, 39, 31, 6, 28, 39, 7, 31, 28, 39, 28, 31,
+        9, 41, 23, 8, 30, 41, 1, 23, 30, 41, 30, 23
+      ]
     }
   ],
   "entities": [
@@ -104,7 +200,7 @@
         "far_plane": 120.0,
         "focus_distance": 5.0,
         "f_stop": 5.6,
-        "exposure_compensation": 0.8
+        "exposure_compensation": 1.25
       },
       "hierarchy": {
         "parent": 9100,
@@ -148,15 +244,8 @@
       "light": {
         "type": "sphere area",
         "color": [1.0, 0.84, 0.62],
-        "intensity": 18.0,
+        "intensity": 24.0,
         "radius": 1.6
-      },
-      "script": {
-        "source": "assets/scripts/third_person_action_light.lua",
-        "language": "lua",
-        "entry": "default",
-        "enabled": true,
-        "reload_on_save": true
       },
       "hierarchy": {
         "parent": 9100,
@@ -174,7 +263,7 @@
       "light": {
         "type": "point",
         "color": [0.45, 0.64, 1.0],
-        "intensity": 6.0,
+        "intensity": 8.0,
         "radius": 1.0
       },
       "hierarchy": {
@@ -187,8 +276,8 @@
       "name": "Low Arena Ambient",
       "light": {
         "type": "environment",
-        "color": [0.12, 0.14, 0.17],
-        "intensity": 0.65,
+        "color": [0.15, 0.17, 0.20],
+        "intensity": 0.85,
         "radius": 0.0
       },
       "hierarchy": {
@@ -211,6 +300,16 @@
         "enabled": true,
         "reload_on_save": true
       },
+      "physics": {
+        "enabled": true,
+        "mass": 1.0,
+        "dynamic": false,
+        "body_type": "kinematic",
+        "shape": "capsule",
+        "friction": 0.6,
+        "restitution": 0.05,
+        "gravity_scale": 0.0
+      },
       "hierarchy": {
         "parent": 9100,
         "sibling_order": 5
@@ -218,155 +317,25 @@
     },
     {
       "id": 9111,
-      "name": "Hero Torso",
+      "name": "Hero Physics Capsule",
       "transform": {
-        "translation": [0.0, 1.24, 0.0],
+        "translation": [0.0, 0.85, 0.0],
         "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.58, 0.86, 0.30]
+        "scale": [0.55, 1.7, 0.55]
       },
-      "mesh": {
-        "mesh_id": 9301,
-        "material_id": 9202
-      },
-      "hierarchy": {
-        "parent": 9110,
-        "sibling_order": 0
-      }
-    },
-    {
-      "id": 9112,
-      "name": "Hero Head",
-      "transform": {
-        "translation": [0.0, 1.92, 0.0],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.34, 0.34, 0.34]
-      },
-      "mesh": {
-        "mesh_id": 9301,
-        "material_id": 9203
+      "physics": {
+        "enabled": true,
+        "mass": 1.0,
+        "dynamic": false,
+        "body_type": "kinematic",
+        "shape": "capsule",
+        "friction": 0.6,
+        "restitution": 0.05,
+        "gravity_scale": 0.0
       },
       "hierarchy": {
         "parent": 9110,
         "sibling_order": 1
-      }
-    },
-    {
-      "id": 9113,
-      "name": "Hero Hips",
-      "transform": {
-        "translation": [0.0, 0.78, 0.0],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.48, 0.32, 0.28]
-      },
-      "mesh": {
-        "mesh_id": 9301,
-        "material_id": 9204
-      },
-      "hierarchy": {
-        "parent": 9110,
-        "sibling_order": 2
-      }
-    },
-    {
-      "id": 9114,
-      "name": "Hero Left Arm",
-      "transform": {
-        "translation": [-0.48, 1.30, 0.0],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.18, 0.66, 0.18]
-      },
-      "mesh": {
-        "mesh_id": 9301,
-        "material_id": 9203
-      },
-      "hierarchy": {
-        "parent": 9110,
-        "sibling_order": 3
-      }
-    },
-    {
-      "id": 9115,
-      "name": "Hero Right Arm",
-      "transform": {
-        "translation": [0.48, 1.30, 0.0],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.18, 0.66, 0.18]
-      },
-      "mesh": {
-        "mesh_id": 9301,
-        "material_id": 9203
-      },
-      "hierarchy": {
-        "parent": 9110,
-        "sibling_order": 4
-      }
-    },
-    {
-      "id": 9116,
-      "name": "Hero Left Leg",
-      "transform": {
-        "translation": [-0.18, 0.35, 0.0],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.18, 0.72, 0.20]
-      },
-      "mesh": {
-        "mesh_id": 9301,
-        "material_id": 9204
-      },
-      "hierarchy": {
-        "parent": 9110,
-        "sibling_order": 5
-      }
-    },
-    {
-      "id": 9117,
-      "name": "Hero Right Leg",
-      "transform": {
-        "translation": [0.18, 0.35, 0.0],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.18, 0.72, 0.20]
-      },
-      "mesh": {
-        "mesh_id": 9301,
-        "material_id": 9204
-      },
-      "hierarchy": {
-        "parent": 9110,
-        "sibling_order": 6
-      }
-    },
-    {
-      "id": 9118,
-      "name": "Hero Left Boot",
-      "transform": {
-        "translation": [-0.18, -0.02, -0.06],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.22, 0.16, 0.34]
-      },
-      "mesh": {
-        "mesh_id": 9301,
-        "material_id": 9205
-      },
-      "hierarchy": {
-        "parent": 9110,
-        "sibling_order": 7
-      }
-    },
-    {
-      "id": 9119,
-      "name": "Hero Right Boot",
-      "transform": {
-        "translation": [0.18, -0.02, -0.06],
-        "rotation": [0.0, 0.0, 0.0, 1.0],
-        "scale": [0.22, 0.16, 0.34]
-      },
-      "mesh": {
-        "mesh_id": 9301,
-        "material_id": 9205
-      },
-      "hierarchy": {
-        "parent": 9110,
-        "sibling_order": 8
       }
     },
     {
@@ -380,6 +349,15 @@
       "mesh": {
         "mesh_id": 9301,
         "material_id": 9206
+      },
+      "physics": {
+        "enabled": true,
+        "mass": 1.0,
+        "dynamic": false,
+        "body_type": "static",
+        "shape": "box",
+        "friction": 0.75,
+        "restitution": 0.05
       },
       "hierarchy": {
         "parent": 9100,
@@ -398,9 +376,134 @@
         "mesh_id": 9301,
         "material_id": 9206
       },
+      "physics": {
+        "enabled": true,
+        "mass": 1.0,
+        "dynamic": false,
+        "body_type": "static",
+        "shape": "box",
+        "friction": 0.75,
+        "restitution": 0.05
+      },
       "hierarchy": {
         "parent": 9100,
         "sibling_order": 7
+      }
+    },
+    {
+      "id": 9130,
+      "name": "Physics Ball Red",
+      "transform": {
+        "translation": [-1.35, 0.32, -0.9],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.24, 0.24, 0.24]
+      },
+      "mesh": {
+        "mesh_id": 9302,
+        "material_id": 9207
+      },
+      "physics": {
+        "enabled": true,
+        "mass": 0.35,
+        "dynamic": true,
+        "body_type": "dynamic",
+        "shape": "sphere",
+        "friction": 0.45,
+        "restitution": 0.45,
+        "gravity_scale": 1.0,
+        "allow_sleeping": true,
+        "continuous_collision": true
+      },
+      "hierarchy": {
+        "parent": 9100,
+        "sibling_order": 8
+      }
+    },
+    {
+      "id": 9131,
+      "name": "Physics Ball Yellow",
+      "transform": {
+        "translation": [-0.75, 0.34, -0.65],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.26, 0.26, 0.26]
+      },
+      "mesh": {
+        "mesh_id": 9302,
+        "material_id": 9207
+      },
+      "physics": {
+        "enabled": true,
+        "mass": 0.42,
+        "dynamic": true,
+        "body_type": "dynamic",
+        "shape": "sphere",
+        "friction": 0.42,
+        "restitution": 0.5,
+        "gravity_scale": 1.0,
+        "allow_sleeping": true,
+        "continuous_collision": true
+      },
+      "hierarchy": {
+        "parent": 9100,
+        "sibling_order": 9
+      }
+    },
+    {
+      "id": 9132,
+      "name": "Physics Ball Blue",
+      "transform": {
+        "translation": [1.05, 0.32, -0.75],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.24, 0.24, 0.24]
+      },
+      "mesh": {
+        "mesh_id": 9302,
+        "material_id": 9207
+      },
+      "physics": {
+        "enabled": true,
+        "mass": 0.32,
+        "dynamic": true,
+        "body_type": "dynamic",
+        "shape": "sphere",
+        "friction": 0.4,
+        "restitution": 0.55,
+        "gravity_scale": 1.0,
+        "allow_sleeping": true,
+        "continuous_collision": true
+      },
+      "hierarchy": {
+        "parent": 9100,
+        "sibling_order": 10
+      }
+    },
+    {
+      "id": 9133,
+      "name": "Physics Ball Green",
+      "transform": {
+        "translation": [1.65, 0.36, 0.75],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.28, 0.28, 0.28]
+      },
+      "mesh": {
+        "mesh_id": 9302,
+        "material_id": 9207
+      },
+      "physics": {
+        "enabled": true,
+        "mass": 0.5,
+        "dynamic": true,
+        "body_type": "dynamic",
+        "shape": "sphere",
+        "friction": 0.48,
+        "restitution": 0.42,
+        "gravity_scale": 1.0,
+        "allow_sleeping": true,
+        "continuous_collision": true
+      },
+      "hierarchy": {
+        "parent": 9100,
+        "sibling_order": 11
       }
     }
   ],

@@ -63,11 +63,13 @@ class WorldSystemScheduler {
 };
 
 struct TransformAuthorityState {
+  /// Last accepted transform writer class for this entity on `frame`.
   TransformAuthority authority = TransformAuthority::Authored;
   vkpt::core::FrameIndex frame = 0;
   std::string writer;
 };
 
+/// Records a same-frame transform write conflict and the authority that won arbitration.
 struct WorldAuthorityConflict {
   vkpt::core::StableId entity = 0;
   std::string writer_a;
@@ -86,10 +88,12 @@ class IEcsWorld {
   virtual bool set_component(vkpt::core::StableEntityId id, ComponentKind kind, const ComponentVariant& component) = 0;
   virtual bool add_component(vkpt::core::StableEntityId id, ComponentKind kind, const ComponentVariant& component) = 0;
   virtual bool remove_component(vkpt::core::StableEntityId id, ComponentKind kind) = 0;
+  /// Set a transform through authority arbitration. Higher authority wins; equal authority is tie-broken by writer name.
   virtual bool set_transform(vkpt::core::StableEntityId id, const TransformComponent& transform,
                              TransformAuthority authority = TransformAuthority::Authored,
                              std::string_view writer = "scene",
                              vkpt::core::FrameIndex frame = 0) = 0;
+  /// Change hierarchy parent. When requested, local transform is adjusted to preserve current world pose.
   virtual bool reparent_entity(vkpt::core::StableEntityId child,
                                vkpt::core::StableEntityId parent,
                                bool preserve_world_transform = true) = 0;
@@ -99,9 +103,13 @@ class IEcsWorld {
   virtual const std::vector<vkpt::core::StableEntityId>& all_entities() const = 0;
   virtual std::vector<vkpt::core::StableEntityId> children_of(vkpt::core::StableEntityId parent) const = 0;
   virtual std::vector<vkpt::core::StableEntityId> query(ComponentKind kind) const = 0;
+  /// Recompute cached world transforms for dirty transform hierarchies.
   virtual void recompute_world_transforms() = 0;
+  /// Return the cached world transform, or nullptr until recompute_world_transforms has produced one.
   virtual const WorldTransform* world_transform(vkpt::core::StableEntityId id) const = 0;
+  /// Build a stable snapshot from ECS component state.
   virtual SceneSnapshot build_snapshot() const = 0;
+  /// Extract renderer-facing data from ECS state for the given frame.
   virtual RenderSceneProxy extract_render_scene(vkpt::core::FrameIndex frame = 0) const = 0;
 };
 
@@ -303,6 +311,7 @@ class WorldCommandBuffer {
   void add_assign_light(vkpt::core::StableId id, const LightComponent& light);
   void add_assign_camera(vkpt::core::StableId id, const CameraComponent& camera);
 
+  /// Apply commands in insertion order. Stops at the first rejected command and reports Internal.
   vkpt::core::Result<void> replay(SceneWorld& world) const;
   void clear();
 

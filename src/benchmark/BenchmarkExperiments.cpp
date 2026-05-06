@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstdint>
 #include <exception>
@@ -9,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -24,6 +26,22 @@ using Path = std::filesystem::path;
 
 bool EnsureDirectory(const Path& path);
 std::string EscapeJson(std::string_view text);
+
+bool ParseSize(std::string_view text, std::size_t& out) {
+  if (!text.empty() && text.front() == '+') {
+    text.remove_prefix(1);
+  }
+  if (text.empty()) {
+    return false;
+  }
+  std::size_t value = 0;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) {
+    return false;
+  }
+  out = value;
+  return true;
+}
 
 bool BackendRegistered(std::string_view name) {
   const auto normalized = vkpt::render::NormalizeBackendName(name);
@@ -137,10 +155,10 @@ int GpuMemPressureCommand(const std::vector<std::string_view>& args) {
   for (std::size_t i = 2; i < args.size(); ++i) {
     if (args[i] == "--max-mb") {
       if (i + 1 >= args.size()) { std::cerr << "missing --max-mb value\n"; return 1; }
-      max_mb = static_cast<std::size_t>(std::stoull(std::string(args[++i])));
+      if (!ParseSize(args[++i], max_mb)) { std::cerr << "invalid --max-mb value\n"; return 1; }
     } else if (args[i] == "--step-mb") {
       if (i + 1 >= args.size()) { std::cerr << "missing --step-mb value\n"; return 1; }
-      step_mb = static_cast<std::size_t>(std::stoull(std::string(args[++i])));
+      if (!ParseSize(args[++i], step_mb)) { std::cerr << "invalid --step-mb value\n"; return 1; }
     } else if (args[i] == "--backend") {
       if (i + 1 >= args.size()) { std::cerr << "missing --backend value\n"; return 1; }
       backendName = std::string(args[++i]);
@@ -363,8 +381,23 @@ int ReleaseCheckCommand(const std::vector<std::string_view>& args) {
 
   std::size_t scene_ok = 0;
   std::size_t scene_fail = 0;
-  for (const auto& entry : std::filesystem::directory_iterator(Path(scenePack))) {
-    if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
+  std::error_code scenePackEc;
+  if (!std::filesystem::exists(Path(scenePack), scenePackEc) || scenePackEc) {
+    std::cerr << "missing scene pack path: " << scenePack << "\n";
+    return 2;
+  }
+  for (std::filesystem::directory_iterator it(
+           Path(scenePack), std::filesystem::directory_options::skip_permission_denied, scenePackEc),
+       end;
+       it != end;
+       it.increment(scenePackEc)) {
+    if (scenePackEc) {
+      scenePackEc.clear();
+      continue;
+    }
+    const auto& entry = *it;
+    std::error_code entryEc;
+    if (!entry.is_regular_file(entryEc) || entryEc || entry.path().extension() != ".json") continue;
     const auto scenePath = entry.path().string();
     std::vector<std::string_view> v = {"ptbench", "validate-scene", "--scene", scenePath};
     const int rc = ValidateSceneCommand(v);
@@ -476,7 +509,8 @@ int RunExperimentsCommand(const std::vector<std::string_view>& args) {
   }
 
   Path inputDir = (scenePack == "core") ? Path("assets/scenes") : Path(scenePack);
-  if (!std::filesystem::exists(inputDir)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(inputDir, ec) || ec) {
     std::cerr << "missing scene pack path: " << inputDir.string() << "\n";
     return 2;
   }
@@ -486,8 +520,17 @@ int RunExperimentsCommand(const std::vector<std::string_view>& args) {
   }
 
   std::vector<Path> scenes;
-  for (const auto& entry : std::filesystem::directory_iterator(inputDir)) {
-    if (!entry.is_regular_file()) {
+  for (std::filesystem::directory_iterator it(inputDir, std::filesystem::directory_options::skip_permission_denied, ec),
+       end;
+       it != end;
+       it.increment(ec)) {
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    const auto& entry = *it;
+    std::error_code entryEc;
+    if (!entry.is_regular_file(entryEc) || entryEc) {
       continue;
     }
     if (entry.path().extension() != ".json") {

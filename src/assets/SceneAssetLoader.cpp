@@ -1,6 +1,7 @@
 #include "assets/SceneAssetLoader.h"
 #include "assets/SceneAssetLoaderInternal.h"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -39,6 +40,11 @@ inline vkpt::core::StableId AllocateId(std::unordered_set<vkpt::core::StableId>&
 
 inline IdSets CollectIds(const vkpt::scene::SceneDocument& document) {
   IdSets out;
+  out.assets.reserve(document.assets.size());
+  out.asset_uris.reserve(document.assets.size());
+  out.materials.reserve(document.materials.size());
+  out.geometry.reserve(document.geometry.size());
+  out.entities.reserve(document.entities.size());
   for (const auto& asset : document.assets) {
     out.assets.insert(asset.id);
     if (!asset.uri.empty()) {
@@ -76,8 +82,9 @@ inline bool AppendTextureAsset(vkpt::scene::SceneDocument& document,
                                const std::filesystem::path& texture_path,
                                std::string_view binding_context,
   vkpt::core::StableId preferred_id,
-  std::vector<std::string>* diagnostics) {
+                               std::vector<std::string>* diagnostics) {
   (void)scene_dir;
+  // Texture assets are appended once by normalized URI; material bindings keep their resolved paths.
   const auto texture_uri = PathString(texture_path);
   if (ids.asset_uris.contains(texture_uri)) {
     return true;
@@ -147,8 +154,13 @@ bool ImportModelAsset(vkpt::scene::SceneDocument& document,
   }
 
   std::unordered_map<std::string, vkpt::core::StableId> material_id_by_name;
+  material_id_by_name.reserve(loaded.materials.size());
+  document.materials.reserve(document.materials.size() + loaded.materials.size() + 1u);
+  document.geometry.reserve(document.geometry.size() + loaded.geometry.size());
+  document.entities.reserve(document.entities.size() + loaded.geometry.size() + 1u);
   std::uint64_t import_base = asset.id == 0 ? 900000u : asset.id * 1000u;
   std::uint32_t material_index = 0;
+  // Imported material IDs are derived from the source asset ID to keep repeated imports predictable.
   for (const auto& material : loaded.materials) {
     vkpt::scene::SceneMaterialDefinition scene_material;
     scene_material.id = AllocateId(ids.materials, import_base + 100u + material_index);
@@ -178,11 +190,11 @@ bool ImportModelAsset(vkpt::scene::SceneDocument& document,
     }
     material_id_by_name[material.name] = scene_material.id;
 
-    const std::vector<std::string> texture_slots = {
-        material.base_color_texture,
-        material.normal_texture,
-        material.roughness_texture,
-        material.metallic_texture,
+    const std::array<std::string_view, 4> texture_slots = {
+        std::string_view(material.base_color_texture),
+        std::string_view(material.normal_texture),
+        std::string_view(material.roughness_texture),
+        std::string_view(material.metallic_texture),
     };
     std::uint32_t texture_slot = 0;
     for (const auto& texture_uri : texture_slots) {
@@ -228,24 +240,33 @@ bool ImportModelAsset(vkpt::scene::SceneDocument& document,
 
   vkpt::scene::SceneEntityDefinition root;
   root.id = AllocateId(ids.entities, import_base + 1u);
-  root.name = "Imported " + std::filesystem::path(asset.uri).stem().string();
+  root.name = asset.name.empty()
+                  ? "Imported " + std::filesystem::path(asset.uri).stem().string()
+                  : asset.name;
   root.has_transform = true;
   root.transform = loaded.has_root_transform ? loaded.root_transform : IdentityTransform();
+  if (asset.has_transform) {
+    root.transform = asset.transform;
+  }
   if (root_transform_override != nullptr) {
     root.transform.translation = root_transform_override->translation;
     root.transform.dirty = true;
   }
   root.has_hierarchy = true;
-  root.hierarchy.parent = 0;
-  root.hierarchy.sibling_order = static_cast<std::uint32_t>(document.entities.size());
-  if (!loaded.animation.clip.empty()) {
+  root.hierarchy.parent = asset.parent;
+  root.hierarchy.sibling_order = asset.parent == 0
+                                      ? static_cast<std::uint32_t>(document.entities.size())
+                                      : asset.sibling_order;
+  if (!asset.disable_imported_animation && !loaded.animation.clip.empty()) {
     root.animation = loaded.animation;
   }
-  document.entities.push_back(root);
-  local_stats.imported_root_entity = root.id;
+  const auto root_id = root.id;
+  document.entities.push_back(std::move(root));
+  local_stats.imported_root_entity = root_id;
   ++local_stats.imported_entities;
 
   std::uint32_t geometry_index = 0;
+  // Each geometry bucket becomes a child mesh entity under one imported root entity.
   for (const auto& bucket : loaded.geometry) {
     const auto material_it = material_id_by_name.find(bucket.material_name);
     const vkpt::core::StableId material_id =
@@ -272,7 +293,7 @@ bool ImportModelAsset(vkpt::scene::SceneDocument& document,
     entity.mesh.mesh_id = document.geometry.back().id;
     entity.mesh.material_id = material_id;
     entity.has_hierarchy = true;
-    entity.hierarchy.parent = root.id;
+    entity.hierarchy.parent = root_id;
     entity.hierarchy.sibling_order = geometry_index;
     document.entities.push_back(std::move(entity));
 

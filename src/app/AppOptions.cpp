@@ -1,9 +1,12 @@
 #include "app/AppOptions.h"
 
+#include <charconv>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include "build_info.generated.h"
@@ -32,12 +35,19 @@ bool ShouldEnableOptionalConsole(int argc, char** argv) {
 }
 
 bool ParseUnsigned(std::string_view text, std::uint32_t& out) {
-  try {
-    out = static_cast<std::uint32_t>(std::stoul(std::string(text)));
-    return true;
-  } catch (...) {
+  if (!text.empty() && text.front() == '+') {
+    text.remove_prefix(1);
+  }
+  std::uint64_t value = 0;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (text.empty() ||
+      parsed.ec != std::errc{} ||
+      parsed.ptr != text.data() + text.size() ||
+      value > std::numeric_limits<std::uint32_t>::max()) {
     return false;
   }
+  out = static_cast<std::uint32_t>(value);
+  return true;
 }
 
 const char* YesNo(bool value) {
@@ -148,6 +158,7 @@ void PrintUsage() {
   std::cout << "  --ui-model-smoke      Run headless UI model smoke checks\n";
   std::cout << "  --ui-release-gate     Print UI release-gate evidence and deferred gaps\n";
   std::cout << "  --dynamic-physics-gate  Run D3D12 dynamic physics transform-update performance gate\n";
+  std::cout << "  --third-person-script-gate  Run D3D12 Lua third-person movement performance gate\n";
   std::cout << "  --render              Render using scalar CPU path tracer\n";
   std::cout << "  --output <path>       Render output PNG path\n";
   std::cout << "  --exr-output <path>   Render output EXR path\n";
@@ -263,6 +274,8 @@ AppOptionsParseResult ParseAppOptions(int argc, char** argv) {
   auto& options = result.options;
   const std::vector<std::string_view> args(argv, argv + argc);
 
+  // Keep parsing single-pass because options like --frames and --env-file
+  // consume the next token and must report the specific flag that failed.
   for (std::size_t i = 1; i < args.size(); ++i) {
     const auto token = args[i];
     if (token == "--version") {
@@ -323,6 +336,8 @@ AppOptionsParseResult ParseAppOptions(int argc, char** argv) {
       options.ui_release_gate = true;
     } else if (token == "--dynamic-physics-gate") {
       options.dynamic_physics_gate = true;
+    } else if (token == "--third-person-script-gate") {
+      options.third_person_script_gate = true;
     } else if (token == "--exit") {
       options.auto_exit_window = true;
     } else if (token == "--config") {
@@ -401,6 +416,8 @@ AppOptionsParseResult ParseAppOptions(int argc, char** argv) {
     }
   }
 
+  // Cross-option validation lives after parsing so aliases and defaulted values
+  // are resolved before deciding whether the requested mode is coherent.
   if (options.open_window && options.do_render) {
     std::cerr << "--window and --render are mutually exclusive; use --window for the interactive preview or --render for offscreen output\n";
     return AppOptionsParseResult{{}, false, true, 1};

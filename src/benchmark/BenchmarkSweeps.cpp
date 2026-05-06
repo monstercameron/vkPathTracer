@@ -35,13 +35,12 @@ std::vector<uint32_t> ParseWorkerList(const std::string& text) {
     const auto comma = text.find(',', start);
     const auto token = text.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
     if (!token.empty()) {
-      try {
-        const auto value = static_cast<uint32_t>(std::stoul(token));
-        if (value > 0u) {
-          values.push_back(value);
-        }
-      } catch (...) {
+      std::uint32_t value = 0;
+      if (!ParseUnsigned(token, value)) {
         return {};
+      }
+      if (value > 0u) {
+        values.push_back(value);
       }
     }
     if (comma == std::string::npos) {
@@ -113,6 +112,8 @@ int ThreadSweepCommand(const std::vector<std::string_view>& args) {
   std::vector<Row> rows;
   double oneWorkerSamples = 0.0;
 
+  // Each sweep entry is a full benchmark run with its own artifact directory;
+  // skipped rows remain in the JSON so dashboards can show unsupported counts.
   for (const auto workerCount : workers) {
     Row row;
     row.workers = workerCount;
@@ -194,9 +195,15 @@ int SimdSweepCommand(const std::vector<std::string_view>& args) {
 
   for (std::size_t i = 2; i < args.size(); ++i) {
     if (args[i] == "--rays" && i + 1 < args.size()) {
-      rayCount = static_cast<uint64_t>(std::stoul(std::string(args[++i])));
+      if (!ParseUnsigned64(args[++i], rayCount) || rayCount == 0u) {
+        std::cerr << "invalid --rays\n";
+        return 1;
+      }
     } else if (args[i] == "--triangles" && i + 1 < args.size()) {
-      triCount = static_cast<uint64_t>(std::stoul(std::string(args[++i])));
+      if (!ParseUnsigned64(args[++i], triCount) || triCount == 0u) {
+        std::cerr << "invalid --triangles\n";
+        return 1;
+      }
     } else if (args[i] == "--output" && i + 1 < args.size()) {
       output = std::string(args[++i]);
     } else {
@@ -389,9 +396,15 @@ int TileSweepCommand(const std::vector<std::string_view>& args) {
     if (args[i] == "--scene" && i + 1 < args.size()) {
       scene = std::string(args[++i]);
     } else if (args[i] == "--workers" && i + 1 < args.size()) {
-      workers = static_cast<uint32_t>(std::stoul(std::string(args[++i])));
+      if (!ParseUnsigned(args[++i], workers)) {
+        std::cerr << "invalid --workers\n";
+        return 1;
+      }
     } else if (args[i] == "--spp" && i + 1 < args.size()) {
-      spp = static_cast<uint32_t>(std::stoul(std::string(args[++i])));
+      if (!ParseUnsigned(args[++i], spp) || spp == 0u) {
+        std::cerr << "invalid --spp\n";
+        return 1;
+      }
     } else if (args[i] == "--resolution" && i + 1 < args.size()) {
       resolution = std::string(args[++i]);
     } else if (args[i] == "--output" && i + 1 < args.size()) {

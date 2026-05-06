@@ -1,12 +1,13 @@
 #include "scene/Json.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cmath>
-#include <cstdlib>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <system_error>
 
 namespace vkpt::scene {
 
@@ -19,6 +20,7 @@ class JsonParserImpl {
     skip_ws();
     auto result = parse_value();
     skip_ws();
+    // A successful parse must consume the entire buffer; trailing tokens make the document invalid.
     if (!m_valid || m_position != m_text.size()) {
       return {};
     }
@@ -114,6 +116,7 @@ class JsonParserImpl {
         return value;
       }
       if (ch == '\\') {
+        // Keep escape handling intentionally small: scene files only need JSON's single-byte escapes.
         char e = peek();
         if (e == '\0') {
           m_valid = false;
@@ -205,8 +208,14 @@ class JsonParserImpl {
         return value;
       }
     }
-    value.number = std::strtod(std::string(m_text.substr(start, m_position - start)).c_str(), nullptr);
-    if (!std::isfinite(value.number)) {
+    const auto number_text = m_text.substr(start, m_position - start);
+    // Reject infinities and partial conversions so scene numeric validation sees only finite values.
+    const auto parsed = std::from_chars(number_text.data(),
+                                        number_text.data() + number_text.size(),
+                                        value.number);
+    if (parsed.ec != std::errc{} ||
+        parsed.ptr != number_text.data() + number_text.size() ||
+        !std::isfinite(value.number)) {
       m_valid = false;
     }
     return value;
@@ -386,7 +395,7 @@ std::string stringify(const JsonValue& value, bool pretty) {
 }
 
 bool read_string(const JsonValue& object, std::string_view key, std::string& out) {
-  auto it = object.object.find(std::string(key));
+  auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::String) {
     return false;
   }
@@ -395,7 +404,7 @@ bool read_string(const JsonValue& object, std::string_view key, std::string& out
 }
 
 bool read_u64(const JsonValue& object, std::string_view key, std::uint64_t& out) {
-  auto it = object.object.find(std::string(key));
+  auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Number ||
       it->second.number < 0.0 ||
       it->second.number > static_cast<double>(std::numeric_limits<std::uint64_t>::max())) {
@@ -415,7 +424,7 @@ bool read_u32(const JsonValue& object, std::string_view key, std::uint32_t& out)
 }
 
 bool read_float(const JsonValue& object, std::string_view key, float& out) {
-  auto it = object.object.find(std::string(key));
+  auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Number || !std::isfinite(it->second.number)) {
     return false;
   }
@@ -424,7 +433,7 @@ bool read_float(const JsonValue& object, std::string_view key, float& out) {
 }
 
 bool read_bool(const JsonValue& object, std::string_view key, bool& out) {
-  auto it = object.object.find(std::string(key));
+  auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Boolean) {
     return false;
   }
@@ -433,7 +442,7 @@ bool read_bool(const JsonValue& object, std::string_view key, bool& out) {
 }
 
 bool read_vec3(const JsonValue& object, std::string_view key, Vec3& out) {
-  auto it = object.object.find(std::string(key));
+  auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array || it->second.array.size() != 3) {
     return false;
   }
@@ -450,7 +459,7 @@ bool read_vec3(const JsonValue& object, std::string_view key, Vec3& out) {
 
 bool read_vec3_list(const JsonValue& object, std::string_view key, std::vector<Vec3>& out) {
   out.clear();
-  auto it = object.object.find(std::string(key));
+  auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array) {
     return false;
   }
@@ -475,7 +484,7 @@ bool read_vec3_list(const JsonValue& object, std::string_view key, std::vector<V
 
 bool read_vec2_list(const JsonValue& object, std::string_view key, std::vector<Vec2>& out) {
   out.clear();
-  auto it = object.object.find(std::string(key));
+  auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array) {
     return false;
   }
@@ -499,7 +508,7 @@ bool read_vec2_list(const JsonValue& object, std::string_view key, std::vector<V
 
 bool read_u32_list(const JsonValue& object, std::string_view key, std::vector<std::uint32_t>& out) {
   out.clear();
-  auto it = object.object.find(std::string(key));
+  auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array) {
     return false;
   }
@@ -515,7 +524,7 @@ bool read_u32_list(const JsonValue& object, std::string_view key, std::vector<st
 }
 
 bool read_quat(const JsonValue& object, std::string_view key, Quat& out) {
-  auto it = object.object.find(std::string(key));
+  auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array || it->second.array.size() != 4) {
     return false;
   }

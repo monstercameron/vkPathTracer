@@ -5,10 +5,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <vector>
+
+#include "core/Logging.h"
 
 namespace vkpt::app {
 
@@ -19,6 +23,8 @@ FpsCollisionHit TraceFpsGround(const std::vector<ViewportPickable> &pickables,
   float bestDistance = maxDistance;
   const ViewportRay ray{origin, {0.0f, -1.0f, 0.0f}};
   constexpr float kQueryPad = 0.08f;
+  // Narrow the triangle loop to the vertical capsule column under the player;
+  // FPS collision runs often enough that broad AABB rejection matters.
   const vkpt::pathtracer::Vec3 queryMin{origin.x - kQueryPad,
                                         origin.y - maxDistance - kQueryPad,
                                         origin.z - kQueryPad};
@@ -122,6 +128,8 @@ TraceFpsBodyWallWithProbeHeights(const std::vector<ViewportPickable> &pickables,
   const auto rayDirection = PtNormalize(direction, {1.0f, 0.0f, 0.0f});
   constexpr float kQueryPad = 0.08f;
   const auto end = PtAdd(feetPosition, PtMul(rayDirection, maxDistance));
+  // Three horizontal probes approximate a standing capsule without building a
+  // separate collision mesh: ankle, torso, and head clearance.
   const auto minmaxHeight =
       std::minmax_element(probeHeights.begin(), probeHeights.end());
   const float minHeight =
@@ -189,6 +197,8 @@ vkpt::pathtracer::Vec3 ResolveFpsHorizontalDeltaForPlayer(
     float eyeHeight) {
   vkpt::pathtracer::Vec3 resolved{};
   vkpt::pathtracer::Vec3 remaining = desiredDelta;
+  // Resolve horizontal motion iteratively so a blocked step can slide along
+  // one wall and still consume the remaining movement against another.
   for (int iteration = 0; iteration < 3; ++iteration) {
     const float remainingDistance = PtLength(remaining);
     if (remainingDistance <= 1.0e-5f) {
@@ -297,6 +307,8 @@ SolveFpsMovement(const std::vector<ViewportPickable> &pickables,
       player.feet_position.x, groundProbeStartY, player.feet_position.z};
   const auto ground =
       TraceFpsGround(pickables, groundOrigin, verticalProbe, 0.62f);
+  // The downward probe starts above both the old and new feet positions so fast
+  // falls still land on thin triangles crossed during this fixed step.
   const bool sweptThroughGround =
       ground.hit &&
       ground.position.y >=
@@ -330,7 +342,34 @@ SolveFpsMovement(const std::vector<ViewportPickable> &pickables,
 
 FpsCollisionWorker::FpsCollisionWorker()
     : m_pickables(std::make_shared<const std::vector<ViewportPickable>>()) {
-  m_thread = std::jthread([this](std::stop_token stop) { run(stop); });
+  m_thread = std::jthread([this](std::stop_token stop) {
+    try {
+      run(stop);
+    } catch (const std::exception& ex) {
+      try {
+        vkpt::log::Logger::instance().log(
+            vkpt::log::Severity::Error,
+            "viewport",
+            "fps collision worker exception",
+            {{"error", ex.what()}});
+      } catch (...) {
+      }
+      std::scoped_lock lock(m_mutex);
+      m_busy = false;
+      m_pending.reset();
+    } catch (...) {
+      try {
+        vkpt::log::Logger::instance().log(
+            vkpt::log::Severity::Error,
+            "viewport",
+            "fps collision worker non-standard exception");
+      } catch (...) {
+      }
+      std::scoped_lock lock(m_mutex);
+      m_busy = false;
+      m_pending.reset();
+    }
+  });
 }
 
 FpsCollisionWorker::~FpsCollisionWorker() { stop(); }

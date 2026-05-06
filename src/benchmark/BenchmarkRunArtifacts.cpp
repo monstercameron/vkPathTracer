@@ -172,7 +172,8 @@ bool WriteRunArtifacts(const vkpt::benchmark::BenchmarkResult& result,
 
   for (const auto& requiredPath : required) {
     std::error_code ec;
-    if (!std::filesystem::exists(requiredPath, ec) || !std::filesystem::is_regular_file(requiredPath, ec)) {
+    if (!std::filesystem::exists(requiredPath, ec) || ec ||
+        !std::filesystem::is_regular_file(requiredPath, ec) || ec) {
       if (error) {
         *error = "required artifact not created: " + requiredPath.string();
       }

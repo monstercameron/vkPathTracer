@@ -60,6 +60,12 @@ struct SceneAssetDefinition {
   vkpt::core::StableId id = 0;
   std::string type;
   std::string uri;
+  std::string name;
+  vkpt::core::StableId parent = 0;
+  std::uint32_t sibling_order = 0;
+  bool has_transform = false;
+  TransformComponent transform;
+  bool disable_imported_animation = false;
 };
 
 struct SceneMaterialDefinition {

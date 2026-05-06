@@ -65,9 +65,10 @@ std::string_view to_string(ScriptDiagnosticSeverity severity) {
 
 std::vector<ScriptBinding> BuildScriptBindings(const vkpt::scene::SceneWorld& world) {
   std::vector<ScriptBinding> bindings;
-  bindings.reserve(world.query(vkpt::scene::ComponentKind::Script).size());
+  bindings.reserve(world.all_entities().size());
 
   std::size_t stable_order = 0;
+  // Dispatch order follows SceneWorld stable entity order and skips empty ScriptComponent sources.
   for (const auto entity_id : world.all_entities()) {
     const auto* entity = world.get_entity(entity_id);
     if (entity == nullptr || !entity->script.has_value()) {
@@ -101,6 +102,7 @@ ScriptBindingSummary SummarizeScriptBindings(const std::vector<ScriptBinding>& b
   summary.lua_compiled_in = lua_compiled_in;
   summary.execution_available = execution_available;
 
+  // Counts describe binding eligibility only; global runtime gates are applied during dispatch.
   for (const auto& binding : bindings) {
     if (!binding.enabled) {
       ++summary.disabled_count;
@@ -118,6 +120,8 @@ ScriptBindingSummary SummarizeScriptBindings(const std::vector<ScriptBinding>& b
 
 ScriptBindingSummary EcsScriptRuntime::reload_bindings(const vkpt::scene::SceneWorld& world) {
   m_bindings = BuildScriptBindings(world);
+  // Source paths can resolve differently after reload, so bytecode is rebuilt on demand.
+  m_lua_bytecode_cache.clear();
   const auto summary = SummarizeScriptBindings(m_bindings, lua_compiled_in(), execution_available());
   vkpt::log::Logger::instance().log(
       vkpt::log::Severity::Info,

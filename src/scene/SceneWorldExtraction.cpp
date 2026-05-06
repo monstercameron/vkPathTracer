@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 namespace vkpt::scene {
 
@@ -22,11 +23,13 @@ bool SceneWorld::set_transform(vkpt::core::StableId id,
   }
   const auto existing = m_transformAuthority.find(id);
   if (existing != m_transformAuthority.end() && existing->second.frame == frame) {
+    // Same-frame writers arbitrate by authority rank, then stable writer name for deterministic ties.
     const auto previous_rank = authority_rank(existing->second.authority);
     const auto next_rank = authority_rank(authority);
-    const bool writer_conflict = existing->second.writer != writer;
+    const std::string_view existing_writer(existing->second.writer);
+    const bool writer_conflict = existing_writer != writer;
     const bool lower_authority = next_rank < previous_rank;
-    const bool tie_loses = next_rank == previous_rank && writer_conflict && std::string(writer) > existing->second.writer;
+    const bool tie_loses = next_rank == previous_rank && writer_conflict && writer.compare(existing_writer) > 0;
     if (writer_conflict || lower_authority) {
       const auto selected = (lower_authority || tie_loses) ? existing->second.authority : authority;
       m_authority_conflicts.push_back(
@@ -61,6 +64,7 @@ WorldTransform SceneWorld::compute_world_transform_unchecked(const EntityRecord*
   out.world_matrix = make_transform_matrix(*entity->transform);
   out.dirty = false;
   auto get_parent_transform = [&](vkpt::core::StableId parent_id) -> WorldTransform {
+    // Prefer cached parents but recurse for callers that need immediate, pre-recompute answers.
     WorldTransform parent{};
     parent.world_matrix = identity_matrix();
     const auto it = m_worldTransforms.find(parent_id);
@@ -89,6 +93,8 @@ WorldTransform SceneWorld::compute_world_transform_unchecked(const EntityRecord*
 
 void SceneWorld::recompute_world_transforms() {
   m_worldTransforms.clear();
+  m_worldTransforms.reserve(m_entities_order.size());
+  // Entity order is stable; parent recursion handles hierarchies even when parents appear later.
   for (auto id : m_entities_order) {
     auto* entity = get_entity(id);
     if (!entity || !entity->transform.has_value()) {
@@ -126,7 +132,8 @@ bool SceneWorld::has_authority(vkpt::core::StableId id,
   if (next_rank != previous_rank) {
     return next_rank > previous_rank;
   }
-  return existing->second.writer == writer || std::string(writer) < existing->second.writer;
+  const std::string_view existing_writer(existing->second.writer);
+  return existing_writer == writer || writer.compare(existing_writer) < 0;
 }
 
 uint32_t SceneWorld::kind_mask(ComponentKind kind) const {
@@ -136,7 +143,13 @@ uint32_t SceneWorld::kind_mask(ComponentKind kind) const {
 SceneSnapshot SceneWorld::build_snapshot() const {
   SceneSnapshot out;
   out.benchmark = {};
+  out.entity_ids.reserve(m_entities_order.size());
+  out.renderables.reserve(m_entities_order.size());
+  out.lights.reserve(m_entities_order.size());
+  out.materials.reserve(m_entities_order.size());
   out.asset_refs.reserve(m_entities_order.size());
+  std::unordered_set<vkpt::core::StableId> snapshot_material_ids;
+  snapshot_material_ids.reserve(m_entities_order.size());
   std::string blob = "scene:";
   for (const auto id : m_entities_order) {
     const auto* entity = get_entity(id);
@@ -145,6 +158,7 @@ SceneSnapshot SceneWorld::build_snapshot() const {
     }
     out.entity_ids.push_back(id);
     blob += "e" + std::to_string(id) + ":" + entity->identity.name + ";";
+    // Resolve lazily so snapshots work even when callers forgot to rebuild the transform cache.
     auto resolve_world = [&]() {
       WorldTransform world{};
       world.world_matrix = identity_matrix();
@@ -170,23 +184,20 @@ SceneSnapshot SceneWorld::build_snapshot() const {
           SceneSnapshot::LightObject{id, *entity->light, world});
       blob += "l" + entity->light->type + ":" + std::to_string(entity->light->intensity) + ";";
     }
-    if (entity->material_override.has_value() && std::none_of(out.materials.begin(), out.materials.end(),
-        [&](const SceneSnapshot::MaterialObject& material) {
-          return material.id == entity->material_override->material_id;
-        })) {
+    if (entity->material_override.has_value() &&
+        snapshot_material_ids.insert(entity->material_override->material_id).second) {
       SceneSnapshot::MaterialObject material;
       material.id = entity->material_override->material_id;
       out.materials.push_back(material);
       blob += "mat" + std::to_string(material.id) + ";";
     }
   }
-  const auto camera_entities = query(ComponentKind::Camera);
-  if (!camera_entities.empty()) {
-    const auto first = camera_entities.front();
-    const auto* cameraEnt = get_entity(first);
+  for (const auto id : m_entities_order) {
+    const auto* cameraEnt = get_entity(id);
     if (cameraEnt && cameraEnt->camera.has_value()) {
-      out.camera = SceneCameraDefinition{first, *cameraEnt->camera};
-      blob += "c" + std::to_string(first) + ":" + camera_hash_blob(*cameraEnt->camera) + ";";
+      out.camera = SceneCameraDefinition{id, *cameraEnt->camera};
+      blob += "c" + std::to_string(id) + ":" + camera_hash_blob(*cameraEnt->camera) + ";";
+      break;
     }
   }
   out.scene_hash = hash_scene_blob(blob);
@@ -204,6 +215,7 @@ RenderSceneProxy SceneWorld::extract_render_scene(vkpt::core::FrameIndex frame) 
   proxy.materials.reserve(snapshot.materials.size());
 
   for (const auto& renderable : snapshot.renderables) {
+    // Render proxies carry only backend-facing fields and the resolved world-space transform.
     RenderSceneProxy::Renderable out;
     out.entity_id = renderable.entity_id;
     out.geometry_id = renderable.mesh_id;

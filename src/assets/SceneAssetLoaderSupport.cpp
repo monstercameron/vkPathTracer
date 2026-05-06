@@ -17,12 +17,14 @@ std::filesystem::path ResolvePath(const std::filesystem::path& base_dir, std::st
   if (requested.is_absolute()) {
     return requested.lexically_normal();
   }
+  std::error_code ec;
   const auto scene_relative = (base_dir / requested).lexically_normal();
-  if (std::filesystem::exists(scene_relative)) {
+  if (std::filesystem::exists(scene_relative, ec) && !ec) {
     return scene_relative;
   }
+  ec.clear();
   const auto cwd_relative = (std::filesystem::current_path() / requested).lexically_normal();
-  if (std::filesystem::exists(cwd_relative)) {
+  if (std::filesystem::exists(cwd_relative, ec) && !ec) {
     return cwd_relative;
   }
   return scene_relative;

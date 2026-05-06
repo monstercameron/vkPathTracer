@@ -2,15 +2,20 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
+
+#include "core/Logging.h"
 
 namespace vkpt::pathtracer {
 
@@ -18,6 +23,20 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kEpsilon = 1e-4f;
+
+void log_scene_conversion_warning(std::string_view message,
+                                  vkpt::core::StableId entity_id,
+                                  vkpt::core::StableId geometry_id) noexcept {
+  try {
+    vkpt::log::Logger::instance().log(
+        vkpt::log::Severity::Warning,
+        "scene-conversion",
+        message,
+        {{"entity_id", std::to_string(entity_id)},
+         {"geometry_id", std::to_string(geometry_id)}});
+  } catch (...) {
+  }
+}
 
 uint64_t splitmix64(uint64_t x) {
   x += 0x9e3779b97f4a7c15ULL;
@@ -249,6 +268,7 @@ std::pair<float, float> spot_cone_cosines(const vkpt::scene::LightComponent& lig
 
 uint32_t material_model_from_family(std::string_view family) {
   const std::string id = normalize_material_id(family);
+  // Compact model IDs are the CPU/GPU bridge for broad BSDF class selection.
   if (id == "emissive" || id == "environment_emissive" || id == "blackbody_emission" ||
       id == "fire_plasma" || id == "fire_sparkle_emission" || id == "light_emitting_textile" ||
       id == "bokeh_motion_blur_stress") {
@@ -293,6 +313,7 @@ uint32_t material_model_from_family(std::string_view family) {
 
 uint32_t material_effect_from_family(std::string_view family) {
   const std::string id = normalize_material_id(family);
+  // Effect IDs preserve specialized material intent even when scalar RTMaterial fields are shared.
   if (id == "velvet" || id == "fabric_cloth" || id == "hair_fur_lobes") return 1u;
   if (id == "procedural_material" || id == "sdf_fractal_material") return 2u;
   if (id == "voronoi_cracks" || id == "charcoal" || id == "cardboard") return 3u;
@@ -323,11 +344,28 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   scene.environment_color = {0.0f, 0.0f, 0.0f};
 
   std::unordered_map<std::string, uint32_t> textureLookup;
+  textureLookup.reserve(doc.assets.size() + doc.materials.size() * 2u);
+  scene.textures.reserve(doc.assets.size() + doc.materials.size() * 2u);
+  scene.materials.reserve(std::max<std::size_t>(1u, doc.materials.size()));
+  scene.instances.reserve(doc.entities.size());
+  scene.lights.reserve(doc.entities.size() + doc.lights.size());
+  scene.sdf_primitives.reserve(doc.entities.size() + doc.sdf_primitives.size());
+  scene.tessellation_requests.reserve(doc.entities.size());
+  std::size_t estimated_vertices = 0u;
+  std::size_t estimated_indices = 0u;
+  for (const auto& geometry : doc.geometry) {
+    estimated_vertices += geometry.vertices.size();
+    estimated_indices += geometry.indices.size();
+  }
+  scene.vertices.reserve(estimated_vertices);
+  scene.texcoords.reserve(estimated_vertices);
+  scene.indices.reserve(estimated_indices);
   auto normalize_texture_uri = [](std::string uri) {
     std::replace(uri.begin(), uri.end(), '\\', '/');
     return uri;
   };
   auto add_texture_uri = [&](std::string uri) -> uint32_t {
+    // Texture indices are packed densely; 0xFFFFFFFF means no bound texture.
     if (uri.empty() || !is_texture_asset_uri(uri)) {
       return 0xFFFFFFFFu;
     }
@@ -358,12 +396,14 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     materials.push_back({});
   }
   std::unordered_map<vkpt::core::StableId, uint32_t> materialLookup;
+  materialLookup.reserve(materials.size());
   for (const auto& material : materials) {
     auto runtimeMaterial = material;
     vkpt::scene::ApplyMaterialFamilyPreset(runtimeMaterial,
                                            vkpt::scene::SceneMaterialPresetPolicy::FillGenericDefaults);
     const uint32_t index = static_cast<uint32_t>(scene.materials.size());
     materialLookup[runtimeMaterial.id] = index;
+    // Scene material fields are normalized into RTMaterial's fixed descriptor layout.
     RTMaterial outMaterial;
     outMaterial.albedo = {runtimeMaterial.albedo.x, runtimeMaterial.albedo.y, runtimeMaterial.albedo.z};
     outMaterial.emissive = {runtimeMaterial.emission.x * runtimeMaterial.emission_intensity,
@@ -399,24 +439,63 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     entityById[entity.id] = &entity;
   }
 
+  std::unordered_map<vkpt::core::StableId, bool> animatedPathCache;
+  std::unordered_map<vkpt::core::StableId, bool> scriptedPathCache;
+  animatedPathCache.reserve(doc.entities.size());
+  scriptedPathCache.reserve(doc.entities.size());
+
   auto entity_has_animated_transform_path =
       [&](const vkpt::scene::SceneEntityDefinition& entity) {
-    if (!entity.animation.clip.empty()) {
-      return true;
+    if (const auto cached = animatedPathCache.find(entity.id); cached != animatedPathCache.end()) {
+      return cached->second;
     }
-    std::unordered_set<vkpt::core::StableId> visited;
-    vkpt::core::StableId parent = entity.has_hierarchy ? entity.hierarchy.parent : 0u;
-    while (parent != 0u && visited.insert(parent).second) {
-      const auto parentIt = entityById.find(parent);
-      if (parentIt == entityById.end() || parentIt->second == nullptr) {
+    bool animated = false;
+    const auto* current = &entity;
+    for (std::size_t depth = 0u; current != nullptr && depth <= doc.entities.size(); ++depth) {
+      if (const auto cached = animatedPathCache.find(current->id); cached != animatedPathCache.end()) {
+        animated = cached->second;
         break;
       }
-      if (!parentIt->second->animation.clip.empty()) {
-        return true;
+      if (!current->animation.clip.empty()) {
+        animated = true;
+        break;
       }
-      parent = parentIt->second->has_hierarchy ? parentIt->second->hierarchy.parent : 0u;
+      const vkpt::core::StableId parent = current->has_hierarchy ? current->hierarchy.parent : 0u;
+      if (parent == 0u) {
+        break;
+      }
+      const auto parentIt = entityById.find(parent);
+      current = (parentIt != entityById.end()) ? parentIt->second : nullptr;
     }
-    return false;
+    animatedPathCache.emplace(entity.id, animated);
+    return animated;
+  };
+
+  auto entity_has_scripted_transform_path =
+      [&](const vkpt::scene::SceneEntityDefinition& entity) {
+    if (const auto cached = scriptedPathCache.find(entity.id); cached != scriptedPathCache.end()) {
+      return cached->second;
+    }
+    bool scripted = false;
+    const auto* current = &entity;
+    for (std::size_t depth = 0u; current != nullptr && depth <= doc.entities.size(); ++depth) {
+      if (const auto cached = scriptedPathCache.find(current->id); cached != scriptedPathCache.end()) {
+        scripted = cached->second;
+        break;
+      }
+      if (current->script.enabled && !current->script.script.empty()) {
+        scripted = true;
+        break;
+      }
+      const vkpt::core::StableId parent = current->has_hierarchy ? current->hierarchy.parent : 0u;
+      if (parent == 0u) {
+        break;
+      }
+      const auto parentIt = entityById.find(parent);
+      current = (parentIt != entityById.end()) ? parentIt->second : nullptr;
+    }
+    scriptedPathCache.emplace(entity.id, scripted);
+    return scripted;
   };
 
   auto resolve_entity_transform = [&](vkpt::core::StableId id,
@@ -445,9 +524,53 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   };
 
   std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneGeometryDefinition*> geometryById;
+  geometryById.reserve(doc.geometry.size());
   for (const auto& geometry : doc.geometry) {
     geometryById[geometry.id] = &geometry;
   }
+
+  auto add_capacity = [](std::size_t& target, std::size_t amount) {
+    const std::size_t maxValue = std::numeric_limits<std::size_t>::max();
+    target = amount > maxValue - target ? maxValue : target + amount;
+  };
+  auto reserve_capacity = [](auto& values, std::size_t capacity) {
+    if (capacity != std::numeric_limits<std::size_t>::max() && values.capacity() < capacity) {
+      values.reserve(capacity);
+    }
+  };
+
+  std::size_t meshVertexCapacity = 0u;
+  std::size_t meshIndexCapacity = 0u;
+  std::size_t dynamicVertexCapacity = 0u;
+  std::size_t dynamicIndexCapacity = 0u;
+  for (const auto& entity : doc.entities) {
+    if (!entity.has_mesh) {
+      continue;
+    }
+    const auto itGeom = geometryById.find(entity.mesh.mesh_id);
+    if (itGeom == geometryById.end()) {
+      continue;
+    }
+    const auto* geometry = itGeom->second;
+    if (geometry->vertices.empty() || geometry->indices.empty() || geometry->indices.size() % 3u != 0u) {
+      continue;
+    }
+    add_capacity(meshVertexCapacity, geometry->vertices.size());
+    add_capacity(meshIndexCapacity, geometry->indices.size());
+    const bool physicsDynamic =
+        entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
+    if (physicsDynamic ||
+        entity_has_animated_transform_path(entity) ||
+        entity_has_scripted_transform_path(entity)) {
+      add_capacity(dynamicVertexCapacity, geometry->vertices.size());
+      add_capacity(dynamicIndexCapacity, geometry->indices.size());
+    }
+  }
+  reserve_capacity(scene.vertices, meshVertexCapacity);
+  reserve_capacity(scene.texcoords, meshVertexCapacity);
+  reserve_capacity(scene.indices, meshIndexCapacity);
+  reserve_capacity(scene.local_vertices, dynamicVertexCapacity);
+  reserve_capacity(scene.local_indices, dynamicIndexCapacity);
 
   for (const auto& entity : doc.entities) {
     if (!entity.has_mesh) {
@@ -473,6 +596,21 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     const auto translation = transform.translation;
     const auto rotation = transform.rotation;
     const auto scale = transform.scale;
+    const bool physics_dynamic =
+        entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
+    const bool animation_dynamic = entity_has_animated_transform_path(entity);
+    const bool scripted_dynamic = entity_has_scripted_transform_path(entity);
+    const bool dynamic_transform = physics_dynamic || animation_dynamic || scripted_dynamic;
+    // Dynamic instances keep local geometry alongside world-space triangles for later refits.
+    if (scene.vertices.size() >
+        static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) -
+            geometry->vertices.size()) {
+      log_scene_conversion_warning(
+          "skipped mesh instance because vertex index range exceeds uint32",
+          entity.id,
+          entity.mesh.mesh_id);
+      continue;
+    }
     const uint32_t firstVertex = static_cast<uint32_t>(scene.vertices.size());
     const bool hasTexcoords = geometry->texcoords.size() == geometry->vertices.size();
     for (std::size_t vertexIndex = 0; vertexIndex < geometry->vertices.size(); ++vertexIndex) {
@@ -490,20 +628,63 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       }
     }
 
+    if ((scene.indices.size() / 3u) >
+        static_cast<std::size_t>(std::numeric_limits<uint32_t>::max())) {
+      log_scene_conversion_warning(
+          "skipped mesh instance because triangle range exceeds uint32",
+          entity.id,
+          entity.mesh.mesh_id);
+      continue;
+    }
     const uint32_t firstTriangle = static_cast<uint32_t>(scene.indices.size() / 3u);
-    for (const auto& index : geometry->indices) {
-      scene.indices.push_back(firstVertex + index);
+    std::vector<uint32_t> validLocalIndices;
+    if (dynamic_transform) {
+      validLocalIndices.reserve(geometry->indices.size());
+    }
+    std::size_t validIndexCount = 0u;
+    std::size_t skippedInvalidTriangles = 0u;
+    for (std::size_t index = 0u; index + 2u < geometry->indices.size(); index += 3u) {
+      const uint32_t i0 = geometry->indices[index + 0u];
+      const uint32_t i1 = geometry->indices[index + 1u];
+      const uint32_t i2 = geometry->indices[index + 2u];
+      if (i0 >= geometry->vertices.size() ||
+          i1 >= geometry->vertices.size() ||
+          i2 >= geometry->vertices.size()) {
+        ++skippedInvalidTriangles;
+        continue;
+      }
+      validIndexCount += 3u;
+      if (dynamic_transform) {
+        validLocalIndices.push_back(i0);
+        validLocalIndices.push_back(i1);
+        validLocalIndices.push_back(i2);
+      }
+      scene.indices.push_back(firstVertex + i0);
+      scene.indices.push_back(firstVertex + i1);
+      scene.indices.push_back(firstVertex + i2);
+    }
+    if (skippedInvalidTriangles != 0u) {
+      log_scene_conversion_warning(
+          "skipped mesh triangles with out-of-range indices",
+          entity.id,
+          entity.mesh.mesh_id);
+    }
+    const uint32_t validTriangleCount =
+        static_cast<uint32_t>(validIndexCount / 3u);
+    if (validTriangleCount == 0u) {
+      log_scene_conversion_warning(
+          "skipped mesh instance with no valid triangles",
+          entity.id,
+          entity.mesh.mesh_id);
+      continue;
     }
     RTInstance instance;
     instance.entity_id = entity.id;
     instance.geometry_id = static_cast<uint32_t>(entity.mesh.mesh_id);
     instance.first_triangle = firstTriangle;
-    instance.triangle_count = static_cast<uint32_t>(geometry->indices.size() / 3u);
+    instance.triangle_count = validTriangleCount;
     instance.material_index = materialIndex;
-    const bool physics_dynamic =
-        entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
-    const bool animation_dynamic = entity_has_animated_transform_path(entity);
-    if (physics_dynamic || animation_dynamic) {
+    if (dynamic_transform) {
       instance.flags |= kRTInstanceFlagDynamicTransform;
       if (physics_dynamic) {
         instance.flags |= kRTInstanceFlagPhysicsControlled;
@@ -514,8 +695,8 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
         scene.local_vertices.push_back(Vec3{vertex.x, vertex.y, vertex.z});
       }
       instance.local_first_index = static_cast<uint32_t>(scene.local_indices.size());
-      instance.local_index_count = static_cast<uint32_t>(geometry->indices.size());
-      for (const auto index : geometry->indices) {
+      instance.local_index_count = static_cast<uint32_t>(validIndexCount);
+      for (const auto index : validLocalIndices) {
         scene.local_indices.push_back(index);
       }
     }
@@ -531,14 +712,14 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     const auto& tessellation = geometry->tessellation;
     if (tessellation.enabled && tessellation.mode == "uniform" && tessellation.factor > 1u) {
       const uint64_t factor = tessellation.factor;
-      const uint64_t sourceTriangles = geometry->indices.size() / 3u;
+      const uint64_t sourceTriangles = validTriangleCount;
       const uint64_t verticesPerTriangle = ((factor + 1u) * (factor + 2u)) / 2u;
       const uint64_t generatedVertices = sourceTriangles * verticesPerTriangle;
       const uint64_t generatedIndices = sourceTriangles * factor * factor * 3u;
       RTTessellationRequest request{};
       request.geometry_id = static_cast<uint32_t>(entity.mesh.mesh_id);
       request.first_triangle = firstTriangle;
-      request.source_triangle_count = static_cast<uint32_t>(sourceTriangles);
+      request.source_triangle_count = saturating_u32(sourceTriangles);
       request.factor = tessellation.factor;
       request.generated_vertex_count = saturating_u32(generatedVertices);
       request.generated_index_count = saturating_u32(generatedIndices);
@@ -558,6 +739,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   }
 
   std::unordered_set<vkpt::core::StableId> ecsSdfIds;
+  ecsSdfIds.reserve(doc.entities.size());
   for (const auto& entity : doc.entities) {
     if (!entity.has_sdf_primitive) {
       continue;
@@ -615,7 +797,8 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       return;
     }
     bool hasTransform = false;
-    const auto* entity = entityById.contains(id) ? entityById[id] : nullptr;
+    const auto entityIt = entityById.find(id);
+    const auto* entity = entityIt != entityById.end() ? entityIt->second : nullptr;
     const auto transform = resolve_entity_transform(
         id,
         entity != nullptr && entity->has_transform ? &entity->transform : nullptr,
@@ -640,6 +823,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   };
 
   std::unordered_set<vkpt::core::StableId> ecsLightIds;
+  ecsLightIds.reserve(doc.entities.size());
   for (const auto& entity : doc.entities) {
     if (entity.has_light) {
       add_light(entity.id, entity.light);
@@ -657,7 +841,8 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
                           const vkpt::scene::CameraComponent& camera,
                           bool* has_transform) {
     bool cameraTransform = false;
-    const auto* entity = entityById.contains(id) ? entityById[id] : nullptr;
+    const auto entityIt = entityById.find(id);
+    const auto* entity = entityIt != entityById.end() ? entityIt->second : nullptr;
     const auto transform = resolve_entity_transform(
         id,
         entity != nullptr && entity->has_transform ? &entity->transform : nullptr,

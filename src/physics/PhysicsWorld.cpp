@@ -11,11 +11,14 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+
+#include "core/Logging.h"
 
 #ifdef PT_ENABLE_JOLT
 #include <Jolt/Jolt.h>
@@ -39,11 +42,30 @@
 #endif
 
 namespace vkpt::physics {
+
+namespace {
+
+void LogPhysicsException(std::string_view operation, std::string_view error) noexcept {
+  try {
+    vkpt::log::Logger::instance().log(
+        vkpt::log::Severity::Error,
+        "physics",
+        "physics worker exception",
+        {{"operation", std::string(operation)}, {"error", std::string(error)}});
+  } catch (...) {
+  }
+}
+
+void LogPhysicsException(std::string_view operation) noexcept {
+  LogPhysicsException(operation, "non-standard exception");
+}
+
+}  // namespace
 namespace {
 
 std::vector<PhysicsBodySync> BuildPhysicsBodySyncList(const vkpt::scene::SceneWorld& world) {
   std::vector<PhysicsBodySync> bodies;
-  bodies.reserve(world.query(vkpt::scene::ComponentKind::PhysicsBody).size());
+  bodies.reserve(world.all_entities().size());
   for (const auto entity_id : world.all_entities()) {
     const auto* entity = world.get_entity(entity_id);
     if (entity == nullptr || !entity->physics_body.has_value()) {
@@ -397,132 +419,195 @@ class NullPhysicsWorld final : public IPhysicsWorld {
 };
 
 class ThreadedPhysicsWorld final : public IPhysicsWorld {
+ private:
+  struct WorkerState {
+    mutable std::mutex mutex;
+    mutable std::condition_variable cv;
+    mutable std::deque<std::function<void()>> jobs;
+    mutable bool started = false;
+    mutable bool stopping = false;
+    std::thread::id worker_id;
+    std::unique_ptr<IPhysicsWorld> backend;
+  };
+
  public:
   explicit ThreadedPhysicsWorld(std::unique_ptr<IPhysicsWorld> backend)
-      : m_backend(std::move(backend)) {
-    if (!m_backend) {
+      : m_state(std::make_shared<WorkerState>()) {
+    if (!backend) {
       throw std::invalid_argument("physics backend is null");
     }
-    m_thread = std::thread([this]() {
-      worker_loop();
+    m_state->backend = std::move(backend);
+    m_thread = std::thread([state = m_state]() {
+      worker_loop(state);
     });
-    std::unique_lock lock(m_mutex);
-    m_cv.wait(lock, [this]() {
-      return m_started;
+    std::unique_lock lock(m_state->mutex);
+    m_state->cv.wait(lock, [state = m_state]() {
+      return state->started;
     });
   }
 
-  ~ThreadedPhysicsWorld() override {
+  ~ThreadedPhysicsWorld() noexcept override {
     if (!m_thread.joinable()) {
       return;
     }
-    if (std::this_thread::get_id() != m_worker_id) {
-      run_on_worker([this]() {
-        m_backend.reset();
-      });
+    const auto state = m_state;
+    if (std::this_thread::get_id() != state->worker_id) {
+      try {
+        run_on_worker([this]() {
+          m_state->backend.reset();
+        });
+      } catch (const std::exception& ex) {
+        LogPhysicsException("threaded_physics_destructor", ex.what());
+      } catch (...) {
+        LogPhysicsException("threaded_physics_destructor");
+      }
+      {
+        std::lock_guard lock(state->mutex);
+        state->stopping = true;
+      }
+      state->cv.notify_one();
+      m_thread.join();
     } else {
-      m_backend.reset();
-      return;
+      state->backend.reset();
+      {
+        std::lock_guard lock(state->mutex);
+        state->jobs.clear();
+        state->stopping = true;
+      }
+      state->cv.notify_one();
+      m_thread.detach();
     }
-    {
-      std::lock_guard lock(m_mutex);
-      m_stopping = true;
-    }
-    m_cv.notify_one();
-    m_thread.join();
   }
 
   PhysicsEngineInfo engine_info() const override {
-    auto info = run_on_worker([this]() {
-      return m_backend->engine_info();
-    });
-    info.runs_on_worker_thread = true;
-    info.threading_model = "dedicated_worker";
-    return info;
+    try {
+      auto info = run_on_worker([this]() {
+        return m_state->backend->engine_info();
+      });
+      info.runs_on_worker_thread = true;
+      info.threading_model = "dedicated_worker";
+      return info;
+    } catch (const std::exception& ex) {
+      LogPhysicsException("engine_info", ex.what());
+    } catch (...) {
+      LogPhysicsException("engine_info");
+    }
+    PhysicsEngineInfo fallback{};
+    fallback.threading_model = "dedicated_worker_error";
+    return fallback;
   }
 
   PhysicsSyncSummary sync_from_scene_world(const vkpt::scene::SceneWorld& world) override {
-    auto bodies = BuildPhysicsBodySyncList(world);
-    const auto ecs_entities = world.all_entities().size();
-    return run_on_worker([this, bodies = std::move(bodies), ecs_entities]() mutable {
-      return m_backend->sync_from_bodies(std::move(bodies), ecs_entities);
-    });
+    try {
+      auto bodies = BuildPhysicsBodySyncList(world);
+      const auto ecs_entities = world.all_entities().size();
+      return run_on_worker([this, bodies = std::move(bodies), ecs_entities]() mutable {
+        return m_state->backend->sync_from_bodies(std::move(bodies), ecs_entities);
+      });
+    } catch (const std::exception& ex) {
+      LogPhysicsException("sync_from_scene_world", ex.what());
+    } catch (...) {
+      LogPhysicsException("sync_from_scene_world");
+    }
+    return {};
   }
 
   PhysicsSyncSummary sync_from_bodies(std::vector<PhysicsBodySync> bodies, std::size_t ecs_entities) override {
-    return run_on_worker([this, bodies = std::move(bodies), ecs_entities]() mutable {
-      return m_backend->sync_from_bodies(std::move(bodies), ecs_entities);
-    });
+    try {
+      return run_on_worker([this, bodies = std::move(bodies), ecs_entities]() mutable {
+        return m_state->backend->sync_from_bodies(std::move(bodies), ecs_entities);
+      });
+    } catch (const std::exception& ex) {
+      LogPhysicsException("sync_from_bodies", ex.what());
+    } catch (...) {
+      LogPhysicsException("sync_from_bodies");
+    }
+    return {};
   }
 
   vkpt::core::Result<void> step_fixed(const PhysicsStepConfig& config) override {
-    return run_on_worker([this, config]() {
-      return m_backend->step_fixed(config);
-    });
+    try {
+      return run_on_worker([this, config]() {
+        return m_state->backend->step_fixed(config);
+      });
+    } catch (const std::exception& ex) {
+      LogPhysicsException("step_fixed", ex.what());
+    } catch (...) {
+      LogPhysicsException("step_fixed");
+    }
+    return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Internal);
   }
 
   std::vector<PhysicsTransformWrite> extract_transform_writes() const override {
-    return run_on_worker([this]() {
-      return m_backend->extract_transform_writes();
-    });
+    try {
+      return run_on_worker([this]() {
+        return m_state->backend->extract_transform_writes();
+      });
+    } catch (const std::exception& ex) {
+      LogPhysicsException("extract_transform_writes", ex.what());
+    } catch (...) {
+      LogPhysicsException("extract_transform_writes");
+    }
+    return {};
   }
 
  private:
   template <typename Fn>
   auto run_on_worker(Fn&& fn) const -> std::invoke_result_t<Fn&> {
     using Result = std::invoke_result_t<Fn&>;
-    if (std::this_thread::get_id() == m_worker_id) {
+    const auto state = m_state;
+    if (std::this_thread::get_id() == state->worker_id) {
       return std::forward<Fn>(fn)();
     }
 
     auto task = std::make_shared<std::packaged_task<Result()>>(std::forward<Fn>(fn));
     auto future = task->get_future();
     {
-      std::lock_guard lock(m_mutex);
-      if (m_stopping) {
+      std::lock_guard lock(state->mutex);
+      if (state->stopping) {
         throw std::runtime_error("physics worker is stopping");
       }
-      m_jobs.emplace_back([task]() {
+      state->jobs.emplace_back([task]() {
         (*task)();
       });
     }
-    m_cv.notify_one();
+    state->cv.notify_one();
     return future.get();
   }
 
-  void worker_loop() {
+  static void worker_loop(const std::shared_ptr<WorkerState>& state) {
     {
-      std::lock_guard lock(m_mutex);
-      m_worker_id = std::this_thread::get_id();
-      m_started = true;
+      std::lock_guard lock(state->mutex);
+      state->worker_id = std::this_thread::get_id();
+      state->started = true;
     }
-    m_cv.notify_all();
+    state->cv.notify_all();
 
     for (;;) {
       std::function<void()> job;
       {
-        std::unique_lock lock(m_mutex);
-        m_cv.wait(lock, [this]() {
-          return m_stopping || !m_jobs.empty();
+        std::unique_lock lock(state->mutex);
+        state->cv.wait(lock, [state]() {
+          return state->stopping || !state->jobs.empty();
         });
-        if (m_stopping && m_jobs.empty()) {
+        if (state->stopping && state->jobs.empty()) {
           return;
         }
-        job = std::move(m_jobs.front());
-        m_jobs.pop_front();
+        job = std::move(state->jobs.front());
+        state->jobs.pop_front();
       }
-      job();
+      try {
+        job();
+      } catch (const std::exception& ex) {
+        LogPhysicsException("worker_loop_job", ex.what());
+      } catch (...) {
+        LogPhysicsException("worker_loop_job");
+      }
     }
   }
 
-  mutable std::mutex m_mutex;
-  mutable std::condition_variable m_cv;
-  mutable std::deque<std::function<void()>> m_jobs;
-  mutable bool m_started = false;
-  mutable bool m_stopping = false;
-  std::thread::id m_worker_id;
+  std::shared_ptr<WorkerState> m_state;
   std::thread m_thread;
-  std::unique_ptr<IPhysicsWorld> m_backend;
 };
 
 #ifdef PT_ENABLE_JOLT
@@ -602,6 +687,12 @@ struct JoltRuntime {
     }
     JPH::RegisterTypes();
   }
+
+  ~JoltRuntime() {
+    JPH::UnregisterTypes();
+    delete JPH::Factory::sInstance;
+    JPH::Factory::sInstance = nullptr;
+  }
 };
 
 void EnsureJoltRuntime() {
@@ -629,6 +720,14 @@ bool NearlyEqual(const vkpt::scene::Vec3& lhs, const vkpt::scene::Vec3& rhs) {
   return NearlyEqual(lhs.x, rhs.x) && NearlyEqual(lhs.y, rhs.y) && NearlyEqual(lhs.z, rhs.z);
 }
 
+bool NearlyEqual(const vkpt::scene::Quat& lhs, const vkpt::scene::Quat& rhs, float epsilon = 0.0005f) {
+  const float dot = lhs.x * rhs.x +
+                    lhs.y * rhs.y +
+                    lhs.z * rhs.z +
+                    lhs.w * rhs.w;
+  return std::abs(1.0f - std::abs(dot)) <= epsilon;
+}
+
 bool NearlyEqual(JPH::RVec3Arg lhs, const vkpt::scene::Vec3& rhs, float epsilon = 0.0005f) {
   return std::abs(static_cast<float>(lhs.GetX()) - rhs.x) <= epsilon &&
          std::abs(static_cast<float>(lhs.GetY()) - rhs.y) <= epsilon &&
@@ -645,6 +744,7 @@ bool NearlyEqual(JPH::QuatArg lhs, const vkpt::scene::Quat& rhs, float epsilon =
 
 struct BodyRuntimeKey {
   bool dynamic = false;
+  bool kinematic = false;
   bool trigger = false;
   bool allow_sleeping = true;
   bool continuous_collision = false;
@@ -658,6 +758,7 @@ struct BodyRuntimeKey {
 
 bool SameBodyRuntimeKey(const BodyRuntimeKey& lhs, const BodyRuntimeKey& rhs) {
   return lhs.dynamic == rhs.dynamic &&
+         lhs.kinematic == rhs.kinematic &&
          lhs.trigger == rhs.trigger &&
          lhs.allow_sleeping == rhs.allow_sleeping &&
          lhs.continuous_collision == rhs.continuous_collision &&
@@ -672,6 +773,7 @@ bool SameBodyRuntimeKey(const BodyRuntimeKey& lhs, const BodyRuntimeKey& rhs) {
 BodyRuntimeKey MakeBodyRuntimeKey(const PhysicsBodySync& sync) {
   BodyRuntimeKey key;
   key.dynamic = sync.body.dynamic;
+  key.kinematic = !sync.body.dynamic && sync.body.body_type == "kinematic";
   key.trigger = sync.body.trigger;
   key.allow_sleeping = sync.body.allow_sleeping;
   key.continuous_collision = sync.body.continuous_collision;
@@ -759,6 +861,7 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
 
   PhysicsSyncSummary sync_from_bodies(std::vector<PhysicsBodySync> bodies_to_sync, std::size_t ecs_entities) override {
     auto summary = BuildSyncSummary(bodies_to_sync, ecs_entities);
+    m_writes.clear();
     auto& bodies = m_system.GetBodyInterface();
     std::unordered_set<vkpt::core::StableEntityId> seen;
     seen.reserve(bodies_to_sync.size());
@@ -783,6 +886,15 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
         const bool pose_changed =
             !NearlyEqual(current_position, sync.transform.translation) ||
             !NearlyEqual(current_rotation, sync.transform.rotation);
+        if (key.kinematic && pose_changed) {
+          bodies.MoveKinematic(existing->second.body_id,
+                               target_position,
+                               target_rotation,
+                               1.0f / 60.0f);
+          bodies.ActivateBody(existing->second.body_id);
+          existing->second.last_published_transform = sync.transform;
+          continue;
+        }
         const auto activation =
             key.dynamic && pose_changed ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
         bodies.SetPositionAndRotationWhenChanged(existing->second.body_id,
@@ -796,6 +908,9 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
           bodies.ResetSleepTimer(existing->second.body_id);
           bodies.ActivateBody(existing->second.body_id);
         }
+        if (pose_changed) {
+          existing->second.last_published_transform = sync.transform;
+        }
         continue;
       }
 
@@ -805,8 +920,10 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
         continue;
       }
 
-      const auto motion_type = sync.body.dynamic ? JPH::EMotionType::Dynamic : JPH::EMotionType::Static;
-      const auto layer = sync.body.dynamic ? Layers::kDynamic : Layers::kStatic;
+      const auto motion_type = sync.body.dynamic
+          ? JPH::EMotionType::Dynamic
+          : (key.kinematic ? JPH::EMotionType::Kinematic : JPH::EMotionType::Static);
+      const auto layer = (sync.body.dynamic || key.kinematic) ? Layers::kDynamic : Layers::kStatic;
       JPH::BodyCreationSettings settings(
           *shape,
           JPH::RVec3(sync.transform.translation.x, sync.transform.translation.y, sync.transform.translation.z),
@@ -826,10 +943,12 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
         settings.mMassPropertiesOverride.mMass = sync.body.mass;
       }
 
-      const auto activation = sync.body.dynamic ? JPH::EActivation::Activate : JPH::EActivation::DontActivate;
+      const auto activation = (sync.body.dynamic || key.kinematic)
+          ? JPH::EActivation::Activate
+          : JPH::EActivation::DontActivate;
       const auto body_id = bodies.CreateAndAddBody(settings, activation);
       if (!body_id.IsInvalid()) {
-        m_bodies.emplace(sync.entity, BodyRecord{body_id, key});
+        m_bodies.emplace(sync.entity, BodyRecord{body_id, key, {}, sync.transform});
       }
     }
 
@@ -849,25 +968,42 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
   }
 
   vkpt::core::Result<void> step_fixed(const PhysicsStepConfig& config) override {
+    m_writes.clear();
     if (!std::isfinite(config.fixed_dt) || config.fixed_dt <= 0.0f || config.collision_steps <= 0) {
       return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::InvalidArgument);
     }
     if (!config.collision_detection_enabled) {
       step_without_collision_detection(config.fixed_dt);
+      collect_changed_transform_writes();
       return vkpt::core::Result<void>::ok();
     }
     const auto error = m_system.Update(config.fixed_dt, config.collision_steps, m_temp_allocator.get(), m_job_system.get());
     if (error != JPH::EPhysicsUpdateError::None) {
       return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Internal);
     }
+    collect_changed_transform_writes();
     return vkpt::core::Result<void>::ok();
   }
 
   std::vector<PhysicsTransformWrite> extract_transform_writes() const override {
-    std::vector<PhysicsTransformWrite> writes;
-    writes.reserve(m_bodies.size());
+    return m_writes;
+  }
+
+ private:
+  struct BodyRecord {
+    JPH::BodyID body_id;
+    BodyRuntimeKey key;
+    vkpt::scene::Vec3 velocity{};
+    vkpt::scene::TransformComponent last_published_transform;
+  };
+
+  void collect_changed_transform_writes() {
+    m_writes.clear();
     const auto& lock_interface = m_system.GetBodyLockInterface();
-    for (const auto& [entity_id, record] : m_bodies) {
+    for (auto& [entity_id, record] : m_bodies) {
+      if (!record.key.dynamic && !record.key.kinematic) {
+        continue;
+      }
       JPH::BodyLockRead lock(lock_interface, record.body_id);
       if (!lock.Succeeded()) {
         continue;
@@ -883,17 +1019,18 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
       transform.rotation = FromJoltQuat(rotation);
       transform.scale = record.key.scale;
       transform.dirty = true;
-      writes.push_back({entity_id, transform});
+      if (NearlyEqual(record.last_published_transform.translation,
+                      transform.translation) &&
+          NearlyEqual(record.last_published_transform.rotation,
+                      transform.rotation) &&
+          NearlyEqual(record.last_published_transform.scale,
+                      transform.scale)) {
+        continue;
+      }
+      record.last_published_transform = transform;
+      m_writes.push_back({entity_id, transform});
     }
-    return writes;
   }
-
- private:
-  struct BodyRecord {
-    JPH::BodyID body_id;
-    BodyRuntimeKey key;
-    vkpt::scene::Vec3 velocity{};
-  };
 
   void step_without_collision_detection(float dt) {
     auto& body_interface = m_system.GetBodyInterface();
@@ -960,6 +1097,7 @@ class JoltPhysicsWorld final : public IPhysicsWorld {
   std::unique_ptr<JPH::JobSystemThreadPool> m_job_system;
   JPH::uint m_backendWorkerThreads = 1;
   std::unordered_map<vkpt::core::StableEntityId, BodyRecord> m_bodies;
+  std::vector<PhysicsTransformWrite> m_writes;
   PhysicsSyncSummary m_summary;
 };
 

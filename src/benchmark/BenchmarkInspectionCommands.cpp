@@ -122,13 +122,23 @@ void PrintHelp() {
 
 int ListScenesCommand() {
   const Path sceneDir("assets/scenes");
-  if (!std::filesystem::exists(sceneDir)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(sceneDir, ec) || ec) {
     std::cerr << "scene directory missing: " << sceneDir.string() << "\n";
     return 1;
   }
   std::cout << "scenes:\n";
-  for (const auto& entry : std::filesystem::directory_iterator(sceneDir)) {
-    if (!entry.is_regular_file()) {
+  for (std::filesystem::directory_iterator it(sceneDir, std::filesystem::directory_options::skip_permission_denied, ec),
+       end;
+       it != end;
+       it.increment(ec)) {
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    const auto& entry = *it;
+    std::error_code entryEc;
+    if (!entry.is_regular_file(entryEc) || entryEc) {
       continue;
     }
     if (entry.path().extension() != ".json") {

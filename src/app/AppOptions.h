@@ -30,6 +30,7 @@ struct AppOptions {
   bool ui_model_smoke = false;
   bool ui_release_gate = false;
   bool dynamic_physics_gate = false;
+  bool third_person_script_gate = false;
   bool open_window = false;
   bool list_gpus = false;
   bool auto_exit_window = false;

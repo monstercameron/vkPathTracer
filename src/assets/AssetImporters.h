@@ -35,6 +35,7 @@ struct AssetValidationResult {
 };
 
 struct AssetImportSource {
+  // Importers prefer explicit bytes, then fall back to resolving uri on disk.
   std::string uri;
   std::vector<std::byte> bytes;
   std::string root_directory;
@@ -42,6 +43,7 @@ struct AssetImportSource {
 };
 
 struct AssetImportOptions {
+  // Most importers emit stable records first; geometry/pixel decode is opt-in.
   bool metadata_only = true;
   bool allow_lossy_conversions = true;
   bool infer_texture_semantic_from_uri = true;
@@ -103,6 +105,7 @@ std::string FileNameOrUri(std::string_view uri);
 
 class ImporterRegistry {
  public:
+  // Dispatches by normalized extension so scene, mesh, and texture pipelines share diagnostics.
   bool register_importer(std::shared_ptr<IAssetImporter> importer);
 
   [[nodiscard]] const IAssetImporter* importer_for_extension(std::string_view extension) const;
