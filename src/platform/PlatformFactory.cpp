@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include <vector>
 
 #include "platform/HeadlessPlatform.h"
 
@@ -27,12 +28,39 @@ std::string ToLower(std::string_view text) {
 
 }  // namespace
 
+HostPlatformKind HostPlatform() {
+#if defined(__EMSCRIPTEN__)
+  return HostPlatformKind::Web;
+#elif defined(_WIN32)
+  return HostPlatformKind::Windows;
+#elif defined(__APPLE__)
+  return HostPlatformKind::MacOS;
+#elif defined(__linux__)
+  return HostPlatformKind::Linux;
+#else
+  return HostPlatformKind::Unknown;
+#endif
+}
+
+const char* HostPlatformName(HostPlatformKind kind) {
+  switch (kind) {
+    case HostPlatformKind::Windows: return "windows";
+    case HostPlatformKind::Linux: return "linux";
+    case HostPlatformKind::MacOS: return "macos";
+    case HostPlatformKind::Web: return "web";
+    case HostPlatformKind::Unknown:
+    default: return "unknown";
+  }
+}
+
 RuntimePlatformKind ParseRuntimePlatform(std::string_view name) {
   const std::string value = ToLower(name);
   if (value.empty() || value == "auto") {
     return RuntimePlatformKind::Auto;
   }
-  if (value == "raw" || value == "desktop" || value == "native" || value == "win32") {
+  if (value == "raw" || value == "desktop" || value == "native" || value == "win32" ||
+      value == "x11" || value == "wayland" || value == "linux" ||
+      value == "macos" || value == "osx" || value == "cocoa") {
     return RuntimePlatformKind::Raw;
   }
   if (value == "qt") {
@@ -55,6 +83,73 @@ const char* RuntimePlatformKindName(RuntimePlatformKind kind) {
   }
 }
 
+RuntimePlatformSupport DescribeRuntimePlatform(RuntimePlatformKind kind) {
+  RuntimePlatformSupport support;
+  support.kind = kind;
+  support.name = RuntimePlatformKindName(kind);
+  switch (kind) {
+    case RuntimePlatformKind::Invalid:
+      support.unavailable_reason = "invalid platform request";
+      return support;
+    case RuntimePlatformKind::Auto:
+      support.built = true;
+      support.available = true;
+      support.implementation = "resolver";
+      return support;
+    case RuntimePlatformKind::Headless:
+      support.built = true;
+      support.available = true;
+      support.implementation = "headless";
+      return support;
+    case RuntimePlatformKind::Raw:
+#if defined(PT_ENABLE_RAW_DESKTOP)
+      support.built = true;
+#if defined(_WIN32)
+      support.available = true;
+      support.implementation = "win32";
+#elif defined(__APPLE__)
+      support.stub = true;
+      support.implementation = "macos-cocoa-stub";
+      support.unavailable_reason =
+          "raw macOS/Cocoa windowing is stubbed; use Qt or headless until the native implementation lands";
+#elif defined(__linux__)
+      support.stub = true;
+      support.implementation = "linux-x11-wayland-stub";
+      support.unavailable_reason =
+          "raw Linux X11/Wayland windowing is stubbed; use Qt or headless until the native implementation lands";
+#else
+      support.stub = true;
+      support.implementation = "native-desktop-stub";
+      support.unavailable_reason =
+          "raw native desktop windowing is stubbed for this host; use Qt or headless";
+#endif
+#else
+      support.unavailable_reason = "PT_ENABLE_RAW_DESKTOP is disabled";
+#endif
+      return support;
+    case RuntimePlatformKind::Qt:
+#if defined(PT_ENABLE_QT)
+      support.built = true;
+      support.available = true;
+      support.implementation = "qt-widgets";
+#else
+      support.unavailable_reason = "PT_ENABLE_QT is disabled";
+#endif
+      return support;
+    default:
+      support.unavailable_reason = "unknown platform";
+      return support;
+  }
+}
+
+std::vector<RuntimePlatformSupport> DescribeRuntimePlatforms() {
+  return {
+      DescribeRuntimePlatform(RuntimePlatformKind::Headless),
+      DescribeRuntimePlatform(RuntimePlatformKind::Raw),
+      DescribeRuntimePlatform(RuntimePlatformKind::Qt),
+  };
+}
+
 RuntimePlatformKind ResolveRuntimePlatform(RuntimePlatformKind requested,
                                           bool wants_window,
                                           bool headless_requested) {
@@ -67,31 +162,33 @@ RuntimePlatformKind ResolveRuntimePlatform(RuntimePlatformKind requested,
   if (headless_requested) {
     return RuntimePlatformKind::Headless;
   }
-  return wants_window ? RuntimePlatformKind::Raw : RuntimePlatformKind::Headless;
+  if (!wants_window) {
+    return RuntimePlatformKind::Headless;
+  }
+#if defined(_WIN32)
+  if (IsPlatformAvailable(RuntimePlatformKind::Raw)) {
+    return RuntimePlatformKind::Raw;
+  }
+  if (IsPlatformAvailable(RuntimePlatformKind::Qt)) {
+    return RuntimePlatformKind::Qt;
+  }
+#else
+  if (IsPlatformAvailable(RuntimePlatformKind::Qt)) {
+    return RuntimePlatformKind::Qt;
+  }
+  if (IsPlatformAvailable(RuntimePlatformKind::Raw)) {
+    return RuntimePlatformKind::Raw;
+  }
+#endif
+  return RuntimePlatformKind::Headless;
 }
 
 bool IsPlatformBuilt(RuntimePlatformKind kind) {
-  switch (kind) {
-    case RuntimePlatformKind::Invalid:
-      return false;
-    case RuntimePlatformKind::Headless:
-      return true;
-    case RuntimePlatformKind::Raw:
-#if defined(PT_ENABLE_RAW_DESKTOP)
-      return true;
-#else
-      return false;
-#endif
-    case RuntimePlatformKind::Qt:
-#if defined(PT_ENABLE_QT)
-      return true;
-#else
-      return false;
-#endif
-    case RuntimePlatformKind::Auto:
-    default:
-      return true;
-  }
+  return DescribeRuntimePlatform(kind).built;
+}
+
+bool IsPlatformAvailable(RuntimePlatformKind kind) {
+  return DescribeRuntimePlatform(kind).available;
 }
 
 std::unique_ptr<IPlatform> CreatePlatform(RuntimePlatformKind kind, std::string_view name) {

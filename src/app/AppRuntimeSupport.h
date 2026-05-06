@@ -85,6 +85,11 @@ void LogRuntimeMetadata(vkpt::log::Logger& logger,
                         bool autoExit,
                         std::uint32_t frameLimit,
                         std::uint32_t uiPresentHz);
+bool ValidateRuntimePlatformSelection(
+    vkpt::platform::RuntimePlatformKind requestedPlatform,
+    vkpt::platform::RuntimePlatformKind effectivePlatform,
+    bool openWindow,
+    bool headless);
 void PrintNonGuiPlatformShellNotice(
     std::string_view command,
     vkpt::platform::RuntimePlatformKind selectedPlatform,

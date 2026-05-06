@@ -255,6 +255,17 @@ bool DesktopWindow::initialize(std::size_t width, std::size_t height, std::strin
   m_hwnd = hwnd;
   ShowWindow(hwnd, SW_SHOW);
   UpdateWindow(hwnd);
+#else
+  m_metrics.width = static_cast<int>(width);
+  m_metrics.height = static_cast<int>(height);
+  m_title.assign(title);
+  m_open = false;
+  m_hwnd = nullptr;
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Warning,
+      "platform",
+      "raw native desktop window requested on a host with only a stub implementation");
+  return false;
 #endif
   m_metrics.width = static_cast<int>(width);
   m_metrics.height = static_cast<int>(height);
@@ -315,8 +326,8 @@ bool DesktopWindow::resize(std::size_t width, std::size_t height) {
   if (width == 0u || height == 0u) {
     return false;
   }
-  const bool changed = (m_metrics.width != static_cast<int>(width))
-                    || (m_metrics.height != static_cast<int>(height));
+  [[maybe_unused]] const bool changed = (m_metrics.width != static_cast<int>(width))
+                                     || (m_metrics.height != static_cast<int>(height));
 #ifdef _WIN32
   if (m_hwnd && changed) {
     const auto hwnd = static_cast<HWND>(m_hwnd);
@@ -592,7 +603,11 @@ vkpt::core::Result<void> DesktopPlatform::initialize() {
     return vkpt::core::Result<void>::ok();
   }
   if (!m_window.initialize(1280, 720, m_name)) {
+#ifdef _WIN32
     return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Internal);
+#else
+    return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Unsupported);
+#endif
   }
 #ifdef _WIN32
   m_surface.set_handles(m_window.native_handle(), GetModuleHandleW(nullptr));

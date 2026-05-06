@@ -439,25 +439,25 @@ int RunApp(int argc, char** argv) {
   const auto requestedPlatform = vkpt::platform::ParseRuntimePlatform(config.platform.value);
   if (requestedPlatform == vkpt::platform::RuntimePlatformKind::Invalid) {
     std::cerr << "invalid platform: " << config.platform.value
-              << " (expected auto|raw|qt|headless aliases: desktop|native|win32)\n";
+              << " (expected auto|raw|qt|headless; raw aliases include desktop|native|win32|x11|wayland|cocoa)\n";
     return 1;
   }
   const auto selectedPlatform = vkpt::platform::ResolveRuntimePlatform(
       requestedPlatform,
       openWindow,
       config.headless.value);
-  if (!vkpt::platform::IsPlatformBuilt(selectedPlatform)) {
-    std::cerr << "selected platform is not built: "
-              << vkpt::platform::RuntimePlatformKindName(selectedPlatform) << "\n";
-    return 1;
-  }
-  const bool doctorMode = doctor || checkBuild || checkCpu || checkBackends || checkAssets || checkShaders
-                         || checkJobSystem || checkSceneSchema || checkBenchmarkArtifact;
-  const bool nonGuiCommandMode = doctorMode || listBackends || listAccelerators || doRender || dynamicPhysicsGate;
+  const bool doctorMode = doctor || checkBuild || checkCpu || checkBackends || checkAssets || checkShaders ||
+                          checkJobSystem || checkSceneSchema || checkBenchmarkArtifact;
+  const bool nonGuiCommandMode = doctorMode || showVersion || dumpConfig || listBackends || listAccelerators ||
+                                 listGpus || doRender || uiModelSmoke || uiReleaseGate || dynamicPhysicsGate;
   auto effectivePlatform = selectedPlatform;
-  if (nonGuiCommandMode && selectedPlatform == vkpt::platform::RuntimePlatformKind::Qt) {
+  if (nonGuiCommandMode && selectedPlatform != vkpt::platform::RuntimePlatformKind::Headless) {
     effectivePlatform = vkpt::platform::RuntimePlatformKind::Headless;
-    BootStep("qt platform requested for non-gui command; using headless shell");
+    BootStep("non-gui command requested; using headless platform shell");
+  }
+  if (!ValidateRuntimePlatformSelection(
+          requestedPlatform, effectivePlatform, openWindow, headless)) {
+    return 1;
   }
   config.platform.value = vkpt::platform::RuntimePlatformKindName(effectivePlatform);
   if (effectivePlatform == vkpt::platform::RuntimePlatformKind::Headless) {

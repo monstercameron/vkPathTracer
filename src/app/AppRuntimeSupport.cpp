@@ -429,13 +429,19 @@ void LogRuntimeMetadata(vkpt::log::Logger& logger,
       effectivePlatform == vkpt::platform::RuntimePlatformKind::Qt && openWindow;
   const uint32_t effectivePreviewPresentHz =
       qtPreviewActive ? std::max<uint32_t>(1u, uiPresentHz) : 0u;
+  const auto rawSupport = vkpt::platform::DescribeRuntimePlatform(
+      vkpt::platform::RuntimePlatformKind::Raw);
   logger.log(vkpt::log::Severity::Info, "app", "runtime metadata", {
     {"phase", std::string(phase)},
+    {"host_platform", vkpt::platform::HostPlatformName(vkpt::platform::HostPlatform())},
     {"requested_platform", vkpt::platform::RuntimePlatformKindName(requestedPlatform)},
     {"selected_platform", vkpt::platform::RuntimePlatformKindName(selectedPlatform)},
     {"effective_platform", vkpt::platform::RuntimePlatformKindName(effectivePlatform)},
     {"window_system", std::string(WindowSystemName(effectivePlatform))},
     {"raw_built", YesNo(IsRawPlatformBuilt())},
+    {"raw_available", rawSupport.available ? "yes" : "no"},
+    {"raw_stub", rawSupport.stub ? "yes" : "no"},
+    {"raw_implementation", rawSupport.implementation},
     {"qt_built", YesNo(IsQtPlatformBuilt())},
     {"qt_version", QtVersionString()},
     {"qt_platform_shell", QtPlatformShellString()},
@@ -448,12 +454,52 @@ void LogRuntimeMetadata(vkpt::log::Logger& logger,
   });
 }
 
+bool ValidateRuntimePlatformSelection(
+    vkpt::platform::RuntimePlatformKind requestedPlatform,
+    vkpt::platform::RuntimePlatformKind effectivePlatform,
+    bool openWindow,
+    bool headless) {
+  if (!vkpt::platform::IsPlatformBuilt(effectivePlatform)) {
+    const auto support = vkpt::platform::DescribeRuntimePlatform(effectivePlatform);
+    std::cerr << "selected platform is not built: "
+              << vkpt::platform::RuntimePlatformKindName(effectivePlatform);
+    if (support.unavailable_reason != nullptr && support.unavailable_reason[0] != '\0') {
+      std::cerr << " (" << support.unavailable_reason << ")";
+    }
+    std::cerr << "\n";
+    return false;
+  }
+  if (openWindow && !headless &&
+      requestedPlatform == vkpt::platform::RuntimePlatformKind::Auto &&
+      effectivePlatform == vkpt::platform::RuntimePlatformKind::Headless) {
+    std::cerr << "--window requires a window platform; build Qt or a host native raw platform\n";
+    return false;
+  }
+  if (!vkpt::platform::IsPlatformAvailable(effectivePlatform)) {
+    const auto support = vkpt::platform::DescribeRuntimePlatform(effectivePlatform);
+    std::cerr << "selected platform is not available on "
+              << vkpt::platform::HostPlatformName(vkpt::platform::HostPlatform())
+              << ": " << vkpt::platform::RuntimePlatformKindName(effectivePlatform);
+    if (support.stub) {
+      std::cerr << " (" << support.implementation << ")";
+    }
+    if (support.unavailable_reason != nullptr && support.unavailable_reason[0] != '\0') {
+      std::cerr << ": " << support.unavailable_reason;
+    }
+    std::cerr << "\n";
+    return false;
+  }
+  return true;
+}
+
 void PrintNonGuiPlatformShellNotice(std::string_view command,
                                     vkpt::platform::RuntimePlatformKind selectedPlatform,
                                     vkpt::platform::RuntimePlatformKind effectivePlatform) {
-  if (selectedPlatform == vkpt::platform::RuntimePlatformKind::Qt &&
+  if (selectedPlatform != effectivePlatform &&
       effectivePlatform == vkpt::platform::RuntimePlatformKind::Headless) {
-    std::cout << "ui shell: headless (Qt requested; GUI not initialized for "
+    std::cout << "ui shell: headless ("
+              << vkpt::platform::RuntimePlatformKindName(selectedPlatform)
+              << " requested; GUI not initialized for "
               << command << ")\n";
   }
 }
