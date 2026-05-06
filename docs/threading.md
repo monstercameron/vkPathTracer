@@ -1,853 +1,820 @@
-I think the FPS cliff is **not caused by “world-space movement” itself**. It is caused by the architecture treating a moving physics object like a broad scene mutation. One body moves, then the engine appears to cascade into ECS-wide transform invalidation, full scene extraction/hash work, and often full acceleration rebuilds.
+Yes — your atomicity correction is the missing piece. After re-checking the current source, the final proposal should be stricter than “make CPU honest.” It should be:
 
-I’m basing this on source inspection, not a profiler capture, but the code paths are strong enough to explain the behavior.
+> **Transform updates are transactions. If a transform update is rejected, unsupported, or requires forbidden fallback work, no committed render state may change.**
 
-## What is probably happening
+That transaction boundary must include **RenderCoordinator’s scene mirror**, **CPU tracer state**, **D3D12 scene/GPU-instance mirrors**, and **acceleration structures**.
 
-### 1. Physics sync scans the whole ECS every tick
+## Source-confirmed corrections
 
-`BuildPhysicsBodySyncList()` reserves against `world.all_entities().size()` and iterates every entity, then copies the cached `world_transform` into the physics sync record when available. That means even if one physics object moves, the sync stage starts with an **O(total entities)** scan. ([GitHub][1])
+The current `RTInstanceTransformUpdate` payload is TRS-only: entity/index/flags/revision plus `translation`, `rotation`, and `scale`. So the public API should keep TRS for now, and backends that need matrices should derive/cache them internally. `RTInstance` also already carries dynamic flags, local geometry ranges, and TRS, which is enough foundation for CPU dynamic BLAS/TLAS later. ([GitHub][1])
 
-That is not necessarily fatal by itself, but it is the first sign that movement is not being processed as a narrow delta.
+The current interfaces are too weak: `IRayAccelerator` has no instance-transform update API, and `IPathTracer::update_instance_transforms()` returns only `bool`, even though its comment says `false` means the backend needs a full scene snapshot or acceleration rebuild. ([GitHub][1])
 
-### 2. Physics calls are serialized through a worker and block the caller
+The current `RenderCoordinator` fast path is **not atomic**. It applies `ApplyInstanceTransformUpdates(scene, updates)` to the coordinator’s local scene mirror before calling the backend. If the backend then fails or requires fallback, the coordinator scene mirror has already moved ahead of the committed acceleration state. ([GitHub][2])
 
-`ThreadedPhysicsWorld` wraps calls like `sync_from_scene_world()`, `step_fixed()`, and `extract_transform_writes()` through `run_on_worker()`, and `run_on_worker()` waits on `future.get()`. So the calling thread can pay multiple hard sync points per frame: sync, step, extract. ([GitHub][1])
+That is worse because `ApplyInstanceTransformUpdates()` does more than metadata: it mutates instance TRS/flags/revision and, when local vertex ranges exist, rebakes transformed vertices into `scene.vertices`. That function should not be called speculatively on a fast transform path. ([GitHub][3])
 
-This means the architecture is not really “physics runs independently.” It is closer to:
+The scalar CPU path has the same atomicity problem. It mutates `m_scene` first, then either returns external accelerator build status without actually updating that accelerator, or calls `build_or_update_acceleration()` and returns success. That is both a hidden rebuild and a possible scene/accelerator consistency bug. ([GitHub][4])
 
-```text
-main/render/update thread
-  -> build full physics sync list
-  -> block on physics worker sync
-  -> block on physics worker step
-  -> block on physics worker write extraction
-```
+D3D12 is architecturally closer to correct, but it also needs transaction staging. Its transform-update path mutates `m_sceneData` and `m_gpuInsts`, builds/updates dynamic acceleration state, and uploads. If the upload/TLAS path fails, those CPU mirrors may already have changed. The good news is that D3D12 already has a better pattern in `update_scene_delta()`: it creates a `nextScene`, applies into the copy, uploads, and only commits after success. Reuse that pattern for transform updates. ([GitHub][5])
 
-That can easily amplify the cost of movement.
+## Final contract
 
-### 3. A physics transform write marks ECS transforms dirty recursively
-
-`SceneWorld::set_transform()` stores the transform and calls `mark_dirty_recursive(id)`. The recursive dirtying erases cached world transforms for the entity and all children. ([GitHub][2]) ([GitHub][3])
-
-That makes sense for hierarchical transforms, but the next stage is the expensive part.
-
-### 4. World transform recomputation clears the entire cache
-
-`recompute_world_transforms()` clears `m_worldTransforms`, reserves for the full entity order, then iterates the whole entity list. Because the cache was just cleared, every transformed entity effectively becomes a cache miss. ([GitHub][2])
-
-This is a major problem.
-
-A single moving physics object should cause:
+Use this as the central rule in docs and code comments:
 
 ```text
-recompute that object
-recompute its children
-maybe update its render instance
+Transform motion is transactional.
+
+If an update returns an applied status:
+  coordinator scene mirror, backend scene mirror, instance buffers,
+  and dynamic acceleration state are all committed to the same transform revision.
+
+If an update returns unsupported/failed/needs forbidden fallback:
+  coordinator scene mirror, backend scene mirror, instance buffers,
+  and acceleration structures remain unchanged.
+
+Non-applied statuses must be side-effect free.
 ```
 
-The current path looks more like:
+This eliminates the stale-state class where “render scene says object moved, BVH still says object did not.”
 
-```text
-one object moved
-clear all cached world transforms
-iterate all entities
-recompute all transforms
-```
+## Final API shape
 
-That alone can tank FPS in a scene with many entities.
+### 1. Add reason and fallback policy to transform commands
 
-### 5. Render extraction appears to rebuild a complete scene snapshot
-
-`build_snapshot()` loops through the world’s entity order, extracts renderables/lights/materials/camera, and includes world transform data in the snapshot/hash blob. Then `extract_render_scene()` calls `build_snapshot()` and copies full render scene data out into `RTSceneData`. ([GitHub][2]) ([GitHub][2]) ([GitHub][2]) ([GitHub][2])
-
-This is likely the big architectural bug: **world transform changes are being treated as scene snapshot changes**.
-
-If a physics body moves every frame, the world translation in the scene hash changes every frame. That can make the system believe the scene changed structurally, even though only an instance transform changed.
-
-### 6. RenderCoordinator has an instance-transform path, but full-scene rebuilds are still reachable
-
-`RenderCoordinator` has `post_instance_transforms()`, which is the right direction. But `post_scene()` resets pending deltas and transform updates, and full scene commands call `load_scene_snapshot()`, `build_or_update_acceleration()`, and `reset_accumulation()`. ([GitHub][4]) ([GitHub][4]) ([GitHub][4])
-
-So if the physics movement path posts a full scene instead of an instance transform batch, every physics step can trigger:
-
-```text
-copy whole RTSceneData
-rebuild acceleration
-reset accumulation
-```
-
-That is exactly the kind of thing that would cause a dramatic FPS collapse.
-
-### 7. Even the CPU “instance transform” path rebuilds the accelerator
-
-This is probably the most important smoking gun for the CPU tracer: `ScalarCpuPathTracer::update_instance_transforms()` applies the instance transform updates, then calls `build_or_update_acceleration()` unless an external accelerator is present. `build_or_update_acceleration()` calls `accelerator->build(m_scene, ...)`, which is a full accelerator build. ([GitHub][5]) ([GitHub][5])
-
-So even if you correctly use `post_instance_transforms()`, the CPU path may still rebuild the BVH every time a physics object moves.
-
-That means the current architecture has two possible slow paths:
-
-```text
-Bad path:
-physics moved -> extract full scene -> post_scene -> full acceleration rebuild
-
-Still-bad CPU path:
-physics moved -> post_instance_transforms -> ScalarCpuPathTracer::update_instance_transforms -> full acceleration rebuild
-```
-
-### 8. There may also be a physics feedback loop
-
-The Jolt sync path compares the current physics pose to the ECS transform. If the pose changed, kinematic bodies are moved, and dynamic bodies can be forcibly repositioned, have linear/angular velocity reset, sleep timer reset, and be activated. ([GitHub][1])
-
-For dynamic bodies, this is the wrong ownership model. A dynamic physics body should not be driven back from ECS every frame. Physics should own it after creation, except for explicit teleports. Otherwise you can get:
-
-```text
-physics simulates body
-ECS receives body transform
-next frame ECS sync sends transform back to physics
-physics treats it as external correction
-body wakes / velocity resets / more work
-```
-
-That can cause both performance problems and bad simulation behavior.
-
----
-
-# Root cause summary
-
-The movement itself is cheap. The expensive part is the cascade:
-
-```text
-Physics body moves in world space
-  ↓
-Physics writes transform into ECS
-  ↓
-ECS marks transform dirty
-  ↓
-World transform cache is cleared and recomputed globally
-  ↓
-Scene snapshot/extraction/hash sees changed world transform
-  ↓
-Render side receives full scene or transform update
-  ↓
-Acceleration structure is rebuilt
-  ↓
-Accumulation is reset
-  ↓
-FPS tanks
-```
-
-The architecture needs to distinguish **structural scene changes** from **runtime motion**.
-
-Right now, transform motion is too entangled with full scene extraction and full acceleration rebuilds.
-
----
-
-# Better architecture
-
-## 1. Split the scene into three separate domains
-
-Do not let one `SceneWorld` snapshot represent everything equally.
-
-Use three explicit domains:
+`post_instance_transforms()` needs to carry policy. A vector alone is not enough.
 
 ```cpp
-struct SceneStructure {
-  // Rarely changes.
-  // Entity creation/destruction.
-  // Mesh assignment.
-  // Material assignment.
-  // Light creation/destruction.
-  // Physics body creation/destruction.
-  uint64_t structural_revision;
-};
-
-struct TransformStore {
-  // Changes often.
-  // Local transforms.
-  // World transforms.
-  // Parent/child links.
-  // Dirty transform set.
-  uint64_t transform_revision;
-};
-
-struct RenderResidentScene {
-  // Renderer-owned persistent resources.
-  // Mesh BLAS handles.
-  // Material buffers.
-  // Entity -> instance index map.
-  // Instance transform buffer.
-  uint64_t uploaded_structural_revision;
-  uint64_t uploaded_transform_revision;
-};
-```
-
-The critical rule:
-
-```text
-Moving an object increments transform_revision only.
-It must not increment structural_revision.
-```
-
-Structural updates are expensive. Transform updates are expected every frame.
-
-## 2. Introduce explicit transform-space APIs
-
-The current `set_transform()` name is too ambiguous. Physics and editor gizmos usually produce world-space transforms. Animation usually produces local-space transforms. Stored ECS transforms appear to be local-space.
-
-Use this instead:
-
-```cpp
-enum class TransformSpace {
-  Local,
-  World
-};
-
-SceneWriteResult set_local_transform(
-    EntityId entity,
-    const TransformComponent& local,
-    TransformAuthority authority);
-
-SceneWriteResult set_world_transform(
-    EntityId entity,
-    const TransformComponent& world,
-    TransformAuthority authority);
-```
-
-`set_world_transform()` should convert world to local if the entity has a parent:
-
-```cpp
-local = inverse(parent_world) * desired_world;
-```
-
-Then physics writeback should always call:
-
-```cpp
-world.set_world_transform(
-    entity,
-    physics_world_transform,
-    TransformAuthority::PhysicsControlled);
-```
-
-This fixes correctness and makes the dirty propagation explicit.
-
-## 3. Replace global transform recompute with dirty-subtree recompute
-
-Do not clear the entire world transform cache in `recompute_world_transforms()`.
-
-Use a dirty queue:
-
-```cpp
-class TransformStore {
-public:
-  void mark_dirty(EntityId entity);
-  void recompute_dirty();
-
-private:
-  std::vector<EntityId> dirty_roots;
-  std::vector<TransformComponent> local;
-  std::vector<WorldTransform> world;
-  std::vector<EntityId> parent;
-  std::vector<std::vector<EntityId>> children;
-};
-```
-
-Pseudo-flow:
-
-```cpp
-void TransformStore::mark_dirty(EntityId entity) {
-  if (!dirty[entity]) {
-    dirty[entity] = true;
-    dirty_roots.push_back(entity);
-  }
-}
-
-void TransformStore::recompute_dirty() {
-  sort_roots_parent_before_child(dirty_roots);
-
-  for (EntityId root : dirty_roots) {
-    recompute_subtree(root);
-  }
-
-  dirty_roots.clear();
-}
-```
-
-A single moving object should touch:
-
-```text
-the object
-its descendants
-its render instance
-its physics proxy if needed
-```
-
-It should not touch every entity in the scene.
-
-## 4. Physics should not sync every entity every frame
-
-Replace `BuildPhysicsBodySyncList(world)` with a persistent physics body registry and dirty command queue.
-
-Current model:
-
-```text
-Every frame:
-  scan all ECS entities
-  build full sync list
-  send full sync list to physics
-```
-
-Better model:
-
-```text
-On body creation:
-  PhysicsCreateBodyCommand
-
-On body destruction:
-  PhysicsDestroyBodyCommand
-
-On collider/mass/mode change:
-  PhysicsUpdateBodyConfigCommand
-
-On kinematic/editor target move:
-  PhysicsSetKinematicTargetCommand
-
-On dynamic body simulation:
-  physics publishes transform delta
-```
-
-Example:
-
-```cpp
-struct PhysicsCommandBuffer {
-  std::vector<CreateBody> creates;
-  std::vector<DestroyBody> destroys;
-  std::vector<UpdateBodyConfig> config_updates;
-  std::vector<SetKinematicTarget> kinematic_targets;
-  std::vector<TeleportDynamicBody> teleports;
-};
-```
-
-Dynamic body ownership should be:
-
-```text
-Initial spawn: ECS -> physics
-Runtime simulation: physics -> ECS/render
-Explicit teleport: ECS -> physics
-Normal per-frame sync: no ECS -> physics pose write
-```
-
-This avoids the Jolt feedback loop where ECS poses are pushed back into dynamic bodies and can wake/reset them.
-
-## 5. Collapse physics worker calls into one tick
-
-Right now the wrapper can impose multiple blocking calls per frame. Replace:
-
-```cpp
-physics.sync_from_scene_world(world);
-physics.step_fixed(config);
-auto writes = physics.extract_transform_writes();
-```
-
-with:
-
-```cpp
-PhysicsTickResult result = physics.tick({
-  .commands = physics_commands,
-  .fixed_dt = fixed_dt,
-  .max_substeps = max_substeps
-});
-```
-
-Internally:
-
-```cpp
-PhysicsTickResult PhysicsWorld::tick(const PhysicsTickInput& input) {
-  apply_commands(input.commands);
-  step_fixed(input.fixed_dt);
-  return collect_changed_transforms();
-}
-```
-
-That reduces cross-thread barriers.
-
-Even better, make it double-buffered:
-
-```text
-Frame N:
-  main thread submits physics commands for tick N
-  physics worker runs tick N
-  main thread applies completed result from tick N - 1
-```
-
-That changes the frame pipeline to:
-
-```text
-Main thread:
-  apply previous physics results
-  update transforms
-  submit render transform deltas
-  submit next physics tick
-
-Physics thread:
-  process commands
-  step simulation
-  write results into output buffer
-```
-
-This avoids stalling the main/render thread on `future.get()` every frame.
-
-## 6. Render should receive motion deltas, not scene snapshots
-
-The physics path should never call full `extract_render_scene()` or `post_scene()` for ordinary body movement.
-
-Instead:
-
-```cpp
-std::vector<RTInstanceTransformUpdate> updates;
-
-for (const PhysicsTransformWrite& write : physics_writes) {
-  world.set_world_transform(write.entity, write.transform, TransformAuthority::PhysicsControlled);
-
-  if (auto instance = render_mapping.find_instance(write.entity)) {
-    updates.push_back({
-      .entity_id = write.entity,
-      .instance_index = instance.index,
-      .transform = world.world_transform(write.entity)
-    });
-  }
-}
-
-render_coordinator.post_instance_transforms(std::move(updates));
-```
-
-Then enforce this invariant:
-
-```text
-Physics movement may post instance transforms.
-Physics movement may not post a full scene.
-```
-
-Add a debug assert/log:
-
-```cpp
-if (scene_update_reason == SceneUpdateReason::PhysicsMotion) {
-  PT_ASSERT(false && "physics motion must use instance transform updates, not post_scene");
-}
-```
-
-## 7. Fix CPU acceleration so transform updates do not rebuild the full BVH
-
-This is the second major fix. The current scalar CPU tracer applies instance transform updates and then rebuilds the acceleration structure. ([GitHub][5])
-
-You need a real dynamic-instance acceleration model.
-
-### Current CPU-style model appears effectively like this
-
-```text
-RTSceneData contains world-space render primitives
-CPU accelerator builds over the scene
-Transform changes require rebuilding acceleration
-```
-
-### Better CPU model
-
-Use a two-level acceleration structure:
-
-```text
-Mesh BLAS:
-  Built once per mesh/geometry.
-  Object-space triangles.
-  Does not change when the instance moves.
-
-Instance TLAS:
-  One node/proxy per render instance.
-  Stores world transform, inverse transform, world AABB.
-  Refit or rebuild only over instances when transforms change.
-```
-
-Data structure:
-
-```cpp
-struct CpuMeshBlas {
-  MeshId mesh;
-  std::vector<Triangle> object_space_triangles;
-  Bvh object_space_bvh;
-};
-
-struct CpuInstance {
-  EntityId entity;
-  MeshId mesh;
-  Mat4 world_from_object;
-  Mat4 object_from_world;
-  Aabb world_bounds;
-};
-
-struct CpuInstanceTlas {
-  std::vector<CpuInstance> instances;
-  Bvh instance_bvh;
-};
-```
-
-Ray traversal:
-
-```cpp
-bool trace_ray(const Ray& world_ray) {
-  for (InstanceHit candidate : tlas.intersect(world_ray)) {
-    Ray object_ray = transform_ray(candidate.object_from_world, world_ray);
-    blas[candidate.mesh].intersect(object_ray);
-  }
-}
-```
-
-Transform update:
-
-```cpp
-bool CpuAccelerator::update_instance_transforms(span<RTInstanceTransformUpdate> updates) {
-  for (const auto& update : updates) {
-    CpuInstance& instance = instances[update.instance_index];
-
-    instance.world_from_object = update.world_matrix;
-    instance.object_from_world = inverse(update.world_matrix);
-    instance.world_bounds = transform_aabb(
-        blas[instance.mesh].object_bounds,
-        instance.world_from_object);
-  }
-
-  tlas.refit_or_rebuild_changed_instances(updates);
-  return true;
-}
-```
-
-Important: this should **not** rebuild mesh BLAS.
-
-For small dynamic counts, rebuilding only the TLAS over instances is acceptable. For larger scenes, refit the TLAS bottom-up. Either option is much cheaper than rebuilding a triangle-level BVH every physics tick.
-
-## 8. Separate static and dynamic render acceleration
-
-A practical renderer structure:
-
-```text
-Static world:
-  static meshes
-  static SDFs
-  static lights
-  static BLAS/TLAS
-  rarely rebuilt
-
-Dynamic world:
-  moving mesh instances
-  moving SDFs
-  moving lights
-  small dynamic TLAS / instance buffer
-  updated every frame
-```
-
-Then ray traversal becomes:
-
-```cpp
-hit_static = trace_static_accel(ray);
-hit_dynamic = trace_dynamic_accel(ray);
-return nearest(hit_static, hit_dynamic);
-```
-
-This gives you a fast path even before building a perfect refit system.
-
-## 9. Scene hashes should not include transform motion
-
-Right now snapshot construction includes world transform data in the scene blob/hash path. ([GitHub][2])
-
-Split the hashes:
-
-```cpp
-struct SceneVersions {
-  uint64_t structural_hash; // entity topology, mesh IDs, material IDs, light existence
-  uint64_t material_hash;   // material parameter changes
-  uint64_t transform_epoch; // increments for motion
-};
-```
-
-Then:
-
-```text
-structural_hash changed -> full scene/resource update
-material_hash changed   -> material/light delta update
-transform_epoch changed -> instance transform update only
-```
-
-Do not use a full snapshot hash to decide whether ordinary physics movement requires full render extraction.
-
----
-
-# Recommended frame pipeline
-
-Use this frame structure:
-
-```text
-1. Input / editor / scripts / animation
-   - produce transform intents and physics commands
-
-2. Apply pre-physics ECS commands
-   - local/world transform writes
-   - kinematic targets
-   - explicit teleports
-   - body creation/destruction
-
-3. Recompute only dirty transforms
-   - no global cache clear
-
-4. Submit physics tick
-   - dirty body commands only
-   - no full ECS scan
-   - preferably async/double-buffered
-
-5. Apply completed physics results
-   - world-space transform writes
-   - skip sleeping bodies and epsilon-small changes
-
-6. Recompute dirty transforms again
-   - only affected physics bodies/subtrees
-
-7. Submit render updates
-   - structural changes -> rare full scene update
-   - material/light changes -> delta update
-   - transform changes -> instance transform batch
-
-8. Render thread
-   - update instance buffer / TLAS
-   - reset accumulation
-   - do not rebuild full scene unless structural revision changed
-```
-
----
-
-# Immediate triage plan
-
-## Step 1: Add instrumentation before changing behavior
-
-Add timers/counters around these specific calls:
-
-```cpp
-BuildPhysicsBodySyncList
-ThreadedPhysicsWorld::run_on_worker
-SceneWorld::set_transform
-SceneWorld::mark_dirty_recursive
-SceneWorld::recompute_world_transforms
-SceneWorld::build_snapshot
-SceneWorld::extract_render_scene
-RenderCoordinator::post_scene
-RenderCoordinator::post_instance_transforms
-ScalarCpuPathTracer::update_instance_transforms
-ScalarCpuPathTracer::build_or_update_acceleration
-```
-
-Also log these per second:
-
-```text
-full_scene_posts_per_second
-instance_transform_batches_per_second
-instance_transform_count_per_second
-bvh_full_rebuilds_per_second
-world_transform_recompute_count
-world_transform_entities_recomputed
-physics_entities_scanned
-physics_transform_writes
-physics_worker_block_ms
-```
-
-The smoking gun will probably be one of these:
-
-```text
-post_scene called every physics frame
-build_snapshot called every physics frame
-build_or_update_acceleration called every physics frame
-recompute_world_transforms recomputing all entities every physics frame
-```
-
-## Step 2: Stop full scene posts for physics motion
-
-Add a hard separation:
-
-```cpp
-enum class SceneUpdateReason {
-  StructuralChange,
-  MaterialChange,
-  LightChange,
-  CameraChange,
+enum class RenderUpdateReason : std::uint8_t {
+  Unknown,
   PhysicsMotion,
-  EditorTransformMotion
+  AnimationMotion,
+  EditorGizmoMotion,
+  ScriptTransformMotion,
+  CameraMotion,
+  MaterialEdit,
+  LightEdit,
+  StructuralSceneEdit,
+  SceneLoad,
+  ExplicitUserReload,
+  LegacyUnknown
+};
+
+enum class TransformFallbackPolicy : std::uint8_t {
+  NoFallback,
+  AllowDynamicAcceleration,
+  AllowFullStaticAccelerationBuild,
+  AllowFullSceneReload
+};
+
+struct InstanceTransformUpdateOptions {
+  RenderUpdateReason reason = RenderUpdateReason::Unknown;
+  TransformFallbackPolicy fallback_policy = TransformFallbackPolicy::NoFallback;
+
+  bool reset_accumulation = true;
+  bool coalesce = true;
+  bool allow_partial = false;
+
+  vkpt::core::FrameIndex source_frame = 0;
+  const char* source_system = nullptr;
+};
+
+struct InstanceTransformCommand {
+  std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates;
+  InstanceTransformUpdateOptions options;
 };
 ```
 
-Then disallow:
+Use strict defaults for motion:
 
 ```cpp
-post_scene(..., SceneUpdateReason::PhysicsMotion)
+TransformFallbackPolicy DefaultTransformPolicy(RenderUpdateReason reason) {
+  switch (reason) {
+    case RenderUpdateReason::PhysicsMotion:
+    case RenderUpdateReason::AnimationMotion:
+    case RenderUpdateReason::EditorGizmoMotion:
+    case RenderUpdateReason::ScriptTransformMotion:
+      return TransformFallbackPolicy::AllowDynamicAcceleration;
+
+    case RenderUpdateReason::StructuralSceneEdit:
+    case RenderUpdateReason::SceneLoad:
+    case RenderUpdateReason::ExplicitUserReload:
+      return TransformFallbackPolicy::AllowFullSceneReload;
+
+    default:
+      return TransformFallbackPolicy::NoFallback;
+  }
+}
 ```
 
-Physics motion should produce only:
+The legacy overload should **not** silently allow full rebuilds:
 
 ```cpp
-post_instance_transforms(...)
+void RenderCoordinator::post_instance_transforms(
+    std::vector<RTInstanceTransformUpdate> updates) {
+  PT_LOG_WARN(
+      "legacy post_instance_transforms() used without reason/policy; "
+      "defaulting to NoFallback");
+
+  post_instance_transforms(
+      std::move(updates),
+      InstanceTransformUpdateOptions{
+        .reason = RenderUpdateReason::LegacyUnknown,
+        .fallback_policy = TransformFallbackPolicy::NoFallback,
+        .source_system = "legacy"
+      });
+}
 ```
 
-## Step 3: Fix the CPU transform update path
+A migration-friendly `AllowFullStaticAccelerationBuild` default preserves the exact hidden-FPS-cliff class you are trying to remove.
 
-Right now this is not enough:
+### 2. Replace boolean result with a work-class result
 
 ```cpp
-post_instance_transforms(...)
+enum class InstanceTransformUpdateStatus : std::uint8_t {
+  AppliedMetadataOnly,
+  AppliedInstanceBufferOnly,
+  AppliedDynamicAccelUpdate,
+
+  BlockedNeedsFullStaticAccelRebuild,
+  BlockedNeedsFullSceneReload,
+
+  Unsupported,
+  Failed
+};
+
+struct InstanceTransformUpdateResult {
+  InstanceTransformUpdateStatus status =
+      InstanceTransformUpdateStatus::Unsupported;
+
+  std::uint32_t requested_count = 0;
+  std::uint32_t applied_count = 0;
+
+  double validate_ms = 0.0;
+  double upload_ms = 0.0;
+  double dynamic_accel_ms = 0.0;
+  double full_rebuild_ms = 0.0;
+
+  const char* message = nullptr;
+
+  bool applied() const {
+    return status == InstanceTransformUpdateStatus::AppliedMetadataOnly ||
+           status == InstanceTransformUpdateStatus::AppliedInstanceBufferOnly ||
+           status == InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate;
+  }
+};
 ```
 
-because the scalar CPU path can still call full acceleration rebuild after applying instance transforms. ([GitHub][5])
+### 3. Prefer plan/apply over one mutating call
 
-Add this interface:
+This is the cleanest way to enforce policy before mutation.
+
+```cpp
+struct InstanceTransformUpdatePlan {
+  InstanceTransformUpdateStatus status =
+      InstanceTransformUpdateStatus::Unsupported;
+
+  std::uint32_t requested_count = 0;
+  std::uint32_t matched_count = 0;
+
+  const char* message = nullptr;
+
+  bool can_apply_without_full_fallback() const {
+    return status == InstanceTransformUpdateStatus::AppliedMetadataOnly ||
+           status == InstanceTransformUpdateStatus::AppliedInstanceBufferOnly ||
+           status == InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate;
+  }
+};
+
+class IPathTracer {
+public:
+  virtual InstanceTransformUpdatePlan plan_instance_transform_update(
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& options) const = 0;
+
+  virtual InstanceTransformUpdateResult apply_instance_transform_update(
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& options) = 0;
+};
+```
+
+Add the same concept to `IRayAccelerator`:
 
 ```cpp
 class IRayAccelerator {
 public:
-  virtual bool build(const RTSceneData& scene, bool deterministic) = 0;
-
-  virtual bool update_instance_transforms(
-      std::span<const RTInstanceTransformUpdate> updates) {
-    return false;
+  virtual InstanceTransformUpdatePlan plan_instance_transform_update(
+      const RTSceneData& scene,
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& options) const {
+    return {
+      .status = InstanceTransformUpdateStatus::Unsupported,
+      .requested_count = static_cast<std::uint32_t>(updates.size()),
+      .message = "accelerator does not support instance transform updates"
+    };
   }
 
-  virtual bool supports_fast_instance_updates() const {
-    return false;
+  virtual InstanceTransformUpdateResult apply_instance_transform_update(
+      const RTSceneData& scene,
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& options) {
+    return {
+      .status = InstanceTransformUpdateStatus::Unsupported,
+      .requested_count = static_cast<std::uint32_t>(updates.size()),
+      .message = "accelerator does not support instance transform updates"
+    };
   }
+
+  // Existing build/intersect/build_info/reset remain.
 };
 ```
 
-Then change `ScalarCpuPathTracer::update_instance_transforms()`:
+A one-method API can work only if it guarantees: **non-applied statuses leave state unchanged**. Plan/apply makes that guarantee easier to test.
+
+## RenderCoordinator transaction model
+
+The coordinator should stop calling `ApplyInstanceTransformUpdates(scene, updates)` before backend acceptance. The current helper mutates and may rebake vertices, so it belongs only in validated commit/fallback paths, not speculative planning. ([GitHub][3])
+
+Use this flow:
 
 ```cpp
-bool ScalarCpuPathTracer::update_instance_transforms(
-    const std::vector<RTInstanceTransformUpdate>& updates) {
-  if (!m_configured || !m_has_scene) {
-    return false;
+void RenderCoordinator::apply_instance_transform_command(
+    IPathTracer& tracer,
+    const InstanceTransformCommand& command) {
+  const auto& updates = command.updates;
+  const auto& options = command.options;
+
+  auto resolved = ResolveInstanceTransformUpdates(scene, updates);
+  if (!resolved.ok()) {
+    stats.instance_transform_failed++;
+    return;
   }
 
-  if (!ApplyInstanceTransformUpdates(m_scene, updates)) {
-    return false;
+  const auto plan =
+      tracer.plan_instance_transform_update(updates, options);
+
+  if (!PolicyAllows(plan.status, options.fallback_policy)) {
+    stats.instance_transform_policy_rejections++;
+
+    PT_LOG_WARN(
+        "rejected transform update slow path",
+        {
+          {"reason", ToString(options.reason)},
+          {"policy", ToString(options.fallback_policy)},
+          {"planned_status", ToString(plan.status)},
+          {"updates", std::to_string(updates.size())},
+          {"source", options.source_system ? options.source_system : ""}
+        });
+
+    mark_render_state_stale(
+        RenderStaleReason::TransformUpdateRejectedByPolicy);
+
+    // Critical: no mutation of coordinator scene, tracer, generation, or sample.
+    return;
+  }
+
+  if (plan.can_apply_without_full_fallback()) {
+    const auto result =
+        tracer.apply_instance_transform_update(updates, options);
+
+    if (!result.applied()) {
+      stats.instance_transform_failed++;
+
+      // Critical: backend contract says failed/non-applied means no mutation.
+      mark_render_state_stale(RenderStaleReason::TransformUpdateApplyFailed);
+      return;
+    }
+
+    // Commit coordinator mirror only after backend commit succeeds.
+    ApplyInstanceTransformMetadataOnly(scene, resolved.value());
+
+    ++generation;
+    sample = 0;
+
+    if (options.reset_accumulation) {
+      tracer.reset_accumulation();
+    }
+
+    RecordTransformResultMetrics(result);
+    return;
+  }
+
+  if (plan.status ==
+          InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild &&
+      options.fallback_policy >=
+          TransformFallbackPolicy::AllowFullStaticAccelerationBuild) {
+    // Build next state first. Commit only after full rebuild succeeds.
+    RTSceneData next_scene = scene;
+    ApplyInstanceTransformUpdatesForFullRebuild(next_scene, resolved.value());
+
+    if (!tracer.load_scene_snapshot(next_scene)) {
+      mark_render_state_stale(RenderStaleReason::FullRebuildFallbackFailed);
+      return;
+    }
+
+    if (!tracer.build_or_update_acceleration()) {
+      mark_render_state_stale(RenderStaleReason::FullRebuildFallbackFailed);
+      return;
+    }
+
+    scene = std::move(next_scene);
+    ++generation;
+    sample = 0;
+    tracer.reset_accumulation();
+
+    stats.instance_transform_full_static_accel_fallbacks++;
+    return;
+  }
+
+  if (plan.status ==
+          InstanceTransformUpdateStatus::BlockedNeedsFullSceneReload &&
+      options.fallback_policy >= TransformFallbackPolicy::AllowFullSceneReload) {
+    // Only explicit scene-load/reload style policies should arrive here.
+    reload_scene_from_latest_authoritative_snapshot();
+    stats.instance_transform_full_scene_fallbacks++;
+    return;
+  }
+}
+```
+
+The important structural change is this:
+
+```text
+Before:
+  mutate coordinator scene
+  mutate backend
+  maybe rebuild/fallback
+
+After:
+  validate
+  plan
+  policy-check
+  apply backend transaction
+  commit coordinator mirror only after backend success
+```
+
+## Add separate apply helpers
+
+The current `ApplyInstanceTransformUpdates()` is too broad for fast motion because it can rebake vertices. Split it:
+
+```cpp
+struct ResolvedInstanceTransformUpdate {
+  std::uint32_t instance_index = kInvalidRTInstanceIndex;
+  const RTInstanceTransformUpdate* update = nullptr;
+};
+
+std::expected<std::vector<ResolvedInstanceTransformUpdate>, TransformUpdateError>
+ResolveInstanceTransformUpdates(
+    const RTSceneData& scene,
+    std::span<const RTInstanceTransformUpdate> updates);
+
+bool ApplyInstanceTransformMetadataOnly(
+    RTSceneData& scene,
+    std::span<const ResolvedInstanceTransformUpdate> updates);
+
+bool ApplyInstanceTransformUpdatesForFullRebuild(
+    RTSceneData& scene,
+    std::span<const ResolvedInstanceTransformUpdate> updates);
+```
+
+`ApplyInstanceTransformMetadataOnly()` should update only:
+
+```text
+RTInstance.translation
+RTInstance.rotation
+RTInstance.scale
+RTInstance.flags
+RTInstance.transform_revision
+```
+
+`ApplyInstanceTransformUpdatesForFullRebuild()` may rebake `scene.vertices` from `local_vertices/local_indices`, because that path is explicitly rebuilding full/static acceleration.
+
+This is essential because D3D12 and future CPU dynamic TLAS should not need CPU vertex rebakes for rigid motion.
+
+## CPU backend: honest and atomic immediately
+
+Given the current CPU BVH flattens all instances/triangles into one primitive array and builds one BVH, the current CPU accelerator cannot cheaply update one rigid instance transform. Until dynamic BLAS/TLAS exists, CPU transform updates should plan as needing a full/static acceleration rebuild. ([GitHub][6])
+
+Immediate CPU behavior:
+
+```cpp
+InstanceTransformUpdatePlan ScalarCpuPathTracer::plan_instance_transform_update(
+    std::span<const RTInstanceTransformUpdate> updates,
+    const InstanceTransformUpdateOptions& options) const {
+  if (!m_configured || !m_has_scene) {
+    return {
+      .status = InstanceTransformUpdateStatus::Failed,
+      .requested_count = static_cast<std::uint32_t>(updates.size()),
+      .message = "CPU tracer not configured or no scene loaded"
+    };
+  }
+
+  const auto resolved = ResolveInstanceTransformUpdates(m_scene, updates);
+  if (!resolved) {
+    return {
+      .status = InstanceTransformUpdateStatus::Failed,
+      .requested_count = static_cast<std::uint32_t>(updates.size()),
+      .message = "invalid instance transform update"
+    };
+  }
+
+  const IRayAccelerator* accelerator =
+      m_external_accelerator ? m_external_accelerator : m_accelerator.get();
+
+  if (accelerator) {
+    const auto accel_plan =
+        accelerator->plan_instance_transform_update(m_scene, updates, options);
+
+    if (accel_plan.can_apply_without_full_fallback()) {
+      return accel_plan;
+    }
+
+    if (accel_plan.status != InstanceTransformUpdateStatus::Unsupported) {
+      return accel_plan;
+    }
+  }
+
+  return {
+    .status = InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild,
+    .requested_count = static_cast<std::uint32_t>(updates.size()),
+    .matched_count = static_cast<std::uint32_t>(resolved->size()),
+    .message = "CPU accelerator lacks dynamic instance TLAS support"
+  };
+}
+```
+
+Apply should mutate only when the plan is applicable:
+
+```cpp
+InstanceTransformUpdateResult ScalarCpuPathTracer::apply_instance_transform_update(
+    std::span<const RTInstanceTransformUpdate> updates,
+    const InstanceTransformUpdateOptions& options) {
+  const auto plan = plan_instance_transform_update(updates, options);
+
+  if (!plan.can_apply_without_full_fallback()) {
+    return {
+      .status = plan.status,
+      .requested_count = plan.requested_count,
+      .message = plan.message
+    };
   }
 
   IRayAccelerator* accelerator =
       m_external_accelerator ? m_external_accelerator : m_accelerator.get();
 
-  if (accelerator && accelerator->update_instance_transforms(updates)) {
-    m_accel_info = accelerator->build_info();
-    return true;
+  if (!accelerator) {
+    return {
+      .status = InstanceTransformUpdateStatus::Unsupported,
+      .requested_count = static_cast<std::uint32_t>(updates.size()),
+      .message = "no CPU accelerator available"
+    };
   }
 
-  // Temporary fallback only, not acceptable for physics-driven motion.
-  return build_or_update_acceleration();
+  const auto result =
+      accelerator->apply_instance_transform_update(m_scene, updates, options);
+
+  if (!result.applied()) {
+    // Contract: accelerator did not mutate.
+    return result;
+  }
+
+  const auto resolved = ResolveInstanceTransformUpdates(m_scene, updates);
+  if (!resolved) {
+    return {
+      .status = InstanceTransformUpdateStatus::Failed,
+      .requested_count = static_cast<std::uint32_t>(updates.size()),
+      .message = "failed to resolve updates after accelerator commit"
+    };
+  }
+
+  // Commit CPU tracer scene mirror only after accelerator commit succeeds.
+  ApplyInstanceTransformMetadataOnly(m_scene, resolved.value());
+  m_accel_info = accelerator->build_info();
+
+  return result;
 }
 ```
 
-Then implement a real `update_instance_transforms()` in the CPU BVH accelerator.
+Also fix the current external-accelerator behavior. Returning `m_external_accelerator->build_info().built` is not a transform update. If the external accelerator has no transform-update API, CPU should return `Unsupported` or `BlockedNeedsFullStaticAccelRebuild`, not success. ([GitHub][4])
 
-## Step 4: Make physics body sync event-driven
+## CPU backend: fast later
 
-Replace the full sync list with dirty body commands:
-
-```cpp
-struct PhysicsWorldDelta {
-  std::vector<PhysicsCreateBody> creates;
-  std::vector<PhysicsDestroyBody> destroys;
-  std::vector<PhysicsUpdateShape> shape_updates;
-  std::vector<PhysicsSetKinematicTarget> kinematic_targets;
-  std::vector<PhysicsTeleportBody> teleports;
-};
-```
-
-Only send dynamic body transforms into physics when explicitly teleporting. Otherwise dynamic transforms flow from physics to ECS/render.
-
-## Step 5: Fix transform recompute
-
-Change:
-
-```cpp
-m_worldTransforms.clear();
-for entity in all_entities:
-  recompute...
-```
-
-to:
-
-```cpp
-for dirty_root in dirty_roots:
-  recompute_subtree(dirty_root)
-```
-
-This should be one of the first code changes because it benefits editor movement, animation, physics, and rendering.
-
----
-
-# Target architecture
-
-The final structure I would aim for:
+Once the honest API is in place, implement CPU dynamic acceleration using the data already present in `RTInstance` and scene conversion:
 
 ```text
-SceneWorld
-  Owns entity/component data.
-  Does not rebuild render scenes on motion.
+Static CPU BVH:
+  static/global flattened triangles
+  rebuilt only on structural/geometry changes
 
-TransformSystem
-  Owns local/world transforms.
-  Maintains dirty sets.
-  Produces TransformDeltaBatch.
+Dynamic geometry BLAS:
+  local-space geometry from scene.local_vertices/local_indices
+  built per mesh/geometry
 
-PhysicsSystem
-  Owns physics body handles.
-  Consumes PhysicsCommandBuffer.
-  Produces PhysicsTransformWriteBatch.
-  Does not scan all ECS every frame.
-
-RenderSyncSystem
-  Maintains entity -> render instance mapping.
-  Converts TransformDeltaBatch into RTInstanceTransformUpdate.
-  Converts structural changes into rare full scene updates.
-
-RenderCoordinator
-  Receives:
-    - full scene update only for structural changes
-    - material/light deltas for parameter changes
-    - instance transform batches for motion
-
-RayAccelerator
-  Owns persistent static/dynamic acceleration.
-  Supports fast instance transform updates.
+Dynamic instance TLAS:
+  one proxy per dynamic instance
+  world AABB derived from TRS
+  refit/rebuild only dynamic instance bounds
 ```
 
-The key principle:
+The current scene conversion already records dynamic flags, physics-controlled flags, local vertex/index ranges, and TRS for dynamic instances, so this is compatible with the existing data model. ([GitHub][7])
+
+CPU dynamic update status should then become:
+
+```cpp
+InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate
+```
+
+where “dynamic accel update” means dynamic TLAS/BVH refit or dynamic-only rebuild, not full/static acceleration rebuild.
+
+## D3D12 backend: classify correctly and make atomic
+
+D3D12 should return:
+
+```cpp
+InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate
+```
+
+because it updates dynamic instance data and dynamic GPU acceleration/TLAS-style structures, not the full/static scene acceleration. ([GitHub][5])
+
+But make it transactional. Current transform update mutates mirrors before all work has succeeded. Instead, copy the scene-delta pattern already present in D3D12:
+
+```cpp
+InstanceTransformUpdateResult D3D12GpuPathTracer::apply_instance_transform_update(
+    std::span<const RTInstanceTransformUpdate> updates,
+    const InstanceTransformUpdateOptions& options) {
+  if (!m_sceneUploaded || !m_instanceBuffer || !m_dynamicTransformsEnabled) {
+    return {
+      .status = InstanceTransformUpdateStatus::Unsupported,
+      .requested_count = static_cast<std::uint32_t>(updates.size()),
+      .message = "D3D12 dynamic transforms unavailable"
+    };
+  }
+
+  auto nextScene = m_sceneData;
+  auto nextGpuInsts = m_gpuInsts;
+
+  auto resolved = ResolveInstanceTransformUpdates(nextScene, updates);
+  if (!resolved) {
+    return {
+      .status = InstanceTransformUpdateStatus::Failed,
+      .requested_count = static_cast<std::uint32_t>(updates.size()),
+      .message = "invalid D3D12 transform update"
+    };
+  }
+
+  ApplyInstanceTransformMetadataOnly(nextScene, resolved.value());
+  PackUpdatedGpuInstances(nextScene, resolved.value(), nextGpuInsts);
+
+  DynamicBvhBuildResult nextDynamicBvh =
+      BuildDynamicInstanceBvhStaged(nextGpuInsts);
+
+  if (!nextDynamicBvh.ok()) {
+    return {
+      .status = InstanceTransformUpdateStatus::Failed,
+      .requested_count = static_cast<std::uint32_t>(updates.size()),
+      .message = "failed to build staged dynamic BVH"
+    };
+  }
+
+  if (!UploadStagedDynamicTransformState(
+          nextGpuInsts,
+          nextDynamicBvh,
+          options)) {
+    return {
+      .status = InstanceTransformUpdateStatus::Failed,
+      .requested_count = static_cast<std::uint32_t>(updates.size()),
+      .message = "failed to upload staged dynamic transform state"
+    };
+  }
+
+  // Commit only after all staged work succeeds.
+  m_sceneData = std::move(nextScene);
+  m_gpuInsts = std::move(nextGpuInsts);
+  m_gpuDynamicBvh = std::move(nextDynamicBvh.bvh);
+
+  invalidate_temporal_history();
+
+  return {
+    .status = InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate,
+    .requested_count = static_cast<std::uint32_t>(updates.size()),
+    .applied_count = static_cast<std::uint32_t>(resolved->size()),
+    .message = "D3D12 dynamic transform update committed"
+  };
+}
+```
+
+This mirrors the existing `update_scene_delta()` philosophy: mutate a copy, upload, then commit. ([GitHub][5])
+
+## Qt physics path: stop policy-forbidden reloads
+
+The Qt physics path now has a delta route, but it can still fall back to `qtReloadEditedScene("physics simulation")` if transform publishing fails. For `PhysicsMotion`, that should no longer be an automatic fallback. The current path steps physics, extracts writes, builds pending transform updates, tries to publish them, and reloads edited scene when publish fails. ([GitHub][8])
+
+Change the Qt publish call to pass reason/policy:
+
+```cpp
+qtPublishInstanceTransformUpdates(
+    std::move(updates),
+    InstanceTransformUpdateOptions{
+      .reason = RenderUpdateReason::PhysicsMotion,
+      .fallback_policy = TransformFallbackPolicy::AllowDynamicAcceleration,
+      .reset_accumulation = true,
+      .source_system = "qt-physics"
+    });
+```
+
+Then handle rejected/blocked results like this:
 
 ```text
-Motion is not structure.
+PhysicsMotion + AppliedDynamicAccelUpdate:
+  normal, continue.
+
+PhysicsMotion + BlockedNeedsFullStaticAccelRebuild:
+  do not reload scene automatically.
+  mark render preview stale or show “CPU backend lacks fast dynamic transform support.”
+
+PhysicsMotion + BlockedNeedsFullSceneReload:
+  do not reload scene automatically.
+
+Manual reload / scene load:
+  may use AllowFullSceneReload.
 ```
 
-As soon as the engine enforces that rule, physics movement should stop causing catastrophic frame-time spikes.
+That prevents the old FPS cliff from reappearing through the UI fallback path.
 
-## The most important fixes, in order
+## ECS and animation movement path
 
-1. **Instrument full-scene updates and BVH rebuilds.** Confirm whether physics movement is causing `post_scene()`, `build_snapshot()`, or `build_or_update_acceleration()` every frame.
+The same policy model should be used for animation and editor movement.
 
-2. **Route physics movement through `post_instance_transforms()`, never `post_scene()`.**
+```text
+Animation:
+  writes local transforms
+  reason = AnimationMotion
+  fallback_policy = AllowDynamicAcceleration
 
-3. **Implement real CPU accelerator instance updates.** Do not rebuild the full BVH for a moving physics object.
+Physics:
+  writes world transforms
+  reason = PhysicsMotion
+  fallback_policy = AllowDynamicAcceleration
 
-4. **Stop clearing all world transforms in `recompute_world_transforms()`.** Recompute only dirty subtrees.
+Editor gizmo drag:
+  usually writes world transforms
+  reason = EditorGizmoMotion
+  fallback_policy = AllowDynamicAcceleration while dragging
 
-5. **Stop scanning all ECS entities for physics sync.** Use physics body command buffers and dirty body lists.
+Script transform motion:
+  explicit local/world transform choice
+  reason = ScriptTransformMotion
+  fallback_policy = AllowDynamicAcceleration by default
+```
 
-6. **Stop pushing dynamic body poses from ECS back into Jolt every frame.** Physics should own dynamic bodies after creation, except explicit teleports.
+The ECS should output `TransformDeltaBatch`, and render sync should convert deltas to `RTInstanceTransformUpdate` without building a full scene snapshot.
 
-7. **Split structural scene revision from transform revision.** Transform changes should not change the structural scene hash.
+The next structural ECS fixes remain valid:
 
-My strongest recommendation: fix the render/BVH update path first. Even with perfect ECS dirty tracking, FPS will still tank if `ScalarCpuPathTracer::update_instance_transforms()` rebuilds the accelerator every time a physics body moves.
+1. Replace ambiguous `set_transform()` hot-path use with explicit `set_local_transform()` and `set_world_transform()`.
+2. Replace global transform recompute with dirty-subtree recompute. The current recompute path clears the whole world-transform cache and loops entity order, which is exactly what one moving object should not do. ([GitHub][9])
+3. Split scene hashes/revisions so transform motion does not alter structural invalidation. Current snapshot hashing includes transform translation in the blob, so transform-only motion can look structural to snapshot consumers. ([GitHub][9])
 
-[1]: https://github.com/monstercameron/vkPathTracer/blob/main/src/physics/PhysicsWorld.cpp "vkPathTracer/src/physics/PhysicsWorld.cpp at main · monstercameron/vkPathTracer · GitHub"
-[2]: https://github.com/monstercameron/vkPathTracer/blob/main/src/scene/SceneWorldExtraction.cpp "vkPathTracer/src/scene/SceneWorldExtraction.cpp at main · monstercameron/vkPathTracer · GitHub"
-[3]: https://github.com/monstercameron/vkPathTracer/blob/main/src/scene/SceneWorld.cpp "vkPathTracer/src/scene/SceneWorld.cpp at main · monstercameron/vkPathTracer · GitHub"
-[4]: https://github.com/monstercameron/vkPathTracer/blob/main/src/render/RenderCoordinator.cpp "vkPathTracer/src/render/RenderCoordinator.cpp at main · monstercameron/vkPathTracer · GitHub"
-[5]: https://github.com/monstercameron/vkPathTracer/blob/main/src/pathtracer/ScalarCpuPathTracer.cpp "vkPathTracer/src/pathtracer/ScalarCpuPathTracer.cpp at main · monstercameron/vkPathTracer · GitHub"
+## Precise rebuild terminology
+
+Use these terms consistently:
+
+```text
+Instance buffer update:
+  Updates TRS/matrix/flags/material/index data for instances.
+  Allowed for per-frame motion.
+
+Dynamic acceleration update:
+  Dynamic instance bounds update, dynamic TLAS/BVH refit,
+  or dynamic-only TLAS/BVH rebuild.
+  Allowed for physics, animation, editor drag, and script motion.
+
+Full/static acceleration rebuild:
+  Rebuilds the main static/global triangle BVH, static BLAS,
+  or full-scene acceleration structure.
+  Forbidden for per-frame motion unless explicit policy allows it.
+
+Full scene reload:
+  Replaces RTSceneData/load_scene_snapshot/post_scene path.
+  Forbidden for per-frame motion unless explicit policy allows it.
+
+CPU vertex rebake:
+  Writes transformed local geometry into scene.vertices.
+  Treat as full/static rebuild-class work, not fast motion work.
+```
+
+D3D12 dynamic TLAS/BVH work is allowed motion work. CPU’s current full flattened BVH rebuild is not.
+
+## Tests that will catch the real regressions
+
+Add these first:
+
+```text
+1. CPU rejected update is atomic
+   Backend: scalar CPU without dynamic TLAS.
+   Reason: PhysicsMotion.
+   Policy: AllowDynamicAcceleration.
+   Expected:
+     plan = BlockedNeedsFullStaticAccelRebuild.
+     coordinator scene unchanged.
+     tracer m_scene unchanged.
+     accelerator build_info/build count unchanged.
+     no load_scene_snapshot().
+     no build_or_update_acceleration().
+
+2. CPU external accelerator is not fake success
+   External accelerator has build_info().built = true but no transform API.
+   Expected:
+     transform update returns Unsupported or BlockedNeedsFullStaticAccelRebuild.
+     no m_scene mutation.
+
+3. RenderCoordinator rejection is atomic
+   Invalid or policy-forbidden transform update.
+   Expected:
+     scene generation unchanged.
+     sample unchanged.
+     committed scene mirror unchanged.
+     stale reason recorded.
+
+4. D3D12 upload failure is atomic
+   Inject failure after staging dynamic BVH but before upload/commit.
+   Expected:
+     m_sceneData unchanged.
+     m_gpuInsts unchanged.
+     dynamic BVH/TLAS mirror unchanged.
+     result = Failed.
+
+5. D3D12 dynamic update classification
+   Move one dynamic physics-controlled instance.
+   Expected:
+     result = AppliedDynamicAccelUpdate.
+     no full scene reload.
+     no full/static acceleration rebuild.
+
+6. No CPU vertex rebake on fast transform path
+   PhysicsMotion transform update.
+   Expected:
+     ApplyInstanceTransformMetadataOnly called.
+     ApplyInstanceTransformUpdatesForFullRebuild not called.
+
+7. Qt physics does not auto-reload on CPU blocked motion
+   CPU backend lacks dynamic TLAS.
+   Physics body moves.
+   Expected:
+     policy rejection or stale preview.
+     qtReloadEditedScene("physics simulation") not called automatically.
+
+8. Scene hash split
+   Transform-only motion.
+   Expected:
+     structural_hash unchanged.
+     transform_revision increments.
+
+9. Dirty transform recompute
+   10,000 entities, move one leaf.
+   Expected:
+     recomputed world transforms = 1 plus descendants, not all entities.
+```
+
+## Final implementation order
+
+1. **Add result/status/options types.** Include `RenderUpdateReason`, `TransformFallbackPolicy`, `InstanceTransformUpdatePlan`, and `InstanceTransformUpdateResult`.
+
+2. **Change `post_instance_transforms()` to carry policy.** Legacy overload defaults to `NoFallback` and logs loudly.
+
+3. **Split transform apply helpers.** Add resolve/validate, metadata-only apply, and full-rebuild apply. Stop using the current broad `ApplyInstanceTransformUpdates()` on speculative fast paths.
+
+4. **Make `RenderCoordinator` transactional.** Plan first, policy-check second, backend apply third, coordinator scene commit last.
+
+5. **Make scalar CPU honest and atomic.** No mutation when dynamic update is unsupported. No hidden `build_or_update_acceleration()` inside transform update. No fake success from external accelerator `build_info()`.
+
+6. **Make D3D12 transform update staged/atomic.** Copy the existing `update_scene_delta()` style: apply to copies, upload/build dynamic state, commit mirrors only on success.
+
+7. **Update Qt physics publishing.** Physics motion gets `AllowDynamicAcceleration`; no automatic full scene reload on blocked CPU dynamic motion.
+
+8. **Implement CPU dynamic BLAS/TLAS.** Use existing dynamic flags and local geometry ranges. Then CPU can return `AppliedDynamicAccelUpdate`.
+
+9. **Split scene revisions/hashes.** Transform motion changes transform revision, not structural hash.
+
+10. **Replace global transform recompute.** Dirty-subtree recompute only.
+
+The decisive upgrade is this:
+
+```text
+Backends report what work is required.
+RenderCoordinator decides whether that work is legal.
+No state changes until the legal path is known.
+No rejected path mutates anything.
+```
+
+That turns motion handling from a hidden side-effect chain into an explicit, enforceable transaction.
+
+[1]: https://github.com/monstercameron/vkPathTracer/blob/main/src/pathtracer/PathTracer.h "vkPathTracer/src/pathtracer/PathTracer.h at main · monstercameron/vkPathTracer · GitHub"
+[2]: https://github.com/monstercameron/vkPathTracer/blob/main/src/render/RenderCoordinator.cpp "vkPathTracer/src/render/RenderCoordinator.cpp at main · monstercameron/vkPathTracer · GitHub"
+[3]: https://github.com/monstercameron/vkPathTracer/blob/main/src/pathtracer/PathTracer.cpp "vkPathTracer/src/pathtracer/PathTracer.cpp at main · monstercameron/vkPathTracer · GitHub"
+[4]: https://github.com/monstercameron/vkPathTracer/blob/main/src/pathtracer/ScalarCpuPathTracer.cpp "vkPathTracer/src/pathtracer/ScalarCpuPathTracer.cpp at main · monstercameron/vkPathTracer · GitHub"
+[5]: https://github.com/monstercameron/vkPathTracer/blob/main/src/gpu/D3D12GpuPathTracer.Scene.cpp "vkPathTracer/src/gpu/D3D12GpuPathTracer.Scene.cpp at main · monstercameron/vkPathTracer · GitHub"
+[6]: https://github.com/monstercameron/vkPathTracer/blob/main/src/pathtracer/CpuBvhAccelerator.cpp "vkPathTracer/src/pathtracer/CpuBvhAccelerator.cpp at main · monstercameron/vkPathTracer · GitHub"
+[7]: https://github.com/monstercameron/vkPathTracer/blob/main/src/pathtracer/SceneConversion.cpp "vkPathTracer/src/pathtracer/SceneConversion.cpp at main · monstercameron/vkPathTracer · GitHub"
+[8]: https://github.com/monstercameron/vkPathTracer/blob/main/src/app/AppRuntimeQtDockSyncAndPhysics.inc "vkPathTracer/src/app/AppRuntimeQtDockSyncAndPhysics.inc at main · monstercameron/vkPathTracer · GitHub"
+[9]: https://github.com/monstercameron/vkPathTracer/blob/main/src/scene/SceneWorldExtraction.cpp "vkPathTracer/src/scene/SceneWorldExtraction.cpp at main · monstercameron/vkPathTracer · GitHub"

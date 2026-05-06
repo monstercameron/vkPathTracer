@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-05-06 (session 35)
+
+### Transactional transforms, Vulkan/DXR parity, and render workflow
+
+- Added transactional instance-transform update planning/results with explicit update reasons and fallback policies so physics, animation, script, and editor motion can avoid silent full-scene fallback.
+- Updated RenderCoordinator, scalar CPU, Null, D3D12, and Vulkan paths to use staged transform-update commits before mutating render mirrors.
+- Hardened D3D12 dynamic transform updates with staged GPU instance buffers, dynamic BVH/TLAS updates, partial upload support, and DXR descriptor/root-signature changes for SDF buffers.
+- Expanded DXR shader behavior with an AnyHit path, default shader-side shadow occlusion, and SDF-aware descriptor binding.
+- Expanded Vulkan path tracer support for packed instance transform data, SDF/environment buffers, camera and scene deltas, and transform-update fallback planning.
+- Added Qt Start Render dialog/settings plumbing for still PNG/EXR output from the editor and status updates during synchronous preview rendering.
+- Added setup documentation, Vulkan SDK cache configuration, launcher improvements, and TODO/threading notes for transform-update atomicity work.
+
 ## 2026-05-06 (session 34)
 
 ### Runtime input, procedural wood, render controls, and dynamic updates

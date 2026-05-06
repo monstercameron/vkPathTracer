@@ -3229,3 +3229,105 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 **Implementation hints:** No-Lua builds should keep the existing skip diagnostics. Lua-enabled checks should be conditional and report missing Lua as a configure/runtime capability issue, not as a default-build failure.
 
 **Acceptance:** Focused smoke tests prove that the third-person scene's required host APIs work before relying on manual Qt preview testing.
+
+---
+
+# 19. Motion transaction and threading backlog
+
+Goal: make physics, animation, editor gizmos, and script transform motion use an explicit transactional transform-update path. Motion may update instance metadata, instance buffers, dynamic bounds, dynamic TLAS/BVH state, and accumulation state. Motion must not silently trigger full scene reloads, full/static acceleration rebuilds, document/world snapshot rebuilds, CPU vertex rebakes, or structural scene hash changes.
+
+## [ ] MOTION01 - Add transform-update result, reason, and fallback policy types
+
+**Deliverable:** Add `RenderUpdateReason`, `TransformFallbackPolicy`, `InstanceTransformUpdateOptions`, `InstanceTransformUpdatePlan`, and `InstanceTransformUpdateResult` to the render/pathtracer interface layer.
+
+**Implementation hints:** Keep `RTInstanceTransformUpdate` as TRS-only. Do not add matrix payloads yet. Define applied statuses separately from blocked/unsupported/failed statuses. Include source frame/system fields for diagnostics.
+
+**Acceptance:** Callers can distinguish metadata-only, instance-buffer-only, dynamic-acceleration, full/static-rebuild-required, full-scene-reload-required, unsupported, and failed outcomes without relying on a boolean.
+
+## [ ] MOTION02 - Carry transform update policy through `RenderCoordinator`
+
+**Deliverable:** Replace the coordinator's vector-only transform command with an `InstanceTransformCommand` carrying updates plus options.
+
+**Implementation hints:** Keep a temporary legacy overload that logs and defaults to `NoFallback`. Coalesce only commands with compatible reason/policy. Physics, animation, editor drag, and script transform motion should default to `AllowDynamicAcceleration`.
+
+**Acceptance:** `RenderCoordinator` can reject a backend-reported full/static rebuild or full scene reload for `PhysicsMotion`, `AnimationMotion`, `EditorGizmoMotion`, and `ScriptTransformMotion`.
+
+## [ ] MOTION03 - Make coordinator transform updates transactional
+
+**Deliverable:** Change `RenderCoordinator` to plan first, policy-check second, apply backend state third, and commit the coordinator scene mirror last.
+
+**Implementation hints:** Do not call broad `ApplyInstanceTransformUpdates()` speculatively. A rejected or failed transform command must leave coordinator scene, generation, sample index, tracer state, backend mirrors, and acceleration structures unchanged.
+
+**Acceptance:** Policy-forbidden transform updates increment a rejection/stale metric and do not mutate committed render state.
+
+## [ ] MOTION04 - Split transform apply helpers by work class
+
+**Deliverable:** Add resolve/validate helpers, metadata-only apply helpers, and full-rebuild apply helpers for `RTInstanceTransformUpdate`.
+
+**Implementation hints:** Metadata-only apply may update `RTInstance` TRS, flags, and revision only. Full-rebuild apply may rebake CPU vertices from local geometry ranges. Use the repo's existing result type instead of `std::expected`.
+
+**Acceptance:** Fast motion paths never rebake CPU vertices, and full-rebuild paths are the only callers that can update baked scene vertices.
+
+## [ ] MOTION05 - Make scalar CPU transform updates honest and atomic
+
+**Deliverable:** Update `ScalarCpuPathTracer` so the new plan/apply transform API reports `BlockedNeedsFullStaticAccelRebuild` or `Unsupported` until CPU dynamic TLAS support exists.
+
+**Implementation hints:** Do not mutate `m_scene` before policy approval. Do not call `build_or_update_acceleration()` inside the fast transform apply path. Do not treat external accelerator `build_info().built` as transform-update success.
+
+**Acceptance:** A CPU physics-motion transform update with `AllowDynamicAcceleration` is rejected or marked stale without changing `m_scene`, rebuilding the BVH, or reporting success.
+
+## [ ] MOTION06 - Make D3D12 transform updates staged and classified
+
+**Deliverable:** Return `AppliedDynamicAccelUpdate` for successful D3D12 dynamic instance/TLAS updates and make the update transactional.
+
+**Implementation hints:** Follow the existing scene-delta pattern: copy `m_sceneData`/packed instance mirrors, apply updates to the copies, build/refit staged dynamic acceleration, upload, then commit mirrors only after all work succeeds.
+
+**Acceptance:** Injected D3D12 upload/TLAS failure leaves `m_sceneData`, packed instance data, and dynamic acceleration mirrors unchanged.
+
+## [ ] MOTION07 - Stop Qt physics from auto-reloading on blocked motion
+
+**Deliverable:** Route Qt physics transform publishes with `RenderUpdateReason::PhysicsMotion` and `AllowDynamicAcceleration`, and remove automatic `qtReloadEditedScene("physics simulation")` fallback for blocked CPU dynamic motion.
+
+**Implementation hints:** On blocked motion, mark preview stale and surface a status message such as CPU backend lacks fast dynamic transform support. Manual scene reloads may still use `AllowFullSceneReload`.
+
+**Acceptance:** With CPU backend lacking dynamic TLAS, moving physics bodies do not trigger automatic full scene reloads from the Qt physics loop.
+
+## [ ] MOTION08 - Add CPU dynamic BLAS/TLAS acceleration
+
+**Deliverable:** Split CPU acceleration into static flattened BVH plus dynamic local-geometry BLAS and dynamic instance TLAS.
+
+**Implementation hints:** Use existing `RTInstance` dynamic flags, local vertex/index ranges, and TRS. Static BVH should remain unchanged when a dynamic rigid instance moves. Dynamic TLAS may refit or rebuild only dynamic instance bounds.
+
+**Acceptance:** Moving one dynamic CPU instance returns `AppliedDynamicAccelUpdate`, leaves the static BVH build count unchanged, and updates/refits only dynamic acceleration state.
+
+## [ ] MOTION09 - Split scene revisions and hashes by domain
+
+**Deliverable:** Separate structural, geometry, material, light, camera, and transform revisions/hashes.
+
+**Implementation hints:** Transform-only motion increments transform revision but does not change structural, geometry, material, or light hashes. Snapshot consumers should be able to detect transform-only changes without treating them as structural scene edits.
+
+**Acceptance:** Moving an entity transform leaves structural hash unchanged and increments transform revision.
+
+## [ ] MOTION10 - Replace global transform recompute with dirty-subtree recompute
+
+**Deliverable:** Replace the `SceneWorld::recompute_world_transforms()` global cache clear with dirty-root/subtree recomputation.
+
+**Implementation hints:** Compact dirty roots by removing descendants when an ancestor is dirty. Moving one leaf should recompute one transform; moving one parent should recompute the parent and descendants.
+
+**Acceptance:** A 10,000-entity scene moving one leaf recomputes one entity plus descendants, not all entities.
+
+## [ ] MOTION11 - Move physics to async command/result ticks
+
+**Deliverable:** Add a physics command/result API that submits a tick and collects completed transform writes without multiple UI-thread `future.get()` barriers.
+
+**Implementation hints:** Keep blocking full sync for scene load, explicit resync, script reload, debug repair, and structural body changes. Runtime dynamic bodies should flow physics-to-transform-to-render; ECS should only push dynamic poses for explicit teleports.
+
+**Acceptance:** The steady-state Qt physics loop does not block on separate `step_fixed()` and `extract_transform_writes()` calls.
+
+## [ ] MOTION12 - Add motion transaction instrumentation and gates
+
+**Deliverable:** Add counters and tests for transform command counts, applied work class, policy rejections, full scene reloads from motion, full/static acceleration rebuilds from motion, dynamic TLAS refits/rebuilds, scene snapshot builds from motion, world transform recompute counts, and physics worker wait time.
+
+**Implementation hints:** Add focused tests for CPU rejection atomicity, external accelerator fake success, coordinator rejection atomicity, D3D12 upload failure atomicity, D3D12 dynamic update classification, no CPU vertex rebake on fast paths, Qt physics no-auto-reload on blocked CPU motion, scene hash split, and dirty transform recompute.
+
+**Acceptance:** A single moving physics body produces zero full scene reloads and zero full/static acceleration rebuilds in the motion perf gate.

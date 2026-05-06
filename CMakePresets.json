@@ -168,9 +168,10 @@
         "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
         "CMAKE_BUILD_TYPE": "Debug",
         "PT_ENABLE_D3D12": "ON",
-        "PT_ENABLE_VULKAN": "OFF",
+        "PT_ENABLE_VULKAN": "ON",
         "PT_ENABLE_WEBGPU": "OFF",
-        "PT_ENABLE_JOLT": "ON"
+        "PT_ENABLE_JOLT": "ON",
+        "VULKAN_SDK": "C:/VulkanSDK/1.4.341.1"
       }
     },
     {
@@ -189,13 +190,14 @@
         "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
         "CMAKE_BUILD_TYPE": "Debug",
         "PT_ENABLE_D3D12": "ON",
-        "PT_ENABLE_VULKAN": "OFF",
+        "PT_ENABLE_VULKAN": "ON",
         "PT_ENABLE_WEBGPU": "OFF",
         "PT_ENABLE_JOLT": "ON",
         "PT_ENABLE_QT": "ON",
         "PT_ENABLE_QT_EDITOR": "ON",
         "PT_ENABLE_LUA": "ON",
-        "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64"
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64",
+        "VULKAN_SDK": "C:/VulkanSDK/1.4.341.1"
       }
     },
     {
@@ -214,13 +216,14 @@
         "CMAKE_C_COMPILER": "C:/Program Files/LLVM/bin/clang-cl.exe",
         "CMAKE_BUILD_TYPE": "Release",
         "PT_ENABLE_D3D12": "ON",
-        "PT_ENABLE_VULKAN": "OFF",
+        "PT_ENABLE_VULKAN": "ON",
         "PT_ENABLE_WEBGPU": "OFF",
         "PT_ENABLE_JOLT": "ON",
         "PT_ENABLE_QT": "ON",
         "PT_ENABLE_QT_EDITOR": "ON",
         "PT_ENABLE_LUA": "ON",
-        "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64"
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64",
+        "VULKAN_SDK": "C:/VulkanSDK/1.4.341.1"
       }
     },
     {

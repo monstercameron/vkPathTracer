@@ -91,6 +91,10 @@ experiments/  throwaway spikes and feel-tests
 
 ### Prerequisites
 
+For a more operational setup guide, including download links, expected Windows
+tool paths, smoke commands, and code-agent workflow notes, see
+[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
+
 | Tool | Minimum | Notes |
 |------|---------|-------|
 | CMake | 3.25 | `cmake --version` to check |
