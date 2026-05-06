@@ -718,10 +718,8 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
 
   std::unordered_map<vkpt::core::StableId, bool> animatedPathCache;
   std::unordered_map<vkpt::core::StableId, bool> scriptedPathCache;
-  std::unordered_map<vkpt::core::StableId, bool> dirtyTransformPathCache;
   animatedPathCache.reserve(doc.entities.size());
   scriptedPathCache.reserve(doc.entities.size());
-  dirtyTransformPathCache.reserve(doc.entities.size());
 
   auto entity_has_animated_transform_path =
       [&](const vkpt::scene::SceneEntityDefinition& entity) {
@@ -775,36 +773,6 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
     }
     scriptedPathCache.emplace(entity.id, scripted);
     return scripted;
-  };
-
-  auto entity_has_dirty_transform_path =
-      [&](const vkpt::scene::SceneEntityDefinition& entity) {
-    if (const auto cached = dirtyTransformPathCache.find(entity.id);
-        cached != dirtyTransformPathCache.end()) {
-      return cached->second;
-    }
-    bool dirty = false;
-    const auto* current = &entity;
-    for (std::size_t depth = 0u; current != nullptr && depth <= doc.entities.size(); ++depth) {
-      if (const auto cached = dirtyTransformPathCache.find(current->id);
-          cached != dirtyTransformPathCache.end()) {
-        dirty = cached->second;
-        break;
-      }
-      if (current->has_transform && current->transform.dirty) {
-        dirty = true;
-        break;
-      }
-      const vkpt::core::StableId parent =
-          current->has_hierarchy ? current->hierarchy.parent : 0u;
-      if (parent == 0u) {
-        break;
-      }
-      const auto parentIt = entityById.find(parent);
-      current = (parentIt != entityById.end()) ? parentIt->second : nullptr;
-    }
-    dirtyTransformPathCache.emplace(entity.id, dirty);
-    return dirty;
   };
 
   auto resolve_entity_transform = [&](vkpt::core::StableId id,
@@ -869,8 +837,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
         entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
     if (physicsDynamic ||
         entity_has_animated_transform_path(entity) ||
-        entity_has_scripted_transform_path(entity) ||
-        entity_has_dirty_transform_path(entity)) {
+        entity_has_scripted_transform_path(entity)) {
       add_capacity(dynamicVertexCapacity, geometry->vertices.size());
       add_capacity(dynamicIndexCapacity, geometry->indices.size());
     }
@@ -909,9 +876,8 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
         entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
     const bool animation_dynamic = entity_has_animated_transform_path(entity);
     const bool scripted_dynamic = entity_has_scripted_transform_path(entity);
-    const bool edited_dynamic = entity_has_dirty_transform_path(entity);
     const bool dynamic_transform =
-        physics_dynamic || animation_dynamic || scripted_dynamic || edited_dynamic;
+        physics_dynamic || animation_dynamic || scripted_dynamic;
     // Dynamic instances keep local geometry alongside world-space triangles for later refits.
     if (scene.vertices.size() >
         static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) -

@@ -357,30 +357,39 @@ bool VulkanGpuPathTracer::update_instance_transforms(
   if (!m_sceneUploaded || updates.empty()) {
     return false;
   }
+  auto nextScene = m_sceneData;
   for (const auto& update : updates) {
     uint32_t instanceIndex = update.instance_index;
-    if (instanceIndex >= m_sceneData.instances.size() && update.entity_id != 0u) {
-      for (std::size_t index = 0u; index < m_sceneData.instances.size(); ++index) {
-        if (m_sceneData.instances[index].entity_id == update.entity_id) {
+    if (instanceIndex >= nextScene.instances.size() && update.entity_id != 0u) {
+      for (std::size_t index = 0u; index < nextScene.instances.size(); ++index) {
+        if (nextScene.instances[index].entity_id == update.entity_id) {
           instanceIndex = static_cast<uint32_t>(index);
           break;
         }
       }
     }
-    if (instanceIndex >= m_sceneData.instances.size()) {
-      continue;
+    if (instanceIndex >= nextScene.instances.size()) {
+      return false;
     }
-    const auto& instance = m_sceneData.instances[instanceIndex];
+    const auto& instance = nextScene.instances[instanceIndex];
     if (!instance.has_flag(vkpt::pathtracer::kRTInstanceFlagDynamicTransform) ||
         instance.local_vertex_count == 0u ||
         instance.local_index_count < 3u) {
       return false;
     }
   }
-  if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(m_sceneData, updates)) {
+  if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(nextScene, updates)) {
     return false;
   }
-  return recreate_scene_buffers_from_snapshot();
+
+  auto previousScene = m_sceneData;
+  m_sceneData = std::move(nextScene);
+  if (!recreate_scene_buffers_from_snapshot()) {
+    m_sceneData = std::move(previousScene);
+    (void)recreate_scene_buffers_from_snapshot();
+    return false;
+  }
+  return true;
 }
 
 vkpt::pathtracer::InstanceTransformUpdatePlan VulkanGpuPathTracer::plan_instance_transform_update(
