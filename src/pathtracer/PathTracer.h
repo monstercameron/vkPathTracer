@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stop_token>
 #include <string>
@@ -511,6 +512,16 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
   void shutdown() override;
 
  private:
+  struct RenderBatchAccum {
+    float lum_sum = 0.0f;
+    float sample_max = 0.0f;
+    std::uint64_t sample_count = 0u;
+    std::uint64_t ray_count = 0u;
+    uint32_t min_pixel = std::numeric_limits<uint32_t>::max();
+    uint32_t max_pixel = 0u;
+    SampleCounters counters{};
+  };
+
   struct Hit {
     bool hit = false;
     float t = 0.0f;
@@ -534,16 +545,55 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
   // below the shading surface. exponent=0 → diffuse, exponent→∞ → mirror.
   Vec3 sample_phong_lobe(Rng& rng, const Vec3& refl_dir,
                          float exponent, const Vec3& normal) const;
-  Vec3 trace(const Ray& ray, uint32_t sample_index, uint32_t frame_index, uint32_t path_id, uint32_t path_depth, uint64_t& ray_counter, Rng& rng);
-  bool intersect_triangle(const RTTriangle& tri, const Ray& ray, float& t, float& u, float& v) const;
-  bool intersect_box(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;
-  bool intersect_sphere(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;
-  bool intersect_rounded_box(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;
-  bool intersect_plane(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;
-  bool intersect_torus(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;
-  bool intersect_capsule(const RTSdfPrimitive& primitive, const Ray& ray, float& t, Vec3& normal) const;
-  bool intersect_scene(const Ray& ray, Hit& out) const;
-  NeeResult sample_direct_light(const Hit& hit, const Vec3& view_dir, Rng& rng) const;
+  Vec3 trace(const Ray& ray,
+             uint32_t sample_index,
+             uint32_t frame_index,
+             uint32_t path_id,
+             uint32_t path_depth,
+             uint64_t& ray_counter,
+             SampleCounters& counters,
+             Rng& rng);
+  bool intersect_triangle(const RTTriangle& tri,
+                          const Ray& ray,
+                          float& t,
+                          float& u,
+                          float& v,
+                          SampleCounters& counters) const;
+  bool intersect_box(const RTSdfPrimitive& primitive,
+                     const Ray& ray,
+                     float& t,
+                     Vec3& normal,
+                     SampleCounters& counters) const;
+  bool intersect_sphere(const RTSdfPrimitive& primitive,
+                        const Ray& ray,
+                        float& t,
+                        Vec3& normal,
+                        SampleCounters& counters) const;
+  bool intersect_rounded_box(const RTSdfPrimitive& primitive,
+                             const Ray& ray,
+                             float& t,
+                             Vec3& normal,
+                             SampleCounters& counters) const;
+  bool intersect_plane(const RTSdfPrimitive& primitive,
+                       const Ray& ray,
+                       float& t,
+                       Vec3& normal,
+                       SampleCounters& counters) const;
+  bool intersect_torus(const RTSdfPrimitive& primitive,
+                       const Ray& ray,
+                       float& t,
+                       Vec3& normal,
+                       SampleCounters& counters) const;
+  bool intersect_capsule(const RTSdfPrimitive& primitive,
+                         const Ray& ray,
+                         float& t,
+                         Vec3& normal,
+                         SampleCounters& counters) const;
+  bool intersect_scene(const Ray& ray, Hit& out, SampleCounters& counters) const;
+  NeeResult sample_direct_light(const Hit& hit,
+                                const Vec3& view_dir,
+                                Rng& rng,
+                                SampleCounters& counters) const;
   float light_pdf_for_direction(const Vec3& position, const Vec3& direction) const;
   Ray camera_rays(uint32_t x,
                   uint32_t y,
@@ -551,6 +601,17 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
                   uint32_t frame_index,
                   uint32_t path_id,
                   uint64_t& sample_seed);
+  void shade_pixel(uint32_t pixel,
+                   uint32_t sample_index,
+                   uint32_t frame_index,
+                   RenderBatchAccum& accum);
+  bool render_sample_contiguous_pixels(uint32_t first_pixel,
+                                       uint32_t pixel_count,
+                                       uint32_t sample_index,
+                                       uint32_t frame_index);
+  bool finish_render_batch(const std::vector<RenderBatchAccum>& locals,
+                           uint32_t sample_index,
+                           uint32_t frame_index);
   static Vec3 evaluate_bsdf(const RTMaterial& material, const Vec3& normal, const Vec3& in_dir, const Vec3& out_dir, float& pdf);
 
   RenderSettings m_settings;

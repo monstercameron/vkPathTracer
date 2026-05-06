@@ -302,25 +302,52 @@ configure_file(
 )
 
 set(PT_CPU_SOURCES
+  # Core/runtime services
   src/core/Assert.cpp
-  src/editor/QtPanelModels.cpp
-  src/editor/UiModels.cpp
   src/core/Config.cpp
+  src/diagnostics/CrashHooks.cpp
+  src/diagnostics/CrashRecorder.cpp
+  src/diagnostics/StatusFile.cpp
+  src/jobs/JobSystem.cpp
+
+  # CPU execution
   src/cpu/CpuFeatures.cpp
   src/cpu/ParallelBvhBuilder.cpp
   src/cpu/TiledCpuPathTracer.cpp
-  src/diagnostics/CrashRecorder.cpp
-  src/diagnostics/CrashHooks.cpp
-  src/diagnostics/StatusFile.cpp
-  src/jobs/JobSystem.cpp
-  src/platform/PlatformFactory.cpp
-  src/platform/HeadlessPlatform.cpp
-  src/physics/PhysicsWorld.cpp
-  src/scene/Scene.cpp
-  src/scripting/ScriptRuntime.cpp
-  src/pathtracer/PathTracer.cpp
-  src/materials/MaterialInterface.cpp
+
+  # Editor model data shared by CLI, desktop, and Qt shells
+  src/app/DoctorChecks.cpp
+  src/app/UiValidation.cpp
+  src/editor/QtPanelModels.cpp
+  src/editor/UiModels.cpp
+
+  # Scene, scripting, materials, and physics
   src/materials/MaterialDescriptors.cpp
+  src/materials/MaterialInterface.cpp
+  src/physics/PhysicsWorld.cpp
+  src/scene/FrameLifecycle.cpp
+  src/scene/Json.cpp
+  src/scene/Scene.cpp
+  src/scene/SceneDocumentExport.cpp
+  src/scene/SceneDocumentLoad.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
+  src/scripting/ScriptRuntime.cpp
+
+  # Path tracer core
+  src/pathtracer/CpuBvhAccelerator.cpp
+  src/pathtracer/FilmBuffer.cpp
+  src/pathtracer/ImageIo.cpp
+  src/pathtracer/PathTracer.cpp
+  src/pathtracer/SceneConversion.cpp
+  src/pathtracer/SceneLayoutManifest.cpp
+
+  # Platform selection
+  src/platform/HeadlessPlatform.cpp
+  src/platform/PlatformFactory.cpp
+
+  # Shader and render orchestration
   src/shaders/ShaderFamilyManifest.cpp
   src/shaders/SdfShaderInventory.cpp
   src/render/DebugViews.cpp
@@ -355,10 +382,21 @@ if(PT_ENABLE_VULKAN)
 endif()
 
 if(PT_ENABLE_D3D12)
-  list(APPEND PT_CPU_SOURCES src/gpu/D3D12GpuPathTracer.cpp)
+  list(APPEND PT_CPU_SOURCES
+    src/gpu/D3D12GpuPathTracer.Compute.cpp
+    src/gpu/D3D12GpuPathTracer.Device.cpp
+    src/gpu/D3D12GpuPathTracer.Dxr.cpp
+    src/gpu/D3D12GpuPathTracer.Film.cpp
+    src/gpu/D3D12GpuPathTracer.cpp
+    src/gpu/D3D12GpuPathTracer.Scene.cpp
+    src/gpu/D3D12GpuPathTracer.Utils.cpp
+  )
 endif()
 
 if(PT_ENABLE_QT)
+  list(APPEND PT_CPU_SOURCES src/app/QtDockPanels.cpp)
+  list(APPEND PT_CPU_SOURCES src/app/ViewportInteraction.cpp)
+
   add_library(pt_platform_qt STATIC
     src/platform/qt/QtPlatform.cpp
   )
@@ -509,7 +547,13 @@ target_compile_features(ptdoctor PRIVATE cxx_std_23)
 # ---- focused smoke targets ---------------------------------------------------
 add_executable(pt_scripting_smoke EXCLUDE_FROM_ALL
   tests/scripting_runtime_smoke.cpp
+  src/scene/Json.cpp
   src/scene/Scene.cpp
+  src/scene/SceneDocumentExport.cpp
+  src/scene/SceneDocumentLoad.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
   src/scripting/ScriptRuntime.cpp
 )
 
