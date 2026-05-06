@@ -550,15 +550,15 @@ uint64_t SaturatingMulU64(uint64_t lhs, uint64_t rhs) {
 uint64_t EstimateLogicalRaysPerD3D12Sample(const vkpt::pathtracer::RenderSettings& settings,
                                            const vkpt::pathtracer::RTSceneData& scene,
                                            bool usingDxrDispatch) {
+  (void)usingDxrDispatch;
   const uint64_t maxDepth = static_cast<uint64_t>(std::max(1u, settings.max_depth));
   uint64_t raysPerSample = maxDepth;
 
   // The GPU shaders do not currently write exact per-ray counters. Count the
   // primary/continuation scene query at each path depth, plus the direct-light
-  // shadow query that both the compute shader and default DXR shader issue.
+  // shadow query issued in the compute shader and in DXR shader code.
   const bool hasDirectLight = !scene.lights.empty();
-  const bool shadowQueriesEnabled = hasDirectLight &&
-      (!usingDxrDispatch || ParseEnvBool("PT_D3D12_DXR_SHADOW_RAYS", true));
+  const bool shadowQueriesEnabled = hasDirectLight;
   if (shadowQueriesEnabled) {
     raysPerSample += maxDepth;
   }

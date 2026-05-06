@@ -90,7 +90,7 @@ bool D3D12GpuPathTracer::compile_dxil(const std::string& path, std::vector<uint8
 
   // Runtime defines keep the DXR shader feature set aligned with benchmark
   // toggles without requiring multiple checked-in DXIL variants.
-  const bool dxrShadowRays = ParseEnvBool("PT_D3D12_DXR_SHADOW_RAYS", true);
+  const bool dxrShadowRays = ParseEnvBool("PT_D3D12_DXR_SHADOW_RAYS", false);
   const wchar_t* shadowRayDefine =
       dxrShadowRays ? L"-DPT_D3D12_DXR_SHADOW_RAYS=1" : L"-DPT_D3D12_DXR_SHADOW_RAYS=0";
   LPCWSTR args[] = { L"-T", L"lib_6_3", L"-HV", L"2021", L"-O3", shadowRayDefine };
@@ -122,7 +122,8 @@ bool D3D12GpuPathTracer::compile_dxil(const std::string& path, std::vector<uint8
   outDxil.resize(dxilBlob->GetBufferSize());
   std::memcpy(outDxil.data(), dxilBlob->GetBufferPointer(), outDxil.size());
   LogInfo("DXR shader compiled " + std::to_string(outDxil.size()) + " bytes from " + path +
-          " shadow_rays=" + (dxrShadowRays ? "true" : "false"));
+          " hardware_shadow_rays=" + (dxrShadowRays ? "true" : "false") +
+          " shader_shadow_occlusion=" + (dxrShadowRays ? "false" : "true"));
   return true;
 }
 
@@ -131,7 +132,7 @@ bool D3D12GpuPathTracer::create_dxr_global_root_sig() {
   // the descriptor table for scene buffers and the HDR film UAV.
   // Param 0: constants CBV (PCBuf) at b0
   // Param 1: root SRV at t0 (TLAS)
-  // Param 2: descriptor table [t1-t11 SRV, u0 UAV]
+  // Param 2: descriptor table [t1-t12 SRV, u0 UAV]
   D3D12_ROOT_PARAMETER params[3]{};
   params[0].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_CBV;
   params[0].Descriptor.ShaderRegister = 0;
@@ -144,7 +145,7 @@ bool D3D12GpuPathTracer::create_dxr_global_root_sig() {
 
   D3D12_DESCRIPTOR_RANGE ranges[2]{};
   ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-  ranges[0].NumDescriptors = 11;         // t1-t11
+  ranges[0].NumDescriptors = 12;         // t1-t12
   ranges[0].BaseShaderRegister = 1;
   ranges[0].RegisterSpace = 0;
   ranges[0].OffsetInDescriptorsFromTableStart = 0;
@@ -152,7 +153,7 @@ bool D3D12GpuPathTracer::create_dxr_global_root_sig() {
   ranges[1].NumDescriptors = 1;          // u0
   ranges[1].BaseShaderRegister = 0;
   ranges[1].RegisterSpace = 0;
-  ranges[1].OffsetInDescriptorsFromTableStart = 11;
+  ranges[1].OffsetInDescriptorsFromTableStart = 12;
   params[2].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
   params[2].DescriptorTable.NumDescriptorRanges = 2;
   params[2].DescriptorTable.pDescriptorRanges   = ranges;
@@ -196,13 +197,14 @@ bool D3D12GpuPathTracer::create_dxr_pipeline() {
   UINT si = 0;
 
   // 1. DXIL library
-  D3D12_EXPORT_DESC exports[3]{};
+  D3D12_EXPORT_DESC exports[4]{};
   exports[0] = {L"RayGen",    nullptr, D3D12_EXPORT_FLAG_NONE};
   exports[1] = {L"Miss",      nullptr, D3D12_EXPORT_FLAG_NONE};
   exports[2] = {L"ClosestHit",nullptr, D3D12_EXPORT_FLAG_NONE};
+  exports[3] = {L"AnyHit",    nullptr, D3D12_EXPORT_FLAG_NONE};
   D3D12_DXIL_LIBRARY_DESC libDesc{};
   libDesc.DXILLibrary = {dxil.data(), dxil.size()};
-  libDesc.NumExports  = 3;
+  libDesc.NumExports  = 4;
   libDesc.pExports    = exports;
   subobjects[si++] = {D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &libDesc};
 
@@ -211,7 +213,7 @@ bool D3D12GpuPathTracer::create_dxr_pipeline() {
   hitGroup.HitGroupExport          = L"HitGroup0";
   hitGroup.Type                    = D3D12_HIT_GROUP_TYPE_TRIANGLES;
   hitGroup.ClosestHitShaderImport  = L"ClosestHit";
-  hitGroup.AnyHitShaderImport      = nullptr;
+  hitGroup.AnyHitShaderImport      = L"AnyHit";
   hitGroup.IntersectionShaderImport= nullptr;
   subobjects[si++] = {D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &hitGroup};
 
