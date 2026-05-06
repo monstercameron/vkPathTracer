@@ -33,4 +33,8 @@ uint32_t BuildDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>&
                                                     uint32_t instanceCount,
                                                     std::vector<float>& outBvh);
 
+uint32_t RefitDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>& insts,
+                                                    uint32_t instanceCount,
+                                                    std::vector<float>& bvh);
+
 }  // namespace vkpt::gpu

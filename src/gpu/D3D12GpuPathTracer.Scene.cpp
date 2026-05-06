@@ -244,10 +244,18 @@ bool D3D12GpuPathTracer::update_instance_transforms(
   if (!changed) {
     return false;
   }
-  m_dynamicInstanceCount = BuildDynamicInstanceBvhFromPackedInstances(
+  const uint32_t refitDynamicCount = RefitDynamicInstanceBvhFromPackedInstances(
       m_gpuInsts,
       static_cast<uint32_t>(m_sceneData.instances.size()),
       m_gpuDynamicBvh);
+  if (refitDynamicCount == 0u || refitDynamicCount != m_dynamicInstanceCount) {
+    m_dynamicInstanceCount = BuildDynamicInstanceBvhFromPackedInstances(
+        m_gpuInsts,
+        static_cast<uint32_t>(m_sceneData.instances.size()),
+        m_gpuDynamicBvh);
+  } else {
+    m_dynamicInstanceCount = refitDynamicCount;
+  }
   const bool uploaded = updateDxrTlas ? update_dxr_instance_buffer_and_tlas() : upload_instance_buffer();
   if (uploaded) {
     m_temporalHistoryValid = false;
