@@ -271,6 +271,71 @@ static vkpt::pathtracer::Vec3 RotateQuat(const vkpt::pathtracer::Vec3& value,
           value.z + doubled.z * q.w + c.z};
 }
 
+static bool LoadDynamicInstanceRefFromPacked(const std::vector<uint32_t>& insts,
+                                             uint32_t instanceIndex,
+                                             DynamicInstanceRef& ref) {
+  const std::size_t ib = static_cast<std::size_t>(instanceIndex) * kGpuInstanceStrideU32;
+  if (ib + 22u >= insts.size()) {
+    return false;
+  }
+  const uint32_t flags = insts[ib + 3u];
+  const uint32_t triCount = insts[ib + 1u];
+  if ((flags & vkpt::pathtracer::kRTInstanceFlagDynamicTransform) == 0u ||
+      triCount == 0u) {
+    return false;
+  }
+  const vkpt::pathtracer::Vec3 translation{
+      UintBitsToFloat(insts[ib + 4u]),
+      UintBitsToFloat(insts[ib + 5u]),
+      UintBitsToFloat(insts[ib + 6u])};
+  const vkpt::pathtracer::Quat4 rotation{
+      UintBitsToFloat(insts[ib + 8u]),
+      UintBitsToFloat(insts[ib + 9u]),
+      UintBitsToFloat(insts[ib + 10u]),
+      UintBitsToFloat(insts[ib + 11u])};
+  const vkpt::pathtracer::Vec3 scale{
+      UintBitsToFloat(insts[ib + 12u]),
+      UintBitsToFloat(insts[ib + 13u]),
+      UintBitsToFloat(insts[ib + 14u])};
+  const vkpt::pathtracer::Vec3 localMin{
+      UintBitsToFloat(insts[ib + 16u]),
+      UintBitsToFloat(insts[ib + 17u]),
+      UintBitsToFloat(insts[ib + 18u])};
+  const vkpt::pathtracer::Vec3 localMax{
+      UintBitsToFloat(insts[ib + 20u]),
+      UintBitsToFloat(insts[ib + 21u]),
+      UintBitsToFloat(insts[ib + 22u])};
+
+  ref = {};
+  ref.instance_index = instanceIndex;
+  for (int k = 0; k < 3; ++k) {
+    ref.bmin[k] = 1e30f;
+    ref.bmax[k] = -1e30f;
+  }
+  for (uint32_t corner = 0u; corner < 8u; ++corner) {
+    const vkpt::pathtracer::Vec3 local{
+        (corner & 1u) ? localMax.x : localMin.x,
+        (corner & 2u) ? localMax.y : localMin.y,
+        (corner & 4u) ? localMax.z : localMin.z};
+    const vkpt::pathtracer::Vec3 scaled{local.x * scale.x, local.y * scale.y, local.z * scale.z};
+    const auto rotated = RotateQuat(scaled, rotation);
+    const vkpt::pathtracer::Vec3 world{
+        rotated.x + translation.x,
+        rotated.y + translation.y,
+        rotated.z + translation.z};
+    ref.bmin[0] = std::min(ref.bmin[0], world.x);
+    ref.bmin[1] = std::min(ref.bmin[1], world.y);
+    ref.bmin[2] = std::min(ref.bmin[2], world.z);
+    ref.bmax[0] = std::max(ref.bmax[0], world.x);
+    ref.bmax[1] = std::max(ref.bmax[1], world.y);
+    ref.bmax[2] = std::max(ref.bmax[2], world.z);
+  }
+  ref.centroid[0] = (ref.bmin[0] + ref.bmax[0]) * 0.5f;
+  ref.centroid[1] = (ref.bmin[1] + ref.bmax[1]) * 0.5f;
+  ref.centroid[2] = (ref.bmin[2] + ref.bmax[2]) * 0.5f;
+  return true;
+}
+
 uint32_t BuildDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>& insts,
                                                     uint32_t instanceCount,
                                                     std::vector<float>& outBvh) {
@@ -280,64 +345,10 @@ uint32_t BuildDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>&
   std::vector<DynamicInstanceRef> refs;
   refs.reserve(instanceCount);
   for (uint32_t instanceIndex = 0u; instanceIndex < instanceCount; ++instanceIndex) {
-    const std::size_t ib = static_cast<std::size_t>(instanceIndex) * kGpuInstanceStrideU32;
-    if (ib + 22u >= insts.size()) {
-      continue;
-    }
-    const uint32_t flags = insts[ib + 3u];
-    const uint32_t triCount = insts[ib + 1u];
-    if ((flags & vkpt::pathtracer::kRTInstanceFlagDynamicTransform) == 0u || triCount == 0u) {
-      continue;
-    }
-    const vkpt::pathtracer::Vec3 translation{
-        UintBitsToFloat(insts[ib + 4u]),
-        UintBitsToFloat(insts[ib + 5u]),
-        UintBitsToFloat(insts[ib + 6u])};
-    const vkpt::pathtracer::Quat4 rotation{
-        UintBitsToFloat(insts[ib + 8u]),
-        UintBitsToFloat(insts[ib + 9u]),
-        UintBitsToFloat(insts[ib + 10u]),
-        UintBitsToFloat(insts[ib + 11u])};
-    const vkpt::pathtracer::Vec3 scale{
-        UintBitsToFloat(insts[ib + 12u]),
-        UintBitsToFloat(insts[ib + 13u]),
-        UintBitsToFloat(insts[ib + 14u])};
-    const vkpt::pathtracer::Vec3 localMin{
-        UintBitsToFloat(insts[ib + 16u]),
-        UintBitsToFloat(insts[ib + 17u]),
-        UintBitsToFloat(insts[ib + 18u])};
-    const vkpt::pathtracer::Vec3 localMax{
-        UintBitsToFloat(insts[ib + 20u]),
-        UintBitsToFloat(insts[ib + 21u]),
-        UintBitsToFloat(insts[ib + 22u])};
-
     DynamicInstanceRef ref{};
-    ref.instance_index = instanceIndex;
-    for (int k = 0; k < 3; ++k) {
-      ref.bmin[k] = 1e30f;
-      ref.bmax[k] = -1e30f;
+    if (!LoadDynamicInstanceRefFromPacked(insts, instanceIndex, ref)) {
+      continue;
     }
-    for (uint32_t corner = 0u; corner < 8u; ++corner) {
-      const vkpt::pathtracer::Vec3 local{
-          (corner & 1u) ? localMax.x : localMin.x,
-          (corner & 2u) ? localMax.y : localMin.y,
-          (corner & 4u) ? localMax.z : localMin.z};
-      const vkpt::pathtracer::Vec3 scaled{local.x * scale.x, local.y * scale.y, local.z * scale.z};
-      const auto rotated = RotateQuat(scaled, rotation);
-      const vkpt::pathtracer::Vec3 world{
-          rotated.x + translation.x,
-          rotated.y + translation.y,
-          rotated.z + translation.z};
-      ref.bmin[0] = std::min(ref.bmin[0], world.x);
-      ref.bmin[1] = std::min(ref.bmin[1], world.y);
-      ref.bmin[2] = std::min(ref.bmin[2], world.z);
-      ref.bmax[0] = std::max(ref.bmax[0], world.x);
-      ref.bmax[1] = std::max(ref.bmax[1], world.y);
-      ref.bmax[2] = std::max(ref.bmax[2], world.z);
-    }
-    ref.centroid[0] = (ref.bmin[0] + ref.bmax[0]) * 0.5f;
-    ref.centroid[1] = (ref.bmin[1] + ref.bmax[1]) * 0.5f;
-    ref.centroid[2] = (ref.bmin[2] + ref.bmax[2]) * 0.5f;
     refs.push_back(ref);
   }
 
@@ -350,6 +361,68 @@ uint32_t BuildDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>&
   dynamic_bvh_build(refs, 0u, static_cast<uint32_t>(refs.size()), outBvh, nodeCount);
   outBvh.resize(static_cast<std::size_t>(nodeCount) * 8u);
   return static_cast<uint32_t>(refs.size());
+}
+
+uint32_t RefitDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>& insts,
+                                                    uint32_t instanceCount,
+                                                    std::vector<float>& bvh) {
+  auto as_u32 = [](float f) -> uint32_t {
+    uint32_t u = 0u;
+    std::memcpy(&u, &f, sizeof(u));
+    return u;
+  };
+  const uint32_t nodeCount = static_cast<uint32_t>(bvh.size() / 8u);
+  if (nodeCount == 0u || bvh.size() % 8u != 0u) {
+    return 0u;
+  }
+
+  uint32_t leafCount = 0u;
+  const auto refitNode = [&](const auto& self, uint32_t nodeIndex) -> bool {
+    if (nodeIndex >= nodeCount) {
+      return false;
+    }
+    const uint32_t base = nodeIndex * 8u;
+    const uint32_t leftOrLeaf = as_u32(bvh[base + 6u]);
+    const uint32_t rightOrCount = as_u32(bvh[base + 7u]);
+    if ((leftOrLeaf & 0x80000000u) != 0u) {
+      const uint32_t instanceIndex = leftOrLeaf & 0x7fffffffu;
+      if (rightOrCount != 1u || instanceIndex >= instanceCount) {
+        return false;
+      }
+      DynamicInstanceRef ref{};
+      if (!LoadDynamicInstanceRefFromPacked(insts, instanceIndex, ref)) {
+        return false;
+      }
+      bvh[base + 0u] = ref.bmin[0];
+      bvh[base + 1u] = ref.bmin[1];
+      bvh[base + 2u] = ref.bmin[2];
+      bvh[base + 3u] = ref.bmax[0];
+      bvh[base + 4u] = ref.bmax[1];
+      bvh[base + 5u] = ref.bmax[2];
+      ++leafCount;
+      return true;
+    }
+
+    const uint32_t left = leftOrLeaf;
+    const uint32_t right = rightOrCount;
+    if (!self(self, left) || !self(self, right)) {
+      return false;
+    }
+    const uint32_t leftBase = left * 8u;
+    const uint32_t rightBase = right * 8u;
+    bvh[base + 0u] = std::min(bvh[leftBase + 0u], bvh[rightBase + 0u]);
+    bvh[base + 1u] = std::min(bvh[leftBase + 1u], bvh[rightBase + 1u]);
+    bvh[base + 2u] = std::min(bvh[leftBase + 2u], bvh[rightBase + 2u]);
+    bvh[base + 3u] = std::max(bvh[leftBase + 3u], bvh[rightBase + 3u]);
+    bvh[base + 4u] = std::max(bvh[leftBase + 4u], bvh[rightBase + 4u]);
+    bvh[base + 5u] = std::max(bvh[leftBase + 5u], bvh[rightBase + 5u]);
+    return true;
+  };
+
+  if (!refitNode(refitNode, 0u)) {
+    return 0u;
+  }
+  return leafCount;
 }
 
 }  // namespace vkpt::gpu
