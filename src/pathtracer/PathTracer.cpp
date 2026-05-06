@@ -600,6 +600,62 @@ bool NullPathTracer::update_instance_transforms(
   return ApplyInstanceTransformUpdates(m_scene, updates);
 }
 
+InstanceTransformUpdatePlan NullPathTracer::plan_instance_transform_update(
+    std::span<const RTInstanceTransformUpdate> updates,
+    const InstanceTransformUpdateOptions& /*options*/) const {
+  if (!m_configured || !m_has_scene) {
+    return {
+        InstanceTransformUpdateStatus::Failed,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "null tracer is not configured or has no scene"};
+  }
+  return {
+      InstanceTransformUpdateStatus::AppliedMetadataOnly,
+      static_cast<std::uint32_t>(updates.size()),
+      static_cast<std::uint32_t>(updates.size()),
+      "null tracer applies transform metadata only"};
+}
+
+InstanceTransformUpdateResult NullPathTracer::apply_instance_transform_update(
+    std::span<const RTInstanceTransformUpdate> updates,
+    const InstanceTransformUpdateOptions& options) {
+  const auto plan = plan_instance_transform_update(updates, options);
+  if (!plan.can_apply_without_full_fallback()) {
+    return {
+        plan.status,
+        plan.requested_count,
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        plan.message};
+  }
+
+  const std::vector<RTInstanceTransformUpdate> update_vec(updates.begin(), updates.end());
+  if (!ApplyInstanceTransformUpdates(m_scene, update_vec, RTInstanceTransformApplyMode::MetadataOnly)) {
+    return {
+        InstanceTransformUpdateStatus::Failed,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        "null tracer failed to apply transform metadata"};
+  }
+  return {
+      InstanceTransformUpdateStatus::AppliedMetadataOnly,
+      static_cast<std::uint32_t>(updates.size()),
+      static_cast<std::uint32_t>(updates.size()),
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      "null tracer transform metadata committed"};
+}
+
 bool NullPathTracer::update_scene_delta(const RTSceneDeltaUpdate& update) {
   if (!m_configured || !m_has_scene) {
     return false;

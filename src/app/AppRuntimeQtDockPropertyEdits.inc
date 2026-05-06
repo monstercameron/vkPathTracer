@@ -903,7 +903,16 @@
           if (!transformBuild.unsupported_instances &&
               !transformBuild.updates.empty() &&
               qtPublishInstanceTransformUpdates &&
-              qtPublishInstanceTransformUpdates(transformBuild.updates)) {
+              qtPublishInstanceTransformUpdates(
+                  transformBuild.updates,
+                  vkpt::pathtracer::InstanceTransformUpdateOptions{
+                      vkpt::pathtracer::RenderUpdateReason::EditorGizmoMotion,
+                      vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
+                      true,
+                      true,
+                      false,
+                      0u,
+                      "qt-property-edit"})) {
             reloadOk = true;
             qtPreviewStatus = "instance transform update";
           } else {

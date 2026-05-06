@@ -503,6 +503,85 @@ bool ScalarCpuPathTracer::update_instance_transforms(
   return build_or_update_acceleration();
 }
 
+InstanceTransformUpdatePlan ScalarCpuPathTracer::plan_instance_transform_update(
+    std::span<const RTInstanceTransformUpdate> updates,
+    const InstanceTransformUpdateOptions& options) const {
+  if (!m_configured || !m_has_scene) {
+    return {
+        InstanceTransformUpdateStatus::Failed,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "CPU tracer is not configured or has no scene"};
+  }
+
+  const IRayAccelerator* accelerator =
+      m_external_accelerator ? m_external_accelerator : m_accelerator.get();
+  if (accelerator != nullptr) {
+    const auto accelerator_plan =
+        accelerator->plan_instance_transform_update(m_scene, updates, options);
+    if (accelerator_plan.can_apply_without_full_fallback() ||
+        accelerator_plan.status != InstanceTransformUpdateStatus::Unsupported) {
+      return accelerator_plan;
+    }
+  }
+
+  return {
+      InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild,
+      static_cast<std::uint32_t>(updates.size()),
+      0u,
+      "CPU accelerator lacks dynamic instance TLAS support"};
+}
+
+InstanceTransformUpdateResult ScalarCpuPathTracer::apply_instance_transform_update(
+    std::span<const RTInstanceTransformUpdate> updates,
+    const InstanceTransformUpdateOptions& options) {
+  const auto plan = plan_instance_transform_update(updates, options);
+  if (!plan.can_apply_without_full_fallback()) {
+    return {
+        plan.status,
+        plan.requested_count,
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        plan.message};
+  }
+
+  IRayAccelerator* accelerator = m_external_accelerator ? m_external_accelerator : m_accelerator.get();
+  if (accelerator == nullptr) {
+    return {
+        InstanceTransformUpdateStatus::Unsupported,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        "no CPU accelerator available"};
+  }
+
+  const auto result = accelerator->apply_instance_transform_update(m_scene, updates, options);
+  if (!result.applied()) {
+    return result;
+  }
+
+  const std::vector<RTInstanceTransformUpdate> update_vec(updates.begin(), updates.end());
+  if (!ApplyInstanceTransformUpdates(m_scene, update_vec, RTInstanceTransformApplyMode::MetadataOnly)) {
+    return {
+        InstanceTransformUpdateStatus::Failed,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        "CPU tracer failed to commit transform metadata after accelerator update"};
+  }
+  m_accel_info = accelerator->build_info();
+  return result;
+}
+
 bool ScalarCpuPathTracer::update_scene_delta(const RTSceneDeltaUpdate& update) {
   if (!m_configured || !m_has_scene) {
     return false;
