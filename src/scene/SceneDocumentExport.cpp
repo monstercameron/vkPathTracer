@@ -229,6 +229,38 @@ std::string SceneDocument::to_json(bool pretty) const {
     root.object["sdf_primitives"] = std::move(sdfNode);
   }
 
+  JsonValue particleNode = array_value();
+  particleNode.array.reserve(particle_emitters.size());
+  for (const auto& emitter : particle_emitters) {
+    JsonValue item = object_value();
+    item.object["id"] = number_value(static_cast<double>(emitter.id));
+    item.object["name"] = string_value(emitter.name);
+    item.object["type"] = string_value(emitter.type);
+    item.object["enabled"] = bool_value(emitter.enabled);
+    item.object["transform"] = transform_value(emitter.transform);
+    item.object["bounds"] = vec3_value(emitter.bounds);
+    item.object["velocity"] = vec3_value(emitter.velocity);
+    item.object["velocity_jitter"] = vec3_value(emitter.velocity_jitter);
+    item.object["wind"] = vec3_value(emitter.wind);
+    item.object["material_id"] = number_value(static_cast<double>(emitter.material_id));
+    item.object["count"] = number_value(static_cast<double>(emitter.count));
+    item.object["seed"] = number_value(static_cast<double>(emitter.seed));
+    item.object["time"] = number_value(emitter.time);
+    item.object["lifetime"] = number_value(emitter.lifetime);
+    item.object["radius"] = number_value(emitter.radius);
+    item.object["length"] = number_value(emitter.length);
+    item.object["turbulence"] = number_value(emitter.turbulence);
+    item.object["gravity_scale"] = number_value(emitter.gravity_scale);
+    item.object["drag"] = number_value(emitter.drag);
+    item.object["bounce"] = number_value(emitter.bounce);
+    item.object["collision_plane_y"] = number_value(emitter.collision_plane_y);
+    item.object["vortex_strength"] = number_value(emitter.vortex_strength);
+    particleNode.array.push_back(std::move(item));
+  }
+  if (!particleNode.array.empty()) {
+    root.object["particle_emitters"] = std::move(particleNode);
+  }
+
   JsonValue entitiesNode = array_value();
   entitiesNode.array.reserve(entities.size());
   for (const auto& entity : entities) {
@@ -523,6 +555,23 @@ SceneSnapshot SceneDocument::snapshot() const {
   for (const auto& sdf : sdf_primitives) {
     blob += "sdf" + std::to_string(sdf.id) + ":" + sdf.shape + ":" +
             std::to_string(sdf.primitive.radius) + ";";
+  }
+  for (const auto& emitter : particle_emitters) {
+    blob += "pt" + std::to_string(emitter.id) + ":" + emitter.type + ":" +
+            std::to_string(emitter.enabled ? 1 : 0) + ":" +
+            std::to_string(emitter.count) + ":" +
+            std::to_string(emitter.seed) + ":" +
+            std::to_string(emitter.time) + ":" +
+            std::to_string(emitter.lifetime) + ":" +
+            std::to_string(emitter.radius) + ":" +
+            std::to_string(emitter.length) + ":" +
+            std::to_string(emitter.gravity_scale) + ":" +
+            std::to_string(emitter.drag) + ":" +
+            std::to_string(emitter.bounce) + ":" +
+            std::to_string(emitter.vortex_strength) + ":" +
+            std::to_string(emitter.bounds.x) + "," +
+            std::to_string(emitter.bounds.y) + "," +
+            std::to_string(emitter.bounds.z) + ";";
   }
   out.benchmark = benchmark;
   if (out.benchmark.enabled) {
