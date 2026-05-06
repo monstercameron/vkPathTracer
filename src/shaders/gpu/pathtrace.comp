@@ -451,9 +451,21 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
             vec3  lpos  = vec3(lights[lb], lights[lb+1u], lights[lb+2u]);
             vec3  lcol  = vec3(lights[lb+3u], lights[lb+4u], lights[lb+5u]);
             float lint  = lights[lb+6u];
+            float lrad  = max(0.0, lights[lb+7u]);
             vec3  spot_dir = normalize(vec3(lights[lb+8u], lights[lb+9u], lights[lb+10u]));
             float spot_inner = lights[lb+11u];
             float spot_outer = lights[lb+12u];
+
+            // Radius-based area approximation for softer shadows. This also
+            // avoids treating a light embedded in visible fixture geometry as
+            // a single fully occluded point.
+            if (lrad > 1.0e-5) {
+                float uz = 1.0 - 2.0 * rand_f(rng);
+                float upr = sqrt(max(0.0, 1.0 - uz * uz));
+                float phi = 6.28318530718 * rand_f(rng);
+                vec3 ofs = vec3(upr * cos(phi), uz, upr * sin(phi)) * lrad;
+                lpos += ofs;
+            }
 
             vec3  to_l  = lpos - hit.pos;
             float dist2 = dot(to_l, to_l);

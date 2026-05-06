@@ -493,14 +493,23 @@ bool ScalarCpuPathTracer::update_instance_transforms(
   if (!m_configured || !m_has_scene) {
     return false;
   }
-  if (!ApplyInstanceTransformUpdates(m_scene, updates)) {
+  if (m_external_accelerator != nullptr) {
     return false;
   }
-  if (m_external_accelerator != nullptr) {
-    m_accel_info = m_external_accelerator->build_info();
-    return m_accel_info.built;
+
+  auto next_scene = m_scene;
+  if (!ApplyInstanceTransformUpdates(next_scene, updates)) {
+    return false;
   }
-  return build_or_update_acceleration();
+
+  auto previous_scene = m_scene;
+  m_scene = std::move(next_scene);
+  if (!build_or_update_acceleration()) {
+    m_scene = std::move(previous_scene);
+    (void)build_or_update_acceleration();
+    return false;
+  }
+  return true;
 }
 
 InstanceTransformUpdatePlan ScalarCpuPathTracer::plan_instance_transform_update(
@@ -512,6 +521,27 @@ InstanceTransformUpdatePlan ScalarCpuPathTracer::plan_instance_transform_update(
         static_cast<std::uint32_t>(updates.size()),
         0u,
         "CPU tracer is not configured or has no scene"};
+  }
+
+  std::uint32_t matched = 0u;
+  for (const auto& update : updates) {
+    uint32_t instance_index = update.instance_index;
+    if (instance_index >= m_scene.instances.size() && update.entity_id != 0u) {
+      for (std::size_t index = 0; index < m_scene.instances.size(); ++index) {
+        if (m_scene.instances[index].entity_id == update.entity_id) {
+          instance_index = static_cast<uint32_t>(index);
+          break;
+        }
+      }
+    }
+    if (instance_index >= m_scene.instances.size()) {
+      return {
+          InstanceTransformUpdateStatus::Failed,
+          static_cast<std::uint32_t>(updates.size()),
+          matched,
+          "CPU transform update references an unknown instance"};
+    }
+    ++matched;
   }
 
   const IRayAccelerator* accelerator =
@@ -528,7 +558,7 @@ InstanceTransformUpdatePlan ScalarCpuPathTracer::plan_instance_transform_update(
   return {
       InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild,
       static_cast<std::uint32_t>(updates.size()),
-      0u,
+      matched,
       "CPU accelerator lacks dynamic instance TLAS support"};
 }
 
