@@ -1,5 +1,7 @@
 #include "render/RenderCoordinator.h"
 
+#include "jobs/JobSystem.h"
+
 #include <algorithm>
 #include <utility>
 
@@ -32,6 +34,7 @@ bool RenderCoordinator::start() {
 
   auto tracer = std::move(m_initialTracer);
   m_thread = std::jthread([this, tracer = std::move(tracer)](std::stop_token stop) mutable {
+    vkpt::jobs::ApplyCurrentThreadPriority(vkpt::jobs::WorkerThreadPriority::Background);
     run(stop, std::move(tracer));
   });
   return true;
@@ -52,15 +55,34 @@ void RenderCoordinator::post_camera(RenderCameraCommand camera) {
   m_pending.camera = camera;
 }
 
+void RenderCoordinator::post_camera_state(vkpt::pathtracer::RTCameraState camera) {
+  std::scoped_lock lock(m_commandMutex);
+  m_pending.camera_state = camera;
+}
+
+void RenderCoordinator::post_instance_transforms(
+    std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates) {
+  if (updates.empty()) {
+    return;
+  }
+  std::scoped_lock lock(m_commandMutex);
+  m_pending.instance_transforms = std::move(updates);
+}
+
 void RenderCoordinator::post_scene(vkpt::pathtracer::RTSceneData scene) {
   std::scoped_lock lock(m_commandMutex);
   m_pending.scene = std::move(scene);
 }
 
+void RenderCoordinator::post_settings(vkpt::pathtracer::RenderSettings settings) {
+  std::scoped_lock lock(m_commandMutex);
+  m_pending.settings = PendingCommands::SettingsCommand{std::move(settings), std::nullopt};
+}
+
 void RenderCoordinator::post_settings(vkpt::pathtracer::RenderSettings settings,
                                       vkpt::pathtracer::RTSceneData scene) {
   std::scoped_lock lock(m_commandMutex);
-  m_pending.settings = PendingCommands::SettingsAndScene{std::move(settings), std::move(scene)};
+  m_pending.settings = PendingCommands::SettingsCommand{std::move(settings), std::move(scene)};
 }
 
 std::optional<DisplayFrame> RenderCoordinator::acquire_latest_frame() {
@@ -140,7 +162,9 @@ void RenderCoordinator::run(std::stop_token stop,
 
     if (commands.settings) {
       settings = std::move(commands.settings->settings);
-      scene = std::move(commands.settings->scene);
+      if (commands.settings->scene) {
+        scene = std::move(*commands.settings->scene);
+      }
       ++generation;
       sample = 0u;
       if (!tracer->configure(settings) ||
@@ -182,6 +206,38 @@ void RenderCoordinator::run(std::stop_token stop,
       }
       if (!cameraOk || !tracer->reset_accumulation()) {
         mark_failed("render coordinator camera update failed");
+        break;
+      }
+      resetPublishClock = true;
+    }
+
+    if (commands.camera_state) {
+      vkpt::pathtracer::ApplyCameraState(scene, *commands.camera_state);
+      ++generation;
+      sample = 0u;
+      bool cameraOk = tracer->update_camera_state(*commands.camera_state);
+      if (!cameraOk) {
+        cameraOk = tracer->load_scene_snapshot(scene) &&
+                   tracer->build_or_update_acceleration();
+      }
+      if (!cameraOk || !tracer->reset_accumulation()) {
+        mark_failed("render coordinator camera state update failed");
+        break;
+      }
+      resetPublishClock = true;
+    }
+
+    if (commands.instance_transforms && !commands.instance_transforms->empty()) {
+      vkpt::pathtracer::ApplyInstanceTransformUpdates(scene, *commands.instance_transforms);
+      ++generation;
+      sample = 0u;
+      bool transformOk = tracer->update_instance_transforms(*commands.instance_transforms);
+      if (!transformOk) {
+        transformOk = tracer->load_scene_snapshot(scene) &&
+                      tracer->build_or_update_acceleration();
+      }
+      if (!transformOk || !tracer->reset_accumulation()) {
+        mark_failed("render coordinator instance transform update failed");
         break;
       }
       resetPublishClock = true;

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(vkPathTracer VERSION 0.1.0 LANGUAGES CXX)
+project(vkPathTracer VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ option(PT_ENABLE_NEON "Enable ARM NEON codepath" OFF)
 option(PT_ENABLE_SVE "Enable ARM SVE codepath" OFF)
 option(PT_ENABLE_JOLT "Enable Jolt integration" OFF)
 option(PT_ENABLE_LUA "Enable Lua integration" OFF)
+option(PT_ENABLE_LUA_VENDOR "Download and build Lua when system Lua 5.4 is unavailable" ON)
 option(PT_ENABLE_EDITOR "Enable editor module" OFF)
 option(PT_ENABLE_BENCHMARK "Enable benchmark module" OFF)
 option(PT_ENABLE_PROFILING "Enable profiling hooks" OFF)
@@ -218,6 +219,7 @@ function(pt_deploy_qt_runtime target_name)
       COMMAND "${PT_WINDEPLOYQT_EXECUTABLE}"
               $<IF:$<CONFIG:Debug>,--debug,--release>
               --no-translations
+              --no-compiler-runtime
               --include-plugins qoffscreen
               "$<TARGET_FILE:${target_name}>"
       COMMENT "Deploying Qt runtime for ${target_name}"
@@ -263,6 +265,86 @@ if(PT_ENABLE_JOLT)
   else()
     message(FATAL_ERROR "PT_ENABLE_JOLT=ON but vendored Jolt target was not created")
   endif()
+endif()
+
+# ---- Lua --------------------------------------------------------------------
+set(PT_LUA_TARGET "")
+if(PT_ENABLE_LUA)
+  find_package(Lua 5.4 QUIET)
+  if(TARGET Lua::Lua)
+    set(PT_LUA_TARGET Lua::Lua)
+  elseif(LUA_FOUND)
+    add_library(pt_lua_imported UNKNOWN IMPORTED)
+    set_target_properties(pt_lua_imported PROPERTIES
+      IMPORTED_LOCATION "${LUA_LIBRARIES}"
+      INTERFACE_INCLUDE_DIRECTORIES "${LUA_INCLUDE_DIR}"
+    )
+    set(PT_LUA_TARGET pt_lua_imported)
+  elseif(PT_ENABLE_LUA_VENDOR)
+    include(FetchContent)
+    FetchContent_Declare(lua_vendor
+      URL https://www.lua.org/ftp/lua-5.4.6.tar.gz
+      URL_HASH SHA256=7d5ea1b9cb6aa0b59ca3dde1c6adcb57ef83a1ba8e5432c0ecd06bf439b3ad88
+    )
+    FetchContent_MakeAvailable(lua_vendor)
+
+    set(_pt_lua_src_dir "${lua_vendor_SOURCE_DIR}/src")
+    set(_pt_lua_vendor_sources
+      "${_pt_lua_src_dir}/lapi.c"
+      "${_pt_lua_src_dir}/lauxlib.c"
+      "${_pt_lua_src_dir}/lbaselib.c"
+      "${_pt_lua_src_dir}/lcode.c"
+      "${_pt_lua_src_dir}/lcorolib.c"
+      "${_pt_lua_src_dir}/lctype.c"
+      "${_pt_lua_src_dir}/ldblib.c"
+      "${_pt_lua_src_dir}/ldebug.c"
+      "${_pt_lua_src_dir}/ldo.c"
+      "${_pt_lua_src_dir}/ldump.c"
+      "${_pt_lua_src_dir}/lfunc.c"
+      "${_pt_lua_src_dir}/lgc.c"
+      "${_pt_lua_src_dir}/linit.c"
+      "${_pt_lua_src_dir}/liolib.c"
+      "${_pt_lua_src_dir}/llex.c"
+      "${_pt_lua_src_dir}/lmathlib.c"
+      "${_pt_lua_src_dir}/lmem.c"
+      "${_pt_lua_src_dir}/loadlib.c"
+      "${_pt_lua_src_dir}/lobject.c"
+      "${_pt_lua_src_dir}/lopcodes.c"
+      "${_pt_lua_src_dir}/loslib.c"
+      "${_pt_lua_src_dir}/lparser.c"
+      "${_pt_lua_src_dir}/lstate.c"
+      "${_pt_lua_src_dir}/lstring.c"
+      "${_pt_lua_src_dir}/lstrlib.c"
+      "${_pt_lua_src_dir}/ltable.c"
+      "${_pt_lua_src_dir}/ltablib.c"
+      "${_pt_lua_src_dir}/ltm.c"
+      "${_pt_lua_src_dir}/lundump.c"
+      "${_pt_lua_src_dir}/lutf8lib.c"
+      "${_pt_lua_src_dir}/lvm.c"
+      "${_pt_lua_src_dir}/lzio.c"
+    )
+    add_library(pt_lua_vendor STATIC ${_pt_lua_vendor_sources})
+    target_include_directories(pt_lua_vendor PUBLIC "${_pt_lua_src_dir}")
+    target_compile_definitions(pt_lua_vendor PUBLIC LUA_COMPAT_5_3)
+    if(WIN32)
+      target_compile_definitions(pt_lua_vendor PRIVATE LUA_USE_WINDOWS)
+    endif()
+    if(MSVC)
+      target_compile_options(pt_lua_vendor PRIVATE /W0)
+    else()
+      target_compile_options(pt_lua_vendor PRIVATE -w)
+    endif()
+    set_target_properties(pt_lua_vendor PROPERTIES
+      AUTOMOC OFF
+      AUTOUIC OFF
+      AUTORCC OFF
+    )
+    set(PT_LUA_TARGET pt_lua_vendor)
+    set(LUA_VERSION_STRING "5.4.6 (vendored)")
+  else()
+    message(FATAL_ERROR "PT_ENABLE_LUA=ON requires Lua 5.4. Install Lua or enable PT_ENABLE_LUA_VENDOR.")
+  endif()
+  message(STATUS "Lua enabled: ${LUA_VERSION_STRING}")
 endif()
 
 # ---- Vulkan SDK --------------------------------------------------------------
@@ -318,10 +400,30 @@ set(PT_CPU_SOURCES
   # Editor model data shared by CLI, desktop, and Qt shells
   src/app/DoctorChecks.cpp
   src/app/UiValidation.cpp
+  src/app/UiValidationAssets.cpp
+  src/app/UiValidationBenchmarkStatus.cpp
+  src/app/UiValidationCameraQt.cpp
+  src/app/UiValidationReleaseGate.cpp
+  src/app/UiValidationSceneTree.cpp
   src/editor/QtPanelModels.cpp
+  src/editor/QtPanelModelsSecondary.cpp
   src/editor/UiModels.cpp
+  src/editor/UiModelsBenchmark.cpp
+  src/editor/UiModelsCommands.cpp
+  src/editor/UiModelsEventLog.cpp
+  src/editor/UiModelsMenu.cpp
+  src/editor/UiModelsPanels.cpp
+  src/editor/UiModelsReleaseGates.cpp
+  src/editor/UiModelsSerialization.cpp
+  src/editor/UiModelsState.cpp
 
   # Scene, scripting, materials, and physics
+  src/assets/AssetImporters.cpp
+  src/assets/AssetImportersTexture.cpp
+  src/assets/SceneAssetLoader.cpp
+  src/assets/SceneAssetLoaderSupport.cpp
+  src/assets/SceneAssetObjLoader.cpp
+  src/assets/SceneAssetGltfLoader.cpp
   src/materials/MaterialDescriptors.cpp
   src/materials/MaterialInterface.cpp
   src/physics/PhysicsWorld.cpp
@@ -334,12 +436,17 @@ set(PT_CPU_SOURCES
   src/scene/SceneWorldExtraction.cpp
   src/scene/WorldCommandBuffer.cpp
   src/scripting/ScriptRuntime.cpp
+  src/scripting/ScriptRuntimeBindings.cpp
 
   # Path tracer core
   src/pathtracer/CpuBvhAccelerator.cpp
   src/pathtracer/FilmBuffer.cpp
   src/pathtracer/ImageIo.cpp
   src/pathtracer/PathTracer.cpp
+  src/pathtracer/ScalarCpuPathTracer.cpp
+  src/pathtracer/ScalarCpuPathTracer.Intersect.cpp
+  src/pathtracer/ScalarCpuPathTracerJobs.cpp
+  src/pathtracer/ScalarCpuPathTracer.Render.cpp
   src/pathtracer/SceneConversion.cpp
   src/pathtracer/SceneLayoutManifest.cpp
 
@@ -355,6 +462,8 @@ set(PT_CPU_SOURCES
   src/render/RenderCoordinator.cpp
   src/render/interface/RenderContracts.cpp
   src/render/backends/BackendFactory.cpp
+  src/render/backends/D3D12BackendPlanner.cpp
+  src/render/backends/D3D12BackendSmoke.cpp
   src/render/backends/FrameGraph.cpp
   src/render/backends/NullBackend.cpp
   src/render/backends/D3D12Backend.cpp
@@ -386,19 +495,44 @@ if(PT_ENABLE_D3D12)
     src/gpu/D3D12GpuPathTracer.Compute.cpp
     src/gpu/D3D12GpuPathTracer.Device.cpp
     src/gpu/D3D12GpuPathTracer.Dxr.cpp
+    src/gpu/D3D12GpuPathTracer.DxrPipeline.cpp
     src/gpu/D3D12GpuPathTracer.Film.cpp
     src/gpu/D3D12GpuPathTracer.cpp
     src/gpu/D3D12GpuPathTracer.Scene.cpp
+    src/gpu/D3D12GpuPathTracer.SceneBvh.cpp
     src/gpu/D3D12GpuPathTracer.Utils.cpp
   )
 endif()
 
 if(PT_ENABLE_QT)
-  list(APPEND PT_CPU_SOURCES src/app/QtDockPanels.cpp)
-  list(APPEND PT_CPU_SOURCES src/app/ViewportInteraction.cpp)
+  list(APPEND PT_CPU_SOURCES
+    src/app/AppQtSceneDocumentActions.cpp
+    src/app/QtDockPanels.cpp
+    src/app/QtDockPanelsAssets.cpp
+    src/app/QtDockPanelsPlatform.cpp
+    src/app/QtDockPanelsRender.cpp
+    src/app/QtDockPanelsRayDevices.cpp
+    src/app/QtDockPanelsParsing.cpp
+    src/app/QtDockPanelsScene.cpp
+    src/app/QtDockPanelsShared.cpp
+  )
+  list(APPEND PT_CPU_SOURCES
+    src/app/ViewportInteraction.cpp
+    src/app/ViewportMath.cpp
+    src/app/ViewportPicking.cpp
+    src/app/ViewportFpsPhysics.cpp
+    src/app/ViewportOverlay.cpp
+    src/app/ViewportGizmo.cpp
+    src/app/ViewportPhysicsGate.cpp
+  )
 
   add_library(pt_platform_qt STATIC
     src/platform/qt/QtPlatform.cpp
+    src/platform/qt/QtPlatformAdapters.cpp
+    src/platform/qt/QtPlatformDockTree.cpp
+    src/platform/qt/QtPlatformEvents.cpp
+    src/platform/qt/QtPlatformLifecycle.cpp
+    src/platform/qt/QtPlatformStyle.cpp
   )
 
   target_include_directories(pt_platform_qt PUBLIC
@@ -427,6 +561,11 @@ endif()
 # ---- ptapp ------------------------------------------------------------------
 add_executable(ptapp
   src/app/main.cpp
+  src/app/AppBenchmarkActions.cpp
+  src/app/AppEditorWorldSupport.cpp
+  src/app/AppOptions.cpp
+  src/app/AppRuntime.cpp
+  src/app/AppRuntimeSupport.cpp
   ${PT_CPU_SOURCES}
 )
 
@@ -470,6 +609,10 @@ if(PT_ENABLE_JOLT)
     PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
 endif()
 
+if(PT_ENABLE_LUA)
+  target_link_libraries(ptapp PRIVATE ${PT_LUA_TARGET})
+endif()
+
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(ptapp PRIVATE ${feature})
 endforeach()
@@ -481,7 +624,19 @@ pt_deploy_qt_runtime(ptapp)
 # ---- ptbench ----------------------------------------------------------------
 add_executable(ptbench
   src/benchmark/ptbench.cpp
+  src/benchmark/BenchmarkCapture.cpp
+  src/benchmark/BenchmarkCli.cpp
+  src/benchmark/BenchmarkExperiments.cpp
+  src/benchmark/BenchmarkImages.cpp
+  src/benchmark/BenchmarkInspectionCommands.cpp
+  src/benchmark/BenchmarkRunArtifacts.cpp
+  src/benchmark/BenchmarkRunOptions.cpp
+  src/benchmark/BenchmarkRuntime.cpp
+  src/benchmark/BenchmarkRuntimeCommands.cpp
+  src/benchmark/BenchmarkSweeps.cpp
+  src/benchmark/BenchmarkTraceProfiler.cpp
   src/benchmark/BenchmarkSchema.cpp
+  src/benchmark/BenchmarkSchemaCapabilities.cpp
   ${PT_CPU_SOURCES}
 )
 
@@ -529,6 +684,10 @@ if(PT_ENABLE_JOLT)
     PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
 endif()
 
+if(PT_ENABLE_LUA)
+  target_link_libraries(ptbench PRIVATE ${PT_LUA_TARGET})
+endif()
+
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(ptbench PRIVATE ${feature})
 endforeach()
@@ -547,14 +706,21 @@ target_compile_features(ptdoctor PRIVATE cxx_std_23)
 # ---- focused smoke targets ---------------------------------------------------
 add_executable(pt_scripting_smoke EXCLUDE_FROM_ALL
   tests/scripting_runtime_smoke.cpp
+  src/assets/AssetImporters.cpp
+  src/assets/AssetImportersTexture.cpp
   src/scene/Json.cpp
   src/scene/Scene.cpp
   src/scene/SceneDocumentExport.cpp
+  src/assets/SceneAssetLoader.cpp
+  src/assets/SceneAssetLoaderSupport.cpp
+  src/assets/SceneAssetObjLoader.cpp
+  src/assets/SceneAssetGltfLoader.cpp
   src/scene/SceneDocumentLoad.cpp
   src/scene/SceneWorld.cpp
   src/scene/SceneWorldExtraction.cpp
   src/scene/WorldCommandBuffer.cpp
   src/scripting/ScriptRuntime.cpp
+  src/scripting/ScriptRuntimeBindings.cpp
 )
 
 target_include_directories(pt_scripting_smoke PRIVATE
@@ -562,6 +728,11 @@ target_include_directories(pt_scripting_smoke PRIVATE
 )
 
 target_compile_features(pt_scripting_smoke PRIVATE cxx_std_23)
+
+if(PT_ENABLE_LUA)
+  target_link_libraries(pt_scripting_smoke PRIVATE ${PT_LUA_TARGET})
+  target_compile_definitions(pt_scripting_smoke PRIVATE PT_ENABLE_LUA)
+endif()
 
 add_custom_target(hello
   DEPENDS ptapp

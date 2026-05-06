@@ -4,6 +4,13 @@
 #include <chrono>
 #include <utility>
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace vkpt::jobs {
 
 struct JobSystem::JobState {
@@ -29,8 +36,33 @@ std::size_t iteration_count(std::size_t begin, std::size_t end, std::size_t step
 
 }  // namespace
 
+void ApplyCurrentThreadPriority(WorkerThreadPriority priority) {
+  if (priority == WorkerThreadPriority::Normal) {
+    return;
+  }
+#if defined(_WIN32)
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#else
+  (void)priority;
+#endif
+}
+
 JobSystem::JobSystem(std::size_t workerCount) {
-  const auto requested = workerCount == 0u ? std::max<std::size_t>(1u, std::thread::hardware_concurrency()) : workerCount;
+  const auto requested = workerCount == 0u
+      ? std::max<std::size_t>(1u, std::thread::hardware_concurrency())
+      : workerCount;
+  m_workers.reserve(requested);
+  for (std::size_t i = 0; i < requested; ++i) {
+    m_workers.emplace_back([this]() { worker_loop(); });
+  }
+}
+
+JobSystem::JobSystem(JobSystemConfig config)
+    : m_workerPriority(config.worker_priority),
+      m_waitingThreadRunsJobs(config.waiting_thread_runs_jobs) {
+  const auto requested = config.worker_count == 0u
+      ? std::max<std::size_t>(1u, std::thread::hardware_concurrency())
+      : config.worker_count;
   m_workers.reserve(requested);
   for (std::size_t i = 0; i < requested; ++i) {
     m_workers.emplace_back([this]() { worker_loop(); });
@@ -268,7 +300,7 @@ bool JobSystem::wait(vkpt::core::JobHandle id, std::stop_token stop) {
   }
 
   while (target->pending.load(std::memory_order_acquire) != 0u) {
-    if (try_run_one_queued_job()) {
+    if (m_waitingThreadRunsJobs && try_run_one_queued_job()) {
       continue;
     }
     std::unique_lock lock(target->mutex);
@@ -343,6 +375,7 @@ bool JobSystem::shutdown() {
 }
 
 void JobSystem::worker_loop() {
+  ApplyCurrentThreadPriority(m_workerPriority);
   while (true) {
     {
       std::unique_lock lock(m_queueMutex);

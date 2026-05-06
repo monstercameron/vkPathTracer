@@ -9,6 +9,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "pathtracer/PathTracer.h"
 #include "render/FrameHandoff.h"
@@ -54,7 +55,11 @@ class RenderCoordinator {
   void stop();
 
   void post_camera(RenderCameraCommand camera);
+  void post_camera_state(vkpt::pathtracer::RTCameraState camera);
+  void post_instance_transforms(
+      std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates);
   void post_scene(vkpt::pathtracer::RTSceneData scene);
+  void post_settings(vkpt::pathtracer::RenderSettings settings);
   void post_settings(vkpt::pathtracer::RenderSettings settings,
                      vkpt::pathtracer::RTSceneData scene);
 
@@ -64,12 +69,14 @@ class RenderCoordinator {
  private:
   struct PendingCommands {
     std::optional<RenderCameraCommand> camera;
+    std::optional<vkpt::pathtracer::RTCameraState> camera_state;
+    std::optional<std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>> instance_transforms;
     std::optional<vkpt::pathtracer::RTSceneData> scene;
-    struct SettingsAndScene {
+    struct SettingsCommand {
       vkpt::pathtracer::RenderSettings settings;
-      vkpt::pathtracer::RTSceneData scene;
+      std::optional<vkpt::pathtracer::RTSceneData> scene;
     };
-    std::optional<SettingsAndScene> settings;
+    std::optional<SettingsCommand> settings;
   };
 
   void run(std::stop_token stop, std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer);

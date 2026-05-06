@@ -1,5 +1,6 @@
 #include "scene/Scene.h"
 
+#include "core/Logging.h"
 #include "scene/SceneInternal.h"
 
 #include <algorithm>
@@ -179,8 +180,9 @@ SceneSnapshot SceneWorld::build_snapshot() const {
       blob += "mat" + std::to_string(material.id) + ";";
     }
   }
-  if (!query(ComponentKind::Camera).empty()) {
-    const auto first = query(ComponentKind::Camera).front();
+  const auto camera_entities = query(ComponentKind::Camera);
+  if (!camera_entities.empty()) {
+    const auto first = camera_entities.front();
     const auto* cameraEnt = get_entity(first);
     if (cameraEnt && cameraEnt->camera.has_value()) {
       out.camera = SceneCameraDefinition{first, *cameraEnt->camera};

@@ -1,5 +1,7 @@
 #include "scene/Scene.h"
 
+#include "core/Logging.h"
+
 #include <chrono>
 #include <string>
 #include <utility>

@@ -27,7 +27,11 @@ TiledCpuPathTracer::TiledCpuPathTracer(TiledRenderConfig config)
       (config.worker_count == 0)
           ? std::max<std::size_t>(1u, std::thread::hardware_concurrency())
           : static_cast<std::size_t>(config.worker_count);
-  m_jobSystem = std::make_unique<vkpt::jobs::JobSystem>(workers);
+  m_jobSystem = std::make_unique<vkpt::jobs::JobSystem>(
+      vkpt::jobs::JobSystemConfig{
+          workers,
+          vkpt::jobs::WorkerThreadPriority::Background,
+          false});
   if (config.deterministic) {
     m_jobSystem->set_deterministic(true);
   }
@@ -157,10 +161,18 @@ bool TiledCpuPathTracer::update_camera(const vkpt::pathtracer::Vec3& pos,
                                        const vkpt::pathtracer::Vec3& target,
                                        const vkpt::pathtracer::Vec3& up,
                                        float fov_deg) {
-  m_scene.camera_position = pos;
-  m_scene.camera_target = target;
-  m_scene.camera_up = up;
-  m_scene.camera_fov_deg = fov_deg;
+  auto camera = vkpt::pathtracer::ExtractCameraState(m_scene);
+  camera.position = pos;
+  camera.target = target;
+  camera.up = up;
+  camera.fov_deg = fov_deg;
+  return update_camera_state(camera);
+}
+
+bool TiledCpuPathTracer::update_camera_state(const vkpt::pathtracer::RTCameraState& camera) {
+  vkpt::pathtracer::ApplyCameraState(m_scene, camera);
+  m_film.set_resolve_settings(
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_scene));
   bool ok = true;
   vkpt::pathtracer::IRayAccelerator* activeAccelerator =
       m_externalAccelerator ? m_externalAccelerator : m_sharedAccelerator.get();
@@ -168,19 +180,69 @@ bool TiledCpuPathTracer::update_camera(const vkpt::pathtracer::Vec3& pos,
     if (!tile.tracer) {
       continue;
     }
-    if (!tile.tracer->update_camera(pos, target, up, fov_deg)) {
+    if (!tile.tracer->update_camera_state(camera)) {
       bool tileOk = false;
       const bool loaded = tile.tracer->load_scene_snapshot(m_scene);
       if (loaded && activeAccelerator) {
         if (auto* kernel = dynamic_cast<vkpt::pathtracer::ICpuRayKernel*>(tile.tracer.get())) {
           tileOk = kernel->set_accelerator(activeAccelerator) &&
-                   tile.tracer->update_camera(pos, target, up, fov_deg);
+                   tile.tracer->update_camera_state(camera);
         }
       } else if (loaded) {
         tileOk = tile.tracer->build_or_update_acceleration();
       }
       ok = tileOk && ok;
     }
+  }
+  return ok;
+}
+
+bool TiledCpuPathTracer::update_instance_transforms(
+    const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) {
+  if (!m_initialized || updates.empty()) {
+    return false;
+  }
+  if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(m_scene, updates)) {
+    return false;
+  }
+
+  const bool deterministic = m_config.deterministic || m_settings.deterministic;
+  vkpt::pathtracer::IRayAccelerator* activeAccelerator = nullptr;
+  if (m_externalAccelerator) {
+    if (!m_externalAccelerator->build(m_scene, deterministic)) {
+      m_bvhStats = {};
+      return false;
+    }
+    activeAccelerator = m_externalAccelerator;
+    m_bvhStats = to_bvh_build_stats(m_externalAccelerator->build_info(), worker_count());
+  } else {
+    if (!m_sharedAccelerator) {
+      m_sharedAccelerator = vkpt::pathtracer::CreateCpuBvhAccelerator();
+    }
+    if (!m_sharedAccelerator || !m_sharedAccelerator->build(m_scene, deterministic)) {
+      m_bvhStats = {};
+      return false;
+    }
+    activeAccelerator = m_sharedAccelerator.get();
+    m_bvhStats = to_bvh_build_stats(m_sharedAccelerator->build_info(), worker_count());
+  }
+
+  bool ok = activeAccelerator != nullptr;
+  for (auto& tile : m_tiles) {
+    if (!tile.tracer) {
+      continue;
+    }
+    bool tileOk = tile.tracer->load_scene_snapshot(m_scene);
+    if (tileOk && activeAccelerator) {
+      if (auto* kernel = dynamic_cast<vkpt::pathtracer::ICpuRayKernel*>(tile.tracer.get())) {
+        tileOk = kernel->set_accelerator(activeAccelerator);
+      } else {
+        tileOk = false;
+      }
+    } else if (tileOk) {
+      tileOk = tile.tracer->build_or_update_acceleration();
+    }
+    ok = tileOk && ok;
   }
   return ok;
 }

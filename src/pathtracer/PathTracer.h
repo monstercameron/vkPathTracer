@@ -307,6 +307,32 @@ struct RTSceneData {
   float camera_anamorphic_squeeze = 1.0f;
 };
 
+struct RTCameraState {
+  Vec3 position{};
+  Vec3 target{0.0f, 0.0f, -1.0f};
+  Vec3 up{0.0f, 1.0f, 0.0f};
+  float fov_deg = 60.0f;
+  float focal_length_mm = 35.0f;
+  float sensor_width_mm = 36.0f;
+  float sensor_height_mm = 24.0f;
+  float aperture_radius = 0.0f;
+  float focus_distance = 0.0f;
+  float f_stop = 0.0f;
+  float shutter_seconds = 0.0166666675f;
+  float iso = 100.0f;
+  float exposure_compensation = 0.0f;
+  float white_balance_kelvin = 6500.0f;
+  uint32_t iris_blade_count = 0u;
+  float iris_rotation_degrees = 0.0f;
+  float iris_roundness = 1.0f;
+  float anamorphic_squeeze = 1.0f;
+};
+
+RTCameraState ExtractCameraState(const RTSceneData& scene);
+void ApplyCameraState(RTSceneData& scene, const RTCameraState& camera);
+bool ApplyInstanceTransformUpdates(RTSceneData& scene,
+                                   const std::vector<RTInstanceTransformUpdate>& updates);
+
 struct GpuLayoutField {
   std::string struct_name;
   std::string field;
@@ -438,6 +464,8 @@ class IPathTracer {
   // not supported (caller should fall back to load_scene_snapshot).
   virtual bool update_camera(const Vec3& /*pos*/, const Vec3& /*target*/,
                              const Vec3& /*up*/, float /*fov_deg*/) { return false; }
+  // Update camera pose, lens, and exposure state without rebuilding geometry.
+  virtual bool update_camera_state(const RTCameraState& /*camera*/) { return false; }
   // Update only dynamic instance transforms. Returns false if the backend still
   // needs a full scene snapshot/acceleration rebuild for moving objects.
   virtual bool update_instance_transforms(
@@ -471,6 +499,8 @@ class NullPathTracer final : public IPathTracer {
   bool build_or_update_acceleration() override;
   bool reset_accumulation() override;
   bool update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) override;
+  bool update_camera_state(const RTCameraState& camera) override;
+  bool update_instance_transforms(const std::vector<RTInstanceTransformUpdate>& updates) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
   FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }
   FilmHdr resolve_hdr() const override { return m_film.resolve_hdr(); }
@@ -498,6 +528,8 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
   bool build_or_update_acceleration() override;
   bool reset_accumulation() override;
   bool update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) override;
+  bool update_camera_state(const RTCameraState& camera) override;
+  bool update_instance_transforms(const std::vector<RTInstanceTransformUpdate>& updates) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
   std::string_view name() const override { return "scalar-cpu"; }
   bool set_accelerator(IRayAccelerator* accelerator) override;
