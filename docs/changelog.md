@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-05-06 (session 36)
+
+### Motion transaction hardening and DXR shadow traversal
+
+- Rewrote the threading notes into a concise current-state contract for UI, render-worker, frame-handoff, physics, and motion-update ownership.
+- Hardened Qt render-dialog validation and status handling for still-image output paths, dimensions, ray budgets, and PNG/EXR format selection.
+- Tightened physics/render motion publishing so unsupported dynamic transform updates retry cleanly after full reloads instead of leaving stale fast-path state.
+- Made scalar CPU and Vulkan instance-transform updates stage candidate scene changes and restore previous committed scenes if rebuild/upload work fails.
+- Refined scene conversion dynamic-instance classification so edited dirty transforms do not permanently force dynamic geometry classification.
+- Expanded DXR descriptor binding and shader shadow traversal to use static, dynamic, and local BVH buffers instead of broad per-instance triangle loops.
+- Added Vulkan soft light sampling and kept D3D12 DXR build defaults biased toward faster rebuild/update iteration.
+
 ## 2026-05-06 (session 35)
 
 ### Transactional transforms, Vulkan/DXR parity, and render workflow
