@@ -267,6 +267,93 @@ int RunScriptingRuntimeSmoke() {
   if (!Check(PathExists(third_person_scene_path), "third-person scripted scene should exist")) {
     return 1;
   }
+
+#ifdef PT_ENABLE_LUA
+  const auto particle_scene_path = FindRepoFile("assets/scenes/particle_benchmark_simple.json");
+  if (!Check(PathExists(particle_scene_path), "particle benchmark scene should exist")) {
+    return 1;
+  }
+
+  auto particle_document_result =
+      vkpt::scene::SceneDocument::load_from_file(particle_scene_path.string());
+  if (!Check(static_cast<bool>(particle_document_result), "particle benchmark scene should load")) {
+    return 1;
+  }
+  std::vector<std::string> particle_scene_issues;
+  if (!Check(particle_document_result.value().validate(&particle_scene_issues),
+             "particle benchmark scene should validate")) {
+    for (const auto& issue : particle_scene_issues) {
+      std::cerr << "  scene issue: " << issue << "\n";
+    }
+    return 1;
+  }
+
+  auto particle_world_result = particle_document_result.value().to_world();
+  if (!Check(static_cast<bool>(particle_world_result),
+             "particle benchmark scene should convert to world before script dispatch")) {
+    return 1;
+  }
+  auto particle_world = std::move(particle_world_result.value());
+  auto particle_runtime = vkpt::scripting::CreateScriptRuntime();
+  const auto particle_bindings = particle_runtime->reload_bindings(particle_world);
+  if (!Check(particle_bindings.binding_count == 1u,
+             "particle benchmark should expose one Lua spawner binding") ||
+      !Check(particle_bindings.runnable_count == 1u,
+             "particle benchmark spawner should be runnable")) {
+    return 1;
+  }
+
+  vkpt::scripting::ScriptExecutionContext particle_context;
+  particle_context.frame = 0;
+  particle_context.delta_seconds = 1.0 / 24.0;
+  particle_context.elapsed_seconds = 0.0;
+
+  vkpt::scene::WorldCommandBuffer spawn_commands;
+  const auto spawn_summary = particle_runtime->dispatch_hook(
+      particle_world, vkpt::scripting::ScriptLifecycleHook::OnSpawn, particle_context, spawn_commands);
+  if (!Check(spawn_summary.hook_call_count == 1u,
+             "particle spawner on_spawn should run once") ||
+      !Check(spawn_summary.diagnostics.empty(),
+             "particle spawner on_spawn should not emit diagnostics") ||
+      !Check(spawn_commands.commands().size() >= 55u,
+             "particle spawner on_spawn should emit droplet create/component commands")) {
+    return 1;
+  }
+  if (!Check(static_cast<bool>(spawn_commands.replay(particle_world)),
+             "particle spawner spawn commands should replay into world")) {
+    return 1;
+  }
+  for (vkpt::core::StableId id = 12000u; id < 12018u; ++id) {
+    if (!Check(particle_world.entity_exists(id),
+               "particle spawner should create droplet entity " + std::to_string(id))) {
+      return 1;
+    }
+  }
+
+  particle_context.frame = 48;
+  particle_context.elapsed_seconds = 2.0;
+  vkpt::scene::WorldCommandBuffer despawn_commands;
+  const auto despawn_summary = particle_runtime->dispatch_hook(
+      particle_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, particle_context, despawn_commands);
+  if (!Check(despawn_summary.hook_call_count == 1u,
+             "particle spawner frame 48 update should run once") ||
+      !Check(despawn_summary.diagnostics.empty(),
+             "particle spawner frame 48 update should not emit diagnostics") ||
+      !Check(despawn_commands.commands().size() == 18u,
+             "particle spawner frame 48 should emit one destroy command per droplet")) {
+    return 1;
+  }
+  if (!Check(static_cast<bool>(despawn_commands.replay(particle_world)),
+             "particle spawner despawn commands should replay into world")) {
+    return 1;
+  }
+  for (vkpt::core::StableId id = 12000u; id < 12018u; ++id) {
+    if (!Check(!particle_world.entity_exists(id),
+               "particle spawner should destroy droplet entity " + std::to_string(id))) {
+      return 1;
+    }
+  }
+#endif
   auto third_person_document_result =
       vkpt::scene::SceneDocument::load_from_file(third_person_scene_path.string());
   if (!Check(static_cast<bool>(third_person_document_result), "third-person scripted scene should load")) {

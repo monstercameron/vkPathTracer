@@ -52,6 +52,10 @@ struct AppOptions {
   std::uint32_t window_frame_limit = 0;
   std::uint32_t spp = 16;
   std::uint32_t max_depth = 6;
+  std::uint32_t render_frame = 0;
+  std::uint32_t render_sequence_frames = 1;
+  std::uint32_t render_fps = 24;
+  std::optional<float> render_time_seconds;
   bool gpu_denoiser = false;
   bool temporal_aa = false;
   std::optional<std::uint32_t> ui_present_hz;

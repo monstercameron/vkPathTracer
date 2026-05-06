@@ -1,6 +1,7 @@
 #include "app/AppOptions.h"
 
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -48,6 +49,19 @@ bool ParseUnsigned(std::string_view text, std::uint32_t& out) {
   }
   out = static_cast<std::uint32_t>(value);
   return true;
+}
+
+bool ParseFloat(std::string_view text, float& out) {
+  if (text.empty()) {
+    return false;
+  }
+  float value = 0.0f;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) {
+    return false;
+  }
+  out = value;
+  return std::isfinite(out);
 }
 
 const char* YesNo(bool value) {
@@ -166,6 +180,10 @@ void PrintUsage() {
   std::cout << "  --height <px>         Render height\n";
   std::cout << "  --spp <samples>       Samples per pixel\n";
   std::cout << "  --max-depth <depth>   Max ray depth\n";
+  std::cout << "  --render-frame <n>    Advance scene particles to frame n for still renders\n";
+  std::cout << "  --render-time <sec>   Advance scene particles to a specific time for still renders\n";
+  std::cout << "  --render-sequence <n> Write n numbered animation frames from --output\n";
+  std::cout << "  --render-fps <fps>    Particle animation frame rate for render sequences\n";
   std::cout << "  --denoiser            Enable GPU denoiser for D3D12 renders\n";
   std::cout << "  --temporal-aa         Enable temporal reuse for D3D12 renders\n";
 }
@@ -403,6 +421,28 @@ AppOptionsParseResult ParseAppOptions(int argc, char** argv) {
     } else if (token == "--max-depth") {
       if (!HasValue(args, i) || !ParseUnsigned(args[++i], options.max_depth)) {
         return ParseError("invalid value for --max-depth");
+      }
+    } else if (token == "--render-frame") {
+      if (!HasValue(args, i) || !ParseUnsigned(args[++i], options.render_frame)) {
+        return ParseError("invalid value for --render-frame");
+      }
+    } else if (token == "--render-time") {
+      float parsedTime = 0.0f;
+      if (!HasValue(args, i) || !ParseFloat(args[++i], parsedTime) || parsedTime < 0.0f) {
+        return ParseError("invalid value for --render-time");
+      }
+      options.render_time_seconds = parsedTime;
+    } else if (token == "--render-sequence") {
+      if (!HasValue(args, i) ||
+          !ParseUnsigned(args[++i], options.render_sequence_frames) ||
+          options.render_sequence_frames == 0u) {
+        return ParseError("invalid value for --render-sequence");
+      }
+    } else if (token == "--render-fps") {
+      if (!HasValue(args, i) ||
+          !ParseUnsigned(args[++i], options.render_fps) ||
+          options.render_fps == 0u) {
+        return ParseError("invalid value for --render-fps");
       }
     } else if (token == "--help" || token == "-h") {
       PrintUsage();

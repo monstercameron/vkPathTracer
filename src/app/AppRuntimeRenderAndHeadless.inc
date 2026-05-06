@@ -93,7 +93,29 @@
     settings.enable_denoiser = gpuDenoiser;
     settings.enable_temporal_aa = temporalAa;
 
-    auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(document);
+    const auto makeParticleAnimationState = [&](uint32_t frame) {
+      vkpt::pathtracer::SceneParticleAnimationState animation{};
+      animation.frame = frame;
+      animation.delta_seconds = 1.0f / static_cast<float>(std::max<uint32_t>(1u, renderFps));
+      animation.seconds = renderTimeSeconds.has_value()
+                              ? *renderTimeSeconds
+                              : static_cast<float>(frame) * animation.delta_seconds;
+      animation.advance_emitters =
+          renderSequenceFrames > 1u || renderFrame != 0u || renderTimeSeconds.has_value();
+      return animation;
+    };
+    const auto numberedOutputPath = [](const std::string& path, uint32_t frame) {
+      const std::filesystem::path input(path);
+      const auto parent = input.parent_path();
+      const auto stem = input.stem().string();
+      const auto ext = input.extension().empty() ? std::string(".png") : input.extension().string();
+      std::ostringstream suffix;
+      suffix << stem << "_" << std::setw(4) << std::setfill('0') << frame << ext;
+      return (parent / suffix.str()).string();
+    };
+
+    auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocumentAtFrame(
+        document, makeParticleAnimationState(renderFrame));
     if (!sceneResult) {
       std::cerr << "scene conversion failed\n";
       recordUiAction("app.render", "render", "scene conversion failed",
@@ -274,50 +296,88 @@
       writeStatus("error:tracer_configure_failed", "tracer_configure_failed");
       return 2;
     }
-    if (!tracer->load_scene_snapshot(sceneResult.value()) || !tracer->build_or_update_acceleration()) {
-      std::cerr << "failed to prepare scene for path tracing\n";
-      recordUiAction("app.render", "render", "scene bvh build failed",
-                     MakeUnsupportedUiCommand("app.render", "bvh_build_failed"));
-      writeStatus("error:bvh_build_failed", "bvh_build_failed");
-      return 2;
-    }
-
-    vkpt::diagnostics::CrashRecorder::instance().update_frame_stage("render_execute", 0);
-    std::filesystem::create_directories(
-        std::filesystem::path(config.output_path.value).parent_path());
-    tracer->reset_accumulation();
-    for (uint32_t sample = 0; sample < settings.spp; ++sample) {
-      if (!tracer->render_sample_batch(0, settings.height, sample, 0)) {
-        std::cerr << "render failed\n";
-        recordUiAction("app.render", "render", "render sample failed",
-                       MakeUnsupportedUiCommand("app.render", "render_sample_batch_failed"));
-        writeStatus("error:render_failed", "render_sample_batch_failed");
-        return 2;
-      }
-    }
-
-    const auto ldr = tracer->resolve_ldr();
-    const auto hdr = tracer->resolve_hdr();
+    vkpt::pathtracer::SampleCounters counters{};
+    std::string finalOutputPath = config.output_path.value;
     std::string saveError;
-    if (!vkpt::pathtracer::SavePngCompat(config.output_path.value, ldr, &saveError)) {
-      std::cerr << "png save failed: " << saveError << "\n";
-      recordUiAction("app.render", "render", "png save failed",
-                     MakeUnsupportedUiCommand("app.render", "png_save_failed"));
-      writeStatus("error:png_save_failed", saveError);
-      return 2;
-    }
-    if (!config.exr_output_path.value.empty()) {
-      if (!vkpt::pathtracer::SaveExrCompat(config.exr_output_path.value, hdr, &saveError)) {
-        std::cerr << "exr save failed: " << saveError << "\n";
-        recordUiAction("app.render", "render", "exr save failed",
-                       MakeUnsupportedUiCommand("app.render", "exr_save_failed"));
-        writeStatus("error:exr_save_failed", saveError);
+    const auto ensureOutputDirectory = [](const std::string& path) {
+      const auto parent = std::filesystem::path(path).parent_path();
+      if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+      }
+    };
+    const auto renderFrameToFile = [&](const vkpt::pathtracer::RTSceneData& frameScene,
+                                       uint32_t frame,
+                                       const std::string& outputPath,
+                                       const std::string& exrOutputPath) {
+      if (!tracer->load_scene_snapshot(frameScene) || !tracer->build_or_update_acceleration()) {
+        std::cerr << "failed to prepare scene for path tracing\n";
+        recordUiAction("app.render", "render", "scene bvh build failed",
+                       MakeUnsupportedUiCommand("app.render", "bvh_build_failed"));
+        writeStatus("error:bvh_build_failed", "bvh_build_failed");
+        return false;
+      }
+      vkpt::diagnostics::CrashRecorder::instance().update_frame_stage("render_execute", frame);
+      ensureOutputDirectory(outputPath);
+      tracer->reset_accumulation();
+      for (uint32_t sample = 0; sample < settings.spp; ++sample) {
+        if (!tracer->render_sample_batch(0, settings.height, sample, frame)) {
+          std::cerr << "render failed\n";
+          recordUiAction("app.render", "render", "render sample failed",
+                         MakeUnsupportedUiCommand("app.render", "render_sample_batch_failed"));
+          writeStatus("error:render_failed", "render_sample_batch_failed");
+          return false;
+        }
+      }
+
+      const auto ldr = tracer->resolve_ldr();
+      const auto hdr = tracer->resolve_hdr();
+      if (!vkpt::pathtracer::SavePngCompat(outputPath, ldr, &saveError)) {
+        std::cerr << "png save failed: " << saveError << "\n";
+        recordUiAction("app.render", "render", "png save failed",
+                       MakeUnsupportedUiCommand("app.render", "png_save_failed"));
+        writeStatus("error:png_save_failed", saveError);
+        return false;
+      }
+      if (!exrOutputPath.empty()) {
+        ensureOutputDirectory(exrOutputPath);
+        if (!vkpt::pathtracer::SaveExrCompat(exrOutputPath, hdr, &saveError)) {
+          std::cerr << "exr save failed: " << saveError << "\n";
+          recordUiAction("app.render", "render", "exr save failed",
+                         MakeUnsupportedUiCommand("app.render", "exr_save_failed"));
+          writeStatus("error:exr_save_failed", saveError);
+          return false;
+        }
+      }
+      counters = tracer->read_counters();
+      finalOutputPath = outputPath;
+      return true;
+    };
+
+    if (renderSequenceFrames > 1u) {
+      for (uint32_t sequenceFrame = 0u; sequenceFrame < renderSequenceFrames; ++sequenceFrame) {
+        auto frameSceneResult = vkpt::pathtracer::BuildSceneDataFromDocumentAtFrame(
+            document, makeParticleAnimationState(sequenceFrame));
+        if (!frameSceneResult) {
+          std::cerr << "scene conversion failed for animation frame " << sequenceFrame << "\n";
+          writeStatus("error:scene_conversion_failed", "scene_conversion_failed");
+          return 2;
+        }
+        const std::string frameOutput = numberedOutputPath(config.output_path.value, sequenceFrame);
+        const std::string frameExrOutput = config.exr_output_path.value.empty()
+                                               ? std::string()
+                                               : numberedOutputPath(config.exr_output_path.value, sequenceFrame);
+        if (!renderFrameToFile(frameSceneResult.value(), sequenceFrame, frameOutput, frameExrOutput)) {
+          return 2;
+        }
+        std::cout << "render frame " << sequenceFrame << ": " << frameOutput << "\n";
+      }
+    } else {
+      if (!renderFrameToFile(sceneResult.value(), renderFrame, config.output_path.value, config.exr_output_path.value)) {
         return 2;
       }
     }
 
-    const auto counters = tracer->read_counters();
-    std::cout << "render complete: " << config.output_path.value << "\n";
+    std::cout << "render complete: " << finalOutputPath << "\n";
     std::cout << "samples: " << counters.samples << "\n";
     std::cout << "rays: " << counters.rays << "\n";
     std::cout << "triangle hits: " << counters.triangle_hits << "\n";

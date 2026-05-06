@@ -432,6 +432,10 @@ int RunApp(int argc, char** argv) {
   const uint32_t windowFrameLimit = parsedOptions.window_frame_limit;
   const uint32_t spp = parsedOptions.spp;
   const uint32_t maxDepth = parsedOptions.max_depth;
+  const uint32_t renderFrame = parsedOptions.render_frame;
+  const uint32_t renderSequenceFrames = parsedOptions.render_sequence_frames;
+  const uint32_t renderFps = parsedOptions.render_fps;
+  const std::optional<float> renderTimeSeconds = parsedOptions.render_time_seconds;
   const bool gpuDenoiser = parsedOptions.gpu_denoiser;
   const bool temporalAa = parsedOptions.temporal_aa;
   const std::optional<uint32_t> uiPresentHz = parsedOptions.ui_present_hz;
@@ -1172,7 +1176,25 @@ int RunApp(int argc, char** argv) {
 #include "AppRuntimeQtViewportInteraction.inc"
 #include "AppRuntimeQtDockSyncAndPhysics.inc"
 #endif
+#ifdef PT_ENABLE_QT
 #include "AppRuntimeQtRenderLoop.inc"
+#else
+    }
+    LogUiWindowStartup(windowWidth, windowHeight, ui_layout_state, ui_runtime_state);
+    logger.log(vkpt::log::Severity::Info, "app",
+               "ui window mode selected; attempting to create desktop platform");
+    recordUiAction("app.window", "window", "window init",
+                   MakeUnsupportedUiCommand("app.window", "window mode requested"));
+
+    if (windowWidth == 0u || windowHeight == 0u) {
+      std::cout << "invalid ui window size (" << windowWidth << "x" << windowHeight
+                << "); falling back to 1280x720\n";
+      logger.log(vkpt::log::Severity::Warning, "app",
+                 "invalid ui window size, using default fallback 1280x720");
+      windowWidth = 1280;
+      windowHeight = 720;
+    }
+#endif
 #if !defined(PT_ENABLE_RAW_DESKTOP)
 #include "AppRuntimeRawDesktopUnavailable.inc"
 #else

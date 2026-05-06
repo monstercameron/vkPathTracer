@@ -331,6 +331,13 @@ struct RTSceneData {
   float camera_anamorphic_squeeze = 1.0f;
 };
 
+struct SceneParticleAnimationState {
+  vkpt::core::FrameIndex frame = 0;
+  float seconds = 0.0f;
+  float delta_seconds = 1.0f / 24.0f;
+  bool advance_emitters = false;
+};
+
 struct RTCameraState {
   Vec3 position{};
   Vec3 target{0.0f, 0.0f, -1.0f};
@@ -723,6 +730,9 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
 };
 
 vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::SceneDocument& doc);
+vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
+    const vkpt::scene::SceneDocument& doc,
+    const SceneParticleAnimationState& animation);
 bool SavePngCompat(const std::string& path, const FilmLdr& image, std::string* error = nullptr);
 bool SaveExrCompat(const std::string& path, const FilmHdr& image, std::string* error = nullptr);
 vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(std::vector<std::string>* diagnostics = nullptr);

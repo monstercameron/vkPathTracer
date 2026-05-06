@@ -1463,18 +1463,6 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         bool  is_clearcoat = (model == 7u) || (MatClearcoat(mi) > 0.05);
         bool  is_toon = (model == 8u);
 
-        if (is_transmissive) {
-            float transmission = saturate(MatTransmission(mi));
-            float absorption = saturate(MatAlpha(mi));
-            float clear_preview = transmission * (1.0f - absorption);
-            float grazing = 1.0f - saturate(dot(n, -rd));
-            float preview_weight = clear_preview * lerp(0.72f, 0.46f, grazing);
-            float3 through = PreviewTransmission(hit.pos + rd * 0.02f, rd, env);
-            float3 tint = lerp(float3(1.0f, 1.0f, 1.0f), albedo, absorption);
-            rad += thr * through * tint * preview_weight;
-            thr *= 1.0f - preview_weight * 0.12f;
-        }
-
         // NEE: sample one point light. The editor preview also adds a compact
         // specular/direct term so mirror, metal, glass, and clearcoat families
         // visibly respond under point lights even with a black environment.
