@@ -451,6 +451,9 @@ class QtMainWindow final : public QMainWindow {
     } else if (icon == "animation") {
       fill = QColor(168, 114, 61);
       glyph = 'A';
+    } else if (icon == "particle") {
+      fill = QColor(83, 139, 181);
+      glyph = 'P';
     } else if (icon == "folder" || icon == "group") {
       fill = QColor(111, 122, 139);
       glyph = 'G';
@@ -666,6 +669,10 @@ class QtMainWindow final : public QMainWindow {
     return property.editable && property.editor == "slider" && property.has_numeric_range;
   }
 
+  static bool isTextProperty(const QtDockProperty& property) {
+    return property.editable && property.editor == "text";
+  }
+
   static bool isButtonProperty(const QtDockProperty& property) {
     return property.editable && property.editor == "button";
   }
@@ -674,7 +681,8 @@ class QtMainWindow final : public QMainWindow {
     return panel.id == "inspector" ||
            panel.id == "camera" ||
            panel.id == "device" ||
-           panel.id == "render_settings";
+           panel.id == "render_settings" ||
+           panel.id == "script_panel";
   }
 
   static int sliderSteps() {
@@ -842,6 +850,14 @@ class QtMainWindow final : public QMainWindow {
           }
           spin->setEnabled(property.enabled);
           spin->setToolTip(ToQString(property.name));
+        }
+      } else if (isTextProperty(property)) {
+        auto* lineEdit = qobject_cast<QLineEdit*>(cell);
+        if (lineEdit != nullptr && !lineEdit->hasFocus()) {
+          QSignalBlocker lineEditBlocker(lineEdit);
+          lineEdit->setText(ToQString(property.value));
+          lineEdit->setEnabled(property.enabled);
+          lineEdit->setToolTip(ToQString(property.name));
         }
       } else if (isButtonProperty(property)) {
         auto* button = qobject_cast<QPushButton*>(cell);

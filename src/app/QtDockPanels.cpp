@@ -21,7 +21,7 @@ std::vector<QtDockPanelContent> BuildQtDockPanels(
   panels.reserve(15u);
   // The shell consumes this fixed order for deterministic dock placement and
   // stable UI validation snapshots.
-  panels.push_back(BuildQtSceneTreeDock(document, selection, layout));
+  panels.push_back(BuildQtSceneTreeDock(document, selection, runtime, layout));
   panels.push_back(BuildQtInspectorDock(document, selection, runtime, layout));
   panels.push_back(BuildQtMaterialsDock(document, scene, layout));
   panels.push_back(BuildQtLightsDock(document, scene, layout));
@@ -32,7 +32,7 @@ std::vector<QtDockPanelContent> BuildQtDockPanels(
                                      frame_stats,
                                      active_camera_shot_slot,
                                      saved_camera_shot_slots));
-  panels.push_back(BuildQtRenderSettingsDock(scene, settings, runtime, layout, frame_stats));
+  panels.push_back(BuildQtRenderSettingsDock(scene, settings, runtime, layout, frame_stats, device_stats));
   panels.push_back(BuildQtBenchmarkDock(benchmark, layout));
   panels.push_back(BuildQtDiagnosticsDock(runtime, selection, layout, frame_stats));
   panels.push_back(BuildQtPerformanceDock(runtime, layout, frame_stats));

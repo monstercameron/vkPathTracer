@@ -3,6 +3,8 @@
 #include "app/QtDockPanelsInternal.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -12,12 +14,76 @@ namespace vkpt::app {
 
 QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& document,
                                         const vkpt::editor::SelectionState& selection,
+                                        const vkpt::editor::UiRuntimeState& runtime,
                                         const vkpt::editor::UiLayoutDocument& layout) {
   auto panel = MakeQtDockPanel(layout, "scene_graph", "Scene Graph", true, 280.0f, 600.0f);
   panel.tree_single_column = true;
+  panel.tree_stretch = 1;
+  panel.property_stretch = 0;
+  panel.property_preferred_height = 220;
+  QtDockAddTextGroupedProperty(panel,
+                               "scene_tree.filter.name",
+                               "Filter",
+                               "Name contains",
+                               runtime.scene_tree_name_filter);
+  const std::uint32_t typeMask = runtime.scene_tree_type_filter_mask;
+  QtDockAddToggleGroupedProperty(panel,
+                                 "scene_tree.filter.camera",
+                                 "Type Filter",
+                                 "Cameras",
+                                 (typeMask & kQtSceneTreeFilterCamera) != 0u);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "scene_tree.filter.light",
+                                 "Type Filter",
+                                 "Lights",
+                                 (typeMask & kQtSceneTreeFilterLight) != 0u);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "scene_tree.filter.model",
+                                 "Type Filter",
+                                 "Models",
+                                 (typeMask & kQtSceneTreeFilterModel) != 0u);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "scene_tree.filter.sdf",
+                                 "Type Filter",
+                                 "SDF",
+                                 (typeMask & kQtSceneTreeFilterSdf) != 0u);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "scene_tree.filter.physics",
+                                 "Type Filter",
+                                 "Physics",
+                                 (typeMask & kQtSceneTreeFilterPhysics) != 0u);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "scene_tree.filter.script",
+                                 "Type Filter",
+                                 "Scripts",
+                                 (typeMask & kQtSceneTreeFilterScript) != 0u);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "scene_tree.filter.animation",
+                                 "Type Filter",
+                                 "Animation",
+                                 (typeMask & kQtSceneTreeFilterAnimation) != 0u);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "scene_tree.filter.entity",
+                                 "Type Filter",
+                                 "Groups",
+                                 (typeMask & kQtSceneTreeFilterEntity) != 0u);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "scene_tree.filter.particle",
+                                 "Type Filter",
+                                 "Particles",
+                                 (typeMask & kQtSceneTreeFilterParticle) != 0u);
+  QtDockAddButtonGroupedProperty(panel,
+                                 "scene_tree.filter.clear",
+                                 "Filter",
+                                 "Clear filters",
+                                 "Clear");
   QtDockAddProperty(panel, "entities", std::to_string(document.entities.size()));
   QtDockAddProperty(panel, "geometry", std::to_string(document.geometry.size()));
   QtDockAddProperty(panel, "sdf primitives", std::to_string(document.sdf_primitives.size()));
+  QtDockAddProperty(panel, "particle emitters", std::to_string(document.particle_emitters.size()));
+  const std::string nameFilter = QtDockToLower(QtTrim(runtime.scene_tree_name_filter));
+  const bool typeFilterActive = typeMask != 0u;
+  const bool filtersActive = typeFilterActive || !nameFilter.empty();
 
   std::unordered_set<vkpt::core::StableId> selected_ids;
   selected_ids.reserve(selection.selected_entity_ids.size());
@@ -92,6 +158,42 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
   auto is_visibility_target = [](const vkpt::scene::SceneEntityDefinition& entity) {
     return entity.has_mesh || entity.has_sdf_primitive || entity.has_light;
   };
+  auto entity_filter_bits = [](const vkpt::scene::SceneEntityDefinition& entity) {
+    std::uint32_t bits = 0u;
+    if (entity.has_camera) {
+      bits |= kQtSceneTreeFilterCamera;
+    }
+    if (entity.has_light) {
+      bits |= kQtSceneTreeFilterLight;
+    }
+    if (entity.has_mesh) {
+      bits |= kQtSceneTreeFilterModel;
+    }
+    if (entity.has_sdf_primitive) {
+      bits |= kQtSceneTreeFilterSdf;
+    }
+    if (entity.has_physics_body) {
+      bits |= kQtSceneTreeFilterPhysics;
+    }
+    if (!entity.script.script.empty()) {
+      bits |= kQtSceneTreeFilterScript;
+    }
+    if (!entity.animation.clip.empty()) {
+      bits |= kQtSceneTreeFilterAnimation;
+    }
+    if (bits == 0u) {
+      bits |= kQtSceneTreeFilterEntity;
+    }
+    return bits;
+  };
+  auto entity_matches_filters = [&](const vkpt::scene::SceneEntityDefinition& entity) {
+    const bool typeOk =
+        !typeFilterActive || (entity_filter_bits(entity) & typeMask) != 0u;
+    const bool nameOk =
+        nameFilter.empty() ||
+        QtDockToLower(QtEntityDisplayName(entity)).find(nameFilter) != std::string::npos;
+    return typeOk && nameOk;
+  };
 
   std::unordered_map<vkpt::core::StableId, bool> visiblePathCache;
   visiblePathCache.reserve(document.entities.size());
@@ -150,8 +252,9 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
   };
 
   std::unordered_set<vkpt::core::StableId> visited;
-  auto build_entity_row = [&](auto&& self,
-                              const vkpt::scene::SceneEntityDefinition& entity) -> QtDockTreeRow {
+  auto build_entity_row =
+      [&](auto&& self,
+          const vkpt::scene::SceneEntityDefinition& entity) -> std::optional<QtDockTreeRow> {
     visited.insert(entity.id);
 
     QtDockTreeRow row;
@@ -187,13 +290,20 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
               if (grandChild == nullptr || visited.contains(grandChild->id)) {
                 continue;
               }
-              row.children.push_back(self(self, *grandChild));
+              if (auto childRow = self(self, *grandChild)) {
+                row.children.push_back(std::move(childRow.value()));
+              }
             }
           }
           continue;
         }
-        row.children.push_back(self(self, *child));
+        if (auto childRow = self(self, *child)) {
+          row.children.push_back(std::move(childRow.value()));
+        }
       }
+    }
+    if (filtersActive && !entity_matches_filters(entity) && row.children.empty()) {
+      return std::nullopt;
     }
     return row;
   };
@@ -210,17 +320,23 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
             if (child == nullptr || visited.contains(child->id)) {
               continue;
             }
-            QtDockAddTreeRow(panel, build_entity_row(build_entity_row, *child));
+            if (auto row = build_entity_row(build_entity_row, *child)) {
+              QtDockAddTreeRow(panel, std::move(row.value()));
+            }
           }
         }
       } else {
-        QtDockAddTreeRow(panel, build_entity_row(build_entity_row, entity));
+        if (auto row = build_entity_row(build_entity_row, entity)) {
+          QtDockAddTreeRow(panel, std::move(row.value()));
+        }
       }
     }
   }
   for (const auto& entity : document.entities) {
     if (!visited.contains(entity.id)) {
-      QtDockAddTreeRow(panel, build_entity_row(build_entity_row, entity));
+      if (auto row = build_entity_row(build_entity_row, entity)) {
+        QtDockAddTreeRow(panel, std::move(row.value()));
+      }
     }
   }
 
@@ -234,20 +350,72 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
       const std::string shape = primitive.shape.empty()
           ? (primitive.primitive.shape.empty() ? std::string("sphere") : primitive.primitive.shape)
           : primitive.shape;
+      const std::string label = "SDF " + shape;
+      const bool typeOk =
+          !typeFilterActive || (typeMask & kQtSceneTreeFilterSdf) != 0u;
+      const bool nameOk =
+          nameFilter.empty() ||
+          QtDockToLower(label).find(nameFilter) != std::string::npos;
+      if (!typeOk || !nameOk) {
+        continue;
+      }
       QtDockTreeRow row;
       row.id = "sdf." + std::to_string(primitive.id);
-      row.label = "SDF " + shape;
+      row.label = label;
       row.value = "#" + std::to_string(primitive.id);
       row.icon = "sdf";
       row.entity_id = primitive.id;
       row.selected = is_selected(primitive.id);
       sdfGroup.children.push_back(std::move(row));
     }
-    QtDockAddTreeRow(panel, std::move(sdfGroup));
+    if (!sdfGroup.children.empty()) {
+      QtDockAddTreeRow(panel, std::move(sdfGroup));
+    }
+  }
+
+  if (!document.particle_emitters.empty()) {
+    QtDockTreeRow particleGroup;
+    particleGroup.id = "particle_emitters";
+    particleGroup.label = "Particle Emitters";
+    particleGroup.value = std::to_string(document.particle_emitters.size()) + " authored";
+    particleGroup.icon = "group";
+    for (const auto& emitter : document.particle_emitters) {
+      const std::string type = emitter.type.empty() ? std::string("particles") : emitter.type;
+      const std::string label = emitter.name.empty() ? ("Emitter " + std::to_string(emitter.id)) : emitter.name;
+      const bool typeOk =
+          !typeFilterActive || (typeMask & kQtSceneTreeFilterParticle) != 0u;
+      const bool nameOk =
+          nameFilter.empty() ||
+          QtDockToLower(label).find(nameFilter) != std::string::npos ||
+          QtDockToLower(type).find(nameFilter) != std::string::npos;
+      if (!typeOk || !nameOk) {
+        continue;
+      }
+      QtDockTreeRow row;
+      row.id = "particle." + std::to_string(emitter.id);
+      row.label = label;
+      row.value = "#" + std::to_string(emitter.id) + "  " + type +
+                  " count=" + std::to_string(emitter.count);
+      if (!emitter.enabled) {
+        row.value += "  disabled";
+        row.visible = false;
+      }
+      row.icon = "particle";
+      row.entity_id = emitter.id;
+      row.selected = is_selected(emitter.id);
+      row.draggable = false;
+      row.visibility_toggle_enabled = false;
+      particleGroup.children.push_back(std::move(row));
+    }
+    if (!particleGroup.children.empty()) {
+      QtDockAddTreeRow(panel, std::move(particleGroup));
+    }
   }
 
   if (panel.tree_rows.empty()) {
-    QtDockAddRow(panel, "No authored entities in document");
+    QtDockAddRow(panel,
+                 filtersActive ? "No scene graph items match the active filters"
+                               : "No authored entities in document");
   }
   return panel;
 }
@@ -269,7 +437,34 @@ QtDockPanelContent BuildQtInspectorDock(const vkpt::scene::SceneDocument& docume
   if (entity == nullptr) {
     const auto* primitive = FindQtSceneSdfPrimitive(document, primaryId);
     if (primitive == nullptr) {
-      QtDockAddProperty(panel, "Selection", "Selected object is not in the loaded document");
+      const auto emitterIt = std::find_if(
+          document.particle_emitters.begin(),
+          document.particle_emitters.end(),
+          [&](const vkpt::scene::SceneParticleEmitterDefinition& emitter) {
+            return emitter.id == primaryId;
+          });
+      if (emitterIt == document.particle_emitters.end()) {
+        QtDockAddProperty(panel, "Selection", "Selected object is not in the loaded document");
+        return panel;
+      }
+      const auto& emitter = *emitterIt;
+      QtDockAddProperty(panel,
+                        "Name",
+                        emitter.name.empty()
+                            ? ("particle emitter " + std::to_string(emitter.id))
+                            : emitter.name);
+      QtDockAddProperty(panel, "Type", "Particle Emitter");
+      QtDockAddProperty(panel, "Emitter", emitter.type.empty() ? "particles" : emitter.type);
+      QtDockAddProperty(panel, "Enabled", QtDockBool(emitter.enabled));
+      QtDockAddProperty(panel, "Count", std::to_string(emitter.count));
+      QtDockAddProperty(panel, "Material", QtMaterialDisplayLabel(document, emitter.material_id));
+      QtDockAddProperty(panel, "Bounds", QtDockVec3(emitter.bounds));
+      QtDockAddProperty(panel, "Velocity", QtDockVec3(emitter.velocity));
+      QtDockAddProperty(panel, "Wind", QtDockVec3(emitter.wind));
+      QtDockAddProperty(panel, "Lifetime", QtDockNumber(emitter.lifetime, 2) + " s");
+      QtDockAddInspectorTransformControls(panel,
+                                          "particle." + std::to_string(emitter.id) + ".transform.",
+                                          emitter.transform);
       return panel;
     }
 

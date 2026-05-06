@@ -48,6 +48,7 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>

@@ -187,6 +187,7 @@ std::vector<UiPanelState> BuildDefaultPanelStates(LayoutPreset preset) {
       PlacePanel(panels, "scene_tree", true, 0.0f, 64.0f, 280.0f, 500.0f);
       PlacePanel(panels, "asset_browser", true, 0.0f, 564.0f, 280.0f, 484.0f);
       PlacePanel(panels, "inspector", true, 960.0f, 64.0f, 320.0f, 360.0f);
+      PlacePanel(panels, "script_panel", true, 960.0f, 64.0f, 320.0f, 360.0f);
       PlacePanel(panels, "render_settings", true, 960.0f, 424.0f, 320.0f, 300.0f);
       PlacePanel(panels, "console", true, 280.0f, 724.0f, 1000.0f, 324.0f);
       PlacePanel(panels, "viewport", true, 280.0f, 64.0f, 680.0f, 660.0f);
@@ -231,7 +232,7 @@ UiRuntimeState CreateDefaultRuntimeState() {
   state.fps = 0.0;
   state.frame_ms = 0.0;
   state.background_job_count = 0;
-  state.visible_panels = {"scene_tree", "inspector", "asset_browser", "viewport", "status_bar", "console"};
+  state.visible_panels = {"scene_tree", "inspector", "script_panel", "asset_browser", "viewport", "status_bar", "console"};
   return state;
 }
 

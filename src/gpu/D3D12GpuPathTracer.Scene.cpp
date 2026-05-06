@@ -211,6 +211,8 @@ bool D3D12GpuPathTracer::update_instance_transforms(
   };
 
   bool changed = false;
+  uint32_t firstChangedInstance = std::numeric_limits<uint32_t>::max();
+  uint32_t lastChangedInstance = 0u;
   for (const auto& update : updates) {
     const uint32_t instanceIndex = findInstanceIndex(update);
     if (instanceIndex >= m_sceneData.instances.size()) {
@@ -239,6 +241,8 @@ bool D3D12GpuPathTracer::update_instance_transforms(
     m_gpuInsts[base + 13u] = FloatBits(instance.scale.y);
     m_gpuInsts[base + 14u] = FloatBits(instance.scale.z);
     changed = true;
+    firstChangedInstance = std::min(firstChangedInstance, instanceIndex);
+    lastChangedInstance = std::max(lastChangedInstance, instanceIndex);
   }
 
   if (!changed) {
@@ -256,7 +260,12 @@ bool D3D12GpuPathTracer::update_instance_transforms(
   } else {
     m_dynamicInstanceCount = refitDynamicCount;
   }
-  const bool uploaded = updateDxrTlas ? update_dxr_instance_buffer_and_tlas() : upload_instance_buffer();
+  const uint32_t changedInstanceCount = firstChangedInstance <= lastChangedInstance
+      ? (lastChangedInstance - firstChangedInstance + 1u)
+      : std::numeric_limits<uint32_t>::max();
+  const bool uploaded = updateDxrTlas
+      ? update_dxr_instance_buffer_and_tlas()
+      : upload_instance_buffer(firstChangedInstance, changedInstanceCount);
   if (uploaded) {
     m_temporalHistoryValid = false;
   }
@@ -1177,11 +1186,26 @@ bool D3D12GpuPathTracer::upload_material_light_buffers(bool uploadMaterials,
   return true;
 }
 
-bool D3D12GpuPathTracer::upload_instance_buffer() {
+bool D3D12GpuPathTracer::upload_instance_buffer(uint32_t firstInstance,
+                                                uint32_t instanceCount) {
   if (!m_instBuf || !m_dynamicBvhBuf || m_gpuInsts.empty() || m_gpuDynamicBvh.empty()) {
     return false;
   }
-  const UINT64 instSize = static_cast<UINT64>(m_gpuInsts.size()) * sizeof(uint32_t);
+  const uint32_t totalInstances = static_cast<uint32_t>(
+      m_gpuInsts.size() / kGpuInstanceStrideU32);
+  if (totalInstances == 0u) {
+    return false;
+  }
+  if (firstInstance >= totalInstances || instanceCount == 0u ||
+      instanceCount == std::numeric_limits<uint32_t>::max()) {
+    firstInstance = 0u;
+    instanceCount = totalInstances;
+  } else {
+    instanceCount = std::min(instanceCount, totalInstances - firstInstance);
+  }
+  const UINT64 instStrideBytes = static_cast<UINT64>(kGpuInstanceStrideU32) * sizeof(uint32_t);
+  const UINT64 instOffset = static_cast<UINT64>(firstInstance) * instStrideBytes;
+  const UINT64 instSize = static_cast<UINT64>(instanceCount) * instStrideBytes;
   const UINT64 tlasSize = static_cast<UINT64>(m_gpuDynamicBvh.size()) * sizeof(float);
   const auto align = [](UINT64 x) { return (x + 255ull) & ~255ull; };
   const UINT64 tlasOffset = align(instSize);
@@ -1203,7 +1227,8 @@ bool D3D12GpuPathTracer::upload_instance_buffer() {
 
   // Instance transforms and the dynamic-instance BVH must update together so
   // shader traversal never observes mismatched transform and bounds data.
-  std::memcpy(m_uploadPtr, m_gpuInsts.data(), static_cast<std::size_t>(instSize));
+  const auto* instanceBytes = reinterpret_cast<const uint8_t*>(m_gpuInsts.data()) + instOffset;
+  std::memcpy(m_uploadPtr, instanceBytes, static_cast<std::size_t>(instSize));
   std::memcpy(static_cast<uint8_t*>(m_uploadPtr) + tlasOffset,
               m_gpuDynamicBvh.data(),
               static_cast<std::size_t>(tlasSize));
@@ -1217,7 +1242,7 @@ bool D3D12GpuPathTracer::upload_instance_buffer() {
     toCopy[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
   }
   m_cmdList->ResourceBarrier(2, toCopy);
-  m_cmdList->CopyBufferRegion(m_instBuf.Get(), 0, m_uploadBuf.Get(), 0, instSize);
+  m_cmdList->CopyBufferRegion(m_instBuf.Get(), instOffset, m_uploadBuf.Get(), 0, instSize);
   m_cmdList->CopyBufferRegion(m_dynamicBvhBuf.Get(), 0, m_uploadBuf.Get(), tlasOffset, tlasSize);
 
   D3D12_RESOURCE_BARRIER toSrv[2] = {toCopy[0], toCopy[1]};

@@ -299,6 +299,8 @@ std::string SerializeUiRuntimeStateInternal(const UiRuntimeState& state) {
     out << state.collapsed_tree_nodes[i];
   }
   out << "],";
+  out << "\"scene_tree_name_filter\":\"" << EscapeJson(state.scene_tree_name_filter) << "\",";
+  out << "\"scene_tree_type_filter_mask\":" << state.scene_tree_type_filter_mask << ",";
   out << "\"focused_panel\":\"" << EscapeJson(state.focused_panel) << "\",";
   out << "\"active_modal\":\"" << EscapeJson(state.active_modal) << "\",";
   out << "\"hovered_widget\":\"" << EscapeJson(state.hovered_widget) << "\",";

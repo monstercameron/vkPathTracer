@@ -446,6 +446,22 @@ void QtDockAddEditableGroupedProperty(QtDockPanelContent& panel,
   panel.properties.push_back(std::move(property));
 }
 
+void QtDockAddTextGroupedProperty(QtDockPanelContent& panel,
+                                  std::string id,
+                                  std::string_view group,
+                                  std::string_view label,
+                                  std::string value) {
+  QtDockProperty property;
+  property.id = std::move(id);
+  property.group = std::string(group);
+  property.label = std::string(label);
+  property.value = std::move(value);
+  property.editor = "text";
+  property.editable = true;
+  property.enabled = true;
+  panel.properties.push_back(std::move(property));
+}
+
 void QtDockAddDropdownGroupedProperty(QtDockPanelContent& panel,
                                       std::string id,
                                       std::string_view group,

@@ -110,6 +110,11 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                                                 [](const QtDockPanelContent& panel) {
                                                   return panel.id == "asset_browser";
                                                 });
+    const auto scriptPanel = std::find_if(cameraDockPanels.begin(),
+                                          cameraDockPanels.end(),
+                                          [](const QtDockPanelContent& panel) {
+                                            return panel.id == "script_panel";
+                                          });
     auto hasActivatableAssetRow = [](const QtDockPanelContent& panel,
                                      std::string_view idPrefix,
                                      std::string_view icon) {
@@ -165,6 +170,27 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                            [](const QtDockProperty& property) {
                              return property.id == "camera.mode.fps_toggle" &&
                                     property.editor == "button";
+                           }));
+    check_true("scripting tab exposes runtime play pause",
+               scriptPanel != cameraDockPanels.end() &&
+               scriptPanel->visible &&
+               scriptPanel->id == "script_panel" &&
+               std::any_of(scriptPanel->properties.begin(),
+                           scriptPanel->properties.end(),
+                           [](const QtDockProperty& property) {
+                             return property.id == "script.runtime.play" &&
+                                    property.editor == "button";
+                           }) &&
+               std::any_of(scriptPanel->properties.begin(),
+                           scriptPanel->properties.end(),
+                           [](const QtDockProperty& property) {
+                             return property.id == "script.runtime.pause" &&
+                                    property.editor == "button";
+                           }) &&
+               std::any_of(scriptPanel->properties.begin(),
+                           scriptPanel->properties.end(),
+                           [](const QtDockProperty& property) {
+                             return property.label == "runtime status";
                            }));
     QtDockFrameStats fpsFrame;
     fpsFrame.camera_mode = "fps";
@@ -252,7 +278,9 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     treeDoc.entities = {root, model, light};
     SelectionState treeSelection;
     treeSelection.selected_entity_ids = {model.id};
-    const auto sceneGraphPanel = BuildQtSceneTreeDock(treeDoc, treeSelection, CreateDefaultLayout());
+    UiRuntimeState treeRuntime;
+    const auto sceneGraphPanel =
+        BuildQtSceneTreeDock(treeDoc, treeSelection, treeRuntime, CreateDefaultLayout());
     check_true("qt scene graph uses one-column tree", sceneGraphPanel.tree_single_column);
     check_true("qt scene graph emits tree rows", sceneGraphPanel.tree_rows.size() == 1u);
     check_true("qt scene graph visually nests children",
@@ -272,6 +300,60 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                sceneGraphPanel.tree_rows.front().children.size() >= 1u &&
                sceneGraphPanel.tree_rows.front().children.front().visibility_toggle_enabled &&
                sceneGraphPanel.tree_rows.front().children.front().visible);
+    check_true("qt scene graph exposes name filter",
+               std::any_of(sceneGraphPanel.properties.begin(),
+                           sceneGraphPanel.properties.end(),
+                           [](const QtDockProperty& property) {
+                             return property.id == "scene_tree.filter.name" &&
+                                    property.editor == "text";
+                           }));
+    treeRuntime.scene_tree_type_filter_mask = kQtSceneTreeFilterLight;
+    const auto lightFilteredPanel =
+        BuildQtSceneTreeDock(treeDoc, treeSelection, treeRuntime, CreateDefaultLayout());
+    check_true("qt scene graph type filter keeps matching descendants",
+               !lightFilteredPanel.tree_rows.empty() &&
+               lightFilteredPanel.tree_rows.front().children.size() == 1u &&
+               lightFilteredPanel.tree_rows.front().children.front().icon == "light");
+    treeRuntime.scene_tree_type_filter_mask = 0u;
+    treeRuntime.scene_tree_name_filter = "model";
+    const auto nameFilteredPanel =
+        BuildQtSceneTreeDock(treeDoc, treeSelection, treeRuntime, CreateDefaultLayout());
+    check_true("qt scene graph name filter is case insensitive",
+               !nameFilteredPanel.tree_rows.empty() &&
+               nameFilteredPanel.tree_rows.front().children.size() == 1u &&
+               nameFilteredPanel.tree_rows.front().children.front().label == "Hero Model");
+
+    vkpt::scene::SceneParticleEmitterDefinition rainEmitter;
+    rainEmitter.id = 100;
+    rainEmitter.name = "Benchmark rain";
+    rainEmitter.type = "rain";
+    rainEmitter.count = 64;
+    treeDoc.particle_emitters = {rainEmitter};
+    treeRuntime.scene_tree_name_filter.clear();
+    treeRuntime.scene_tree_type_filter_mask = 0u;
+    const auto particlePanel =
+        BuildQtSceneTreeDock(treeDoc, treeSelection, treeRuntime, CreateDefaultLayout());
+    const auto particleGroup = std::find_if(
+        particlePanel.tree_rows.begin(),
+        particlePanel.tree_rows.end(),
+        [](const QtDockTreeRow& row) {
+          return row.id == "particle_emitters";
+        });
+    check_true("qt scene graph exposes particle emitter group",
+               particleGroup != particlePanel.tree_rows.end() &&
+               particleGroup->children.size() == 1u &&
+               particleGroup->children.front().icon == "particle" &&
+               particleGroup->children.front().label == "Benchmark rain");
+    treeRuntime.scene_tree_type_filter_mask = kQtSceneTreeFilterParticle;
+    const auto particleFilteredPanel =
+        BuildQtSceneTreeDock(treeDoc, treeSelection, treeRuntime, CreateDefaultLayout());
+    check_true("qt scene graph particle filter keeps emitters",
+               !particleFilteredPanel.tree_rows.empty() &&
+               std::any_of(particleFilteredPanel.tree_rows.begin(),
+                           particleFilteredPanel.tree_rows.end(),
+                           [](const QtDockTreeRow& row) {
+                             return row.id == "particle_emitters" && !row.children.empty();
+                           }));
   }
 
   {
@@ -463,12 +545,16 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     renderFrame.displayed_image_height = 608u;
     renderFrame.sample_count = 7u;
     renderFrame.render_mode = "on (event loop)";
+    QtDockDeviceStats renderDevice;
+    renderDevice.selected_backend = "cpu";
+    renderDevice.runtime_backend_options = {"auto", "cpu", "d3d12", "d3d12-dxr", "null"};
     const auto renderPanel = BuildQtRenderSettingsDock(
         vkpt::pathtracer::RTSceneData{},
         renderSettings,
         UiRuntimeState{},
         CreateDefaultLayout(),
-        renderFrame);
+        renderFrame,
+        renderDevice);
     const auto findRenderProperty = [&](std::string_view label) -> const QtDockProperty* {
       const auto it = std::find_if(renderPanel.properties.begin(),
                                    renderPanel.properties.end(),
@@ -482,6 +568,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     const auto* displayedImage = findRenderProperty("Displayed image");
     const auto* gpuDenoiser = findRenderProperty("GPU denoiser");
     const auto* temporalAa = findRenderProperty("Temporal AA");
+    const auto* runtimeBackend = findRenderProperty("Backend");
     check_true("render settings separates render resolution from canvas",
                renderResolution != nullptr &&
                renderResolution->value == "320x240" &&
@@ -497,6 +584,14 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                temporalAa != nullptr &&
                temporalAa->value == "true" &&
                temporalAa->editor == "toggle");
+    check_true("render settings exposes backend dropdown",
+               runtimeBackend != nullptr &&
+               runtimeBackend->id == "render.backend" &&
+               runtimeBackend->editor == "dropdown" &&
+               runtimeBackend->value == "cpu" &&
+               std::find(runtimeBackend->options.begin(),
+                         runtimeBackend->options.end(),
+                         "d3d12-dxr") != runtimeBackend->options.end());
   }
 
   {
