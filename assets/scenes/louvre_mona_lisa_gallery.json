@@ -1,0 +1,3130 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Louvre Mona Lisa Gallery",
+    "author": "vkPathTracer generated scene; Mona Lisa texture from Wikimedia Commons C2RMF retouched image",
+    "created": "2026-05-06"
+  },
+  "assets": [
+    {
+      "id": 5100,
+      "type": "model/obj",
+      "uri": "../models/louvre_gallery/louvre_furniture_highres.obj",
+      "name": "High resolution museum bench and rope barriers",
+      "transform": {
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "id": 5102,
+      "type": "model/obj",
+      "uri": "../models/louvre_gallery/left_wall_renaissance_portrait.obj",
+      "name": "Left wall Renaissance portrait",
+      "transform": {
+        "translation": [
+          -5.18,
+          1.62,
+          1.25
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          1.02,
+          1.18,
+          1.0
+        ]
+      }
+    },
+    {
+      "id": 5103,
+      "type": "model/obj",
+      "uri": "../models/louvre_gallery/back_wall_blue_portrait.obj",
+      "name": "Back wall blue portrait",
+      "transform": {
+        "translation": [
+          -2.95,
+          1.58,
+          -1.085
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.92,
+          1.08,
+          1.0
+        ]
+      }
+    }
+  ],
+  "materials": [
+    {
+      "id": 5201,
+      "name": "louvre_limestone_wall",
+      "family": "stone",
+      "albedo": [
+        0.74,
+        0.7,
+        0.62
+      ],
+      "roughness": 0.82,
+      "metallic": 0.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.0,
+      "sheen": 0.0,
+      "anisotropy": 0.0,
+      "alpha": 1.0,
+      "double_sided": true,
+      "base_color_texture": "assets/models/louvre_gallery/textures/louvre_limestone.png",
+      "emission": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "emission_intensity": 0.0
+    },
+    {
+      "id": 5202,
+      "name": "parquet_oak_floor",
+      "family": "parquet",
+      "albedo": [
+        0.46,
+        0.4,
+        0.27
+      ],
+      "roughness": 0.18,
+      "metallic": 0.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.72,
+      "sheen": 0.0,
+      "anisotropy": 0.28,
+      "alpha": 1.0,
+      "double_sided": false,
+      "base_color_texture": "assets/models/louvre_gallery/textures/parquet_oak.png",
+      "emission": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "emission_intensity": 0.0
+    },
+    {
+      "id": 5203,
+      "name": "mona_lisa_oil_panel",
+      "family": "diffuse",
+      "albedo": [
+        0.88,
+        0.82,
+        0.68
+      ],
+      "roughness": 0.64,
+      "metallic": 0.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.12,
+      "sheen": 0.22,
+      "anisotropy": 0.0,
+      "alpha": 1.0,
+      "double_sided": true,
+      "base_color_texture": "assets/models/louvre_gallery/textures/mona_lisa_c2rmf_retouched.jpg",
+      "emission": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "emission_intensity": 0.0
+    },
+    {
+      "id": 5204,
+      "name": "gilded_gold_leaf",
+      "family": "metallic_pbr",
+      "albedo": [
+        0.83,
+        0.67,
+        0.21
+      ],
+      "roughness": 0.14,
+      "metallic": 1.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.0,
+      "sheen": 0.0,
+      "anisotropy": 0.12,
+      "alpha": 1.0,
+      "double_sided": false,
+      "base_color_texture": "assets/models/louvre_gallery/textures/gilded_frame.png",
+      "emission": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "emission_intensity": 0.0
+    },
+    {
+      "id": 5205,
+      "name": "protective_glass",
+      "family": "glass",
+      "albedo": [
+        0.75,
+        0.9,
+        0.95
+      ],
+      "roughness": 0.02,
+      "metallic": 0.0,
+      "ior": 1.45,
+      "transmission": 0.35,
+      "clearcoat": 1.0,
+      "sheen": 0.0,
+      "anisotropy": 0.0,
+      "alpha": 0.38,
+      "double_sided": true,
+      "base_color_texture": "assets/models/louvre_gallery/textures/clear_glass_tint.png",
+      "emission": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "emission_intensity": 0.0
+    },
+    {
+      "id": 5206,
+      "name": "linen_wall_label",
+      "family": "paper",
+      "albedo": [
+        0.84,
+        0.79,
+        0.68
+      ],
+      "roughness": 0.76,
+      "metallic": 0.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.0,
+      "sheen": 0.0,
+      "anisotropy": 0.0,
+      "alpha": 1.0,
+      "double_sided": true,
+      "base_color_texture": "assets/models/louvre_gallery/textures/linen_label.png",
+      "emission": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "emission_intensity": 0.0
+    },
+    {
+      "id": 5207,
+      "name": "warm_emissive_picture_light",
+      "family": "emissive",
+      "albedo": [
+        1.0,
+        0.82,
+        0.46
+      ],
+      "roughness": 1.0,
+      "metallic": 0.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.0,
+      "sheen": 0.0,
+      "anisotropy": 0.0,
+      "alpha": 1.0,
+      "double_sided": true,
+      "base_color_texture": "",
+      "emission": [
+        1.0,
+        0.74,
+        0.38
+      ],
+      "emission_intensity": 30.0
+    },
+    {
+      "id": 5208,
+      "name": "dark_bronze_fixture_housing",
+      "family": "metallic_pbr",
+      "albedo": [
+        0.24,
+        0.18,
+        0.1
+      ],
+      "roughness": 0.26,
+      "metallic": 1.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.18,
+      "sheen": 0.0,
+      "anisotropy": 0.25,
+      "alpha": 1.0,
+      "double_sided": false,
+      "base_color_texture": "assets/models/louvre_gallery/textures/brushed_brass.png",
+      "emission": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "emission_intensity": 0.0
+    },
+    {
+      "id": 5209,
+      "name": "ceiling_plaster_blanc",
+      "family": "plaster",
+      "albedo": [
+        0.92,
+        0.90,
+        0.86
+      ],
+      "roughness": 0.90,
+      "metallic": 0.0,
+      "ior": 1.5,
+      "transmission": 0.0,
+      "clearcoat": 0.0,
+      "sheen": 0.0,
+      "anisotropy": 0.0,
+      "alpha": 1.0,
+      "double_sided": false,
+      "base_color_texture": "",
+      "emission": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "emission_intensity": 0.0
+    }
+  ],
+  "geometry": [
+    {
+      "id": 5300,
+      "primitive": "triangle",
+      "material_id": 5201,
+      "tags": [
+        "unit_box",
+        "textured"
+      ],
+      "vertices": [
+        [
+          -0.5,
+          -0.5,
+          0.5
+        ],
+        [
+          0.5,
+          -0.5,
+          0.5
+        ],
+        [
+          0.5,
+          0.5,
+          0.5
+        ],
+        [
+          -0.5,
+          0.5,
+          0.5
+        ],
+        [
+          0.5,
+          -0.5,
+          -0.5
+        ],
+        [
+          -0.5,
+          -0.5,
+          -0.5
+        ],
+        [
+          -0.5,
+          0.5,
+          -0.5
+        ],
+        [
+          0.5,
+          0.5,
+          -0.5
+        ],
+        [
+          -0.5,
+          -0.5,
+          -0.5
+        ],
+        [
+          -0.5,
+          -0.5,
+          0.5
+        ],
+        [
+          -0.5,
+          0.5,
+          0.5
+        ],
+        [
+          -0.5,
+          0.5,
+          -0.5
+        ],
+        [
+          0.5,
+          -0.5,
+          0.5
+        ],
+        [
+          0.5,
+          -0.5,
+          -0.5
+        ],
+        [
+          0.5,
+          0.5,
+          -0.5
+        ],
+        [
+          0.5,
+          0.5,
+          0.5
+        ],
+        [
+          -0.5,
+          0.5,
+          0.5
+        ],
+        [
+          0.5,
+          0.5,
+          0.5
+        ],
+        [
+          0.5,
+          0.5,
+          -0.5
+        ],
+        [
+          -0.5,
+          0.5,
+          -0.5
+        ],
+        [
+          -0.5,
+          -0.5,
+          -0.5
+        ],
+        [
+          0.5,
+          -0.5,
+          -0.5
+        ],
+        [
+          0.5,
+          -0.5,
+          0.5
+        ],
+        [
+          -0.5,
+          -0.5,
+          0.5
+        ]
+      ],
+      "texcoords": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          0,
+          1
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3,
+        4,
+        5,
+        6,
+        4,
+        6,
+        7,
+        8,
+        9,
+        10,
+        8,
+        10,
+        11,
+        12,
+        13,
+        14,
+        12,
+        14,
+        15,
+        16,
+        17,
+        18,
+        16,
+        18,
+        19,
+        20,
+        21,
+        22,
+        20,
+        22,
+        23
+      ]
+    },
+    {
+      "id": 5301,
+      "primitive": "triangle",
+      "material_id": 5203,
+      "tags": [
+        "mona_lisa",
+        "painting",
+        "textured"
+      ],
+      "vertices": [
+        [
+          -0.5,
+          -0.75,
+          0.0
+        ],
+        [
+          0.5,
+          -0.75,
+          0.0
+        ],
+        [
+          0.5,
+          0.75,
+          0.0
+        ],
+        [
+          -0.5,
+          0.75,
+          0.0
+        ]
+      ],
+      "texcoords": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "id": 5400,
+      "name": "Camera - visitor view",
+      "transform": {
+        "translation": [
+          0.0,
+          1.45,
+          5.85
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "camera": {
+        "fov": 44.0,
+        "near_plane": 0.03,
+        "far_plane": 80.0,
+        "focal_length_mm": 46.0,
+        "sensor_width_mm": 36.0,
+        "sensor_height_mm": 24.0,
+        "aperture_radius": 0.038,
+        "focus_distance": 6.93,
+        "f_stop": 2.0,
+        "shutter_seconds": 0.0166667,
+        "iso": 160.0,
+        "exposure_compensation": 1.45,
+        "white_balance_kelvin": 4300.0
+      }
+    },
+    {
+      "id": 5401,
+      "name": "Polished parquet floor",
+      "transform": {
+        "translation": [
+          0.0,
+          -0.035,
+          2.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          10.6,
+          0.07,
+          6.6
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5202
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.9,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5402,
+      "name": "Back limestone wall",
+      "transform": {
+        "translation": [
+          0.0,
+          1.55,
+          -1.18
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          10.6,
+          3.45,
+          0.08
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5201
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5403,
+      "name": "Left limestone wall",
+      "transform": {
+        "translation": [
+          -5.28,
+          1.55,
+          2.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.08,
+          3.45,
+          6.6
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5201
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5404,
+      "name": "Mona Lisa high resolution textured painting",
+      "transform": {
+        "translation": [
+          0.0,
+          1.62,
+          -1.082
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.02,
+          0.97,
+          1.0
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5301,
+        "material_id": 5203
+      }
+    },
+    {
+      "id": 5405,
+      "name": "Protective glass cover",
+      "transform": {
+        "translation": [
+          0.0,
+          1.62,
+          -1.078
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.08,
+          1.04,
+          1.0
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5301,
+        "material_id": 5205
+      }
+    },
+    {
+      "id": 5406,
+      "name": "Gilded frame top rail",
+      "transform": {
+        "translation": [
+          0.0,
+          2.43,
+          -1.075
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.32,
+          0.12,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5407,
+      "name": "Gilded frame bottom rail",
+      "transform": {
+        "translation": [
+          0.0,
+          0.81,
+          -1.075
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.32,
+          0.12,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5408,
+      "name": "Gilded frame left rail",
+      "transform": {
+        "translation": [
+          -0.66,
+          1.62,
+          -1.075
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.12,
+          1.74,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5409,
+      "name": "Gilded frame right rail",
+      "transform": {
+        "translation": [
+          0.66,
+          1.62,
+          -1.075
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.12,
+          1.74,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5410,
+      "name": "Wall label - Mona Lisa",
+      "transform": {
+        "translation": [
+          1.28,
+          0.86,
+          -1.08
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.42,
+          0.2,
+          0.025
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5206
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5411,
+      "name": "Back wall right decorative inset panel",
+      "transform": {
+        "translation": [
+          3.35,
+          1.55,
+          -1.065
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.45,
+          2.16,
+          0.035
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5201
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5412,
+      "name": "Left wall rear decorative inset panel",
+      "transform": {
+        "translation": [
+          -5.115,
+          1.55,
+          4.15
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          1.45,
+          2.16,
+          0.035
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5201
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5413,
+      "name": "Back wall crown molding",
+      "transform": {
+        "translation": [
+          0.0,
+          3.16,
+          -1.06
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          10.6,
+          0.16,
+          0.18
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5414,
+      "name": "Left wall crown molding",
+      "transform": {
+        "translation": [
+          -5.16,
+          3.16,
+          2.1
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.18,
+          0.16,
+          6.6
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5420,
+      "name": "Back wall left portrait top rail",
+      "transform": {
+        "translation": [
+          -2.95,
+          2.39,
+          -1.09
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.26,
+          0.1,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5421,
+      "name": "Back wall left portrait bottom rail",
+      "transform": {
+        "translation": [
+          -2.95,
+          0.77,
+          -1.09
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.26,
+          0.1,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5422,
+      "name": "Back wall left portrait left rail",
+      "transform": {
+        "translation": [
+          -3.58,
+          1.58,
+          -1.09
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.1,
+          1.72,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5423,
+      "name": "Back wall left portrait right rail",
+      "transform": {
+        "translation": [
+          -2.32,
+          1.58,
+          -1.09
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.1,
+          1.72,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5424,
+      "name": "Back portrait label",
+      "transform": {
+        "translation": [
+          -2.1,
+          0.83,
+          -1.08
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.38,
+          0.18,
+          0.025
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5206
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5425,
+      "name": "Left wall portrait top rail",
+      "transform": {
+        "translation": [
+          -5.15,
+          2.49,
+          1.25
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          1.32,
+          0.1,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5426,
+      "name": "Left wall portrait bottom rail",
+      "transform": {
+        "translation": [
+          -5.15,
+          0.75,
+          1.25
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          1.32,
+          0.1,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5427,
+      "name": "Left wall portrait near rail",
+      "transform": {
+        "translation": [
+          -5.15,
+          1.62,
+          0.59
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          0.1,
+          1.84,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5428,
+      "name": "Left wall portrait far rail",
+      "transform": {
+        "translation": [
+          -5.15,
+          1.62,
+          1.91
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          0.1,
+          1.84,
+          0.1
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5429,
+      "name": "Left portrait label",
+      "transform": {
+        "translation": [
+          -5.14,
+          0.83,
+          2.08
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          0.38,
+          0.18,
+          0.025
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5206
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5430,
+      "name": "Back wall left gilded pilaster",
+      "transform": {
+        "translation": [
+          -5.0,
+          1.45,
+          -1.08
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.16,
+          2.55,
+          0.14
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5431,
+      "name": "Back wall right gilded pilaster",
+      "transform": {
+        "translation": [
+          5.0,
+          1.45,
+          -1.08
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.16,
+          2.55,
+          0.14
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5432,
+      "name": "Back wall baseboard",
+      "transform": {
+        "translation": [
+          0.0,
+          0.17,
+          -1.06
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          10.6,
+          0.13,
+          0.15
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5433,
+      "name": "Left wall baseboard",
+      "transform": {
+        "translation": [
+          -5.14,
+          0.17,
+          2.1
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          6.6,
+          0.13,
+          0.15
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5204
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5440,
+      "name": "Mona Lisa visible emissive picture light",
+      "transform": {
+        "translation": [
+          0.0,
+          2.57,
+          -1.035
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.92,
+          0.055,
+          0.055
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5207
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [
+          1.0,
+          0.78,
+          0.46
+        ],
+        "intensity": 40.0,
+        "radius": 0.32
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5441,
+      "name": "Mona Lisa picture light bronze backplate",
+      "transform": {
+        "translation": [
+          0.0,
+          2.57,
+          -1.06
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.05,
+          0.11,
+          0.035
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5208
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5442,
+      "name": "Back portrait visible emissive picture light",
+      "transform": {
+        "translation": [
+          -2.95,
+          2.53,
+          -1.035
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.82,
+          0.05,
+          0.05
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5207
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [
+          1.0,
+          0.76,
+          0.44
+        ],
+        "intensity": 19.0,
+        "radius": 0.24
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5443,
+      "name": "Back portrait picture light bronze backplate",
+      "transform": {
+        "translation": [
+          -2.95,
+          2.53,
+          -1.06
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.94,
+          0.1,
+          0.035
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5208
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5444,
+      "name": "Left portrait visible emissive picture light",
+      "transform": {
+        "translation": [
+          -5.105,
+          2.64,
+          1.25
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          0.84,
+          0.05,
+          0.05
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5207
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [
+          1.0,
+          0.76,
+          0.44
+        ],
+        "intensity": 19.0,
+        "radius": 0.24
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5445,
+      "name": "Left portrait picture light bronze backplate",
+      "transform": {
+        "translation": [
+          -5.13,
+          2.64,
+          1.25
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          0.96,
+          0.1,
+          0.035
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5208
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.72,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5446,
+      "name": "Back wall left bronze sconce glow",
+      "transform": {
+        "translation": [
+          -4.35,
+          2.25,
+          -1.035
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.2,
+          0.32,
+          0.055
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5207
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [
+          1.0,
+          0.72,
+          0.38
+        ],
+        "intensity": 12.0,
+        "radius": 0.22
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5447,
+      "name": "Back wall right bronze sconce glow",
+      "transform": {
+        "translation": [
+          4.35,
+          2.25,
+          -1.035
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.2,
+          0.32,
+          0.055
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5207
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [
+          1.0,
+          0.72,
+          0.38
+        ],
+        "intensity": 12.0,
+        "radius": 0.22
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5448,
+      "name": "Back wall left sconce bronze housing",
+      "transform": {
+        "translation": [
+          -4.35,
+          2.25,
+          -1.06
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.32,
+          0.48,
+          0.035
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5208
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5449,
+      "name": "Back wall right sconce bronze housing",
+      "transform": {
+        "translation": [
+          4.35,
+          2.25,
+          -1.06
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.32,
+          0.48,
+          0.035
+        ]
+      },
+      "mesh": {
+        "mesh_id": 5300,
+        "material_id": 5208
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.62,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5418,
+      "name": "Dark museum ambient",
+      "light": {
+        "type": "environment",
+        "color": [
+          0.025,
+          0.026,
+          0.028
+        ],
+        "intensity": 1.0,
+        "radius": 0.0
+      }
+    },
+    {
+      "id": 5450,
+      "name": "Mona Lisa painting and glass collider",
+      "visible": false,
+      "transform": {
+        "translation": [
+          0.0,
+          1.62,
+          -1.055
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.12,
+          1.58,
+          0.09
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.45,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5451,
+      "name": "Back wall imported portrait collider",
+      "visible": false,
+      "transform": {
+        "translation": [
+          -2.95,
+          1.58,
+          -1.055
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.12,
+          1.56,
+          0.09
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.45,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5452,
+      "name": "Left wall imported portrait collider",
+      "visible": false,
+      "transform": {
+        "translation": [
+          -5.095,
+          1.62,
+          1.25
+        ],
+        "rotation": [
+          0.0,
+          0.7071,
+          0.0,
+          0.7071
+        ],
+        "scale": [
+          1.14,
+          1.7,
+          0.09
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.45,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5460,
+      "name": "Museum bench seat collider",
+      "visible": false,
+      "transform": {
+        "translation": [
+          0.0,
+          0.42,
+          1.85
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          2.25,
+          0.4,
+          0.72
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.82,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5461,
+      "name": "Museum bench lower support collider",
+      "visible": false,
+      "transform": {
+        "translation": [
+          0.0,
+          0.18,
+          1.85
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          2.1,
+          0.28,
+          0.45
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.82,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5462,
+      "name": "Front velvet rope collider",
+      "visible": false,
+      "transform": {
+        "translation": [
+          0.0,
+          0.78,
+          2.82
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          3.45,
+          0.24,
+          0.18
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.7,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5463,
+      "name": "Back velvet rope collider",
+      "visible": false,
+      "transform": {
+        "translation": [
+          0.0,
+          0.78,
+          0.88
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          3.45,
+          0.24,
+          0.18
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.7,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5464,
+      "name": "Left velvet rope collider",
+      "visible": false,
+      "transform": {
+        "translation": [
+          -1.72,
+          0.78,
+          1.85
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.18,
+          0.24,
+          1.94
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.7,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5465,
+      "name": "Right velvet rope collider",
+      "visible": false,
+      "transform": {
+        "translation": [
+          1.72,
+          0.78,
+          1.85
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.18,
+          0.24,
+          1.94
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.7,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5466,
+      "name": "Brass stanchion post collider 1",
+      "visible": false,
+      "transform": {
+        "translation": [
+          -1.72,
+          0.5,
+          0.88
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.28,
+          1.0,
+          0.28
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.78,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5467,
+      "name": "Brass stanchion post collider 2",
+      "visible": false,
+      "transform": {
+        "translation": [
+          1.72,
+          0.5,
+          0.88
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.28,
+          1.0,
+          0.28
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.78,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5468,
+      "name": "Brass stanchion post collider 3",
+      "visible": false,
+      "transform": {
+        "translation": [
+          -1.72,
+          0.5,
+          2.82
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.28,
+          1.0,
+          0.28
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.78,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5469,
+      "name": "Brass stanchion post collider 4",
+      "visible": false,
+      "transform": {
+        "translation": [
+          1.72,
+          0.5,
+          2.82
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.28,
+          1.0,
+          0.28
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.78,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5470,
+      "name": "Brass stanchion post collider 5",
+      "visible": false,
+      "transform": {
+        "translation": [
+          0.0,
+          0.5,
+          0.88
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.28,
+          1.0,
+          0.28
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.78,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+    {
+      "id": 5471,
+      "name": "Brass stanchion post collider 6",
+      "visible": false,
+      "transform": {
+        "translation": [
+          0.0,
+          0.5,
+          2.82
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          0.28,
+          1.0,
+          0.28
+        ]
+      },
+      "physics": {
+        "enabled": true,
+        "body_type": "static",
+        "dynamic": false,
+        "shape": "box",
+        "mass": 1.0,
+        "friction": 0.78,
+        "restitution": 0.0,
+        "gravity_scale": 1.0,
+        "trigger": false,
+        "allow_sleeping": true,
+        "continuous_collision": false
+      }
+    },
+
+    {
+      "id": 5480,
+      "name": "Right limestone wall",
+      "transform": {
+        "translation": [5.28, 1.55, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.08, 3.45, 6.6]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5201},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5481,
+      "name": "Right wall baseboard",
+      "transform": {
+        "translation": [5.14, 0.17, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.15, 0.13, 6.6]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5482,
+      "name": "Right wall crown molding",
+      "transform": {
+        "translation": [5.16, 3.16, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.18, 0.16, 6.6]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5483,
+      "name": "Right wall rear gilded pilaster",
+      "transform": {
+        "translation": [5.14, 1.45, -0.90],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.14, 2.55, 0.16]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5484,
+      "name": "Right wall front gilded pilaster",
+      "transform": {
+        "translation": [5.14, 1.45, 5.10],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.14, 2.55, 0.16]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5490,
+      "name": "Ceiling plaster slab",
+      "transform": {
+        "translation": [0.0, 3.30, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [10.6, 0.08, 6.6]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5209},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5491,
+      "name": "Ceiling coffer rib longitudinal left",
+      "transform": {
+        "translation": [-3.53, 3.19, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.22, 0.22, 6.6]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5492,
+      "name": "Ceiling coffer rib longitudinal right",
+      "transform": {
+        "translation": [3.53, 3.19, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.22, 0.22, 6.6]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5493,
+      "name": "Ceiling coffer rib transverse center",
+      "transform": {
+        "translation": [0.0, 3.19, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [10.6, 0.22, 0.22]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5500,
+      "name": "Dado rail back wall",
+      "transform": {
+        "translation": [0.0, 0.92, -1.10],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [10.6, 0.065, 0.075]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5501,
+      "name": "Dado rail left wall",
+      "transform": {
+        "translation": [-5.22, 0.92, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.075, 0.065, 6.6]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5502,
+      "name": "Dado rail right wall",
+      "transform": {
+        "translation": [5.22, 0.92, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.075, 0.065, 6.6]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5510,
+      "name": "Wainscot panel back wall left",
+      "transform": {
+        "translation": [-3.95, 0.565, -1.074],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [3.55, 0.65, 0.028]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5201},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5511,
+      "name": "Wainscot panel back wall right",
+      "transform": {
+        "translation": [3.75, 0.565, -1.074],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [3.95, 0.65, 0.028]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5201},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5512,
+      "name": "Wainscot panel left wall",
+      "transform": {
+        "translation": [-5.22, 0.565, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.028, 0.65, 6.2]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5201},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5513,
+      "name": "Wainscot panel right wall",
+      "transform": {
+        "translation": [5.22, 0.565, 2.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.028, 0.65, 6.2]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5201},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5520,
+      "name": "Mona Lisa frame inner bead top",
+      "transform": {
+        "translation": [0.0, 2.40, -1.079],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.16, 0.045, 0.045]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5521,
+      "name": "Mona Lisa frame inner bead bottom",
+      "transform": {
+        "translation": [0.0, 0.84, -1.079],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.16, 0.045, 0.045]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5522,
+      "name": "Mona Lisa frame inner bead left",
+      "transform": {
+        "translation": [-0.575, 1.62, -1.079],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.045, 1.56, 0.045]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5523,
+      "name": "Mona Lisa frame inner bead right",
+      "transform": {
+        "translation": [0.575, 1.62, -1.079],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.045, 1.56, 0.045]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5524,
+      "name": "Mona Lisa frame outer casing top",
+      "transform": {
+        "translation": [0.0, 2.545, -1.083],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.52, 0.095, 0.06]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5525,
+      "name": "Mona Lisa frame outer casing bottom",
+      "transform": {
+        "translation": [0.0, 0.695, -1.083],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.52, 0.095, 0.06]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5526,
+      "name": "Mona Lisa frame outer casing left",
+      "transform": {
+        "translation": [-0.760, 1.62, -1.083],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.095, 1.85, 0.06]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5527,
+      "name": "Mona Lisa frame outer casing right",
+      "transform": {
+        "translation": [0.760, 1.62, -1.083],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.095, 1.85, 0.06]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5204},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5530,
+      "name": "Left sconce arm bracket",
+      "transform": {
+        "translation": [-4.35, 2.25, -0.988],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.055, 0.055, 0.14]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5208},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5531,
+      "name": "Left sconce candle cup",
+      "transform": {
+        "translation": [-4.35, 2.29, -0.918],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.11, 0.11, 0.075]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5208},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5532,
+      "name": "Right sconce arm bracket",
+      "transform": {
+        "translation": [4.35, 2.25, -0.988],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.055, 0.055, 0.14]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5208},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5533,
+      "name": "Right sconce candle cup",
+      "transform": {
+        "translation": [4.35, 2.29, -0.918],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.11, 0.11, 0.075]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5208},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.62, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+
+    {
+      "id": 5540,
+      "name": "Mona Lisa picture light side return left",
+      "transform": {
+        "translation": [-0.535, 2.57, -1.048],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.035, 0.11, 0.055]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5208},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5541,
+      "name": "Mona Lisa picture light side return right",
+      "transform": {
+        "translation": [0.535, 2.57, -1.048],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.035, 0.11, 0.055]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5208},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5542,
+      "name": "Back portrait picture light side return left",
+      "transform": {
+        "translation": [-3.375, 2.53, -1.048],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.03, 0.10, 0.05]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5208},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5543,
+      "name": "Back portrait picture light side return right",
+      "transform": {
+        "translation": [-2.525, 2.53, -1.048],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.03, 0.10, 0.05]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5208},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5544,
+      "name": "Left wall picture light side return near",
+      "transform": {
+        "translation": [-5.108, 2.64, 0.665],
+        "rotation": [0.0, 0.7071, 0.0, 0.7071],
+        "scale": [0.03, 0.10, 0.05]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5208},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    },
+    {
+      "id": 5545,
+      "name": "Left wall picture light side return far",
+      "transform": {
+        "translation": [-5.108, 2.64, 1.835],
+        "rotation": [0.0, 0.7071, 0.0, 0.7071],
+        "scale": [0.03, 0.10, 0.05]
+      },
+      "mesh": {"mesh_id": 5300, "material_id": 5208},
+      "physics": {"enabled": true, "body_type": "static", "dynamic": false, "shape": "box", "mass": 1.0, "friction": 0.72, "restitution": 0.0, "gravity_scale": 1.0, "trigger": false, "allow_sleeping": true, "continuous_collision": false}
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 96,
+    "warmup_frames": 8
+  }
+}

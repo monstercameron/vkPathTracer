@@ -1,0 +1,35 @@
+newmtl bench_top_walnut
+family walnut
+Kd 0.50 0.31 0.16
+Pr 0.72
+clearcoat 0.03
+sheen 0.03
+map_Kd textures/dark_walnut.png
+
+newmtl bench_side_walnut
+family walnut
+Kd 0.25 0.13 0.055
+Pr 0.88
+clearcoat 0.02
+sheen 0.02
+map_Kd textures/dark_walnut.png
+
+newmtl brass
+family metallic_pbr
+Kd 0.95 0.74 0.28
+Pr 0.18
+Pm 1.0
+map_Kd textures/brushed_brass.png
+
+newmtl velvet
+family fabric
+Kd 0.48 0.02 0.05
+Pr 0.78
+sheen 0.65
+map_Kd textures/red_velvet.png
+
+newmtl label
+family paper
+Kd 0.86 0.82 0.72
+Pr 0.68
+map_Kd textures/linen_label.png
