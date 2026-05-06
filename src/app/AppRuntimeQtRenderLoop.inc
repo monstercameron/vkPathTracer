@@ -120,6 +120,9 @@
                           {"raw_key", std::to_string(rawKey)},
                           {"is_b_key", (key == 'B' || rawKey == 'B') ? "true" : "false"},
                           {"is_w_key", (key == 'W' || rawKey == 'W') ? "true" : "false"},
+                          {"is_a_key", (key == 'A' || rawKey == 'A') ? "true" : "false"},
+                          {"is_s_key", (key == 'S' || rawKey == 'S') ? "true" : "false"},
+                          {"is_d_key", (key == 'D' || rawKey == 'D') ? "true" : "false"},
                           {"keys_down", std::to_string(qtKeysDown.size())},
                           {"lua_playing", qtScriptState.playing ? "true" : "false"},
                           {"lua_compiled_in", qtScriptRuntime->lua_compiled_in() ? "true" : "false"},
@@ -211,6 +214,9 @@
                           {"raw_key", std::to_string(rawKey)},
                           {"is_b_key", (key == 'B' || rawKey == 'B') ? "true" : "false"},
                           {"is_w_key", (key == 'W' || rawKey == 'W') ? "true" : "false"},
+                          {"is_a_key", (key == 'A' || rawKey == 'A') ? "true" : "false"},
+                          {"is_s_key", (key == 'S' || rawKey == 'S') ? "true" : "false"},
+                          {"is_d_key", (key == 'D' || rawKey == 'D') ? "true" : "false"},
                           {"keys_down", std::to_string(qtKeysDown.size())},
                           {"lua_playing", qtScriptState.playing ? "true" : "false"}},
                          qtFrameCount);
@@ -318,6 +324,12 @@
                 qtPendingFpsLookDy += event.delta_y;
                 break;
               }
+              if (qtScriptState.playing) {
+                qtUserCameraActive = true;
+                qtPendingFpsLookDx += event.delta_x;
+                qtPendingFpsLookDy += event.delta_y;
+                break;
+              }
               if (qtLeftMouseDown && qtGizmoDrag.active) {
                 qtApplyGizmoDrag(event.x, event.y, qtFrameCount);
                 qtClickDragPixels = std::max(qtClickDragPixels,
@@ -344,7 +356,7 @@
               break;
             }
             case vkpt::platform::InputEventType::MouseWheel:
-              if (qtFpsMode) {
+              if (qtFpsMode || qtScriptState.playing) {
                 break;
               }
               qtUserCameraActive = true;
@@ -419,7 +431,11 @@
         qtApplyContinuousFpsMovement(qtInputDt);
         qtApplyPhysicsSimulation(qtFrameStart);
         qtApplySceneAnimation(qtFrameStart);
-        qtApplyScriptPlayback(qtFrameStart, qtFrameCount, qtInputDt);
+        const bool qtScriptDispatched = qtApplyScriptPlayback(qtFrameStart, qtFrameCount, qtInputDt);
+        if (qtScriptDispatched && qtScriptState.playing && !qtFpsMode) {
+          qtPendingFpsLookDx = 0.0f;
+          qtPendingFpsLookDy = 0.0f;
+        }
         updateQtSelectionOverlay();
 #endif
 

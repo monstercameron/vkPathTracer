@@ -2,6 +2,7 @@
 #include "scripting/ScriptRuntime.h"
 
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -32,6 +33,57 @@ std::filesystem::path FindRepoFile(const std::filesystem::path& relative_path) {
     current = current.parent_path();
   }
   return relative_path;
+}
+
+vkpt::scene::Vec3 RotateByQuat(const vkpt::scene::Vec3& value, const vkpt::scene::Quat& rotation) {
+  const float len_sq = rotation.x * rotation.x +
+                       rotation.y * rotation.y +
+                       rotation.z * rotation.z +
+                       rotation.w * rotation.w;
+  if (len_sq <= 1.0e-8f) {
+    return value;
+  }
+  const float inv_len = 1.0f / std::sqrt(len_sq);
+  const float qx = rotation.x * inv_len;
+  const float qy = rotation.y * inv_len;
+  const float qz = rotation.z * inv_len;
+  const float qw = rotation.w * inv_len;
+  const auto cross = [](const vkpt::scene::Vec3& a, const vkpt::scene::Vec3& b) {
+    return vkpt::scene::Vec3{
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    };
+  };
+  const vkpt::scene::Vec3 qv{qx, qy, qz};
+  const auto t = cross(qv, value);
+  const vkpt::scene::Vec3 two_t{t.x * 2.0f, t.y * 2.0f, t.z * 2.0f};
+  const auto qv_cross_t = cross(qv, two_t);
+  return {
+      value.x + two_t.x * qw + qv_cross_t.x,
+      value.y + two_t.y * qw + qv_cross_t.y,
+      value.z + two_t.z * qw + qv_cross_t.z,
+  };
+}
+
+[[maybe_unused]] bool CameraLooksAtHeroCenter(const vkpt::scene::TransformComponent& camera,
+                                              const vkpt::scene::TransformComponent& hero) {
+  constexpr float kTargetY = 1.35f;
+  const auto forward = RotateByQuat({0.0f, 0.0f, -1.0f}, camera.rotation);
+  const vkpt::scene::Vec3 to_target{
+      hero.translation.x - camera.translation.x,
+      hero.translation.y + kTargetY - camera.translation.y,
+      hero.translation.z - camera.translation.z,
+  };
+  const float forward_len =
+      std::sqrt(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z);
+  const float target_len =
+      std::sqrt(to_target.x * to_target.x + to_target.y * to_target.y + to_target.z * to_target.z);
+  if (forward_len <= 1.0e-6f || target_len <= 1.0e-6f) {
+    return false;
+  }
+  const float dot = forward.x * to_target.x + forward.y * to_target.y + forward.z * to_target.z;
+  return dot / (forward_len * target_len) > 0.995f;
 }
 
 }  // namespace
@@ -227,8 +279,6 @@ int main() {
 #ifdef PT_ENABLE_LUA
   bool moved_hero_root = false;
   bool moved_camera = false;
-  bool assigned_camera = false;
-  bool assigned_light = false;
   for (const auto& command : third_person_commands.commands()) {
     if (const auto* set_transform =
             std::get_if<vkpt::scene::WorldCommandBuffer::SetTransformCommand>(&command.payload)) {
@@ -238,26 +288,112 @@ int main() {
       if (set_transform->id == 9101u) {
         moved_camera = true;
       }
-    } else if (const auto* assign_camera =
-                   std::get_if<vkpt::scene::WorldCommandBuffer::AssignCameraCommand>(&command.payload)) {
-      if (assign_camera->id == 9101u && assign_camera->camera.fov > 0.0f) {
-        assigned_camera = true;
-      }
-    } else if (const auto* assign_light =
-                   std::get_if<vkpt::scene::WorldCommandBuffer::AssignLightCommand>(&command.payload)) {
-      if (assign_light->id == 9103u && assign_light->light.intensity > 0.0f) {
-        assigned_light = true;
-      }
     }
   }
   if (!Check(third_person_dispatch.hook_call_count == 2u, "Lua third-person dispatch should call both update hooks") ||
-      !Check(third_person_dispatch.command_count_after >= 8u,
-             "Lua third-person dispatch should emit gameplay transform/camera/light commands") ||
+      !Check(third_person_dispatch.command_count_after >= 7u,
+             "Lua third-person dispatch should emit gameplay transform commands without per-frame light rebuilds") ||
       !Check(third_person_dispatch.diagnostics.empty(), "Lua third-person dispatch should not report diagnostics") ||
       !Check(moved_hero_root, "W input should move the hero root forward") ||
-      !Check(moved_camera, "third-person script should move the action camera") ||
-      !Check(assigned_camera, "third-person script should update the camera component") ||
-      !Check(assigned_light, "third-person light script should update the key light")) {
+      !Check(moved_camera, "third-person script should move the action camera")) {
+    return 1;
+  }
+
+  vkpt::scene::WorldCommandBuffer third_person_strafe_commands;
+  third_person_context.input.active_keys = {'D'};
+  const auto third_person_strafe_dispatch = third_person_runtime->dispatch_hook(
+      third_person_world_result.value(),
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      third_person_context,
+      third_person_strafe_commands);
+  bool strafed_right = false;
+  bool camera_locked = false;
+  bool have_strafe_hero = false;
+  bool have_strafe_camera = false;
+  vkpt::scene::TransformComponent strafe_hero_transform;
+  vkpt::scene::TransformComponent strafe_camera_transform;
+  for (const auto& command : third_person_strafe_commands.commands()) {
+    const auto* set_transform =
+        std::get_if<vkpt::scene::WorldCommandBuffer::SetTransformCommand>(&command.payload);
+    if (set_transform == nullptr) {
+      continue;
+    }
+    if (set_transform->id == 9110u &&
+        set_transform->transform.translation.x > 0.0001f &&
+        std::abs(set_transform->transform.translation.z) < 0.0001f) {
+      strafed_right = true;
+      strafe_hero_transform = set_transform->transform;
+      have_strafe_hero = true;
+    }
+    if (set_transform->id == 9101u &&
+        set_transform->transform.translation.x > 0.0001f &&
+        set_transform->transform.translation.z > 4.9f) {
+      camera_locked = true;
+      strafe_camera_transform = set_transform->transform;
+      have_strafe_camera = true;
+    }
+  }
+  if (!Check(third_person_strafe_dispatch.hook_call_count == 2u,
+             "Lua third-person strafe dispatch should call both update hooks") ||
+      !Check(third_person_strafe_dispatch.command_count_after >= 7u,
+             "D input should emit strafe transform commands") ||
+      !Check(strafed_right, "D input should move the hero right without forward drift") ||
+      !Check(camera_locked, "D input should keep the action camera locked behind the hero") ||
+      !Check(have_strafe_hero && have_strafe_camera &&
+                 CameraLooksAtHeroCenter(strafe_camera_transform, strafe_hero_transform),
+             "D input camera should remain centered on the hero")) {
+    return 1;
+  }
+
+  vkpt::scene::WorldCommandBuffer third_person_mouse_commands;
+  third_person_context.input.active_keys = {'W'};
+  third_person_context.input.mouse_delta_x = 100.0f;
+  third_person_context.input.mouse_delta_y = 0.0f;
+  const auto third_person_mouse_dispatch = third_person_runtime->dispatch_hook(
+      third_person_world_result.value(),
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      third_person_context,
+      third_person_mouse_commands);
+  bool mouse_steered_hero = false;
+  bool mouse_steered_movement = false;
+  bool mouse_steered_camera = false;
+  bool have_mouse_hero = false;
+  bool have_mouse_camera = false;
+  vkpt::scene::TransformComponent mouse_hero_transform;
+  vkpt::scene::TransformComponent mouse_camera_transform;
+  for (const auto& command : third_person_mouse_commands.commands()) {
+    const auto* set_transform =
+        std::get_if<vkpt::scene::WorldCommandBuffer::SetTransformCommand>(&command.payload);
+    if (set_transform == nullptr) {
+      continue;
+    }
+    if (set_transform->id == 9110u) {
+      mouse_hero_transform = set_transform->transform;
+      have_mouse_hero = true;
+      if (set_transform->transform.rotation.y < -0.01f) {
+        mouse_steered_hero = true;
+      }
+      if (set_transform->transform.translation.x < -0.0001f &&
+          set_transform->transform.translation.z < -0.0001f) {
+        mouse_steered_movement = true;
+      }
+    }
+    if (set_transform->id == 9101u && set_transform->transform.translation.x > 0.1f) {
+      mouse_steered_camera = true;
+      mouse_camera_transform = set_transform->transform;
+      have_mouse_camera = true;
+    }
+  }
+  if (!Check(third_person_mouse_dispatch.hook_call_count == 2u,
+             "Lua third-person mouse dispatch should call both update hooks") ||
+      !Check(third_person_mouse_dispatch.command_count_after >= 7u,
+             "mouse look with W should emit gameplay transform commands") ||
+      !Check(mouse_steered_hero, "mouse look should rotate the hero") ||
+      !Check(mouse_steered_movement, "mouse look should steer W movement direction") ||
+      !Check(mouse_steered_camera, "mouse look should rotate the chase camera around the hero") ||
+      !Check(have_mouse_hero && have_mouse_camera &&
+                 CameraLooksAtHeroCenter(mouse_camera_transform, mouse_hero_transform),
+             "mouse look camera should remain centered on the hero")) {
     return 1;
   }
 #else

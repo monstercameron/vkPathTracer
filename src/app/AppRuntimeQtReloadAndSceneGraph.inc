@@ -1,4 +1,7 @@
       std::function<bool(std::string_view)> qtReloadEditedScene;
+      std::function<bool(const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>&)>
+          qtPublishInstanceTransformUpdates;
+      uint32_t qtScriptTransformRevision = 1u;
       auto qtReloadScriptsFromDocument = [&](std::string_view reason) {
         auto worldResult = qtSceneDocument.to_world();
         if (!worldResult) {
@@ -29,28 +32,128 @@
         std::size_t setTransformCount = 0u;
         std::size_t assignCameraCount = 0u;
         std::size_t assignLightCount = 0u;
+        std::unordered_set<vkpt::core::StableId> transformTouchedIds;
+        bool cameraStateTouched = false;
+        bool cameraTransformTouched = false;
+        bool fullSceneReloadNeeded = false;
+        bool scriptBindingsDirty = false;
         bool touchesHeroRoot = false;
         bool touchesActionCamera = false;
         bool touchesActionLight = false;
+        auto hasTouchedTransformAncestor =
+            [&](const vkpt::scene::SceneEntityDefinition& entity) {
+          if (transformTouchedIds.contains(entity.id)) {
+            return true;
+          }
+          std::unordered_set<vkpt::core::StableId> visited;
+          vkpt::core::StableId parent = entity.has_hierarchy ? entity.hierarchy.parent : 0u;
+          while (parent != 0u && visited.insert(parent).second) {
+            if (transformTouchedIds.contains(parent)) {
+              return true;
+            }
+            const auto* parentEntity = static_cast<const vkpt::scene::SceneEntityDefinition*>(nullptr);
+            for (const auto& candidate : qtSceneDocument.entities) {
+              if (candidate.id == parent) {
+                parentEntity = &candidate;
+                break;
+              }
+            }
+            if (parentEntity == nullptr) {
+              break;
+            }
+            parent = parentEntity->has_hierarchy ? parentEntity->hierarchy.parent : 0u;
+          }
+          return false;
+        };
+        auto markTransformTouched = [&](vkpt::core::StableId id) {
+          transformTouchedIds.insert(id);
+          touchesHeroRoot = touchesHeroRoot || id == 9110u;
+          touchesActionCamera = touchesActionCamera || id == 9101u;
+          if (auto* entity = qtFindEntity(id)) {
+            cameraTransformTouched = cameraTransformTouched || entity->has_camera;
+            fullSceneReloadNeeded = fullSceneReloadNeeded ||
+                                    entity->has_light ||
+                                    entity->has_sdf_primitive;
+          }
+        };
+        auto classifyComponentMutation =
+            [&](vkpt::core::StableId id, vkpt::scene::ComponentKind kind, bool removing) {
+          switch (kind) {
+            case vkpt::scene::ComponentKind::Identity:
+              scriptBindingsDirty = true;
+              break;
+            case vkpt::scene::ComponentKind::Transform:
+              if (removing) {
+                fullSceneReloadNeeded = true;
+              } else {
+                markTransformTouched(id);
+              }
+              break;
+            case vkpt::scene::ComponentKind::Camera:
+              cameraStateTouched = cameraStateTouched || !removing;
+              fullSceneReloadNeeded = fullSceneReloadNeeded || removing;
+              break;
+            case vkpt::scene::ComponentKind::Script:
+              scriptBindingsDirty = true;
+              break;
+            case vkpt::scene::ComponentKind::Hierarchy:
+            case vkpt::scene::ComponentKind::Light:
+            case vkpt::scene::ComponentKind::MeshRenderer:
+            case vkpt::scene::ComponentKind::SdfPrimitive:
+            case vkpt::scene::ComponentKind::MaterialOverride:
+            case vkpt::scene::ComponentKind::PhysicsBody:
+            case vkpt::scene::ComponentKind::Animation:
+              fullSceneReloadNeeded = true;
+              break;
+            case vkpt::scene::ComponentKind::BenchmarkTag:
+            case vkpt::scene::ComponentKind::Count:
+              break;
+          }
+        };
         for (const auto& command : commands.commands()) {
           std::visit([&](const auto& payload) {
             using T = std::decay_t<decltype(payload)>;
             if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::CreateEntityCommand>) {
               ++createCount;
+              fullSceneReloadNeeded = true;
+              scriptBindingsDirty = true;
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::DestroyEntityCommand>) {
               ++destroyCount;
+              fullSceneReloadNeeded = true;
+              scriptBindingsDirty = true;
+            } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::SetComponentCommand> ||
+                                 std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AddComponentCommand>) {
+              classifyComponentMutation(payload.id, payload.kind, false);
+            } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::RemoveComponentCommand>) {
+              classifyComponentMutation(payload.id, payload.kind, true);
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::SetTransformCommand>) {
               ++setTransformCount;
-              touchesHeroRoot = touchesHeroRoot || payload.id == 9110u;
-              touchesActionCamera = touchesActionCamera || payload.id == 9101u;
+              markTransformTouched(payload.id);
+            } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::ReparentEntityCommand>) {
+              fullSceneReloadNeeded = true;
+            } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignMaterialCommand>) {
+              fullSceneReloadNeeded = true;
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignCameraCommand>) {
               ++assignCameraCount;
+              cameraStateTouched = true;
               touchesActionCamera = touchesActionCamera || payload.id == 9101u;
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignLightCommand>) {
               ++assignLightCount;
+              fullSceneReloadNeeded = true;
               touchesActionLight = touchesActionLight || payload.id == 9103u;
             }
           }, command.payload);
+        }
+        if (!transformTouchedIds.empty()) {
+          for (const auto& entity : qtSceneDocument.entities) {
+            if ((entity.has_light || entity.has_sdf_primitive) &&
+                hasTouchedTransformAncestor(entity)) {
+              fullSceneReloadNeeded = true;
+            }
+            if (entity.has_camera && hasTouchedTransformAncestor(entity)) {
+              cameraTransformTouched = true;
+            }
+          }
         }
         logger.log(vkpt::log::Severity::Info,
                    "scripts",
@@ -61,6 +164,11 @@
                     {"set_transform", std::to_string(setTransformCount)},
                     {"assign_camera", std::to_string(assignCameraCount)},
                     {"assign_light", std::to_string(assignLightCount)},
+                    {"transform_entities", std::to_string(transformTouchedIds.size())},
+                    {"camera_state_touched", cameraStateTouched ? "true" : "false"},
+                    {"camera_transform_touched", cameraTransformTouched ? "true" : "false"},
+                    {"full_scene_reload_needed", fullSceneReloadNeeded ? "true" : "false"},
+                    {"script_bindings_dirty", scriptBindingsDirty ? "true" : "false"},
                     {"touches_hero_root_9110", touchesHeroRoot ? "true" : "false"},
                     {"touches_action_camera_9101", touchesActionCamera ? "true" : "false"},
                     {"touches_action_light_9103", touchesActionLight ? "true" : "false"}},
@@ -260,10 +368,131 @@
                      qtFrameCount);
           return false;
         }
+
+        if (!fullSceneReloadNeeded) {
+          bool incrementalOk = true;
+          bool postedTransforms = false;
+          bool postedCamera = false;
+
+          if (!transformTouchedIds.empty()) {
+            std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates;
+            updates.reserve(qtScene.instances.size());
+            const auto worldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
+            const auto* world = worldSnapshot ? &worldSnapshot.value() : nullptr;
+            for (std::size_t index = 0; index < qtScene.instances.size(); ++index) {
+              const auto entityId = qtScene.instances[index].entity_id;
+              const auto* entity = qtFindEntity(entityId);
+              if (entity == nullptr) {
+                continue;
+              }
+              const auto worldTransform = ResolveEntityWorldTransform(*entity, world);
+              vkpt::pathtracer::RTInstanceTransformUpdate update;
+              update.entity_id = entityId;
+              update.instance_index = static_cast<uint32_t>(index);
+              update.flags = vkpt::pathtracer::kRTInstanceFlagDynamicTransform |
+                             vkpt::pathtracer::kRTInstanceFlagTransformDirty;
+              update.transform_revision = qtScriptTransformRevision++;
+              update.translation = ToPtVec3(worldTransform.translation);
+              update.rotation = ToPtQuat4(worldTransform.rotation);
+              update.scale = ToPtVec3(worldTransform.scale);
+              updates.push_back(update);
+            }
+
+            if (!updates.empty()) {
+              incrementalOk = qtPublishInstanceTransformUpdates &&
+                              qtPublishInstanceTransformUpdates(updates);
+              postedTransforms = incrementalOk;
+            }
+          }
+
+          if (incrementalOk && (cameraStateTouched || cameraTransformTouched)) {
+            auto* activeCamera = qtFindActiveCameraEntity();
+            incrementalOk = activeCamera != nullptr && activeCamera->has_camera;
+            if (incrementalOk) {
+              const auto& camera = activeCamera->camera;
+              qtScene.camera_fov_deg = camera.fov;
+              qtScene.camera_focal_length_mm = camera.focal_length_mm;
+              qtScene.camera_sensor_width_mm = camera.sensor_width_mm;
+              qtScene.camera_sensor_height_mm = camera.sensor_height_mm;
+              qtScene.camera_aperture_radius = camera.aperture_radius;
+              qtScene.camera_focus_distance = camera.focus_distance;
+              qtScene.camera_f_stop = camera.f_stop;
+              qtScene.camera_shutter_seconds = camera.shutter_seconds;
+              qtScene.camera_iso = camera.iso;
+              qtScene.camera_exposure_compensation = camera.exposure_compensation;
+              qtScene.camera_white_balance_kelvin = camera.white_balance_kelvin;
+              qtScene.camera_iris_blade_count = camera.iris_blade_count;
+              qtScene.camera_iris_rotation_degrees = camera.iris_rotation_degrees;
+              qtScene.camera_iris_roundness = camera.iris_roundness;
+              qtScene.camera_anamorphic_squeeze = camera.anamorphic_squeeze;
+
+              if (cameraTransformTouched && activeCamera->has_transform) {
+                const auto worldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
+                const auto* world = worldSnapshot ? &worldSnapshot.value() : nullptr;
+                const auto transform = ResolveEntityWorldTransform(*activeCamera, world);
+                qtScene.camera_position = ToPtVec3(transform.translation);
+                const auto forward = PtNormalize(
+                    RotatePointByQuat({0.0f, 0.0f, -1.0f}, transform.rotation),
+                    {0.0f, 0.0f, -1.0f});
+                qtScene.camera_target = PtAdd(qtScene.camera_position, forward);
+                qtScene.camera_up = PtNormalize(
+                    RotatePointByQuat({0.0f, 1.0f, 0.0f}, transform.rotation),
+                    {0.0f, 1.0f, 0.0f});
+              }
+
+              syncQtCameraPoseFromScene();
+              syncQtFpsAnglesFromPose();
+              qtCameraFocusDistance = std::max(
+                  0.25f,
+                  qtScene.camera_focus_distance > 0.0f
+                      ? qtScene.camera_focus_distance
+                      : PtLength(PtSub(qtCameraPose.target, qtCameraPose.position)));
+              qtCameraFocusPoint =
+                  PtAdd(qtCameraPose.position, PtMul(qtCameraForward(), qtCameraFocusDistance));
+              qtPublishedSample.store(0u, std::memory_order_relaxed);
+              qtPublishedRays.store(0u, std::memory_order_relaxed);
+              const auto cameraState = vkpt::pathtracer::ExtractCameraState(qtScene);
+              if (qtUseBg && qtRenderCoordinator) {
+                qtRenderCoordinator->post_camera_state(cameraState);
+                postedCamera = true;
+              } else if (!qtUseBg && qtTracerReady) {
+                bool cameraOk = qtTracer->update_camera_state(cameraState);
+                if (!cameraOk) {
+                  cameraOk = qtTracer->load_scene_snapshot(qtScene) &&
+                             qtTracer->build_or_update_acceleration();
+                }
+                qtTracerReady = cameraOk && qtTracer->reset_accumulation();
+                qtSampleIndex = 0u;
+                postedCamera = qtTracerReady;
+              } else {
+                incrementalOk = false;
+              }
+            }
+          }
+
+          if (incrementalOk) {
+            if (scriptBindingsDirty) {
+              qtReloadScriptsFromDocument("script command");
+            }
+            qtDockPanelsDirty = true;
+            qtPreviewStatus = "lua playable";
+            logger.log(vkpt::log::Severity::Info,
+                       "scripts",
+                       "Lua script commands applied incrementally",
+                       {{"commands", std::to_string(commands.commands().size())},
+                        {"transform_updates", postedTransforms ? "true" : "false"},
+                        {"camera_update", postedCamera ? "true" : "false"},
+                        {"script_bindings_reloaded", scriptBindingsDirty ? "true" : "false"}},
+                       qtFrameCount);
+            return true;
+          }
+        }
+
         if (qtReloadEditedScene) {
           qtReloadEditedScene("script command");
+        } else if (scriptBindingsDirty) {
+          qtReloadScriptsFromDocument("script command");
         }
-        qtReloadScriptsFromDocument("script command");
         logger.log(vkpt::log::Severity::Info,
                    "scripts",
                    "Lua script commands applied and scene reloaded",
@@ -308,8 +537,13 @@
                     {"lua_compiled_in", qtScriptRuntime->lua_compiled_in() ? "true" : "false"},
                     {"execution_available", qtScriptRuntime->execution_available() ? "true" : "false"},
                     {"active_keys", std::to_string(context.input.active_keys.size())},
+                    {"mouse_delta_x", std::to_string(context.input.mouse_delta_x)},
+                    {"mouse_delta_y", std::to_string(context.input.mouse_delta_y)},
                     {"b_down", qtKeyActive('B') ? "true" : "false"},
-                    {"w_down", qtKeyActive('W') ? "true" : "false"}},
+                    {"w_down", qtKeyActive('W') ? "true" : "false"},
+                    {"a_down", qtKeyActive('A') ? "true" : "false"},
+                    {"s_down", qtKeyActive('S') ? "true" : "false"},
+                    {"d_down", qtKeyActive('D') ? "true" : "false"}},
                    frameIndex);
         qtScriptState.last_dispatch =
             qtScriptRuntime->dispatch_hook(world, hook, context, commands);
@@ -363,10 +597,15 @@
                     {"dt", std::to_string(dtSeconds)},
                     {"execution_available", qtScriptRuntime->execution_available() ? "true" : "false"},
                     {"active_keys", std::to_string(qtKeysDown.size())},
-                    {"w_down", qtKeyActive('W') ? "true" : "false"}},
+                    {"mouse_delta_x", std::to_string(qtPendingFpsLookDx)},
+                    {"mouse_delta_y", std::to_string(qtPendingFpsLookDy)},
+                    {"w_down", qtKeyActive('W') ? "true" : "false"},
+                    {"a_down", qtKeyActive('A') ? "true" : "false"},
+                    {"s_down", qtKeyActive('S') ? "true" : "false"},
+                    {"d_down", qtKeyActive('D') ? "true" : "false"}},
                    frameIndex);
         const auto interval = qtScriptRuntime->execution_available()
-            ? std::chrono::milliseconds(16)
+            ? std::chrono::milliseconds(33)
             : std::chrono::milliseconds(500);
         if (qtLastScriptAutoDispatch != std::chrono::steady_clock::time_point{} &&
             now - qtLastScriptAutoDispatch < interval) {
@@ -471,7 +710,7 @@
       };
       uint32_t qtAnimationTransformRevision = 1u;
       const auto qtAnimationStartTime = std::chrono::steady_clock::now();
-      auto qtPublishInstanceTransformUpdates =
+      qtPublishInstanceTransformUpdates =
           [&](const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) {
         if (updates.empty() || !qtTracerReady) {
           return false;
