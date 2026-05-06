@@ -207,6 +207,7 @@
       std::uint64_t qtFpsAppliedMoveSequence = 0u;
       bool qtDockPanelsDirty = true;
       auto qtLastFpsDockRefresh = std::chrono::steady_clock::time_point{};
+      auto qtLastFpsSlowLog = std::chrono::steady_clock::time_point{};
       constexpr auto kQtFpsDockRefreshInterval = std::chrono::milliseconds(250);
       auto qtMarkFpsDockPanelsDirty = [&](bool immediate) {
         const auto now = std::chrono::steady_clock::now();

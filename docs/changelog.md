@@ -11,6 +11,7 @@
 - Refined scene conversion dynamic-instance classification so edited dirty transforms do not permanently force dynamic geometry classification.
 - Expanded DXR descriptor binding and shader shadow traversal to use static, dynamic, and local BVH buffers instead of broad per-instance triangle loops.
 - Added Vulkan soft light sampling and kept D3D12 DXR build defaults biased toward faster rebuild/update iteration.
+- Added FPS collision solve and Qt physics slice timing diagnostics, reduced physics collision substeps, and increased FPS movement speed scaling.
 
 ## 2026-05-06 (session 35)
 

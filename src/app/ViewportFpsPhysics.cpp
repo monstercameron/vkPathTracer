@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <exception>
 #include <memory>
@@ -448,7 +449,11 @@ void FpsCollisionWorker::run(std::stop_token stop) {
 
     static const auto kEmptyPickables = std::vector<ViewportPickable>{};
     const auto &collisionPickables = pickables ? *pickables : kEmptyPickables;
+    const auto solveStart = std::chrono::steady_clock::now();
     auto result = SolveFpsMovement(collisionPickables, request);
+    result.solve_ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - solveStart)
+                          .count();
 
     {
       std::scoped_lock lock(m_mutex);
