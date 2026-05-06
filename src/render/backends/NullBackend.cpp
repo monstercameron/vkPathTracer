@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 namespace vkpt::render {
 
@@ -30,7 +31,7 @@ bool NullShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc,
 }
 
 bool NullShaderCache::query(std::string_view key, std::string& binary) {
-  const auto it = m_entries.find(std::string(key));
+  const auto it = m_entries.find(key);
   if (it == m_entries.end()) {
     return false;
   }
@@ -44,7 +45,7 @@ bool NullShaderCache::store(std::string_view key, const std::string& binary) {
 }
 
 bool NullShaderCache::invalidate(std::string_view key) {
-  const auto it = m_entries.find(std::string(key));
+  const auto it = m_entries.find(key);
   if (it == m_entries.end()) {
     return false;
   }
@@ -163,8 +164,19 @@ ResourceHandle NullResourceAllocator::create_texture(const TextureDesc& desc) {
   ResourceRecord record;
   record.label = desc.debug_label;
   record.is_texture = true;
-  const auto bytes = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.width)) *
-                     static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.height)) * 4u;
+  // Store simulated textures as tightly packed RGBA8 bytes; format semantics are
+  // reported through capabilities rather than modeled in this allocator.
+  const auto width = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.width));
+  const auto height = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.height));
+  constexpr std::size_t kBytesPerTexel = 4u;
+  if (height > std::numeric_limits<std::size_t>::max() / width) {
+    return kInvalidHandle;
+  }
+  const auto texels = width * height;
+  if (texels > std::numeric_limits<std::size_t>::max() / kBytesPerTexel) {
+    return kInvalidHandle;
+  }
+  const auto bytes = texels * kBytesPerTexel;
   record.size_bytes = bytes;
   record.data.assign(bytes, 0u);
   m_resources.emplace(handle, std::move(record));
@@ -251,6 +263,7 @@ std::string NullBackend::name() const {
 
 RenderBackendCapabilities NullBackend::capabilities() const {
   RenderBackendCapabilities caps;
+  // The null backend advertises only contracts that can be honored in CPU memory.
   caps.backend_name = name();
   caps.compute = true;
   caps.storage_buffers = true;

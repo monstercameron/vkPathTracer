@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -133,6 +134,13 @@ struct RenderStats {
   uint64_t seed = 0;
 };
 
+/// Stable identity for one random-number stream.
+///
+/// The scalar and GPU tracers derive sampler state from this tuple instead of
+/// mutable global RNG state. Keeping pixel, sample, frame, path, and dimension
+/// explicit makes tiled/multithreaded rendering reproducible: any worker can
+/// regenerate the same random sequence for the same path without depending on
+/// scheduling order.
 struct SampleKey {
   vkpt::core::FrameIndex frame_index = 0;
   vkpt::core::StableId pixel_index = 0;
@@ -143,6 +151,11 @@ struct SampleKey {
   uint64_t seed = 0;
 };
 
+/// Per-render diagnostic counters accumulated by the active integrator.
+///
+/// These are intentionally low-level. Benchmarks and trace probes use them to
+/// separate actual shading work from acceleration-structure quality issues
+/// such as excessive node or leaf visits.
 struct SampleCounters {
   uint64_t samples = 0;
   uint64_t rays = 0;
@@ -271,6 +284,13 @@ struct RTHitLight {
   float spot_outer_cos = -1.0f;
 };
 
+/// Flattened render-time scene consumed by CPU, Vulkan, and D3D12 backends.
+///
+/// Scene extraction resolves the editor/ECS representation into packed arrays:
+/// triangle instances point into global index streams, dynamic instances also
+/// retain local ranges and transform state, and SDF/light/material tables are
+/// laid out so backends can upload them directly. Treat this as a snapshot; live
+/// ECS mutation should produce transform/material deltas or a new snapshot.
 struct RTSceneData {
   std::vector<Vec3> vertices;
   std::vector<Vec2> texcoords;
@@ -328,10 +348,31 @@ struct RTCameraState {
   float anamorphic_squeeze = 1.0f;
 };
 
+struct RTMaterialUpdate {
+  uint32_t material_index = 0u;
+  RTMaterial material{};
+};
+
+struct RTLightUpdate {
+  uint32_t light_index = 0u;
+  RTHitLight light{};
+};
+
+struct RTSceneDeltaUpdate {
+  std::vector<RTMaterialUpdate> materials;
+  std::vector<RTLightUpdate> lights;
+  bool environment_color_changed = false;
+  Vec3 environment_color{};
+};
+
 RTCameraState ExtractCameraState(const RTSceneData& scene);
 void ApplyCameraState(RTSceneData& scene, const RTCameraState& camera);
 bool ApplyInstanceTransformUpdates(RTSceneData& scene,
                                    const std::vector<RTInstanceTransformUpdate>& updates);
+bool ApplySceneDeltaUpdate(RTSceneData& scene, const RTSceneDeltaUpdate& update);
+void MergeSceneDeltaUpdates(RTSceneDeltaUpdate& dst, const RTSceneDeltaUpdate& src);
+std::optional<RTSceneDeltaUpdate> BuildSceneDeltaUpdate(const RTSceneData& before,
+                                                        const RTSceneData& after);
 
 struct GpuLayoutField {
   std::string struct_name;
@@ -470,6 +511,10 @@ class IPathTracer {
   // needs a full scene snapshot/acceleration rebuild for moving objects.
   virtual bool update_instance_transforms(
       const std::vector<RTInstanceTransformUpdate>& /*updates*/) { return false; }
+  // Update material/light/environment records without rebuilding geometry or
+  // acceleration structures. Returns false when the backend requires a full
+  // scene upload for this delta.
+  virtual bool update_scene_delta(const RTSceneDeltaUpdate& /*update*/) { return false; }
   virtual bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) = 0;
   virtual bool render_sample_batch_cancellable(uint32_t start_y,
                                                uint32_t end_y,
@@ -501,6 +546,7 @@ class NullPathTracer final : public IPathTracer {
   bool update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) override;
   bool update_camera_state(const RTCameraState& camera) override;
   bool update_instance_transforms(const std::vector<RTInstanceTransformUpdate>& updates) override;
+  bool update_scene_delta(const RTSceneDeltaUpdate& update) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
   FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }
   FilmHdr resolve_hdr() const override { return m_film.resolve_hdr(); }
@@ -530,6 +576,7 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
   bool update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) override;
   bool update_camera_state(const RTCameraState& camera) override;
   bool update_instance_transforms(const std::vector<RTInstanceTransformUpdate>& updates) override;
+  bool update_scene_delta(const RTSceneDeltaUpdate& update) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
   std::string_view name() const override { return "scalar-cpu"; }
   bool set_accelerator(IRayAccelerator* accelerator) override;
@@ -544,7 +591,7 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
   void shutdown() override;
 
  private:
-  struct RenderBatchAccum {
+  struct alignas(64) RenderBatchAccum {
     float lum_sum = 0.0f;
     float sample_max = 0.0f;
     std::uint64_t sample_count = 0u;

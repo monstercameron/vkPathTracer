@@ -335,6 +335,9 @@
                 false,
                 entity->transform,
                 InverseSceneTransformPoint(hit.pivot, entity->transform)});
+            if (entity->has_light || entity->has_camera || entity->has_sdf_primitive) {
+              qtGizmoDrag.scene_reload_pending = true;
+            }
             continue;
           }
           if (auto* primitive = qtFindSdfPrimitive(selectedId)) {
@@ -343,6 +346,7 @@
                 true,
                 primitive->transform,
                 InverseSceneTransformPoint(hit.pivot, primitive->transform)});
+            qtGizmoDrag.scene_reload_pending = true;
           }
         }
         if (qtGizmoDrag.entities.empty()) {
@@ -458,6 +462,32 @@
           }
           qtWriteGizmoTransform(start, transform);
         }
+        std::unordered_set<vkpt::core::StableId> transformTouchedIds;
+        transformTouchedIds.reserve(qtGizmoDrag.entities.size());
+        for (const auto& start : qtGizmoDrag.entities) {
+          if (start.sdf_primitive) {
+            qtGizmoDrag.scene_reload_pending = true;
+            continue;
+          }
+          transformTouchedIds.insert(start.entity_id);
+        }
+        if (!transformTouchedIds.empty()) {
+          auto transformBuild = qtBuildInstanceTransformUpdatesForTouchedEntities(
+              transformTouchedIds,
+              0u,
+              qtScriptTransformRevision);
+          if (transformBuild.unsupported_instances) {
+            qtGizmoDrag.scene_reload_pending = true;
+          }
+          if (transformBuild.updates.empty()) {
+            qtGizmoDrag.scene_reload_pending = true;
+          }
+          if (!transformBuild.updates.empty() &&
+              !(qtPublishInstanceTransformUpdates &&
+                qtPublishInstanceTransformUpdates(transformBuild.updates))) {
+            qtGizmoDrag.scene_reload_pending = true;
+          }
+        }
         PushUiEvent(ui_event_log,
                     "viewport_gizmo_drag",
                     "viewport",
@@ -466,7 +496,17 @@
                     {},
                     vkpt::editor::ToString(ui_runtime_state.active_gizmo_mode),
                     "gizmo manipulating selection");
-        qtReloadEditedScene("drag");
+      };
+      auto qtCommitGizmoDrag = [&]() {
+        if (!qtGizmoDrag.active) {
+          return;
+        }
+        if (qtGizmoDrag.scene_reload_pending) {
+          qtReloadEditedScene("drag commit");
+        } else {
+          qtRefreshViewportPickablesNow();
+          qtMarkTransformDockPanelsDirty(true);
+        }
       };
       auto qtSetGizmoMode = [&](vkpt::editor::GizmoMode mode,
                                 std::string_view source,

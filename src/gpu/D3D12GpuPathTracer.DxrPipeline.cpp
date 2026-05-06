@@ -9,6 +9,8 @@
 namespace vkpt::gpu {
 
 void D3D12GpuPathTracer::destroy_dxr_resources() {
+  // The SBT is persistently mapped while the DXR pipeline is alive; unmap it
+  // before releasing the upload resource to keep teardown order explicit.
   if (m_sbtMappedPtr && m_sbtBuffer) { m_sbtBuffer->Unmap(0, nullptr); m_sbtMappedPtr = nullptr; }
   m_rtPsoProps.Reset();    m_rtPso.Reset();
   m_sbtBuffer.Reset();     m_dxrDescHeap.Reset();
@@ -86,6 +88,8 @@ bool D3D12GpuPathTracer::compile_dxil(const std::string& path, std::vector<uint8
   src.Size     = sourceBlob->GetBufferSize();
   src.Encoding = DXC_CP_ACP;
 
+  // Runtime defines keep the DXR shader feature set aligned with benchmark
+  // toggles without requiring multiple checked-in DXIL variants.
   const bool dxrShadowRays = ParseEnvBool("PT_D3D12_DXR_SHADOW_RAYS", true);
   const wchar_t* shadowRayDefine =
       dxrShadowRays ? L"-DPT_D3D12_DXR_SHADOW_RAYS=1" : L"-DPT_D3D12_DXR_SHADOW_RAYS=0";
@@ -123,6 +127,8 @@ bool D3D12GpuPathTracer::compile_dxil(const std::string& path, std::vector<uint8
 }
 
 bool D3D12GpuPathTracer::create_dxr_global_root_sig() {
+  // Root bindings mirror pathtrace_rt.hlsl: constants, TLAS root SRV, then
+  // the descriptor table for scene buffers and the HDR film UAV.
   // Param 0: constants CBV (PCBuf) at b0
   // Param 1: root SRV at t0 (TLAS)
   // Param 2: descriptor table [t1-t9 SRV, u0 UAV]
@@ -178,6 +184,8 @@ bool D3D12GpuPathTracer::create_dxr_global_root_sig() {
 bool D3D12GpuPathTracer::create_dxr_pipeline() {
   if (!create_dxr_global_root_sig()) return false;
 
+  // The raygen shader owns the path loop, so TraceRay recursion depth stays at
+  // one even though the integrator can evaluate multiple path bounces.
   // Compile DXIL library
   std::vector<uint8_t> dxil;
   if (!compile_dxil(m_rtHlslPath, dxil)) return false;
@@ -241,7 +249,8 @@ bool D3D12GpuPathTracer::create_dxr_pipeline() {
     return false;
   }
 
-  // Build shader binding table (3 x 64-byte records: raygen, miss, hitgroup)
+  // Build shader binding table (3 x 64-byte records: raygen, miss, hitgroup).
+  // Records contain only identifiers because all resources are in the global root.
   constexpr UINT kSbtRecordSize  = 32; // D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES
   constexpr UINT kSbtRecordAlign = 64; // D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT
   constexpr UINT kSbtTotalBytes  = kSbtRecordAlign * 3; // raygen + miss + hitgroup
@@ -265,7 +274,14 @@ bool D3D12GpuPathTracer::create_dxr_pipeline() {
     LogError("create_dxr_pipeline: " + m_error);
     return false;
   }
-  m_sbtBuffer->Map(0, nullptr, &m_sbtMappedPtr);
+  const HRESULT mapSbtHr = m_sbtBuffer->Map(0, nullptr, &m_sbtMappedPtr);
+  if (FAILED(mapSbtHr) || m_sbtMappedPtr == nullptr) {
+    m_error = "SBT map hr=" + FormatHr(mapSbtHr);
+    LogError("create_dxr_pipeline: " + m_error);
+    m_sbtMappedPtr = nullptr;
+    m_sbtBuffer.Reset();
+    return false;
+  }
   std::memset(m_sbtMappedPtr, 0, kSbtTotalBytes);
 
   auto* sbtBytes = static_cast<uint8_t*>(m_sbtMappedPtr);
@@ -275,6 +291,9 @@ bool D3D12GpuPathTracer::create_dxr_pipeline() {
   if (!rayGenId || !missId || !hitId) {
     m_error = "GetShaderIdentifier returned null — names may not match PSO exports";
     LogError("create_dxr_pipeline: " + m_error);
+    m_sbtBuffer->Unmap(0, nullptr);
+    m_sbtMappedPtr = nullptr;
+    m_sbtBuffer.Reset();
     return false;
   }
   std::memcpy(sbtBytes + 0,              rayGenId, kSbtRecordSize);

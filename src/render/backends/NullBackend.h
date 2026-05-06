@@ -11,12 +11,14 @@
 
 namespace vkpt::render {
 
+/// Shader compiler stub that validates synthetic compute descriptors.
 class NullShaderCompiler final : public IShaderCompiler {
  public:
   bool supports_feature(std::string_view feature) const override;
   bool compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) override;
 };
 
+/// In-memory shader cache used by the null backend for lifecycle tests.
 class NullShaderCache final : public IShaderCache {
  public:
   bool query(std::string_view key, std::string& binary) override;
@@ -26,9 +28,10 @@ class NullShaderCache final : public IShaderCache {
   std::vector<CachedManifest> dump_manifest() const override;
 
  private:
-  std::unordered_map<std::string, std::string> m_entries;
+  std::unordered_map<std::string, std::string, TransparentStringHash, std::equal_to<>> m_entries;
 };
 
+/// Command context that accepts commands without touching GPU state.
 class NullCommandContext final : public IRenderCommandContext {
  public:
   bool begin_frame() override { return true; }
@@ -40,6 +43,7 @@ class NullCommandContext final : public IRenderCommandContext {
   bool barrier(ResourceHandle resource, std::uint32_t usage_before, std::uint32_t usage_after) override;
 };
 
+/// Headless swapchain placeholder for code paths that expect presentation hooks.
 class NullSwapchain final : public IRenderSwapchain {
  public:
   explicit NullSwapchain(std::uint32_t width = 0u, std::uint32_t height = 0u);
@@ -53,6 +57,7 @@ class NullSwapchain final : public IRenderSwapchain {
   std::uint32_t m_height = 0u;
 };
 
+/// CPU-memory resource allocator used by the null backend.
 class NullResourceAllocator final : public IRenderResourceAllocator {
  public:
   ResourceHandle create_buffer(const BufferDesc& desc) override;
@@ -80,6 +85,7 @@ class NullResourceAllocator final : public IRenderResourceAllocator {
   std::unordered_map<ResourceHandle, ResourceRecord> m_resources;
 };
 
+/// Null render device with explicit begin/end lifetime gating command contexts.
 class NullDevice final : public IRenderDevice {
  public:
   explicit NullDevice(std::unique_ptr<NullResourceAllocator> allocator,
@@ -96,6 +102,7 @@ class NullDevice final : public IRenderDevice {
   bool m_running = false;
 };
 
+/// Simulated backend for tests, diagnostics, and fallback selection.
 class NullBackend final : public IRenderBackend {
  public:
   bool initialize() override;

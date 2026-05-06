@@ -151,6 +151,8 @@ std::optional<ViewportGizmoHit> PickSelectionGizmoHandle(
   const auto corners = BoundsCorners(bounds);
   std::size_t anchorIndex = 0u;
   float nearestDepth = std::numeric_limits<float>::infinity();
+  // Use the nearest projected corner as the handle origin so the overlay stays
+  // visible and hit targets do not hide behind the selected bounds.
   for (std::size_t i = 0; i < corners.size(); ++i) {
     const auto projected = ProjectWorldPointToOverlay(corners[i], camera, width,
                                                       height, renderAspect);
@@ -210,6 +212,9 @@ std::optional<ViewportGizmoHit> PickSelectionGizmoHandle(
   constexpr float kScaleHitRadius = 12.0f;
   const auto accept_hit = [&](float distance, int priority,
                               ViewportGizmoHit hit) {
+    // Different handle types can overlap in screen space; priority keeps small
+    // scale endpoints and rotate arcs usable without requiring pixel-perfect
+    // mouse placement.
     constexpr float kTieBreakPixels = 0.75f;
     if (distance + kTieBreakPixels < bestDistance ||
         (std::fabs(distance - bestDistance) <= kTieBreakPixels &&
@@ -403,6 +408,8 @@ void AddSelectionGizmo(vkpt::platform::QtSelectionOverlayBox &box,
   const auto corners = BoundsCorners(bounds);
   std::size_t anchorIndex = 0u;
   float nearestDepth = std::numeric_limits<float>::infinity();
+  // Rendering mirrors the picking anchor calculation; changing one path should
+  // be reflected in the other to keep hover feedback aligned with hit tests.
   for (std::size_t i = 0; i < corners.size(); ++i) {
     const auto projected = ProjectWorldPointToOverlay(corners[i], camera, width,
                                                       height, renderAspect);

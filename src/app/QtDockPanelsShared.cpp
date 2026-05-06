@@ -296,7 +296,7 @@ std::vector<std::filesystem::path> QtDockFindAssetFiles(
     bool recursive) {
   std::vector<std::filesystem::path> files;
   std::error_code ec;
-  if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
+  if (!std::filesystem::exists(root, ec) || ec || !std::filesystem::is_directory(root, ec) || ec) {
     return files;
   }
 

@@ -114,6 +114,8 @@ vkpt::core::Result<void> HeadlessPlatform::initialize() {
   if (m_initialized) {
     return vkpt::core::Result<void>::ok();
   }
+  // Headless still creates a logical window so render and input code can use
+  // the same lifecycle contract as desktop platforms.
   if (!m_window.initialize(1280, 720, m_name)) {
     return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Internal);
   }

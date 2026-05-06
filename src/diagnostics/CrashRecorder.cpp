@@ -65,6 +65,8 @@ static void WriteTextFile(const std::string& path, std::string_view text) {
 static std::string CreateCrashArtifactDir(const std::string& base_dir) {
   std::filesystem::create_directories(base_dir);
   const std::string timestamp = TimestampNow();
+  // Crash artifacts are append-only: retry with a numeric suffix instead of
+  // overwriting an earlier crash from the same UTC second.
   for (uint32_t attempt = 0; attempt < 1000; ++attempt) {
     std::string name = "crash_" + timestamp;
     if (attempt != 0) {

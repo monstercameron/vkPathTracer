@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <cmath>
 
@@ -34,7 +35,7 @@ bool VulkanShaderCompiler::compile_compute_shader(const ComputePipelineDesc& des
 }
 
 bool VulkanShaderCache::query(std::string_view key, std::string& binary) {
-  const auto it = m_entries.find(std::string(key));
+  const auto it = m_entries.find(key);
   if (it == m_entries.end()) {
     return false;
   }
@@ -48,7 +49,7 @@ bool VulkanShaderCache::store(std::string_view key, const std::string& binary) {
 }
 
 bool VulkanShaderCache::invalidate(std::string_view key) {
-  const auto it = m_entries.find(std::string(key));
+  const auto it = m_entries.find(key);
   if (it == m_entries.end()) {
     return false;
   }
@@ -183,10 +184,22 @@ ResourceHandle VulkanResourceAllocator::create_texture(const TextureDesc& desc) 
   ResourceRecord record;
   record.label = desc.debug_label;
   record.is_texture = true;
-  const auto bytes = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.width)) *
-                     static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.height)) *
-                     static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.array_layers));
-  record.size_bytes = bytes * 4u;
+  const auto width = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.width));
+  const auto height = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.height));
+  const auto layers = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.array_layers));
+  constexpr std::size_t kBytesPerTexel = 4u;
+  if (height > std::numeric_limits<std::size_t>::max() / width) {
+    return kInvalidHandle;
+  }
+  const auto pixels = width * height;
+  if (layers > std::numeric_limits<std::size_t>::max() / pixels) {
+    return kInvalidHandle;
+  }
+  const auto texels = pixels * layers;
+  if (texels > std::numeric_limits<std::size_t>::max() / kBytesPerTexel) {
+    return kInvalidHandle;
+  }
+  record.size_bytes = texels * kBytesPerTexel;
   record.data.assign(record.size_bytes, 0u);
   m_resources.emplace(handle, std::move(record));
   return handle;
@@ -376,6 +389,8 @@ bool RunVulkanComputeSmoke(vkpt::render::IRenderBackend& backend) {
     return false;
   }
 
+  // The smoke graph covers write, compute, and readback pass types so the common
+  // frame-graph contract is exercised before native Vulkan command recording.
   FrameGraphDesc graphDesc;
   graphDesc.debug_label = "vulkan_compute_smoke";
   graphDesc.passes = {
@@ -515,6 +530,8 @@ VulkanBVHPassResult RunVulkanBVHPass(
   }
 
   // -- Build frame graph and execute -----------------------------------------
+  // The simulated BVH path records the intended pass ordering that a native
+  // Vulkan backend will later lower into transfer, compute, and readback queues.
   FrameGraphDesc graphDesc;
   graphDesc.debug_label = "vulkan_bvh_pathtrace";
   graphDesc.target_width = std::max<uint32_t>(width, 1u);

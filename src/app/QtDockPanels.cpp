@@ -19,6 +19,8 @@ std::vector<QtDockPanelContent> BuildQtDockPanels(
     const QtDockScriptRuntimeState* script_runtime) {
   std::vector<QtDockPanelContent> panels;
   panels.reserve(15u);
+  // The shell consumes this fixed order for deterministic dock placement and
+  // stable UI validation snapshots.
   panels.push_back(BuildQtSceneTreeDock(document, selection, layout));
   panels.push_back(BuildQtInspectorDock(document, selection, runtime, layout));
   panels.push_back(BuildQtMaterialsDock(document, scene, layout));

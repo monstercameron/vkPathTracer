@@ -10,9 +10,15 @@ namespace vkpt::gpu {
 
 void D3D12GpuPathTracer::shutdown() {
   if (!m_device) return;
+  // Stop GPU work before releasing resources; mapped upload/readback pointers
+  // remain valid only while their owning committed resources are alive.
   (void)wait_for_gpu();
   destroy_film_buffer();
   destroy_scene_buffers();
+  if (m_uploadPtr && m_uploadBuf) {
+    m_uploadBuf->Unmap(0, nullptr);
+    m_uploadPtr = nullptr;
+  }
   m_uploadBuf.Reset();
   destroy_dxr_resources();
   m_dxrCmdList.Reset();
@@ -32,7 +38,6 @@ void D3D12GpuPathTracer::shutdown() {
   m_device.Reset();
   m_factory.Reset();
   m_valid = false;
-  m_uploadPtr = nullptr;
   m_dxrRuntimeObjectsReady = false;
   m_usingDxrDispatch = false;
   m_dxrAccelReady    = false;
@@ -135,7 +140,8 @@ bool D3D12GpuPathTracer::init_device() {
     LogInfo(dxr.str());
   }
 
-  // Command queue
+  // The compute path can run on a compute-capable queue, but the command list
+  // type must remain consistent across queue, allocator, and command list.
   const D3D12_COMMAND_LIST_TYPE commandListType = SelectComputeCommandListType();
   LogInfo(std::string("compute command queue type=") + CommandListTypeName(commandListType));
   D3D12_COMMAND_QUEUE_DESC qd{};
@@ -163,7 +169,12 @@ bool D3D12GpuPathTracer::init_device() {
     LogError("init_device: " + m_error);
     return false;
   }
-  m_cmdList->Close();
+  const HRESULT closeListHr = m_cmdList->Close();
+  if (FAILED(closeListHr)) {
+    m_error = "CreateCommandList initial close hr=" + FormatHr(closeListHr);
+    LogError("init_device: " + m_error);
+    return false;
+  }
 
   // Fence
   const HRESULT createFenceHr = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
@@ -180,7 +191,8 @@ bool D3D12GpuPathTracer::init_device() {
     return false;
   }
 
-  // Upload buffer — 64 MB
+  // Persistent upload heap. Scene uploads suballocate from this mapped buffer
+  // and copy into default-heap resources on the GPU queue.
   m_uploadSize = 256ull * 1024 * 1024;
   const D3D12_HEAP_PROPERTIES hp = MakeHeapProperties(D3D12_HEAP_TYPE_UPLOAD);
   D3D12_RESOURCE_DESC   rd{};
@@ -242,10 +254,16 @@ bool D3D12GpuPathTracer::init_dxr_runtime_objects() {
     LogError("init_dxr_runtime_objects: " + m_error);
     return false;
   }
-  m_dxrCmdList->Close();
+  const HRESULT closeDxrListHr = m_dxrCmdList->Close();
+  if (FAILED(closeDxrListHr)) {
+    m_error = "CreateCommandList4(DIRECT) initial close hr=" + FormatHr(closeDxrListHr);
+    LogError("init_dxr_runtime_objects: " + m_error);
+    return false;
+  }
   m_dxrRuntimeObjectsReady = true;
 
-  // Create DXR fence (separate from compute fence so queues can sync independently)
+  // Keep a DXR fence even though current DispatchRays uses the compute queue;
+  // it preserves the split-queue path for future experiments and diagnostics.
   const HRESULT createDxrFenceHr = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
       IID_PPV_ARGS(&m_dxrFence));
   if (FAILED(createDxrFenceHr)) {
@@ -267,6 +285,8 @@ bool D3D12GpuPathTracer::init_dxr_runtime_objects() {
 }
 
 bool D3D12GpuPathTracer::wait_for_gpu() {
+  // Fence every submitted batch before CPU readback or resource reuse. This is
+  // conservative but keeps persistent mapped upload/readback buffers simple.
   ++m_fenceValue;
   const HRESULT signalHr = m_cmdQueue->Signal(m_fence.Get(), m_fenceValue);
   if (FAILED(signalHr)) {
@@ -297,6 +317,7 @@ bool D3D12GpuPathTracer::wait_for_gpu() {
 // ============================================================================
 
 bool D3D12GpuPathTracer::wait_for_dxr_gpu() {
+  // Mirrors wait_for_gpu() for the optional direct DXR queue.
   ++m_dxrFenceValue;
   const HRESULT signalHr = m_dxrCmdQueue->Signal(m_dxrFence.Get(), m_dxrFenceValue);
   if (FAILED(signalHr)) {

@@ -299,6 +299,7 @@
                 qtLeftMouseDown = false;
                 if (qtGizmoDrag.active) {
                   qtApplyGizmoDrag(event.x, event.y, qtFrameCount);
+                  qtCommitGizmoDrag();
                   qtGizmoDrag = {};
                   ui_runtime_state.status_message = "gizmo drag committed";
                   qtDockPanelsDirty = true;

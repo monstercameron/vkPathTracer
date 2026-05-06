@@ -44,7 +44,9 @@ AssetDropValidation ValidateAssetDrop(std::string_view asset_path,
   }
 
   const std::filesystem::path path(asset_path);
-  result.normalized_path = std::filesystem::absolute(path).string();
+  std::error_code ec;
+  auto normalized = std::filesystem::absolute(path, ec);
+  result.normalized_path = ec ? std::string(asset_path) : normalized.string();
   const auto ext = ToLower(path.extension().string());
   const std::string_view ext_no_dot = ext.empty() ? std::string_view{} : std::string_view(ext).substr(1);
 
@@ -383,19 +385,29 @@ std::vector<SceneTreeRow> BuildSceneTreeRows(const std::vector<SceneTreeEntityMo
 
   std::vector<SceneTreeRow> rows;
   rows.reserve(max_rows == 0 ? entities.size() : std::min(max_rows, entities.size()));
+
+  std::unordered_set<vkpt::core::StableId> selected_ids;
+  selected_ids.reserve(selection.selected_entity_ids.size());
+  for (const auto id : selection.selected_entity_ids) {
+    selected_ids.insert(id);
+  }
+  std::unordered_set<vkpt::core::StableId> hovered_ids;
+  hovered_ids.reserve(selection.hovered_entity_ids.size() + 2u);
+  for (const auto id : selection.hovered_entity_ids) {
+    hovered_ids.insert(id);
+  }
+  if (hovered_entity != 0) {
+    hovered_ids.insert(hovered_entity);
+  }
+  if (selection.hovered_entity != 0) {
+    hovered_ids.insert(selection.hovered_entity);
+  }
+
   const auto is_selected = [&](vkpt::core::StableId id) {
-    return std::find(selection.selected_entity_ids.begin(), selection.selected_entity_ids.end(), id) !=
-           selection.selected_entity_ids.end();
+    return selected_ids.contains(id);
   };
   const auto is_hovered = [&](vkpt::core::StableId id) {
-    if (hovered_entity != 0 && hovered_entity == id) {
-      return true;
-    }
-    if (selection.hovered_entity == id) {
-      return true;
-    }
-    return std::find(selection.hovered_entity_ids.begin(), selection.hovered_entity_ids.end(), id) !=
-           selection.hovered_entity_ids.end();
+    return hovered_ids.contains(id);
   };
 
   std::unordered_set<vkpt::core::StableId> visiting;
@@ -464,7 +476,15 @@ std::vector<AssetPreviewCard> FilterAndSortAssetCards(const std::vector<AssetPre
                                                       const AssetBrowserFilter& filter) {
   const std::string query = ToLower(filter.query);
   const std::string category = ToLower(filter.category);
-  std::vector<AssetPreviewCard> out;
+  const std::string sortKey = ToLower(filter.sort_key);
+
+  struct FilteredCard {
+    AssetPreviewCard card;
+    std::string sort_key;
+  };
+
+  std::vector<FilteredCard> filtered;
+  filtered.reserve(cards.size());
   for (const auto& card : cards) {
     if (!filter.show_missing && card.missing) {
       continue;
@@ -481,31 +501,32 @@ std::vector<AssetPreviewCard> FilterAndSortAssetCards(const std::vector<AssetPre
         continue;
       }
     }
-    out.push_back(card);
+
+    std::string sortValue;
+    if (sortKey == "category") {
+      sortValue = card.category;
+    } else if (sortKey == "status") {
+      sortValue = card.status;
+    } else if (sortKey == "path") {
+      sortValue = card.path;
+    } else {
+      sortValue = card.display_name;
+    }
+    filtered.push_back({card, ToLower(sortValue)});
   }
 
-  const std::string sortKey = ToLower(filter.sort_key);
-  std::sort(out.begin(), out.end(), [&](const AssetPreviewCard& a, const AssetPreviewCard& b) {
-    std::string av;
-    std::string bv;
-    if (sortKey == "category") {
-      av = a.category;
-      bv = b.category;
-    } else if (sortKey == "status") {
-      av = a.status;
-      bv = b.status;
-    } else if (sortKey == "path") {
-      av = a.path;
-      bv = b.path;
-    } else {
-      av = a.display_name;
-      bv = b.display_name;
-    }
+  std::sort(filtered.begin(), filtered.end(), [&](const FilteredCard& a, const FilteredCard& b) {
     if (filter.ascending) {
-      return ToLower(av) < ToLower(bv);
+      return a.sort_key < b.sort_key;
     }
-    return ToLower(av) > ToLower(bv);
+    return a.sort_key > b.sort_key;
   });
+
+  std::vector<AssetPreviewCard> out;
+  out.reserve(filtered.size());
+  for (auto& item : filtered) {
+    out.push_back(std::move(item.card));
+  }
   return out;
 }
 

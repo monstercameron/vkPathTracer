@@ -419,6 +419,13 @@ bool ScalarCpuPathTracer::update_instance_transforms(
   return build_or_update_acceleration();
 }
 
+bool ScalarCpuPathTracer::update_scene_delta(const RTSceneDeltaUpdate& update) {
+  if (!m_configured || !m_has_scene) {
+    return false;
+  }
+  return ApplySceneDeltaUpdate(m_scene, update);
+}
+
 bool ScalarCpuPathTracer::reset_accumulation() {
   if (!m_configured) {
     return false;

@@ -57,6 +57,9 @@ Ray ScalarCpuPathTracer::camera_rays(uint32_t x,
                                      uint32_t frame_index,
                                      uint32_t path_id,
                                      uint64_t& sample_seed) {
+  // Algorithm note: camera sampling is keyed by absolute pixel/sample identity,
+  // not by worker-local state. That keeps deterministic renders identical when
+  // the same image is rendered as one batch, tiles, or arbitrary sparse pixels.
   SampleKey key{};
   key.pixel_index = static_cast<vkpt::core::StableId>(y) * m_settings.width + x;
   key.sample_index = sample_index;
@@ -82,6 +85,9 @@ Ray ScalarCpuPathTracer::camera_rays(uint32_t x,
       ? m_scene.camera_focus_distance
       : m_settings.camera_focus_distance;
   if (aperture_radius > 0.0f && focus_distance > kEpsilon) {
+    // Thin-lens depth of field. A circular lens is the common case; finite iris
+    // blades shrink the radial boundary per angular sector to approximate a
+    // polygonal aperture before anamorphic squeeze is applied.
     const float lens_radius_sample = std::sqrt(rng.next01());
     const float lens_phi = 2.0f * kPi * rng.next01();
     float aperture_boundary = 1.0f;
@@ -159,6 +165,9 @@ void ScalarCpuPathTracer::shade_pixel(uint32_t pixel,
   const uint64_t sampleSeed = (static_cast<uint64_t>(y) << 32) | x;
   const uint64_t pathId = sampleSeed + static_cast<uint64_t>(sample_index) + static_cast<uint64_t>(frame_index);
   const Ray ray = camera_rays(x, y, sample_index, frame_index, static_cast<uint32_t>(pathId), seed);
+  // The camera sampler contributes additional entropy through sample_seed, but
+  // the base identity remains stable so diagnostics can map a path back to the
+  // pixel and sample that generated it.
   SampleKey key{};
   key.pixel_index = sampleSeed;
   key.sample_index = sample_index;
@@ -215,6 +224,8 @@ bool ScalarCpuPathTracer::render_sample_contiguous_pixels(uint32_t first_pixel,
       shade_pixel(first_pixel + i, sample_index, frame_index, locals[0]);
     }
   } else {
+    // Contiguous batches are divided into contiguous subranges to preserve
+    // cache locality in FilmBuffer writes and scene traversal side data.
     auto run_worker = [&](uint32_t workerIndex) {
       RenderBatchAccum& local = locals[workerIndex];
       const uint64_t begin = (static_cast<uint64_t>(pixel_count) * workerIndex) / threadCount;
@@ -262,6 +273,9 @@ bool ScalarCpuPathTracer::render_sample_pixels(const uint32_t* pixel_indices,
       shade_pixel(pixel_indices[i], sample_index, frame_index, locals[0]);
     }
   } else {
+    // Sparse pixel updates use striding instead of ranges so arbitrary dirty
+    // lists are distributed evenly even when the pixel order is spatially
+    // clustered.
     auto run_worker = [&](uint32_t workerIndex) {
       RenderBatchAccum& local = locals[workerIndex];
       for (uint32_t i = workerIndex; i < pixel_count; i += threadCount) {
@@ -287,6 +301,9 @@ bool ScalarCpuPathTracer::render_sample_pixels(const uint32_t* pixel_indices,
 bool ScalarCpuPathTracer::finish_render_batch(const std::vector<RenderBatchAccum>& locals,
                                               uint32_t sample_index,
                                               uint32_t frame_index) {
+  // Workers write only thread-local accumulators. The merge below is the single
+  // synchronization point for counters; relaxed atomics are sufficient because
+  // consumers only need monotonic diagnostic totals, not an ordering fence.
   float sampleLumSum = 0.0f;
   float sampleMax = 0.0f;
   std::uint64_t sampleCount = 0u;

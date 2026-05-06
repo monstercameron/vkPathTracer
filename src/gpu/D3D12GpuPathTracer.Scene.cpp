@@ -4,6 +4,7 @@
 #include "gpu/D3D12GpuPathTracer.SceneBvh.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -11,6 +12,110 @@
 #include <vector>
 
 namespace vkpt::gpu {
+
+namespace {
+
+constexpr uint32_t kGpuMaterialStrideFloats = 16u;
+constexpr uint32_t kGpuLightStrideFloats = 16u;
+
+std::array<float, kGpuMaterialStrideFloats> PackedMaterialValues(
+    const vkpt::pathtracer::RTMaterial& material) {
+  // The final float carries bit-packed material options consumed by HLSL as an
+  // integer payload after float-to-uint conversion.
+  uint32_t packedEffect = (material.material_effect & 1023u) |
+                          ((material.material_flags & 1u) ? 1024u : 0u);
+  if (material.base_color_texture_index != kInvalidTextureIndex &&
+      material.base_color_texture_index < 8191u) {
+    packedEffect |= ((material.base_color_texture_index + 1u) << 11u);
+  }
+  return {
+      material.albedo.x,
+      material.albedo.y,
+      material.albedo.z,
+      material.emissive.x,
+      material.emissive.y,
+      material.emissive.z,
+      material.roughness,
+      static_cast<float>(material.material_model),
+      material.metallic,
+      material.ior,
+      material.transmission,
+      material.clearcoat,
+      material.sheen,
+      material.normal_texture_index != kInvalidTextureIndex
+          ? static_cast<float>(material.normal_texture_index + 1u)
+          : 0.0f,
+      material.alpha,
+      static_cast<float>(packedEffect),
+  };
+}
+
+void PackMaterial(const vkpt::pathtracer::RTMaterial& material,
+                  std::vector<float>& out) {
+  const auto packed = PackedMaterialValues(material);
+  out.insert(out.end(), packed.begin(), packed.end());
+}
+
+bool StorePackedMaterialAt(std::vector<float>& gpuMaterials,
+                           uint32_t materialIndex,
+                           const vkpt::pathtracer::RTMaterial& material) {
+  const std::size_t base = static_cast<std::size_t>(materialIndex) * kGpuMaterialStrideFloats;
+  if (base + kGpuMaterialStrideFloats > gpuMaterials.size()) {
+    return false;
+  }
+  const auto packed = PackedMaterialValues(material);
+  std::copy(packed.begin(), packed.end(), gpuMaterials.begin() + static_cast<std::ptrdiff_t>(base));
+  return true;
+}
+
+std::array<float, kGpuLightStrideFloats> PackedLightValues(
+    const vkpt::pathtracer::RTHitLight& light) {
+  return {
+      light.position.x,
+      light.position.y,
+      light.position.z,
+      light.color.x,
+      light.color.y,
+      light.color.z,
+      light.intensity,
+      std::max(0.0f, light.radius),
+      light.direction.x,
+      light.direction.y,
+      light.direction.z,
+      light.spot_inner_cos,
+      light.spot_outer_cos,
+      0.0f,
+      0.0f,
+      0.0f,
+  };
+}
+
+void PackLight(const vkpt::pathtracer::RTHitLight& light,
+               std::vector<float>& out) {
+  const auto packed = PackedLightValues(light);
+  out.insert(out.end(), packed.begin(), packed.end());
+}
+
+bool StorePackedLightAt(std::vector<float>& gpuLights,
+                        uint32_t lightIndex,
+                        const vkpt::pathtracer::RTHitLight& light) {
+  const std::size_t base = static_cast<std::size_t>(lightIndex) * kGpuLightStrideFloats;
+  if (base + kGpuLightStrideFloats > gpuLights.size()) {
+    return false;
+  }
+  const auto packed = PackedLightValues(light);
+  std::copy(packed.begin(), packed.end(), gpuLights.begin() + static_cast<std::ptrdiff_t>(base));
+  return true;
+}
+
+bool MaterialDeltaRequiresFullRebuild(const vkpt::pathtracer::RTMaterial& before,
+                                      const vkpt::pathtracer::RTMaterial& after) {
+  // Double-sided state is baked into packed triangle data for the current
+  // D3D12 path, so changing it needs the full triangle buffer repack.
+  return before.material_flags != after.material_flags;
+}
+
+}  // namespace
 
 bool D3D12GpuPathTracer::load_scene_snapshot(
     const vkpt::pathtracer::RTSceneData& scene) {
@@ -45,13 +150,32 @@ bool D3D12GpuPathTracer::update_camera(
     // Geometry hasn't been uploaded yet — can't update camera independently.
     return false;
   }
-  m_sceneData.camera_position = pos;
-  m_sceneData.camera_target   = target;
-  m_sceneData.camera_up       = up;
-  m_sceneData.camera_fov_deg  = fov_deg;
+  auto camera = vkpt::pathtracer::ExtractCameraState(m_sceneData);
+  camera.position = pos;
+  camera.target = target;
+  camera.up = up;
+  camera.fov_deg = fov_deg;
+  const bool updated = update_camera_state(camera);
   std::ostringstream ss;
   ss << "update_camera pos=(" << pos.x << "," << pos.y << "," << pos.z
      << ") target=(" << target.x << "," << target.y << "," << target.z << ")";
+  LogDebug(ss.str());
+  return updated;
+}
+
+bool D3D12GpuPathTracer::update_camera_state(
+    const vkpt::pathtracer::RTCameraState& camera) {
+  if (!m_sceneUploaded) {
+    return false;
+  }
+  vkpt::pathtracer::ApplyCameraState(m_sceneData, camera);
+  m_film.set_resolve_settings(
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
+  m_temporalHistoryValid = false;
+  std::ostringstream ss;
+  ss << "update_camera_state pos=(" << camera.position.x << "," << camera.position.y
+     << "," << camera.position.z << ") target=(" << camera.target.x << ","
+     << camera.target.y << "," << camera.target.z << ")";
   LogDebug(ss.str());
   return true;
 }
@@ -131,6 +255,68 @@ bool D3D12GpuPathTracer::update_instance_transforms(
   return uploaded;
 }
 
+bool D3D12GpuPathTracer::update_scene_delta(
+    const vkpt::pathtracer::RTSceneDeltaUpdate& update) {
+  if (!m_sceneUploaded) {
+    return false;
+  }
+  const bool uploadMaterials = !update.materials.empty();
+  const bool uploadLights = !update.lights.empty();
+  if (uploadMaterials && !m_matBuf) {
+    return false;
+  }
+  if (uploadLights && !m_ltBuf) {
+    return false;
+  }
+
+  for (const auto& material : update.materials) {
+    if (material.material_index >= m_sceneData.materials.size()) {
+      return false;
+    }
+    if (MaterialDeltaRequiresFullRebuild(m_sceneData.materials[material.material_index],
+                                         material.material)) {
+      return false;
+    }
+  }
+  for (const auto& light : update.lights) {
+    if (light.light_index >= m_sceneData.lights.size()) {
+      return false;
+    }
+  }
+
+  // Validate and pack into CPU mirrors before touching GPU resources so a
+  // failed delta leaves both scene state and buffers on the previous version.
+  auto nextScene = m_sceneData;
+  if (!vkpt::pathtracer::ApplySceneDeltaUpdate(nextScene, update)) {
+    return false;
+  }
+  for (const auto& material : update.materials) {
+    if (!StorePackedMaterialAt(m_gpuMats, material.material_index, material.material)) {
+      return false;
+    }
+  }
+  for (const auto& light : update.lights) {
+    if (!StorePackedLightAt(m_gpuLights, light.light_index, light.light)) {
+      return false;
+    }
+  }
+
+  const bool uploaded = upload_material_light_buffers(uploadMaterials, uploadLights);
+  if (!uploaded) {
+    return false;
+  }
+  m_sceneData = std::move(nextScene);
+  m_film.set_resolve_settings(
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
+  m_temporalHistoryValid = false;
+  std::ostringstream ss;
+  ss << "scene delta uploaded mats=" << update.materials.size()
+     << " lights=" << update.lights.size()
+     << " environment=" << (update.environment_color_changed ? "true" : "false");
+  LogDebug(ss.str());
+  return true;
+}
+
 bool D3D12GpuPathTracer::build_or_update_acceleration() {
   if (!m_hasScene) {
     m_error = "build_or_update_acceleration before snapshot";
@@ -138,26 +324,14 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
     return false;
   }
   m_gpuMats.clear();
+  m_gpuMats.reserve(std::max<std::size_t>(16u, m_sceneData.materials.size() * 16u));
   for (const auto& m : m_sceneData.materials) {
-    m_gpuMats.push_back(m.albedo.x); m_gpuMats.push_back(m.albedo.y);
-    m_gpuMats.push_back(m.albedo.z);
-    m_gpuMats.push_back(m.emissive.x); m_gpuMats.push_back(m.emissive.y);
-    m_gpuMats.push_back(m.emissive.z);
-    m_gpuMats.push_back(m.roughness); m_gpuMats.push_back(static_cast<float>(m.material_model));
-    m_gpuMats.push_back(m.metallic); m_gpuMats.push_back(m.ior);
-    m_gpuMats.push_back(m.transmission); m_gpuMats.push_back(m.clearcoat);
-    m_gpuMats.push_back(m.sheen);
-    m_gpuMats.push_back(m.normal_texture_index != kInvalidTextureIndex
-                            ? static_cast<float>(m.normal_texture_index + 1u)
-                            : 0.0f);
-    uint32_t packed_effect = (m.material_effect & 1023u) | ((m.material_flags & 1u) ? 1024u : 0u);
-    if (m.base_color_texture_index != kInvalidTextureIndex && m.base_color_texture_index < 8191u) {
-      packed_effect |= ((m.base_color_texture_index + 1u) << 11u);
-    }
-    m_gpuMats.push_back(m.alpha); m_gpuMats.push_back(static_cast<float>(packed_effect));
+    PackMaterial(m, m_gpuMats);
   }
   if (m_gpuMats.empty()) m_gpuMats.assign(16, 0.0f);
 
+  // CPU scene data is normalized into flat SoA buffers because the compute
+  // shaders consume raw SRV buffers rather than structured C++ scene objects.
   struct PackedInstance {
     uint32_t first_triangle = 0u;
     uint32_t triangle_count = 0u;
@@ -180,8 +354,12 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
   m_gpuLocalBvh.clear();
   m_dynamicInstanceTransformsEnabled = false;
   m_staticTriangleCount = 0u;
+  m_gpuVerts.reserve(std::max<std::size_t>(3u, m_sceneData.vertices.size() * 3u + m_sceneData.local_vertices.size() * 3u));
+  m_gpuTexcoords.reserve(std::max<std::size_t>(2u, m_sceneData.vertices.size() * 2u + m_sceneData.local_vertices.size() * 2u));
+  m_gpuIdx.reserve(std::max<std::size_t>(1u, m_sceneData.indices.size() + m_sceneData.local_indices.size()));
   std::vector<PackedInstance> packedInstances(m_sceneData.instances.size());
   std::vector<uint32_t> staticTriMat;
+  staticTriMat.reserve(m_sceneData.indices.size() / 3u);
   const BvhBuildConfig bvhConfig{
       m_bvhLeafSize,
       m_bvhBucketCount,
@@ -226,7 +404,8 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
     }
     const uint64_t firstIndex = static_cast<uint64_t>(inst.first_triangle) * 3ull;
     const uint64_t indexCount = static_cast<uint64_t>(inst.triangle_count) * 3ull;
-    return firstIndex + indexCount <= m_sceneData.indices.size();
+    const uint64_t indexSize = static_cast<uint64_t>(m_sceneData.indices.size());
+    return firstIndex <= indexSize && indexCount <= indexSize - firstIndex;
   };
 
   auto instance_has_local_triangles = [&](const vkpt::pathtracer::RTInstance& inst) {
@@ -234,14 +413,20 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
     const uint64_t indexCount = inst.local_index_count;
     const uint64_t firstVertex = inst.local_first_vertex;
     const uint64_t vertexCount = inst.local_vertex_count;
+    const uint64_t localIndexSize = static_cast<uint64_t>(m_sceneData.local_indices.size());
+    const uint64_t localVertexSize = static_cast<uint64_t>(m_sceneData.local_vertices.size());
     return indexCount >= 3u &&
            indexCount % 3u == 0u &&
-           firstIndex + indexCount <= m_sceneData.local_indices.size() &&
+           firstIndex <= localIndexSize &&
+           indexCount <= localIndexSize - firstIndex &&
            vertexCount > 0u &&
-           firstVertex + vertexCount <= m_sceneData.local_vertices.size();
+           firstVertex <= localVertexSize &&
+           vertexCount <= localVertexSize - firstVertex;
   };
 
   const bool allowDynamicInstanceTransforms = m_dynamicInstanceTransformsAllowed;
+  // Dynamic instances carry local geometry plus transform data. Static geometry
+  // is baked into world-space triangle buffers for cheaper shader traversal.
   auto should_use_dynamic_instance = [&](const vkpt::pathtracer::RTInstance& inst) {
     return allowDynamicInstanceTransforms &&
            inst.has_flag(vkpt::pathtracer::kRTInstanceFlagDynamicTransform) &&
@@ -362,7 +547,7 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
       std::vector<uint32_t> reorderedTriMat;
       reorderedIdx.reserve(localOrigIdx.size());
       reorderedTriMat.reserve(packed.triangle_count);
-      std::vector<float> localBvh(std::max(1u, 2u * packed.triangle_count) * 8u, 0.0f);
+      std::vector<float> localBvh(std::max(1u, 2u * packed.triangle_count - 1u) * 8u, 0.0f);
       uint32_t nodeCount = 0u;
       bvh_build(refs, 0u, packed.triangle_count, localOrigIdx, localTriMat,
                 bvhConfig, localBvh, reorderedIdx, reorderedTriMat, nodeCount);
@@ -413,32 +598,34 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
   }
 
   m_gpuInsts.clear();
-  m_gpuInsts.reserve(packedInstances.size() * kGpuInstanceStrideU32);
-  for (const auto& inst : packedInstances) {
-    m_gpuInsts.push_back(inst.first_triangle);
-    m_gpuInsts.push_back(inst.triangle_count);
-    m_gpuInsts.push_back(inst.material_index);
-    m_gpuInsts.push_back(inst.flags);
-    m_gpuInsts.push_back(FloatBits(inst.translation.x));
-    m_gpuInsts.push_back(FloatBits(inst.translation.y));
-    m_gpuInsts.push_back(FloatBits(inst.translation.z));
-    m_gpuInsts.push_back(inst.local_bvh_first_node);
-    m_gpuInsts.push_back(FloatBits(inst.rotation.x));
-    m_gpuInsts.push_back(FloatBits(inst.rotation.y));
-    m_gpuInsts.push_back(FloatBits(inst.rotation.z));
-    m_gpuInsts.push_back(FloatBits(inst.rotation.w));
-    m_gpuInsts.push_back(FloatBits(inst.scale.x));
-    m_gpuInsts.push_back(FloatBits(inst.scale.y));
-    m_gpuInsts.push_back(FloatBits(inst.scale.z));
-    m_gpuInsts.push_back(inst.local_bvh_node_count);
-    m_gpuInsts.push_back(FloatBits(inst.local_bounds_min.x));
-    m_gpuInsts.push_back(FloatBits(inst.local_bounds_min.y));
-    m_gpuInsts.push_back(FloatBits(inst.local_bounds_min.z));
-    m_gpuInsts.push_back(0u);
-    m_gpuInsts.push_back(FloatBits(inst.local_bounds_max.x));
-    m_gpuInsts.push_back(FloatBits(inst.local_bounds_max.y));
-    m_gpuInsts.push_back(FloatBits(inst.local_bounds_max.z));
-    m_gpuInsts.push_back(0u);
+  m_gpuInsts.resize(packedInstances.size() * kGpuInstanceStrideU32);
+  for (std::size_t instanceIndex = 0u; instanceIndex < packedInstances.size(); ++instanceIndex) {
+    const auto& inst = packedInstances[instanceIndex];
+    uint32_t* dst = m_gpuInsts.data() + instanceIndex * kGpuInstanceStrideU32;
+    dst[0] = inst.first_triangle;
+    dst[1] = inst.triangle_count;
+    dst[2] = inst.material_index;
+    dst[3] = inst.flags;
+    dst[4] = FloatBits(inst.translation.x);
+    dst[5] = FloatBits(inst.translation.y);
+    dst[6] = FloatBits(inst.translation.z);
+    dst[7] = inst.local_bvh_first_node;
+    dst[8] = FloatBits(inst.rotation.x);
+    dst[9] = FloatBits(inst.rotation.y);
+    dst[10] = FloatBits(inst.rotation.z);
+    dst[11] = FloatBits(inst.rotation.w);
+    dst[12] = FloatBits(inst.scale.x);
+    dst[13] = FloatBits(inst.scale.y);
+    dst[14] = FloatBits(inst.scale.z);
+    dst[15] = inst.local_bvh_node_count;
+    dst[16] = FloatBits(inst.local_bounds_min.x);
+    dst[17] = FloatBits(inst.local_bounds_min.y);
+    dst[18] = FloatBits(inst.local_bounds_min.z);
+    dst[19] = 0u;
+    dst[20] = FloatBits(inst.local_bounds_max.x);
+    dst[21] = FloatBits(inst.local_bounds_max.y);
+    dst[22] = FloatBits(inst.local_bounds_max.z);
+    dst[23] = 0u;
   }
   if (m_gpuInsts.empty()) m_gpuInsts.assign(kGpuInstanceStrideU32, 0u);
   if (m_gpuLocalBvh.empty()) StoreEmptyBvh(m_gpuLocalBvh);
@@ -448,39 +635,34 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
       m_gpuDynamicBvh);
 
   m_gpuLights.clear();
+  m_gpuLights.reserve(std::max<std::size_t>(16u, m_sceneData.lights.size() * 16u));
   for (const auto& lt : m_sceneData.lights) {
-    m_gpuLights.push_back(lt.position.x); m_gpuLights.push_back(lt.position.y);
-    m_gpuLights.push_back(lt.position.z);
-    m_gpuLights.push_back(lt.color.x); m_gpuLights.push_back(lt.color.y);
-    m_gpuLights.push_back(lt.color.z);
-    m_gpuLights.push_back(lt.intensity); m_gpuLights.push_back(std::max(0.0f, lt.radius));
-    m_gpuLights.push_back(lt.direction.x); m_gpuLights.push_back(lt.direction.y);
-    m_gpuLights.push_back(lt.direction.z);
-    m_gpuLights.push_back(lt.spot_inner_cos); m_gpuLights.push_back(lt.spot_outer_cos);
-    m_gpuLights.push_back(0.0f); m_gpuLights.push_back(0.0f); m_gpuLights.push_back(0.0f);
+    PackLight(lt, m_gpuLights);
   }
   if (m_gpuLights.empty()) m_gpuLights.assign(16, 0.0f);
 
   m_gpuSdfs.clear();
-  m_gpuSdfs.reserve(m_sceneData.sdf_primitives.size() * kGpuSdfStrideFloats);
-  for (const auto& sdf : m_sceneData.sdf_primitives) {
+  m_gpuSdfs.resize(m_sceneData.sdf_primitives.size() * kGpuSdfStrideFloats);
+  for (std::size_t sdfIndex = 0u; sdfIndex < m_sceneData.sdf_primitives.size(); ++sdfIndex) {
+    const auto& sdf = m_sceneData.sdf_primitives[sdfIndex];
     const uint32_t shape = static_cast<uint32_t>(sdf.shape);
-    m_gpuSdfs.push_back(static_cast<float>(shape));
-    m_gpuSdfs.push_back(static_cast<float>(sdf.material_index));
-    m_gpuSdfs.push_back(std::max(0.001f, sdf.radius));
-    m_gpuSdfs.push_back(sdf.param_a);
-    m_gpuSdfs.push_back(sdf.position.x);
-    m_gpuSdfs.push_back(sdf.position.y);
-    m_gpuSdfs.push_back(sdf.position.z);
-    m_gpuSdfs.push_back(sdf.param_b);
-    m_gpuSdfs.push_back(sdf.scale.x);
-    m_gpuSdfs.push_back(sdf.scale.y);
-    m_gpuSdfs.push_back(sdf.scale.z);
-    m_gpuSdfs.push_back(0.0f);
-    m_gpuSdfs.push_back(sdf.rotation.x);
-    m_gpuSdfs.push_back(sdf.rotation.y);
-    m_gpuSdfs.push_back(sdf.rotation.z);
-    m_gpuSdfs.push_back(0.0f);
+    float* dst = m_gpuSdfs.data() + sdfIndex * kGpuSdfStrideFloats;
+    dst[0] = static_cast<float>(shape);
+    dst[1] = static_cast<float>(sdf.material_index);
+    dst[2] = std::max(0.001f, sdf.radius);
+    dst[3] = sdf.param_a;
+    dst[4] = sdf.position.x;
+    dst[5] = sdf.position.y;
+    dst[6] = sdf.position.z;
+    dst[7] = sdf.param_b;
+    dst[8] = sdf.scale.x;
+    dst[9] = sdf.scale.y;
+    dst[10] = sdf.scale.z;
+    dst[11] = 0.0f;
+    dst[12] = sdf.rotation.x;
+    dst[13] = sdf.rotation.y;
+    dst[14] = sdf.rotation.z;
+    dst[15] = 0.0f;
   }
   if (m_gpuSdfs.empty()) m_gpuSdfs.assign(kGpuSdfStrideFloats, 0.0f);
   if (!build_texture_buffers()) {
@@ -548,7 +730,7 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
     }
 
     // Allocate GPU node buffer (max 2*total_tris nodes for binary BVH)
-    const uint32_t max_nodes = std::max(1u, 2u * total_tris);
+    const uint32_t max_nodes = std::max(1u, 2u * total_tris - 1u);
     m_gpuBvh.assign(static_cast<size_t>(max_nodes) * 8u, 0.0f);
 
     std::vector<uint32_t> orig_idx_copy = m_gpuIdx; // save before reorder
@@ -607,7 +789,8 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
       const uint32_t packedEffect = static_cast<uint32_t>(m_gpuMats[effectOffset] + 0.5f);
       return (packedEffect & 1024u) != 0u;
     };
-    auto push_packed_tri = [&](uint32_t triIndex) {
+    m_gpuTriData.resize(static_cast<std::size_t>(packedTriCount) * kGpuTriDataStrideFloats);
+    auto write_packed_tri = [&](uint32_t triIndex) {
       const std::size_t ib = static_cast<std::size_t>(triIndex) * 3u;
       const uint32_t i0 = ib + 0u < m_gpuIdx.size() ? m_gpuIdx[ib + 0u] : 0u;
       const uint32_t i1 = ib + 1u < m_gpuIdx.size() ? m_gpuIdx[ib + 1u] : i0;
@@ -630,16 +813,28 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
       const float e2[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
       const uint32_t matIndex = triIndex < packedTriMat.size() ? packedTriMat[triIndex] : 0u;
       const float doubleSided = material_is_double_sided(matIndex) ? 1.0f : 0.0f;
-      m_gpuTriData.push_back(v0[0]); m_gpuTriData.push_back(v0[1]); m_gpuTriData.push_back(v0[2]); m_gpuTriData.push_back(static_cast<float>(matIndex));
-      m_gpuTriData.push_back(e1[0]); m_gpuTriData.push_back(e1[1]); m_gpuTriData.push_back(e1[2]); m_gpuTriData.push_back(doubleSided);
-      m_gpuTriData.push_back(e2[0]); m_gpuTriData.push_back(e2[1]); m_gpuTriData.push_back(e2[2]); m_gpuTriData.push_back(0.0f);
-      m_gpuTriData.push_back(uv0[0]); m_gpuTriData.push_back(uv0[1]);
-      m_gpuTriData.push_back(uv1[0]); m_gpuTriData.push_back(uv1[1]);
-      m_gpuTriData.push_back(uv2[0]); m_gpuTriData.push_back(uv2[1]);
+      float* dst = m_gpuTriData.data() + static_cast<std::size_t>(triIndex) * kGpuTriDataStrideFloats;
+      dst[0] = v0[0];
+      dst[1] = v0[1];
+      dst[2] = v0[2];
+      dst[3] = static_cast<float>(matIndex);
+      dst[4] = e1[0];
+      dst[5] = e1[1];
+      dst[6] = e1[2];
+      dst[7] = doubleSided;
+      dst[8] = e2[0];
+      dst[9] = e2[1];
+      dst[10] = e2[2];
+      dst[11] = 0.0f;
+      dst[12] = uv0[0];
+      dst[13] = uv0[1];
+      dst[14] = uv1[0];
+      dst[15] = uv1[1];
+      dst[16] = uv2[0];
+      dst[17] = uv2[1];
     };
-    m_gpuTriData.reserve(static_cast<std::size_t>(packedTriCount) * kGpuTriDataStrideFloats);
     for (uint32_t tri = 0u; tri < packedTriCount; ++tri) {
-      push_packed_tri(tri);
+      write_packed_tri(tri);
     }
   }
   if (m_gpuTriData.empty()) {
@@ -736,6 +931,8 @@ bool D3D12GpuPathTracer::upload_scene_buffers() {
   UINT64 offset = 0;
   auto align = [](UINT64 x) { return (x + 255ull) & ~255ull; };
 
+  // Each packed array is copied into one default-heap buffer. Offsets in the
+  // persistent upload heap are 256-byte aligned to satisfy D3D12 copy rules.
   auto stage = [&](const char* name, const void* data, UINT64 size, ID3D12Resource** dst) {
     const bool shouldLogUpload = g_d3d12SceneUploadCalls < 8u;
     if (shouldLogUpload) {
@@ -801,7 +998,8 @@ bool D3D12GpuPathTracer::upload_scene_buffers() {
   if (!stage("texels", m_gpuTexels.data(), m_gpuTexels.size() * sizeof(uint32_t), &m_texelBuf)) return false;
   if (!stage("texmeta", m_gpuTextureMeta.data(), m_gpuTextureMeta.size() * sizeof(uint32_t), &m_texMetaBuf)) return false;
 
-  // Transition all to non-pixel shader resource
+  // Transition once after all copies so the buffers can be read by compute and
+  // DXR shaders until a later delta upload transitions selected buffers back.
   D3D12_RESOURCE_BARRIER barriers[13]{};
   ID3D12Resource* bufs[] = {m_vertBuf.Get(), m_idxBuf.Get(), m_matBuf.Get(),
                             m_instBuf.Get(), m_ltBuf.Get(), m_bvhBuf.Get(), m_triMatBuf.Get(),
@@ -838,6 +1036,106 @@ bool D3D12GpuPathTracer::upload_scene_buffers() {
   return true;
 }
 
+bool D3D12GpuPathTracer::upload_material_light_buffers(bool uploadMaterials,
+                                                       bool uploadLights) {
+  if (!uploadMaterials && !uploadLights) {
+    return true;
+  }
+  if (uploadMaterials && (!m_matBuf || m_gpuMats.empty())) {
+    m_error = "material delta upload missing material buffer";
+    LogError("upload_material_light_buffers: " + m_error);
+    return false;
+  }
+  if (uploadLights && (!m_ltBuf || m_gpuLights.empty())) {
+    m_error = "light delta upload missing light buffer";
+    LogError("upload_material_light_buffers: " + m_error);
+    return false;
+  }
+
+  const UINT64 matSize = uploadMaterials
+      ? static_cast<UINT64>(m_gpuMats.size()) * sizeof(float)
+      : 0u;
+  const UINT64 lightSize = uploadLights
+      ? static_cast<UINT64>(m_gpuLights.size()) * sizeof(float)
+      : 0u;
+  const auto align = [](UINT64 x) { return (x + 255ull) & ~255ull; };
+  const UINT64 lightOffset = align(matSize);
+  const UINT64 requiredSize = lightOffset + lightSize;
+  if (requiredSize > m_uploadSize) {
+    m_error = "upload_material_light_buffers overflow";
+    LogError("upload_material_light_buffers: " + m_error);
+    return false;
+  }
+  if (!wait_for_gpu()) {
+    LogError("upload_material_light_buffers: " + m_error);
+    return false;
+  }
+  if (FAILED(m_cmdAllocator->Reset()) ||
+      FAILED(m_cmdList->Reset(m_cmdAllocator.Get(), nullptr))) {
+    m_error = "material/light upload command reset failed";
+    LogError("upload_material_light_buffers: " + m_error);
+    return false;
+  }
+
+  // Delta uploads rewrite whole material/light buffers. That keeps descriptor
+  // bindings stable and avoids per-element copy bookkeeping.
+  D3D12_RESOURCE_BARRIER toCopy[2]{};
+  UINT barrierCount = 0u;
+  auto addToCopy = [&](ID3D12Resource* resource) {
+    auto& barrier = toCopy[barrierCount++];
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = resource;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+  };
+
+  if (uploadMaterials) {
+    std::memcpy(m_uploadPtr, m_gpuMats.data(), static_cast<std::size_t>(matSize));
+    addToCopy(m_matBuf.Get());
+  }
+  if (uploadLights) {
+    std::memcpy(static_cast<uint8_t*>(m_uploadPtr) + lightOffset,
+                m_gpuLights.data(),
+                static_cast<std::size_t>(lightSize));
+    addToCopy(m_ltBuf.Get());
+  }
+  m_cmdList->ResourceBarrier(barrierCount, toCopy);
+  if (uploadMaterials) {
+    m_cmdList->CopyBufferRegion(m_matBuf.Get(), 0, m_uploadBuf.Get(), 0, matSize);
+  }
+  if (uploadLights) {
+    m_cmdList->CopyBufferRegion(m_ltBuf.Get(), 0, m_uploadBuf.Get(), lightOffset, lightSize);
+  }
+
+  D3D12_RESOURCE_BARRIER toSrv[2]{};
+  for (UINT i = 0u; i < barrierCount; ++i) {
+    toSrv[i] = toCopy[i];
+    toSrv[i].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    toSrv[i].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+  }
+  m_cmdList->ResourceBarrier(barrierCount, toSrv);
+
+  if (FAILED(m_cmdList->Close())) {
+    m_error = "material/light upload command close failed";
+    LogError("upload_material_light_buffers: " + m_error);
+    return false;
+  }
+  ID3D12CommandList* lists[] = {m_cmdList.Get()};
+  m_cmdQueue->ExecuteCommandLists(1, lists);
+  if (!wait_for_gpu()) {
+    LogError("upload_material_light_buffers: " + m_error);
+    return false;
+  }
+  const auto removeHr = m_device->GetDeviceRemovedReason();
+  if (FAILED(removeHr)) {
+    m_error = "device removed during upload_material_light_buffers hr=" + FormatHr(removeHr);
+    LogError("upload_material_light_buffers: " + m_error);
+    return false;
+  }
+  return true;
+}
+
 bool D3D12GpuPathTracer::upload_instance_buffer() {
   if (!m_instBuf || !m_dynamicBvhBuf || m_gpuInsts.empty() || m_gpuDynamicBvh.empty()) {
     return false;
@@ -862,6 +1160,8 @@ bool D3D12GpuPathTracer::upload_instance_buffer() {
     return false;
   }
 
+  // Instance transforms and the dynamic-instance BVH must update together so
+  // shader traversal never observes mismatched transform and bounds data.
   std::memcpy(m_uploadPtr, m_gpuInsts.data(), static_cast<std::size_t>(instSize));
   std::memcpy(static_cast<uint8_t*>(m_uploadPtr) + tlasOffset,
               m_gpuDynamicBvh.data(),

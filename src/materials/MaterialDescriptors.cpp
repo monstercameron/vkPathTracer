@@ -171,6 +171,7 @@ const std::vector<MaterialDescriptor>& GetMaterialRegistry() {
   static const std::vector<MaterialDescriptor> s_registry = [] {
     std::vector<MaterialDescriptor> r;
 
+    // Material packs are append-only so serialized registry hashes stay stable across releases.
     // Pack 1: benchmark core (13 materials)
     r.push_back({MaterialFamily::Diffuse,             "diffuse",             "Diffuse (Lambert)",         ImplementationStatus::Implemented, true,  "Lambertian BRDF"});
     r.push_back({MaterialFamily::Emissive,            "emissive",            "Emissive",                  ImplementationStatus::Implemented, true,  "Area light emission"});
@@ -284,6 +285,7 @@ MaterialDesc MakeMaterialDescFromDescriptor(const MaterialDescriptor& descriptor
   desc.benchmark_approved = descriptor.benchmark_approved;
   desc.compatibility_notes.push_back(descriptor.notes);
 
+  // Collapse family descriptors into renderer-safe scalar slots and texture/sampler bindings.
   switch (descriptor.family) {
     case MaterialFamily::Diffuse:
       desc.base_color = {0.75f, 0.75f, 0.75f, 1.0f};
@@ -392,6 +394,7 @@ MaterialDesc MakeMaterialDescFromDescriptor(const MaterialDescriptor& descriptor
 }
 
 std::string SerializeMaterialDesc(const MaterialDesc& desc) {
+  // Keep field order fixed because HashMaterialDesc uses this JSON as the canonical descriptor stream.
   std::ostringstream out;
   out << "{";
   out << "\"id\":\"" << EscapeJson(desc.id) << "\",";
@@ -508,6 +511,7 @@ MaterialValidationResult MaterialRegistry::validate_material(const MaterialDesc&
   MaterialValidationResult result;
   result.fallback_material_id = desc.fallback_material_id.empty() ? m_fallbackId : desc.fallback_material_id;
 
+  // Validation is deliberately permissive for missing textures but strict for numeric packing ranges.
   auto invalidate = [&](std::string message) {
     result.valid = false;
     result.warnings.push_back(std::move(message));

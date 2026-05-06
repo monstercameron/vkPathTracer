@@ -226,6 +226,14 @@ QtDockPanelContent BuildQtDeviceDock(const vkpt::pathtracer::RTSceneData& scene,
   const std::string backendValue = !rendererPath.empty() && rendererPath != selectedBackend
       ? selectedBackend + " / " + rendererPath
       : selectedBackend;
+  if (!device_stats.runtime_backend_options.empty()) {
+    QtDockAddDropdownGroupedProperty(panel,
+                                     "render.backend",
+                                     "Runtime",
+                                     "Runtime backend",
+                                     selectedBackend,
+                                     device_stats.runtime_backend_options);
+  }
   QtDockAddProperty(panel, "Backend", backendValue);
   QtDockAddProperty(panel, "Render mode",
                     frame_stats.background_thread ? "background render thread" : "event loop renderer");

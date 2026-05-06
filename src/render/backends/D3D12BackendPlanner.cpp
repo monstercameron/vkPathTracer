@@ -80,6 +80,8 @@ RayBudgetPlan BuildD3D12RayBudgetPlan(const RayBudgetRequest& request) {
   }
 
   auto accelerators = EnumerateD3D12Accelerators(request.include_cpu, request.include_warp);
+  // Sort by coarse device class first, then estimated effective throughput. Auto
+  // mode chooses only the first eligible accelerator from this ordered list.
   std::sort(accelerators.begin(), accelerators.end(), [](const AcceleratorCapabilities& lhs,
                                                          const AcceleratorCapabilities& rhs) {
     const int lhs_priority = AutoAcceleratorPriority(lhs);
@@ -96,6 +98,8 @@ RayBudgetPlan BuildD3D12RayBudgetPlan(const RayBudgetRequest& request) {
   });
 
   const auto inactive_reason = [&](const AcceleratorCapabilities& accel) -> std::string {
+    // Keep all eligibility gates in one lambda so inactive assignments explain
+    // exactly why an accelerator did not receive work.
     if (!accel.available) {
       return "inactive: accelerator unavailable";
     }
@@ -158,6 +162,8 @@ RayBudgetPlan BuildD3D12RayBudgetPlan(const RayBudgetRequest& request) {
                accel.id != auto_selected_id) {
       assignment.reason = "inactive: auto preset selected a higher-priority accelerator";
     } else {
+      // Convert the time budget to rays, then snap down to batch size so worker
+      // submission overhead stays predictable.
       const auto raw_target = static_cast<std::uint64_t>(
           std::max(0.0, std::floor(assignment.estimated_rays_per_ms * plan.ray_budget_ms)));
       assignment.target_rays = RoundDownToBatch(raw_target, request.min_rays_per_batch);

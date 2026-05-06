@@ -214,6 +214,8 @@ bool QueryD3D12Adapter(IDXGIAdapter1* adapter,
 
   const bool software = ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) || IsMicrosoftBasicAdapter(desc);
   const std::string luid = FormatLuid(desc.AdapterLuid);
+  // Use the adapter LUID as the stable planner id so repeated probes can be
+  // correlated with persisted budget diagnostics.
   out.id = (warp ? "d3d12:warp:" : "d3d12:") + luid;
   out.name = WStringToUtf8(desc.Description);
   out.backend_kind = BackendKind::D3d12;
@@ -481,7 +483,7 @@ bool D3D12ShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc
 }
 
 bool D3D12ShaderCache::query(std::string_view key, std::string& binary) {
-  const auto it = m_entries.find(std::string(key));
+  const auto it = m_entries.find(key);
   if (it == m_entries.end()) {
     return false;
   }
@@ -495,7 +497,7 @@ bool D3D12ShaderCache::store(std::string_view key, const std::string& binary) {
 }
 
 bool D3D12ShaderCache::invalidate(std::string_view key) {
-  const auto it = m_entries.find(std::string(key));
+  const auto it = m_entries.find(key);
   if (it == m_entries.end()) {
     return false;
   }
@@ -630,10 +632,22 @@ ResourceHandle D3D12ResourceAllocator::create_texture(const TextureDesc& desc) {
   ResourceRecord record;
   record.label = desc.debug_label;
   record.is_texture = true;
-  const auto bytes = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.width)) *
-                     static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.height)) *
-                     static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.array_layers));
-  record.size_bytes = bytes * 4u;
+  const auto width = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.width));
+  const auto height = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.height));
+  const auto layers = static_cast<std::size_t>(std::max<std::uint32_t>(1, desc.array_layers));
+  constexpr std::size_t kBytesPerTexel = 4u;
+  if (height > std::numeric_limits<std::size_t>::max() / width) {
+    return kInvalidHandle;
+  }
+  const auto pixels = width * height;
+  if (layers > std::numeric_limits<std::size_t>::max() / pixels) {
+    return kInvalidHandle;
+  }
+  const auto texels = pixels * layers;
+  if (texels > std::numeric_limits<std::size_t>::max() / kBytesPerTexel) {
+    return kInvalidHandle;
+  }
+  record.size_bytes = texels * kBytesPerTexel;
   record.data.assign(record.size_bytes, 0u);
   m_resources.emplace(handle, std::move(record));
   return handle;
@@ -795,6 +809,8 @@ std::vector<AcceleratorCapabilities> EnumerateD3D12Accelerators(bool include_cpu
   std::vector<AcceleratorCapabilities> accelerators;
 
 #if defined(_WIN32) && defined(PT_ENABLE_D3D12)
+  // Native DXGI/D3D12 probing is optional; non-Windows or disabled builds still
+  // report CPU planning candidates through the same contract.
   EnumerateNativeD3D12(accelerators, include_warp);
 #else
   (void)include_warp;

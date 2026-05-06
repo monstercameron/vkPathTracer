@@ -3,16 +3,17 @@
 #ifdef PT_ENABLE_QT
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cmath>
-#include <sstream>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 namespace vkpt::app {
 
-std::string QtTrim(std::string_view text) {
+std::string_view QtTrimView(std::string_view text) {
   std::size_t begin = 0;
   while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin]))) {
     ++begin;
@@ -21,11 +22,16 @@ std::string QtTrim(std::string_view text) {
   while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
     --end;
   }
-  return std::string(text.substr(begin, end - begin));
+  return text.substr(begin, end - begin);
+}
+
+std::string QtTrim(std::string_view text) {
+  return std::string(QtTrimView(text));
 }
 
 std::vector<std::string> QtSplitPropertyPath(std::string_view id) {
   std::vector<std::string> parts;
+  parts.reserve(static_cast<std::size_t>(std::count(id.begin(), id.end(), '.')) + 1u);
   std::size_t start = 0;
   while (start <= id.size()) {
     const auto dot = id.find('.', start);
@@ -40,17 +46,41 @@ std::vector<std::string> QtSplitPropertyPath(std::string_view id) {
 }
 
 bool QtParseFloat(std::string_view text, float& out) {
-  try {
-    std::size_t consumed = 0;
-    const auto value = std::stof(std::string(QtTrim(text)), &consumed);
-    if (consumed == 0 || !std::isfinite(value)) {
-      return false;
-    }
-    out = value;
-    return true;
-  } catch (...) {
+  std::string_view numeric = QtTrimView(text);
+  if (!numeric.empty() && numeric.front() == '+') {
+    numeric.remove_prefix(1);
+  }
+  float value = 0.0f;
+  const auto parsed = std::from_chars(numeric.data(), numeric.data() + numeric.size(), value);
+  if (numeric.empty() ||
+      parsed.ec != std::errc{} ||
+      parsed.ptr != numeric.data() + numeric.size() ||
+      !std::isfinite(value)) {
     return false;
   }
+  out = value;
+  return true;
+}
+
+void QtSkipFloatDelimiters(std::string_view text, std::size_t& cursor) {
+  while (cursor < text.size() &&
+         (text[cursor] == ',' || std::isspace(static_cast<unsigned char>(text[cursor])))) {
+    ++cursor;
+  }
+}
+
+bool QtParseFloatComponent(std::string_view text, std::size_t& cursor, float& out) {
+  QtSkipFloatDelimiters(text, cursor);
+  if (cursor >= text.size()) {
+    return false;
+  }
+  const auto begin = cursor;
+  while (cursor < text.size() &&
+         text[cursor] != ',' &&
+         !std::isspace(static_cast<unsigned char>(text[cursor]))) {
+    ++cursor;
+  }
+  return QtParseFloat(text.substr(begin, cursor - begin), out);
 }
 
 bool QtParseStableId(std::string_view text, vkpt::core::StableId& out) {
@@ -60,6 +90,8 @@ bool QtParseStableId(std::string_view text, vkpt::core::StableId& out) {
     out = 0;
     return true;
   }
+  // Dock labels are displayed as "#id name"; parsing tolerates the label text
+  // so dropdown values can round-trip directly from the UI.
   std::size_t begin = 0u;
   if (trimmed[begin] == '#') {
     ++begin;
@@ -77,17 +109,13 @@ bool QtParseStableId(std::string_view text, vkpt::core::StableId& out) {
   if (begin == end) {
     return false;
   }
-  try {
-    std::size_t consumed = 0;
-    const auto value = std::stoull(trimmed.substr(begin, end - begin), &consumed, 10);
-    if (consumed != end - begin) {
-      return false;
-    }
-    out = static_cast<vkpt::core::StableId>(value);
-    return true;
-  } catch (...) {
+  vkpt::core::StableId value = 0;
+  const auto parsed = std::from_chars(trimmed.data() + begin, trimmed.data() + end, value);
+  if (parsed.ec != std::errc{} || parsed.ptr != trimmed.data() + end) {
     return false;
   }
+  out = value;
+  return true;
 }
 
 bool QtParseBool(std::string_view text, bool& out) {
@@ -105,11 +133,11 @@ bool QtParseBool(std::string_view text, bool& out) {
 }
 
 bool QtParseVec3(std::string_view text, vkpt::scene::Vec3& out) {
-  std::string normalized = std::string(text);
-  std::replace(normalized.begin(), normalized.end(), ',', ' ');
-  std::istringstream input(normalized);
+  std::size_t cursor = 0u;
   vkpt::scene::Vec3 value{};
-  if (!(input >> value.x >> value.y >> value.z)) {
+  if (!QtParseFloatComponent(text, cursor, value.x) ||
+      !QtParseFloatComponent(text, cursor, value.y) ||
+      !QtParseFloatComponent(text, cursor, value.z)) {
     return false;
   }
   out = value;
@@ -117,11 +145,12 @@ bool QtParseVec3(std::string_view text, vkpt::scene::Vec3& out) {
 }
 
 bool QtParseQuat(std::string_view text, vkpt::scene::Quat& out) {
-  std::string normalized = std::string(text);
-  std::replace(normalized.begin(), normalized.end(), ',', ' ');
-  std::istringstream input(normalized);
+  std::size_t cursor = 0u;
   vkpt::scene::Quat value{};
-  if (!(input >> value.x >> value.y >> value.z >> value.w)) {
+  if (!QtParseFloatComponent(text, cursor, value.x) ||
+      !QtParseFloatComponent(text, cursor, value.y) ||
+      !QtParseFloatComponent(text, cursor, value.z) ||
+      !QtParseFloatComponent(text, cursor, value.w)) {
     return false;
   }
   out = value;
@@ -196,6 +225,7 @@ std::string QtGeometryDisplayLabel(const vkpt::scene::SceneDocument& document,
 std::vector<std::string> QtMaterialIdOptions(const vkpt::scene::SceneDocument& document,
                                              vkpt::core::StableId current) {
   std::vector<std::string> options;
+  options.reserve(document.materials.size() + 2u);
   options.push_back("none");
   bool hasCurrent = current == 0u;
   for (const auto& material : document.materials) {
@@ -212,6 +242,7 @@ std::vector<std::string> QtMaterialIdOptions(const vkpt::scene::SceneDocument& d
 std::vector<std::string> QtGeometryIdOptions(const vkpt::scene::SceneDocument& document,
                                              vkpt::core::StableId current) {
   std::vector<std::string> options;
+  options.reserve(document.geometry.size() + 2u);
   options.push_back("none");
   bool hasCurrent = current == 0u;
   for (const auto& geometry : document.geometry) {
@@ -602,6 +633,8 @@ QtDockPanelContent MakeQtDockPanel(const vkpt::editor::UiLayoutDocument& layout,
   panel.visible = default_visible;
   panel.width = default_width;
   panel.height = default_height;
+  // Persisted layout state overrides only dock chrome and size; panel contents
+  // are rebuilt every frame from the current scene/runtime model.
   if (const auto* state = FindQtLayoutPanel(layout, id)) {
     panel.visible = state->visible;
     panel.docked = state->docked;
@@ -653,6 +686,7 @@ vkpt::scene::PhysicsBodyComponent QtDefaultDynamicPhysicsBody() {
 
 std::string QtEntityComponentSummary(const vkpt::scene::SceneEntityDefinition& entity) {
   std::vector<std::string> components;
+  components.reserve(7u);
   if (entity.has_transform) components.push_back("Transform");
   if (entity.has_mesh) components.push_back("Mesh");
   if (entity.has_light) components.push_back("Light");

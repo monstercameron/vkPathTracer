@@ -150,6 +150,7 @@ struct QtDockDeviceStats {
   vkpt::render::RenderBackendCapabilities backend_caps;
   std::vector<vkpt::render::AcceleratorCapabilities> accelerators;
   std::vector<QtDockRayDeviceMetric> ray_metrics;
+  std::vector<std::string> runtime_backend_options;
   std::string selected_backend;
   std::string active_renderer_path;
   std::string active_device_key;

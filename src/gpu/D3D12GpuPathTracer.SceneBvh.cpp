@@ -24,9 +24,12 @@ static float bvh_sa(const float bmin[3], const float bmax[3]) {
   return 2.0f * (dx*dy + dy*dz + dz*dx);
 }
 
-// Writes 8 floats per node into gpu_bvh (pre-sized to max_nodes*8).
-// Reorders triangles into reord_idx / reord_tri_mat for cache-friendly leaf access.
-// Returns node index of the root.
+// GPU BVH node layout is intentionally shader-friendly rather than type-safe:
+//   [0..2] = min bounds, [3..5] = max bounds,
+//   [6]    = left child or leaf flag|first triangle,
+//   [7]    = right child or primitive count.
+// Child/leaf indices are bit-cast through floats because the compute shader
+// consumes one raw float buffer for both bounds and integer metadata.
 uint32_t bvh_build(
   std::vector<BvhTriRef>&        refs,
   uint32_t start, uint32_t count,
@@ -57,6 +60,9 @@ uint32_t bvh_build(
   gpu_bvh[base+3u]=bmax[0]; gpu_bvh[base+4u]=bmax[1]; gpu_bvh[base+5u]=bmax[2];
 
   if (count <= config.leaf_size) {
+    // Leaves compact referenced triangles into traversal order. The shader can
+    // then walk consecutive triangle/material records without indirection back
+    // to the original scene index stream.
     const uint32_t first_tri = static_cast<uint32_t>(reord_idx.size() / 3u);
     for (uint32_t i = start; i < start + count; ++i) {
       const uint32_t t = refs[i].orig_idx;
@@ -71,6 +77,8 @@ uint32_t bvh_build(
   }
 
   if (config.use_median_split) {
+    // Median split is deterministic and cheap. It is useful for validation or
+    // scenes where SAH build cost outweighs the traversal savings.
     float cmin[3] = {1e30f, 1e30f, 1e30f};
     float cmax[3] = {-1e30f, -1e30f, -1e30f};
     for (uint32_t i = start; i < start + count; ++i) {
@@ -100,7 +108,9 @@ uint32_t bvh_build(
     return ni;
   }
 
-  // SAH split using a configurable bucket count along each axis.
+  // Bucketed SAH approximates the exact O(n^2) surface-area search with a small
+  // fixed bucket count. It balances build time against traversal quality and is
+  // the default path for larger static triangle sets.
   constexpr int kMaxBvhBuckets = 16;
   const int bucket_count = static_cast<int>(std::clamp(config.bucket_count, 2u, 16u));
   const float node_sa_v = std::max(1e-9f, bvh_sa(bmin, bmax));
@@ -159,7 +169,8 @@ uint32_t bvh_build(
     }
   }
 
-  // Partition refs around the best split
+  // Partition refs around the best split. If all centroids land on one side,
+  // fall back to an even split so recursion always makes progress.
   uint32_t mid;
   if (found_split) {
     const int   ax  = best_axis;
@@ -211,6 +222,9 @@ static uint32_t dynamic_bvh_build(
   gpu_bvh[base+3u]=bmax[0]; gpu_bvh[base+4u]=bmax[1]; gpu_bvh[base+5u]=bmax[2];
 
   if (count <= 1u) {
+    // Dynamic instance leaves encode the instance index directly. The shader
+    // uses this separate top-level tree to cheaply reject unchanged static
+    // geometry while animated/physics instances move every frame.
     gpu_bvh[base+6u] = as_fb(0x80000000u | refs[start].instance_index);
     gpu_bvh[base+7u] = as_fb(1u);
     return ni;
@@ -260,6 +274,9 @@ static vkpt::pathtracer::Vec3 RotateQuat(const vkpt::pathtracer::Vec3& value,
 uint32_t BuildDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>& insts,
                                                     uint32_t instanceCount,
                                                     std::vector<float>& outBvh) {
+  // Reconstruct world-space bounds from the packed instance buffer that is also
+  // uploaded to the shader. Keeping this CPU builder on the packed format makes
+  // transform update validation match the GPU traversal inputs byte-for-byte.
   std::vector<DynamicInstanceRef> refs;
   refs.reserve(instanceCount);
   for (uint32_t instanceIndex = 0u; instanceIndex < instanceCount; ++instanceIndex) {

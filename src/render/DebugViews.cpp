@@ -154,6 +154,8 @@ std::vector<DebugViewCommandDescriptor> BuildDebugViewCommandDescriptors() {
   std::vector<DebugViewCommandDescriptor> commands;
   const auto& registry = GetDebugViewRegistry();
   commands.reserve(registry.size());
+  // Commands are derived mechanically from registry data so UI action binding,
+  // undo policy, and serialized payloads stay in sync with debug-view metadata.
   for (const auto& descriptor : registry) {
     DebugViewCommandDescriptor command;
     command.command_id = CommandIdFor(descriptor);

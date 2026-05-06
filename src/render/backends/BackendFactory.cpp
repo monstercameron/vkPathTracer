@@ -60,6 +60,8 @@ bool CandidateMeetsRequest(const BackendCandidateDesc& candidate,
                            const BackendSelectionRequest& request,
                            BackendSelectionSource source,
                            std::string* reason) {
+  // Keep rejection reasons close to the predicate so backend selection reports
+  // the same contract checks that factory creation will enforce.
   if (!candidate.compiled) {
     if (reason) {
       *reason = candidate.unavailable_reason.empty() ? "backend not compiled into this build" : candidate.unavailable_reason;
@@ -236,6 +238,8 @@ BackendSelectionDecision SelectBackend(const BackendSelectionRequest& request) {
   BackendSelectionDecision decision;
   decision.candidates = DescribeBackendCandidates();
 
+  // Explicit requests are terminal: callers asked for a specific backend, so an
+  // unknown or incompatible explicit name should not silently fall through.
   if (TrySelectNamed(decision.candidates,
                      request.explicit_backend,
                      request,
@@ -270,6 +274,8 @@ BackendSelectionDecision SelectBackend(const BackendSelectionRequest& request) {
   std::sort(sorted.begin(), sorted.end(), [](const BackendCandidateDesc& lhs, const BackendCandidateDesc& rhs) {
     return lhs.selection_priority < rhs.selection_priority;
   });
+  // Lower priority numbers are preferred. Null is only considered here when the
+  // request explicitly allows a simulated fallback.
   for (const auto& candidate : sorted) {
     if (candidate.kind == BackendKind::Null && !request.allow_null_fallback) {
       continue;

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -53,9 +54,15 @@ bool VulkanGpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   if (!m_valid) return false;
   m_settings    = s;
   m_configured  = true;
-  m_filmPixels  = s.width * s.height;
+  const uint64_t filmPixels = static_cast<uint64_t>(s.width) * s.height;
+  if (filmPixels > std::numeric_limits<uint32_t>::max()) {
+    m_error = "film dimensions exceed Vulkan backend limits";
+    return false;
+  }
+  m_filmPixels  = static_cast<uint32_t>(filmPixels);
 
-  // (Re)allocate film buffer
+  // The film buffer is host-visible and coherent, so resolve paths can read
+  // accumulated RGBA32F data without staging copies or explicit invalidation.
   destroy_film_buffers();
   const VkDeviceSize filmBytes =
       static_cast<VkDeviceSize>(m_filmPixels) * 4u * sizeof(float);
@@ -98,55 +105,96 @@ bool VulkanGpuPathTracer::load_scene_snapshot(
 bool VulkanGpuPathTracer::build_or_update_acceleration() {
   if (!m_hasScene) return false;
 
-  // Pack RTSceneData into flat GPU arrays
+  // Pack RTSceneData into flat arrays matching pathtrace.comp storage-buffer
+  // contracts. Dummy entries keep descriptor ranges non-empty for empty scenes.
+  constexpr std::size_t kMaterialStrideFloats = 16u;
+  constexpr std::size_t kInstanceStrideU32 = 4u;
+  constexpr std::size_t kLightStrideFloats = 16u;
+
   m_gpuVerts.clear();
-  for (const auto& v : m_sceneData.vertices) {
-    m_gpuVerts.push_back(v.x); m_gpuVerts.push_back(v.y); m_gpuVerts.push_back(v.z);
+  if (m_sceneData.vertices.empty()) {
+    m_gpuVerts.assign(3u, 0.0f);
+  } else {
+    m_gpuVerts.resize(m_sceneData.vertices.size() * 3u);
+    for (std::size_t i = 0u; i < m_sceneData.vertices.size(); ++i) {
+      const auto& v = m_sceneData.vertices[i];
+      const std::size_t base = i * 3u;
+      m_gpuVerts[base + 0u] = v.x;
+      m_gpuVerts[base + 1u] = v.y;
+      m_gpuVerts[base + 2u] = v.z;
+    }
   }
-  if (m_gpuVerts.empty()) m_gpuVerts.assign(3, 0.0f);
 
   m_gpuIdx = m_sceneData.indices;
   if (m_gpuIdx.empty()) m_gpuIdx.push_back(0u);
 
   m_gpuMats.clear();
-  for (const auto& m : m_sceneData.materials) {
-    m_gpuMats.push_back(m.albedo.x);   m_gpuMats.push_back(m.albedo.y);
-    m_gpuMats.push_back(m.albedo.z);
-    m_gpuMats.push_back(m.emissive.x); m_gpuMats.push_back(m.emissive.y);
-    m_gpuMats.push_back(m.emissive.z);
-    m_gpuMats.push_back(m.roughness);  m_gpuMats.push_back(static_cast<float>(m.material_model));
-    m_gpuMats.push_back(m.metallic);   m_gpuMats.push_back(m.ior);
-    m_gpuMats.push_back(m.transmission); m_gpuMats.push_back(m.clearcoat);
-    m_gpuMats.push_back(m.sheen);      m_gpuMats.push_back(m.anisotropy);
+  m_gpuMats.resize(std::max<std::size_t>(kMaterialStrideFloats,
+                                         m_sceneData.materials.size() * kMaterialStrideFloats),
+                   0.0f);
+  for (std::size_t i = 0u; i < m_sceneData.materials.size(); ++i) {
+    const auto& m = m_sceneData.materials[i];
+    const std::size_t base = i * kMaterialStrideFloats;
     const uint32_t packed_effect = (m.material_effect & 1023u) | ((m.material_flags & 1u) ? 1024u : 0u);
-    m_gpuMats.push_back(m.alpha);      m_gpuMats.push_back(static_cast<float>(packed_effect));
+    m_gpuMats[base + 0u] = m.albedo.x;
+    m_gpuMats[base + 1u] = m.albedo.y;
+    m_gpuMats[base + 2u] = m.albedo.z;
+    m_gpuMats[base + 3u] = m.emissive.x;
+    m_gpuMats[base + 4u] = m.emissive.y;
+    m_gpuMats[base + 5u] = m.emissive.z;
+    m_gpuMats[base + 6u] = m.roughness;
+    m_gpuMats[base + 7u] = static_cast<float>(m.material_model);
+    m_gpuMats[base + 8u] = m.metallic;
+    m_gpuMats[base + 9u] = m.ior;
+    m_gpuMats[base + 10u] = m.transmission;
+    m_gpuMats[base + 11u] = m.clearcoat;
+    m_gpuMats[base + 12u] = m.sheen;
+    m_gpuMats[base + 13u] = m.anisotropy;
+    m_gpuMats[base + 14u] = m.alpha;
+    m_gpuMats[base + 15u] = static_cast<float>(packed_effect);
   }
-  if (m_gpuMats.empty()) m_gpuMats.assign(16, 0.0f);
 
   m_gpuInsts.clear();
-  for (const auto& inst : m_sceneData.instances) {
-    m_gpuInsts.push_back(inst.first_triangle);
-    m_gpuInsts.push_back(inst.triangle_count);
-    m_gpuInsts.push_back(inst.material_index);
-    m_gpuInsts.push_back(0u);
+  m_gpuInsts.resize(std::max<std::size_t>(kInstanceStrideU32,
+                                          m_sceneData.instances.size() * kInstanceStrideU32),
+                    0u);
+  for (std::size_t i = 0u; i < m_sceneData.instances.size(); ++i) {
+    const auto& inst = m_sceneData.instances[i];
+    const std::size_t base = i * kInstanceStrideU32;
+    m_gpuInsts[base + 0u] = inst.first_triangle;
+    m_gpuInsts[base + 1u] = inst.triangle_count;
+    m_gpuInsts[base + 2u] = inst.material_index;
+    m_gpuInsts[base + 3u] = 0u;
   }
-  if (m_gpuInsts.empty()) m_gpuInsts.assign(4, 0u);
 
   m_gpuLights.clear();
-  for (const auto& lt : m_sceneData.lights) {
-    m_gpuLights.push_back(lt.position.x); m_gpuLights.push_back(lt.position.y);
-    m_gpuLights.push_back(lt.position.z);
-    m_gpuLights.push_back(lt.color.x);    m_gpuLights.push_back(lt.color.y);
-    m_gpuLights.push_back(lt.color.z);
-    m_gpuLights.push_back(lt.intensity);  m_gpuLights.push_back(std::max(0.0f, lt.radius));
-    m_gpuLights.push_back(lt.direction.x); m_gpuLights.push_back(lt.direction.y);
-    m_gpuLights.push_back(lt.direction.z);
-    m_gpuLights.push_back(lt.spot_inner_cos); m_gpuLights.push_back(lt.spot_outer_cos);
-    m_gpuLights.push_back(0.0f); m_gpuLights.push_back(0.0f); m_gpuLights.push_back(0.0f);
+  m_gpuLights.resize(std::max<std::size_t>(kLightStrideFloats,
+                                           m_sceneData.lights.size() * kLightStrideFloats),
+                     0.0f);
+  for (std::size_t i = 0u; i < m_sceneData.lights.size(); ++i) {
+    const auto& lt = m_sceneData.lights[i];
+    const std::size_t base = i * kLightStrideFloats;
+    m_gpuLights[base + 0u] = lt.position.x;
+    m_gpuLights[base + 1u] = lt.position.y;
+    m_gpuLights[base + 2u] = lt.position.z;
+    m_gpuLights[base + 3u] = lt.color.x;
+    m_gpuLights[base + 4u] = lt.color.y;
+    m_gpuLights[base + 5u] = lt.color.z;
+    m_gpuLights[base + 6u] = lt.intensity;
+    m_gpuLights[base + 7u] = std::max(0.0f, lt.radius);
+    m_gpuLights[base + 8u] = lt.direction.x;
+    m_gpuLights[base + 9u] = lt.direction.y;
+    m_gpuLights[base + 10u] = lt.direction.z;
+    m_gpuLights[base + 11u] = lt.spot_inner_cos;
+    m_gpuLights[base + 12u] = lt.spot_outer_cos;
+    m_gpuLights[base + 13u] = 0.0f;
+    m_gpuLights[base + 14u] = 0.0f;
+    m_gpuLights[base + 15u] = 0.0f;
   }
-  if (m_gpuLights.empty()) m_gpuLights.assign(16, 0.0f);
 
   // Upload — use HOST_VISIBLE | HOST_COHERENT buffers (mapped directly)
+  // Upload with HOST_VISIBLE | HOST_COHERENT buffers. This favors simple
+  // backend behavior over peak throughput; no staging queue is needed.
   destroy_scene_buffers();
 
   struct Upload { const void* data; VkDeviceSize sz; VkBuffer* buf; VkDeviceMemory* mem; };
@@ -254,7 +302,8 @@ bool VulkanGpuPathTracer::render_sample_batch(
       ? std::max(0.01f, sc.camera_anamorphic_squeeze)
       : 1.0f;
 
-  // Record command buffer
+  // Record a one-shot command buffer per sample. The fence wait below makes the
+  // host-visible film immediately readable by resolve_ldr/resolve_hdr.
   VK_CHK(vkResetCommandBuffer(m_cmdBuf, 0));
   VkCommandBufferBeginInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -271,7 +320,8 @@ bool VulkanGpuPathTracer::render_sample_batch(
                 (m_settings.height + 7u) / 8u, 1u);
   VK_CHK(vkEndCommandBuffer(m_cmdBuf));
 
-  // Submit and wait
+  // Submit and wait synchronously because the public IPathTracer API exposes
+  // immediate CPU resolve/readback semantics.
   VK_CHK(vkResetFences(m_device, 1, &m_fence));
   VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   si.commandBufferCount = 1;
@@ -302,21 +352,24 @@ vkpt::pathtracer::SampleCounters VulkanGpuPathTracer::read_counters() const {
 }
 
 void VulkanGpuPathTracer::shutdown() {
-  if (m_device == VK_NULL_HANDLE) return;
-  vkDeviceWaitIdle(m_device);
+  if (m_device != VK_NULL_HANDLE) {
+    // Ensure no queued command buffer still references resources being torn down.
+    vkDeviceWaitIdle(m_device);
 
-  if (m_ds != VK_NULL_HANDLE) {
-    vkFreeDescriptorSets(m_device, m_dsPool, 1, &m_ds);  m_ds = VK_NULL_HANDLE;
+    if (m_ds != VK_NULL_HANDLE) {
+      vkFreeDescriptorSets(m_device, m_dsPool, 1, &m_ds);  m_ds = VK_NULL_HANDLE;
+    }
+    destroy_film_buffers();
+    destroy_scene_buffers();
+    destroy_pipeline();
+
+    if (m_dsPool   != VK_NULL_HANDLE) { vkDestroyDescriptorPool(m_device, m_dsPool, nullptr);             m_dsPool   = VK_NULL_HANDLE; }
+    if (m_dsLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(m_device, m_dsLayout, nullptr);      m_dsLayout = VK_NULL_HANDLE; }
+    if (m_fence    != VK_NULL_HANDLE) { vkDestroyFence(m_device, m_fence, nullptr);                       m_fence    = VK_NULL_HANDLE; }
+    if (m_cmdPool  != VK_NULL_HANDLE) { vkDestroyCommandPool(m_device, m_cmdPool, nullptr);               m_cmdPool  = VK_NULL_HANDLE; }
+    vkDestroyDevice(m_device, nullptr);
+    m_device = VK_NULL_HANDLE;
   }
-  destroy_film_buffers();
-  destroy_scene_buffers();
-  destroy_pipeline();
-
-  if (m_dsPool   != VK_NULL_HANDLE) { vkDestroyDescriptorPool(m_device, m_dsPool, nullptr);             m_dsPool   = VK_NULL_HANDLE; }
-  if (m_dsLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(m_device, m_dsLayout, nullptr);      m_dsLayout = VK_NULL_HANDLE; }
-  if (m_fence    != VK_NULL_HANDLE) { vkDestroyFence(m_device, m_fence, nullptr);                       m_fence    = VK_NULL_HANDLE; }
-  if (m_cmdPool  != VK_NULL_HANDLE) { vkDestroyCommandPool(m_device, m_cmdPool, nullptr);               m_cmdPool  = VK_NULL_HANDLE; }
-  if (m_device   != VK_NULL_HANDLE) { vkDestroyDevice(m_device, nullptr);                               m_device   = VK_NULL_HANDLE; }
   if (m_instance != VK_NULL_HANDLE) { vkDestroyInstance(m_instance, nullptr);                           m_instance = VK_NULL_HANDLE; }
   m_valid = false;
   m_cpuFilmDirty = false;
@@ -458,9 +511,19 @@ bool VulkanGpuPathTracer::create_pipeline() {
     return false;
   }
   const auto spvSz = static_cast<std::size_t>(f.tellg());
+  if (spvSz == 0u || (spvSz % sizeof(uint32_t)) != 0u) {
+    m_error = "Invalid SPIR-V byte size: " + std::to_string(spvSz);
+    vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
+    return false;
+  }
   f.seekg(0);
   std::vector<uint32_t> spv(spvSz / 4u);
   f.read(reinterpret_cast<char*>(spv.data()), static_cast<std::streamsize>(spvSz));
+  if (!f) {
+    m_error = "Failed to read SPIR-V: " + m_spvPath;
+    vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
+    return false;
+  }
   f.close();
 
   VkShaderModuleCreateInfo smci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -469,6 +532,8 @@ bool VulkanGpuPathTracer::create_pipeline() {
   VK_CHK(vkCreateShaderModule(m_device, &smci, nullptr, &m_shaderMod));
 
   // Descriptor set layout — 6 storage buffers
+  // Descriptor set layout: vertex, index, material, instance, light, and film
+  // buffers. The binding order is fixed by pathtrace.comp.
   VkDescriptorSetLayoutBinding binds[6]{};
   for (uint32_t i = 0; i < 6; ++i) {
     binds[i].binding         = i;
@@ -525,7 +590,8 @@ bool VulkanGpuPathTracer::create_descriptors() {
   ai.pSetLayouts        = &m_dsLayout;
   VK_CHK(vkAllocateDescriptorSets(m_device, &ai, &m_ds));
 
-  // Only bind if all buffers exist
+  // configure() can create the descriptor pool before scene buffers exist. Once
+  // scene upload completes, this function is called again to write all bindings.
   if (!m_filmBuf || !m_vertBuf) return true;
 
   const std::size_t szV  = m_gpuVerts.size()   * sizeof(float);
@@ -568,22 +634,65 @@ bool VulkanGpuPathTracer::make_buffer(VkDeviceSize size,
                                       VkMemoryPropertyFlags props,
                                       VkBuffer& buf, VkDeviceMemory& mem) {
   if (size == 0) size = 4;
+  // Use local handles until every Vulkan allocation step succeeds so callers do
+  // not inherit half-created buffer state on error.
+  VkBuffer localBuf = VK_NULL_HANDLE;
+  VkDeviceMemory localMem = VK_NULL_HANDLE;
+  auto cleanup = [&]() {
+    if (localMem != VK_NULL_HANDLE) {
+      vkFreeMemory(m_device, localMem, nullptr);
+      localMem = VK_NULL_HANDLE;
+    }
+    if (localBuf != VK_NULL_HANDLE) {
+      vkDestroyBuffer(m_device, localBuf, nullptr);
+      localBuf = VK_NULL_HANDLE;
+    }
+  };
   VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   bci.size        = size;
   bci.usage       = usage;
   bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  VK_CHK(vkCreateBuffer(m_device, &bci, nullptr, &buf));
+  VkResult result = vkCreateBuffer(m_device, &bci, nullptr, &localBuf);
+  if (result != VK_SUCCESS) {
+    std::ostringstream ss;
+    ss << "vkCreateBuffer failed: VkResult=" << static_cast<int>(result);
+    m_error = ss.str();
+    vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
+    return false;
+  }
 
   VkMemoryRequirements mr{};
-  vkGetBufferMemoryRequirements(m_device, buf, &mr);
+  vkGetBufferMemoryRequirements(m_device, localBuf, &mr);
   const uint32_t mt = find_mem_type(mr.memoryTypeBits, props);
-  if (mt == UINT32_MAX) { m_error = "No suitable memory type"; return false; }
+  if (mt == UINT32_MAX) {
+    m_error = "No suitable memory type";
+    cleanup();
+    return false;
+  }
 
   VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   mai.allocationSize  = mr.size;
   mai.memoryTypeIndex = mt;
-  VK_CHK(vkAllocateMemory(m_device, &mai, nullptr, &mem));
-  VK_CHK(vkBindBufferMemory(m_device, buf, mem, 0));
+  result = vkAllocateMemory(m_device, &mai, nullptr, &localMem);
+  if (result != VK_SUCCESS) {
+    std::ostringstream ss;
+    ss << "vkAllocateMemory failed: VkResult=" << static_cast<int>(result);
+    m_error = ss.str();
+    vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
+    cleanup();
+    return false;
+  }
+  result = vkBindBufferMemory(m_device, localBuf, localMem, 0);
+  if (result != VK_SUCCESS) {
+    std::ostringstream ss;
+    ss << "vkBindBufferMemory failed: VkResult=" << static_cast<int>(result);
+    m_error = ss.str();
+    vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
+    cleanup();
+    return false;
+  }
+  buf = localBuf;
+  mem = localMem;
   return true;
 }
 
@@ -592,6 +701,8 @@ void VulkanGpuPathTracer::rebuild_cpu_film_from_gpu() const {
     return;
   }
 
+  // The shader stores RGB sums plus sample count in alpha. FilmBuffer expects
+  // samples, so feed it the average once instead of replaying all samples.
   const float* src = reinterpret_cast<const float*>(m_filmPtr);
   m_film.resize(m_settings.width, m_settings.height);
   m_film.set_resolve_settings(

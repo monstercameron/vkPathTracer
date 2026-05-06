@@ -1,7 +1,9 @@
 #include <cerrno>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <iostream>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -60,7 +62,7 @@ std::filesystem::path ResolvePtappPath(const char* argv0) {
 #else
   auto sibling = dir / "ptapp";
 #endif
-  if (std::filesystem::exists(sibling, ec)) {
+  if (std::filesystem::exists(sibling, ec) && !ec) {
     return sibling;
   }
 
@@ -164,13 +166,22 @@ int RunPtapp(const std::filesystem::path& ptapp, const std::vector<std::string>&
 }  // namespace
 
 int main(int argc, char** argv) {
-  const auto ptapp = ResolvePtappPath(argc > 0 ? argv[0] : nullptr);
-  const auto args = MapDoctorArguments(argc, argv);
+  try {
+    const auto ptapp = ResolvePtappPath(argc > 0 ? argv[0] : nullptr);
+    const auto args = MapDoctorArguments(argc, argv);
 
-  const int code = RunPtapp(ptapp, args);
-  if (code != 0) {
-    std::cerr << "ptdoctor: delegated command failed via " << ptapp.string()
-              << " with exit code " << code << "\n";
+    const int code = RunPtapp(ptapp, args);
+    if (code != 0) {
+      std::cerr << "ptdoctor: delegated command failed via " << ptapp.string()
+                << " with exit code " << code << "\n";
+    }
+    return code;
+  } catch (const std::bad_alloc& ex) {
+    std::cerr << "ptdoctor: out of memory: " << ex.what() << "\n";
+  } catch (const std::exception& ex) {
+    std::cerr << "ptdoctor: unhandled exception: " << ex.what() << "\n";
+  } catch (...) {
+    std::cerr << "ptdoctor: unhandled non-standard exception\n";
   }
-  return code;
+  return 127;
 }

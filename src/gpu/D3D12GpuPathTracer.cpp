@@ -12,6 +12,7 @@
 #include <d3dcompiler.h>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <vector>
 #include <array>
@@ -51,6 +52,8 @@ std::string D3D12GpuPathTracer::dxr_tier_string() const {
 }
 
 void D3D12GpuPathTracer::set_prefer_dxr(bool enabled) {
+  // DXR can be toggled after construction. Runtime objects and the state object
+  // are created lazily so the compute backend remains cheap on non-DXR runs.
   const bool wasEnabled = m_preferDxr;
   m_preferDxr = enabled;
   m_usingDxrDispatch = false;
@@ -110,9 +113,17 @@ bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
     LogError("configure rejected: " + m_error);
     return false;
   }
+  const uint64_t filmPixels = static_cast<uint64_t>(s.width) * s.height;
+  if (filmPixels > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
+    m_error = "film dimensions exceed D3D12 backend limits";
+    LogError("configure rejected: " + m_error);
+    return false;
+  }
+  // Configuration invalidates all GPU scene state because film dimensions,
+  // batching, and optional postprocess buffers are tied to RenderSettings.
   m_settings   = s;
   m_configured = true;
-  m_filmPixels = s.width * s.height;
+  m_filmPixels = static_cast<uint32_t>(filmPixels);
   m_film.resize(s.width, s.height);
   m_film.set_resolve_settings(s.film_resolve);
   m_film.clear();

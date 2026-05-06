@@ -2,6 +2,162 @@
       std::function<bool(const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>&)>
           qtPublishInstanceTransformUpdates;
       uint32_t qtScriptTransformRevision = 1u;
+      struct QtInstanceTransformBuildResult {
+        std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates;
+        bool unsupported_instances = false;
+      };
+      auto qtBuildInstanceTransformUpdatesForTouchedEntities =
+          [&](const std::unordered_set<vkpt::core::StableId>& transformTouchedIds,
+              uint32_t baseFlags,
+              uint32_t& transformRevision) {
+        QtInstanceTransformBuildResult result;
+        if (transformTouchedIds.empty()) {
+          return result;
+        }
+
+        std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneEntityDefinition*>
+            entitiesById;
+        entitiesById.reserve(qtSceneDocument.entities.size());
+        for (const auto& entity : qtSceneDocument.entities) {
+          entitiesById.emplace(entity.id, &entity);
+        }
+
+        auto hasTouchedTransformAncestor =
+            [&](const vkpt::scene::SceneEntityDefinition& entity) {
+          if (transformTouchedIds.contains(entity.id)) {
+            return true;
+          }
+          std::unordered_set<vkpt::core::StableId> visited;
+          vkpt::core::StableId parent =
+              entity.has_hierarchy ? entity.hierarchy.parent : 0u;
+          while (parent != 0u && visited.insert(parent).second) {
+            if (transformTouchedIds.contains(parent)) {
+              return true;
+            }
+            const auto parentIt = entitiesById.find(parent);
+            if (parentIt == entitiesById.end()) {
+              break;
+            }
+            const auto* parentEntity = parentIt->second;
+            parent = parentEntity->has_hierarchy ? parentEntity->hierarchy.parent : 0u;
+          }
+          return false;
+        };
+
+        result.updates.reserve(qtScene.instances.size());
+        const auto worldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
+        const auto* world = worldSnapshot ? &worldSnapshot.value() : nullptr;
+        for (std::size_t index = 0; index < qtScene.instances.size(); ++index) {
+          const auto& instance = qtScene.instances[index];
+          const auto entityIt = entitiesById.find(instance.entity_id);
+          if (entityIt == entitiesById.end() || entityIt->second == nullptr) {
+            continue;
+          }
+          if (!hasTouchedTransformAncestor(*entityIt->second)) {
+            continue;
+          }
+          const bool dynamicCompatible =
+              instance.has_flag(vkpt::pathtracer::kRTInstanceFlagDynamicTransform) &&
+              instance.local_vertex_count > 0u &&
+              instance.local_index_count >= 3u;
+          if (!dynamicCompatible) {
+            result.unsupported_instances = true;
+            continue;
+          }
+          const auto worldTransform =
+              ResolveEntityWorldTransform(*entityIt->second, world);
+          vkpt::pathtracer::RTInstanceTransformUpdate update;
+          update.entity_id = instance.entity_id;
+          update.instance_index = static_cast<uint32_t>(index);
+          update.flags = baseFlags |
+                         vkpt::pathtracer::kRTInstanceFlagDynamicTransform |
+                         vkpt::pathtracer::kRTInstanceFlagTransformDirty;
+          update.transform_revision = transformRevision++;
+          update.translation = ToPtVec3(worldTransform.translation);
+          update.rotation = ToPtQuat4(worldTransform.rotation);
+          update.scale = ToPtVec3(worldTransform.scale);
+          result.updates.push_back(update);
+        }
+        std::sort(result.updates.begin(),
+                  result.updates.end(),
+                  [](const vkpt::pathtracer::RTInstanceTransformUpdate& lhs,
+                     const vkpt::pathtracer::RTInstanceTransformUpdate& rhs) {
+                    if (lhs.instance_index != rhs.instance_index) {
+                      return lhs.instance_index < rhs.instance_index;
+                    }
+                    return lhs.entity_id < rhs.entity_id;
+                  });
+        return result;
+      };
+      auto qtRefreshSelectionBoundsFromRtScene = [&]() {
+        ui_selection_state.per_item_bounds.clear();
+        ui_selection_state.per_item_bounds.reserve(
+            ui_selection_state.selected_entity_ids.size());
+        ui_selection_state.aggregate_bounds = {};
+        for (const auto selectedId : ui_selection_state.selected_entity_ids) {
+          auto bounds = vkpt::editor::Bounds{};
+          bool found = false;
+          for (const auto& instance : qtScene.instances) {
+            if (instance.entity_id != selectedId) {
+              continue;
+            }
+            const uint64_t firstIndex =
+                static_cast<uint64_t>(instance.first_triangle) * 3ull;
+            const uint64_t indexCount =
+                static_cast<uint64_t>(instance.triangle_count) * 3ull;
+            if (firstIndex > qtScene.indices.size() ||
+                indexCount > qtScene.indices.size() - firstIndex) {
+              continue;
+            }
+            for (uint64_t offset = 0u; offset < indexCount; ++offset) {
+              const uint32_t vertexIndex =
+                  qtScene.indices[static_cast<std::size_t>(firstIndex + offset)];
+              if (vertexIndex >= qtScene.vertices.size()) {
+                continue;
+              }
+              ExpandBounds(bounds, qtScene.vertices[vertexIndex]);
+              ExpandBounds(ui_selection_state.aggregate_bounds,
+                           qtScene.vertices[vertexIndex]);
+              found = true;
+            }
+          }
+          if (found && bounds.valid) {
+            ui_selection_state.per_item_bounds.push_back({selectedId, bounds});
+          }
+        }
+      };
+      auto qtLastViewportPickablesRefresh = std::chrono::steady_clock::time_point{};
+      bool qtViewportPickablesRefreshPending = false;
+      constexpr auto kQtTransformPickablesRefreshInterval =
+          std::chrono::milliseconds(100);
+      auto qtRefreshViewportPickablesNow = [&]() {
+        qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
+        qtFpsCollisionWorker.set_pickables(qtPickables);
+        RebuildSelectionBounds(ui_selection_state, qtPickables);
+        qtViewportPickablesRefreshPending = false;
+        qtLastViewportPickablesRefresh = std::chrono::steady_clock::now();
+        updateQtSelectionOverlay();
+      };
+      auto qtScheduleViewportPickablesRefresh = [&](bool immediate) {
+        if (immediate) {
+          qtRefreshViewportPickablesNow();
+          return;
+        }
+        qtViewportPickablesRefreshPending = true;
+        qtRefreshSelectionBoundsFromRtScene();
+        updateQtSelectionOverlay();
+      };
+      auto qtMaybeRefreshPendingViewportPickables =
+          [&](std::chrono::steady_clock::time_point now) {
+        if (!qtViewportPickablesRefreshPending || qtGizmoDrag.active) {
+          return;
+        }
+        if (qtLastViewportPickablesRefresh == std::chrono::steady_clock::time_point{} ||
+            now - qtLastViewportPickablesRefresh >=
+                kQtTransformPickablesRefreshInterval) {
+          qtRefreshViewportPickablesNow();
+        }
+      };
       auto qtReloadScriptsFromDocument = [&](std::string_view reason) {
         auto worldResult = qtSceneDocument.to_world();
         if (!worldResult) {
@@ -37,34 +193,10 @@
         bool cameraTransformTouched = false;
         bool fullSceneReloadNeeded = false;
         bool scriptBindingsDirty = false;
+        bool physicsTransformTouched = false;
         bool touchesHeroRoot = false;
         bool touchesActionCamera = false;
         bool touchesActionLight = false;
-        auto hasTouchedTransformAncestor =
-            [&](const vkpt::scene::SceneEntityDefinition& entity) {
-          if (transformTouchedIds.contains(entity.id)) {
-            return true;
-          }
-          std::unordered_set<vkpt::core::StableId> visited;
-          vkpt::core::StableId parent = entity.has_hierarchy ? entity.hierarchy.parent : 0u;
-          while (parent != 0u && visited.insert(parent).second) {
-            if (transformTouchedIds.contains(parent)) {
-              return true;
-            }
-            const auto* parentEntity = static_cast<const vkpt::scene::SceneEntityDefinition*>(nullptr);
-            for (const auto& candidate : qtSceneDocument.entities) {
-              if (candidate.id == parent) {
-                parentEntity = &candidate;
-                break;
-              }
-            }
-            if (parentEntity == nullptr) {
-              break;
-            }
-            parent = parentEntity->has_hierarchy ? parentEntity->hierarchy.parent : 0u;
-          }
-          return false;
-        };
         auto markTransformTouched = [&](vkpt::core::StableId id) {
           transformTouchedIds.insert(id);
           touchesHeroRoot = touchesHeroRoot || id == 9110u;
@@ -144,6 +276,31 @@
             }
           }, command.payload);
         }
+        auto hasTouchedTransformAncestor =
+            [&](const vkpt::scene::SceneEntityDefinition& entity) {
+          if (transformTouchedIds.contains(entity.id)) {
+            return true;
+          }
+          std::unordered_set<vkpt::core::StableId> visited;
+          vkpt::core::StableId parent =
+              entity.has_hierarchy ? entity.hierarchy.parent : 0u;
+          while (parent != 0u && visited.insert(parent).second) {
+            if (transformTouchedIds.contains(parent)) {
+              return true;
+            }
+            const auto parentIt = std::find_if(
+                qtSceneDocument.entities.begin(),
+                qtSceneDocument.entities.end(),
+                [&](const vkpt::scene::SceneEntityDefinition& candidate) {
+                  return candidate.id == parent;
+                });
+            if (parentIt == qtSceneDocument.entities.end()) {
+              break;
+            }
+            parent = parentIt->has_hierarchy ? parentIt->hierarchy.parent : 0u;
+          }
+          return false;
+        };
         if (!transformTouchedIds.empty()) {
           for (const auto& entity : qtSceneDocument.entities) {
             if ((entity.has_light || entity.has_sdf_primitive) &&
@@ -152,6 +309,9 @@
             }
             if (entity.has_camera && hasTouchedTransformAncestor(entity)) {
               cameraTransformTouched = true;
+            }
+            if (entity.has_physics_body && hasTouchedTransformAncestor(entity)) {
+              physicsTransformTouched = true;
             }
           }
         }
@@ -167,6 +327,7 @@
                     {"transform_entities", std::to_string(transformTouchedIds.size())},
                     {"camera_state_touched", cameraStateTouched ? "true" : "false"},
                     {"camera_transform_touched", cameraTransformTouched ? "true" : "false"},
+                    {"physics_transform_touched", physicsTransformTouched ? "true" : "false"},
                     {"full_scene_reload_needed", fullSceneReloadNeeded ? "true" : "false"},
                     {"script_bindings_dirty", scriptBindingsDirty ? "true" : "false"},
                     {"touches_hero_root_9110", touchesHeroRoot ? "true" : "false"},
@@ -373,34 +534,19 @@
           bool incrementalOk = true;
           bool postedTransforms = false;
           bool postedCamera = false;
+          std::size_t transformUpdateCount = 0u;
 
           if (!transformTouchedIds.empty()) {
-            std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates;
-            updates.reserve(qtScene.instances.size());
-            const auto worldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
-            const auto* world = worldSnapshot ? &worldSnapshot.value() : nullptr;
-            for (std::size_t index = 0; index < qtScene.instances.size(); ++index) {
-              const auto entityId = qtScene.instances[index].entity_id;
-              const auto* entity = qtFindEntity(entityId);
-              if (entity == nullptr) {
-                continue;
-              }
-              const auto worldTransform = ResolveEntityWorldTransform(*entity, world);
-              vkpt::pathtracer::RTInstanceTransformUpdate update;
-              update.entity_id = entityId;
-              update.instance_index = static_cast<uint32_t>(index);
-              update.flags = vkpt::pathtracer::kRTInstanceFlagDynamicTransform |
-                             vkpt::pathtracer::kRTInstanceFlagTransformDirty;
-              update.transform_revision = qtScriptTransformRevision++;
-              update.translation = ToPtVec3(worldTransform.translation);
-              update.rotation = ToPtQuat4(worldTransform.rotation);
-              update.scale = ToPtVec3(worldTransform.scale);
-              updates.push_back(update);
-            }
+            auto transformBuild = qtBuildInstanceTransformUpdatesForTouchedEntities(
+                transformTouchedIds,
+                0u,
+                qtScriptTransformRevision);
+            transformUpdateCount = transformBuild.updates.size();
+            incrementalOk = incrementalOk && !transformBuild.unsupported_instances;
 
-            if (!updates.empty()) {
+            if (incrementalOk && !transformBuild.updates.empty()) {
               incrementalOk = qtPublishInstanceTransformUpdates &&
-                              qtPublishInstanceTransformUpdates(updates);
+                              qtPublishInstanceTransformUpdates(transformBuild.updates);
               postedTransforms = incrementalOk;
             }
           }
@@ -474,6 +620,9 @@
             if (scriptBindingsDirty) {
               qtReloadScriptsFromDocument("script command");
             }
+            if (physicsTransformTouched) {
+              qtSyncPhysicsFromSceneDocument();
+            }
             qtDockPanelsDirty = true;
             qtPreviewStatus = "lua playable";
             logger.log(vkpt::log::Severity::Info,
@@ -481,6 +630,7 @@
                        "Lua script commands applied incrementally",
                        {{"commands", std::to_string(commands.commands().size())},
                         {"transform_updates", postedTransforms ? "true" : "false"},
+                        {"transform_update_count", std::to_string(transformUpdateCount)},
                         {"camera_update", postedCamera ? "true" : "false"},
                         {"script_bindings_reloaded", scriptBindingsDirty ? "true" : "false"}},
                        qtFrameCount);
@@ -627,8 +777,15 @@
           qtPreviewStatus = "scene edit failed";
           return false;
         }
-        qtScene = std::move(sceneResult.value());
-        qtApplySceneLightingFallback();
+        auto nextScene = std::move(sceneResult.value());
+        qtApplySceneLightingFallbackTo(nextScene);
+        const auto sceneDelta = vkpt::pathtracer::BuildSceneDeltaUpdate(qtScene, nextScene);
+        const bool hasSceneDeltaWork =
+            sceneDelta.has_value() &&
+            (!sceneDelta->materials.empty() ||
+             !sceneDelta->lights.empty() ||
+             sceneDelta->environment_color_changed);
+        qtScene = std::move(nextScene);
         syncQtCameraPoseFromScene();
         syncQtFpsAnglesFromPose();
         qtCameraFocusDistance = std::max(
@@ -639,21 +796,50 @@
         qtCameraFocusPoint =
             PtAdd(qtCameraPose.position, PtMul(qtCameraForward(), qtCameraFocusDistance));
         qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
+        qtViewportPickablesRefreshPending = false;
+        qtLastViewportPickablesRefresh = std::chrono::steady_clock::now();
         qtFpsCollisionWorker.set_pickables(qtPickables);
         RebuildSelectionBounds(ui_selection_state, qtPickables);
-        qtPublishedSample.store(0u, std::memory_order_relaxed);
-        if (qtUseBg && qtRenderCoordinator) {
-          qtRenderCoordinator->post_scene(qtScene);
-        } else if (!qtUseBg && qtTracerReady) {
-          qtTracerReady = qtTracer->load_scene_snapshot(qtScene) &&
-                          qtTracer->build_or_update_acceleration() &&
-                          qtTracer->reset_accumulation();
-          qtSampleIndex = 0u;
+        bool rendererUpdatedIncrementally = false;
+        bool accumulationReset = false;
+        if (hasSceneDeltaWork) {
+          if (qtUseBg && qtRenderCoordinator) {
+            qtRenderCoordinator->post_scene_delta(*sceneDelta);
+            rendererUpdatedIncrementally = true;
+            accumulationReset = true;
+          } else if (!qtUseBg && qtTracerReady) {
+            rendererUpdatedIncrementally = qtTracer->update_scene_delta(*sceneDelta);
+            if (rendererUpdatedIncrementally) {
+              qtTracerReady = qtTracer->reset_accumulation();
+              rendererUpdatedIncrementally = qtTracerReady;
+              qtSampleIndex = 0u;
+              accumulationReset = qtTracerReady;
+            }
+          }
+        } else if (sceneDelta.has_value()) {
+          rendererUpdatedIncrementally = true;
+        }
+
+        if (!rendererUpdatedIncrementally) {
+          if (qtUseBg && qtRenderCoordinator) {
+            qtRenderCoordinator->post_scene(qtScene);
+            accumulationReset = true;
+          } else if (!qtUseBg && qtTracerReady) {
+            qtTracerReady = qtTracer->load_scene_snapshot(qtScene) &&
+                            qtTracer->build_or_update_acceleration() &&
+                            qtTracer->reset_accumulation();
+            qtSampleIndex = 0u;
+            accumulationReset = qtTracerReady;
+          }
         }
         qtDockPanelsDirty = true;
         qtSyncPhysicsFromSceneDocument();
         qtReloadScriptsFromDocument("scene edited");
-        qtPreviewStatus = qtTracerReady ? "scene edited" : "scene edit renderer reload failed";
+        qtPreviewStatus = qtTracerReady
+            ? (rendererUpdatedIncrementally && hasSceneDeltaWork
+                   ? "scene delta update"
+                   : "scene edited")
+            : "scene edit renderer reload failed";
         if (reason == std::string_view{"animation playback"}) {
           ui_runtime_state.status_message = "animation playback";
         } else if (reason == std::string_view{"scene loaded"} ||
@@ -665,7 +851,10 @@
         } else {
           ui_runtime_state.status_message = "gizmo " + std::string(reason);
         }
-        qtPublishedRays.store(0u, std::memory_order_relaxed);
+        if (accumulationReset) {
+          qtPublishedSample.store(0u, std::memory_order_relaxed);
+          qtPublishedRays.store(0u, std::memory_order_relaxed);
+        }
         updateQtSelectionOverlay();
         return qtTracerReady;
       };
@@ -737,11 +926,8 @@
         }
         qtPublishedSample.store(0u, std::memory_order_relaxed);
         qtPublishedRays.store(0u, std::memory_order_relaxed);
-        qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
-        qtFpsCollisionWorker.set_pickables(qtPickables);
-        RebuildSelectionBounds(ui_selection_state, qtPickables);
-        qtDockPanelsDirty = true;
-        updateQtSelectionOverlay();
+        qtScheduleViewportPickablesRefresh(false);
+        qtMarkTransformDockPanelsDirty(false);
         return true;
       };
       auto qtApplySceneAnimation = [&](std::chrono::steady_clock::time_point now) {

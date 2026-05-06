@@ -60,6 +60,10 @@ struct AdapterBackendConfig {
   RenderBackendCapabilities capabilities;
 };
 
+/// Compiler facade shared by optional adapter skeletons.
+///
+/// It validates source format and entry-point metadata, then emits a synthetic
+/// artifact id; native shader-module creation belongs to future backend adapters.
 class AdapterShaderCompiler final : public IShaderCompiler {
  public:
   explicit AdapterShaderCompiler(AdapterBackendConfig config) : m_config(std::move(config)) {}
@@ -113,6 +117,7 @@ class AdapterShaderCompiler final : public IShaderCompiler {
   AdapterBackendConfig m_config;
 };
 
+/// In-memory shader cache used by adapter skeletons.
 class AdapterShaderCache final : public IShaderCache {
  public:
   AdapterShaderCache(std::string backend, ShaderSourceFormat source_format, std::string default_source_path)
@@ -181,6 +186,7 @@ class AdapterShaderCache final : public IShaderCache {
   std::unordered_map<std::string, std::string> m_entries;
 };
 
+/// Optional backend skeleton for platform APIs not yet wired to native devices.
 class AdapterBackend final : public IRenderBackend {
  public:
   explicit AdapterBackend(AdapterBackendConfig config) : m_config(std::move(config)) {}
@@ -229,6 +235,7 @@ class AdapterBackend final : public IRenderBackend {
   std::unique_ptr<AdapterShaderCache> m_cache;
 };
 
+/// Run the common one-pass compute graph against an adapter skeleton.
 inline bool RunAdapterComputeSmoke(IRenderBackend& backend, std::string_view label) {
   if (!backend.initialize()) {
     return false;
@@ -258,6 +265,7 @@ inline bool RunAdapterComputeSmoke(IRenderBackend& backend, std::string_view lab
   return ok;
 }
 
+/// Fill conservative capability defaults for simulated adapter skeletons.
 inline RenderBackendCapabilities MakeAdapterBaseCapabilities(std::string backend_name) {
   RenderBackendCapabilities caps;
   caps.backend_name = std::move(backend_name);

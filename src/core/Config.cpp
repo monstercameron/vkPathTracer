@@ -1,13 +1,17 @@
 #include "core/Config.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <system_error>
 
 #include "core/EngineConfig.h"
 
@@ -255,16 +259,19 @@ static bool ParseBool(const std::string& value) {
 }
 
 static std::optional<uint32_t> TryParseU32(const std::string& value) {
-  try {
-    std::size_t parsed = 0;
-    const auto parsed_value = std::stoul(value, &parsed);
-    if (parsed != value.size() || parsed_value > std::numeric_limits<uint32_t>::max()) {
-      return std::nullopt;
-    }
-    return static_cast<uint32_t>(parsed_value);
-  } catch (...) {
+  std::string_view numeric = value;
+  if (!numeric.empty() && numeric.front() == '+') {
+    numeric.remove_prefix(1);
+  }
+  std::uint64_t parsed_value = 0;
+  const auto parsed = std::from_chars(numeric.data(), numeric.data() + numeric.size(), parsed_value);
+  if (numeric.empty() ||
+      parsed.ec != std::errc{} ||
+      parsed.ptr != numeric.data() + numeric.size() ||
+      parsed_value > std::numeric_limits<uint32_t>::max()) {
     return std::nullopt;
   }
+  return static_cast<uint32_t>(parsed_value);
 }
 
 static uint32_t ParseU32(const std::string& value) {
