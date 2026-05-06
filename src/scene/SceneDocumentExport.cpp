@@ -11,6 +11,7 @@ namespace vkpt::scene {
 using namespace detail;
 
 std::string SceneDocument::to_json(bool pretty) const {
+  // Build the DOM explicitly so load/export share the same key names and default elision rules.
   auto bool_value = [](bool v) {
     JsonValue value;
     value.kind = JsonValue::Kind::Boolean;
@@ -102,16 +103,33 @@ std::string SceneDocument::to_json(bool pretty) const {
   root.object["metadata"] = metadataNode;
 
   JsonValue assetsNode = array_value();
+  assetsNode.array.reserve(assets.size());
   for (const auto& asset : assets) {
     JsonValue item = object_value();
     item.object["id"] = number_value(static_cast<double>(asset.id));
     item.object["type"] = string_value(asset.type);
     item.object["uri"] = string_value(asset.uri);
+    if (!asset.name.empty()) {
+      item.object["name"] = string_value(asset.name);
+    }
+    if (asset.parent != 0) {
+      item.object["parent"] = number_value(static_cast<double>(asset.parent));
+    }
+    if (asset.sibling_order != 0) {
+      item.object["sibling_order"] = number_value(static_cast<double>(asset.sibling_order));
+    }
+    if (asset.has_transform) {
+      item.object["transform"] = transform_value(asset.transform);
+    }
+    if (asset.disable_imported_animation) {
+      item.object["disable_imported_animation"] = bool_value(true);
+    }
     assetsNode.array.push_back(std::move(item));
   }
   root.object["assets"] = std::move(assetsNode);
 
   JsonValue materialsNode = array_value();
+  materialsNode.array.reserve(materials.size());
   for (const auto& material : materials) {
     JsonValue item = object_value();
     item.object["id"] = number_value(static_cast<double>(material.id));
@@ -140,6 +158,7 @@ std::string SceneDocument::to_json(bool pretty) const {
   root.object["materials"] = std::move(materialsNode);
 
   JsonValue geometryNode = array_value();
+  geometryNode.array.reserve(geometry.size());
   for (const auto& geometry_entry : geometry) {
     JsonValue item = object_value();
     item.object["id"] = number_value(static_cast<double>(geometry_entry.id));
@@ -159,23 +178,27 @@ std::string SceneDocument::to_json(bool pretty) const {
       item.object["tessellation"] = std::move(tessNode);
     }
     JsonValue tagsNode = array_value();
+    tagsNode.array.reserve(geometry_entry.tags.size());
     for (const auto& tag : geometry_entry.tags) {
       tagsNode.array.push_back(string_value(tag));
     }
     item.object["tags"] = std::move(tagsNode);
     JsonValue verticesNode = array_value();
+    verticesNode.array.reserve(geometry_entry.vertices.size());
     for (const auto& vertex : geometry_entry.vertices) {
       verticesNode.array.push_back(vec3_value(vertex));
     }
     item.object["vertices"] = std::move(verticesNode);
     if (!geometry_entry.texcoords.empty()) {
       JsonValue texcoordsNode = array_value();
+      texcoordsNode.array.reserve(geometry_entry.texcoords.size());
       for (const auto& texcoord : geometry_entry.texcoords) {
         texcoordsNode.array.push_back(vec2_value(texcoord));
       }
       item.object["texcoords"] = std::move(texcoordsNode);
     }
     JsonValue indicesNode = array_value();
+    indicesNode.array.reserve(geometry_entry.indices.size());
     for (const auto index : geometry_entry.indices) {
       indicesNode.array.push_back(number_value(static_cast<double>(index)));
     }
@@ -185,6 +208,7 @@ std::string SceneDocument::to_json(bool pretty) const {
   root.object["geometry"] = std::move(geometryNode);
 
   JsonValue sdfNode = array_value();
+  sdfNode.array.reserve(sdf_primitives.size());
   for (const auto& sdf : sdf_primitives) {
     JsonValue item = object_value();
     item.object["id"] = number_value(static_cast<double>(sdf.id));
@@ -203,6 +227,7 @@ std::string SceneDocument::to_json(bool pretty) const {
   }
 
   JsonValue entitiesNode = array_value();
+  entitiesNode.array.reserve(entities.size());
   for (const auto& entity : entities) {
     JsonValue item = object_value();
     item.object["id"] = number_value(static_cast<double>(entity.id));
@@ -294,6 +319,7 @@ std::string SceneDocument::to_json(bool pretty) const {
   root.object["entities"] = std::move(entitiesNode);
 
   JsonValue transformsNode = array_value();
+  transformsNode.array.reserve(transforms.size());
   for (const auto& transform : transforms) {
     JsonValue item = object_value();
     item.object["id"] = number_value(static_cast<double>(transform.id));
@@ -304,6 +330,7 @@ std::string SceneDocument::to_json(bool pretty) const {
   root.object["transforms"] = std::move(transformsNode);
 
   JsonValue camerasNode = array_value();
+  camerasNode.array.reserve(cameras.size());
   for (const auto& camera : cameras) {
     JsonValue item = object_value();
     item.object["id"] = number_value(static_cast<double>(camera.id));
@@ -316,6 +343,7 @@ std::string SceneDocument::to_json(bool pretty) const {
   root.object["cameras"] = std::move(camerasNode);
 
   JsonValue lightsNode = array_value();
+  lightsNode.array.reserve(lights.size());
   for (const auto& light : lights) {
     JsonValue item = object_value();
     item.object["id"] = number_value(static_cast<double>(light.id));
@@ -355,6 +383,7 @@ std::string SceneDocument::export_hash_hex() const {
 SceneSnapshot SceneDocument::snapshot() const {
   SceneSnapshot out;
   if (auto world = to_world()) {
+    // Prefer ECS extraction for hierarchy-aware transforms, then add document-only sections below.
     out = world.value().build_snapshot();
   }
 
@@ -362,6 +391,9 @@ SceneSnapshot SceneDocument::snapshot() const {
   out.entity_ids.clear();
   out.renderables.clear();
   out.lights.clear();
+  out.entity_ids.reserve(entities.size());
+  out.renderables.reserve(entities.size());
+  out.lights.reserve(entities.size() + lights.size());
   for (const auto& entity : entities) {
     out.entity_ids.push_back(entity.id);
     blob += "e" + std::to_string(entity.id) + ":" + entity.name + ";";
@@ -394,6 +426,7 @@ SceneSnapshot SceneDocument::snapshot() const {
     }
   }
   out.materials.clear();
+  out.materials.reserve(materials.size());
   for (const auto& material : materials) {
     out.materials.push_back({material.id, material});
     blob += "mat" + std::to_string(material.id) + ":" + material.name + ":" +
@@ -404,9 +437,12 @@ SceneSnapshot SceneDocument::snapshot() const {
             (material.double_sided ? "2s" : "1s") + ";";
   }
   out.asset_refs.clear();
+  out.asset_refs.reserve(assets.size());
   for (const auto& asset : assets) {
     out.asset_refs.push_back(asset.uri);
-    blob += "a" + std::to_string(asset.id) + ":" + asset.uri + ";";
+    blob += "a" + std::to_string(asset.id) + ":" + asset.uri + ":" +
+            asset.name + ":p" + std::to_string(asset.parent) + ":o" +
+            std::to_string(asset.sibling_order) + ";";
   }
   for (const auto& camera : cameras) {
     if (!out.camera) {
@@ -463,6 +499,7 @@ RenderSceneProxy SceneDocument::extract_render_scene(vkpt::core::FrameIndex fram
   proxy.benchmark = benchmark;
 
   if (auto loaded = to_world()) {
+    // World extraction resolves hierarchy and transform authority; document material data is merged afterward.
     proxy = loaded.value().extract_render_scene(frame);
     proxy.scene_hash = snap.scene_hash;
     proxy.benchmark = benchmark;

@@ -126,6 +126,7 @@ bool SceneWorld::set_hierarchy_parent(vkpt::core::StableId child,
   if (child == parent || is_ancestor(child, parent)) {
     return false;
   }
+  // Keep sibling storage authoritative and mirror normalized order back to HierarchyComponent.
   const vkpt::core::StableId previous = childRecord->hierarchy ? childRecord->hierarchy->parent : 0;
   if (previous == parent && sibling_order == UINT32_MAX) {
     return true;
@@ -163,6 +164,7 @@ bool SceneWorld::reparent_entity(vkpt::core::StableId child,
 
   std::optional<TransformComponent> preservedLocalTransform;
   if (preserve_world_transform && childRecord->transform.has_value()) {
+    // Convert the current world pose into the new parent's local space before rewiring hierarchy.
     const auto before = compute_world_transform_unchecked(childRecord);
     Mat4 localMatrix = before.world_matrix;
     if (parent != 0) {
@@ -449,6 +451,7 @@ std::vector<vkpt::core::StableId> SceneWorld::children_of(vkpt::core::StableId p
 
 std::vector<vkpt::core::StableId> SceneWorld::query(ComponentKind kind) const {
   std::vector<vkpt::core::StableId> out;
+  out.reserve(m_entities_order.size());
   for (const auto id : m_entities_order) {
     const auto* entity = get_entity(id);
     if (!entity) {
@@ -528,6 +531,7 @@ void SceneWorld::mark_dirty_recursive(vkpt::core::StableId id) {
   if (entity->transform.has_value()) {
     entity->transform->dirty = true;
   }
+  // Cached world transforms are invalid for the full subtree once a local transform or parent changes.
   m_worldTransforms.erase(id);
   const auto it = m_children.find(id);
   if (it == m_children.end()) {

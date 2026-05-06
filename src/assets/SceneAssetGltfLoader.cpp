@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -23,7 +24,7 @@ inline const vkpt::scene::JsonValue* JsonMember(const vkpt::scene::JsonValue& ob
   if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
     return nullptr;
   }
-  const auto it = object.object.find(std::string(key));
+  const auto it = object.object.find(key);
   return it == object.object.end() ? nullptr : &it->second;
 }
 
@@ -110,15 +111,35 @@ inline bool ReadFileBytes(const std::filesystem::path& path,
     return false;
   }
   const auto size = file.tellg();
-  if (size < 0) {
+  if (size < 0 || size > std::streampos{std::numeric_limits<std::streamsize>::max()}) {
     return false;
   }
   out.resize(static_cast<std::size_t>(size));
   file.seekg(0, std::ios::beg);
   if (!out.empty()) {
     file.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
+    if (file.gcount() != static_cast<std::streamsize>(out.size())) {
+      out.clear();
+      return false;
+    }
   }
-  return file.good() || file.eof();
+  return true;
+}
+
+inline bool CheckedAddSize(std::size_t lhs, std::size_t rhs, std::size_t& out) {
+  if (lhs > std::numeric_limits<std::size_t>::max() - rhs) {
+    return false;
+  }
+  out = lhs + rhs;
+  return true;
+}
+
+inline bool CheckedMulSize(std::size_t lhs, std::size_t rhs, std::size_t& out) {
+  if (lhs != 0u && rhs > std::numeric_limits<std::size_t>::max() / lhs) {
+    return false;
+  }
+  out = lhs * rhs;
+  return true;
 }
 
 struct GltfBufferView {
@@ -185,6 +206,7 @@ inline bool GltfReadAccessorFloats(const std::vector<GltfAccessor>& accessors,
                                    std::size_t accessor_index,
                                    std::vector<float>& out,
                                    std::size_t* out_components = nullptr) {
+  // Accessor reads honor bufferView stride so interleaved glTF vertex buffers import correctly.
   out.clear();
   if (accessor_index >= accessors.size()) {
     return false;
@@ -206,18 +228,37 @@ inline bool GltfReadAccessorFloats(const std::vector<GltfAccessor>& accessors,
       ? components * component_size
       : view.byte_stride;
   const auto& bytes = buffers[view.buffer];
-  const std::size_t base = view.byte_offset + accessor.byte_offset;
-  out.reserve(accessor.count * components);
+  std::size_t base = 0u;
+  std::size_t output_count = 0u;
+  if (!CheckedAddSize(view.byte_offset, accessor.byte_offset, base) ||
+      !CheckedMulSize(accessor.count, components, output_count)) {
+    return false;
+  }
+  out.resize(output_count);
+  std::size_t out_index = 0u;
   for (std::size_t item = 0; item < accessor.count; ++item) {
-    const std::size_t item_offset = base + item * stride;
+    std::size_t item_stride = 0u;
+    std::size_t item_offset = 0u;
+    if (!CheckedMulSize(item, stride, item_stride) ||
+        !CheckedAddSize(base, item_stride, item_offset)) {
+      out.clear();
+      return false;
+    }
     for (std::size_t component = 0; component < components; ++component) {
+      std::size_t component_offset = 0u;
+      std::size_t scalar_offset = 0u;
+      if (!CheckedMulSize(component, component_size, component_offset) ||
+          !CheckedAddSize(item_offset, component_offset, scalar_offset)) {
+        out.clear();
+        return false;
+      }
       float value = 0.0f;
-      if (!GltfReadScalar(bytes, item_offset + component * component_size, value) ||
+      if (!GltfReadScalar(bytes, scalar_offset, value) ||
           !std::isfinite(value)) {
         out.clear();
         return false;
       }
-      out.push_back(value);
+      out[out_index++] = value;
     }
   }
   if (out_components != nullptr) {
@@ -249,10 +290,19 @@ inline bool GltfReadAccessorIndices(const std::vector<GltfAccessor>& accessors,
   }
   const std::size_t stride = view.byte_stride == 0u ? component_size : view.byte_stride;
   const auto& bytes = buffers[view.buffer];
-  const std::size_t base = view.byte_offset + accessor.byte_offset;
-  out.reserve(accessor.count);
+  std::size_t base = 0u;
+  if (!CheckedAddSize(view.byte_offset, accessor.byte_offset, base)) {
+    return false;
+  }
+  out.resize(accessor.count);
   for (std::size_t item = 0; item < accessor.count; ++item) {
-    const std::size_t offset = base + item * stride;
+    std::size_t item_stride = 0u;
+    std::size_t offset = 0u;
+    if (!CheckedMulSize(item, stride, item_stride) ||
+        !CheckedAddSize(base, item_stride, offset)) {
+      out.clear();
+      return false;
+    }
     std::uint32_t value = 0u;
     if (accessor.component_type == 5121) {
       std::uint8_t raw = 0u;
@@ -273,7 +323,7 @@ inline bool GltfReadAccessorIndices(const std::vector<GltfAccessor>& accessors,
     } else {
       return false;
     }
-    out.push_back(value);
+    out[item] = value;
   }
   return true;
 }
@@ -283,6 +333,7 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
   ObjLoadResult result;
   result.source_format = "gltf";
 
+  // This scene loader handles JSON .gltf plus external .bin buffers; GLB stays in metadata import for now.
   std::ifstream file(gltf_path);
   if (!file) {
     if (diagnostics) {
@@ -300,6 +351,12 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
     return result;
   }
   const auto& root = *parsed;
+  const bool has_skins = [&]() {
+    const auto* skins_node = JsonMember(root, "skins");
+    return skins_node != nullptr &&
+           skins_node->kind == vkpt::scene::JsonValue::Kind::Array &&
+           !skins_node->array.empty();
+  }();
   const auto* buffers_node = JsonMember(root, "buffers");
   const auto* buffer_views_node = JsonMember(root, "bufferViews");
   const auto* accessors_node = JsonMember(root, "accessors");
@@ -380,6 +437,9 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
 
   const auto* materials_node = JsonMember(root, "materials");
   if (materials_node != nullptr && materials_node->kind == vkpt::scene::JsonValue::Kind::Array) {
+    // glTF PBR factors are reduced to the SceneDocument material fields used by runtime conversion.
+    result.materials.reserve(materials_node->array.size());
+    result.texture_uris.reserve(materials_node->array.size());
     for (std::size_t index = 0; index < materials_node->array.size(); ++index) {
       const auto& material_node = materials_node->array[index];
       ObjMaterial material;
@@ -429,7 +489,9 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
     result.materials.push_back(ObjMaterial{});
   }
 
+  result.geometry.reserve(meshes_node->array.size());
   for (std::size_t mesh_index = 0; mesh_index < meshes_node->array.size(); ++mesh_index) {
+    // Only triangle primitives are emitted; other modes are skipped instead of triangulated here.
     const auto& mesh_node = meshes_node->array[mesh_index];
     const auto mesh_name = JsonStringMember(mesh_node, "name", "gltf_mesh_" + std::to_string(mesh_index));
     const auto* primitives_node = JsonMember(mesh_node, "primitives");
@@ -463,12 +525,13 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
       }
       std::vector<float> texcoord_values;
       std::size_t texcoord_components = 0u;
+      const auto texcoord_accessor = JsonIndexMember(*attributes, "TEXCOORD_0");
       const bool has_texcoords =
-          JsonIndexMember(*attributes, "TEXCOORD_0").has_value() &&
+          texcoord_accessor.has_value() &&
           GltfReadAccessorFloats(accessors,
                                  buffer_views,
                                  buffers,
-                                 *JsonIndexMember(*attributes, "TEXCOORD_0"),
+                                 *texcoord_accessor,
                                  texcoord_values,
                                  &texcoord_components) &&
           texcoord_components == 2u &&
@@ -485,9 +548,7 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
         }
       } else {
         indices.resize(positions.size() / 3u);
-        for (std::size_t i = 0; i < indices.size(); ++i) {
-          indices[i] = static_cast<std::uint32_t>(i);
-        }
+        std::iota(indices.begin(), indices.end(), 0u);
       }
       if (indices.empty() || indices.size() % 3u != 0u) {
         continue;
@@ -498,9 +559,6 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
       bucket.material_name = material_index < result.materials.size()
           ? result.materials[material_index].name
           : result.materials.front().name;
-      if (primitive_index > 0u) {
-        bucket.material_name += "_" + std::to_string(primitive_index);
-      }
       bucket.vertices.reserve(positions.size() / 3u);
       bucket.texcoords.reserve(positions.size() / 3u);
       for (std::size_t i = 0; i + 2u < positions.size(); i += 3u) {
@@ -548,7 +606,8 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
   }
 
   const auto* animations_node = JsonMember(root, "animations");
-  if (animations_node != nullptr &&
+  if (!has_skins &&
+      animations_node != nullptr &&
       animations_node->kind == vkpt::scene::JsonValue::Kind::Array &&
       !animations_node->array.empty()) {
     const auto& animation_node = animations_node->array.front();

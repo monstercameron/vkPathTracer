@@ -90,15 +90,23 @@ LuaHostContext* Host(lua_State* lua) {
   return static_cast<LuaHostContext*>(lua_touserdata(lua, lua_upvalueindex(1)));
 }
 
+int LuaBytecodeWriter(lua_State*, const void* data, std::size_t size, void* user_data) {
+  auto* out = static_cast<std::string*>(user_data);
+  out->append(static_cast<const char*>(data), size);
+  return 0;
+}
+
 std::filesystem::path ResolveScriptPath(std::string_view source) {
   const std::filesystem::path requested{std::string(source)};
-  if (requested.is_absolute() || std::filesystem::exists(requested)) {
+  std::error_code ec;
+  if (requested.is_absolute() || (std::filesystem::exists(requested, ec) && !ec)) {
     return requested.lexically_normal();
   }
   auto current = std::filesystem::current_path();
   for (int i = 0; i < 8; ++i) {
     const auto candidate = (current / requested).lexically_normal();
-    if (std::filesystem::exists(candidate)) {
+    ec.clear();
+    if (std::filesystem::exists(candidate, ec) && !ec) {
       return candidate;
     }
     if (!current.has_parent_path() || current.parent_path() == current) {
@@ -141,6 +149,7 @@ std::string LuaErrorText(lua_State* lua) {
 }
 
 void OpenSafeLuaLibraries(lua_State* lua) {
+  // Expose pure computation helpers but remove filesystem/loading/printing entry points from scripts.
   luaL_requiref(lua, "_G", luaopen_base, 1);
   lua_pop(lua, 1);
   luaL_requiref(lua, LUA_MATHLIBNAME, luaopen_math, 1);
@@ -381,6 +390,32 @@ void PushCamera(lua_State* lua, const vkpt::scene::CameraComponent& camera) {
   lua_setfield(lua, -2, "exposure_compensation");
 }
 
+void PushPhysicsBody(lua_State* lua, const vkpt::scene::PhysicsBodyComponent& body) {
+  lua_newtable(lua);
+  lua_pushboolean(lua, body.enabled ? 1 : 0);
+  lua_setfield(lua, -2, "enabled");
+  lua_pushnumber(lua, body.mass);
+  lua_setfield(lua, -2, "mass");
+  lua_pushboolean(lua, body.dynamic ? 1 : 0);
+  lua_setfield(lua, -2, "dynamic");
+  lua_pushstring(lua, body.body_type.c_str());
+  lua_setfield(lua, -2, "body_type");
+  lua_pushstring(lua, body.shape.c_str());
+  lua_setfield(lua, -2, "shape");
+  lua_pushnumber(lua, body.friction);
+  lua_setfield(lua, -2, "friction");
+  lua_pushnumber(lua, body.restitution);
+  lua_setfield(lua, -2, "restitution");
+  lua_pushnumber(lua, body.gravity_scale);
+  lua_setfield(lua, -2, "gravity_scale");
+  lua_pushboolean(lua, body.trigger ? 1 : 0);
+  lua_setfield(lua, -2, "trigger");
+  lua_pushboolean(lua, body.allow_sleeping ? 1 : 0);
+  lua_setfield(lua, -2, "allow_sleeping");
+  lua_pushboolean(lua, body.continuous_collision ? 1 : 0);
+  lua_setfield(lua, -2, "continuous_collision");
+}
+
 vkpt::core::StableEntityId LuaSelfEntity(lua_State* lua, int self_index) {
   if (!lua_istable(lua, self_index)) {
     return 0;
@@ -406,6 +441,22 @@ vkpt::scene::TransformComponent EntityTransformOrDefault(const vkpt::scene::Scen
 
 int LuaEntityId(lua_State* lua) {
   lua_pushinteger(lua, static_cast<lua_Integer>(LuaSelfEntity(lua, 1)));
+  return 1;
+}
+
+int LuaEntityGetName(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->world == nullptr) {
+    lua_pushnil(lua);
+    return 1;
+  }
+  const auto* entity = host->world->get_entity(entity_id);
+  if (entity == nullptr) {
+    lua_pushnil(lua);
+    return 1;
+  }
+  lua_pushstring(lua, entity->identity.name.c_str());
   return 1;
 }
 
@@ -538,17 +589,36 @@ int LuaEntitySetCamera(lua_State* lua) {
   return 0;
 }
 
+int LuaEntityGetPhysics(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->world == nullptr) {
+    lua_pushnil(lua);
+    return 1;
+  }
+  const auto* entity = host->world->get_entity(entity_id);
+  if (entity == nullptr || !entity->physics_body.has_value()) {
+    lua_pushnil(lua);
+    return 1;
+  }
+  PushPhysicsBody(lua, *entity->physics_body);
+  return 1;
+}
+
 void PushHostClosure(lua_State* lua, LuaHostContext& host, lua_CFunction function) {
   lua_pushlightuserdata(lua, &host);
   lua_pushcclosure(lua, function, 1);
 }
 
 void PushEntityObject(lua_State* lua, LuaHostContext& host, vkpt::core::StableEntityId entity_id) {
+  // Entity handles are lightweight tables closed over the host context for this hook dispatch only.
   lua_newtable(lua);
   lua_pushinteger(lua, static_cast<lua_Integer>(entity_id));
   lua_setfield(lua, -2, "_entity_id");
   PushHostClosure(lua, host, LuaEntityId);
   lua_setfield(lua, -2, "id");
+  PushHostClosure(lua, host, LuaEntityGetName);
+  lua_setfield(lua, -2, "get_name");
   PushHostClosure(lua, host, LuaEntityGetTransform);
   lua_setfield(lua, -2, "get_transform");
   PushHostClosure(lua, host, LuaEntitySetTransform);
@@ -567,6 +637,8 @@ void PushEntityObject(lua_State* lua, LuaHostContext& host, vkpt::core::StableEn
   lua_setfield(lua, -2, "get_camera");
   PushHostClosure(lua, host, LuaEntitySetCamera);
   lua_setfield(lua, -2, "set_camera");
+  PushHostClosure(lua, host, LuaEntityGetPhysics);
+  lua_setfield(lua, -2, "get_physics");
 }
 
 vkpt::core::StableEntityId AllocateScriptEntityId(LuaHostContext& host) {
@@ -642,6 +714,7 @@ int LuaWorldSpawnEntity(lua_State* lua) {
   if (entity_id == 0) {
     entity_id = AllocateScriptEntityId(*host);
   } else {
+    // Reserve explicit IDs immediately so multiple spawns in one hook cannot collide.
     host->reserved_entity_ids.insert(entity_id);
   }
   const auto name = LuaStringField(lua, def, "name", "Script Entity");
@@ -829,7 +902,8 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
                     const ScriptExecutionContext& context,
                     vkpt::scene::WorldCommandBuffer& commands,
                     std::vector<ScriptDiagnostic>& dispatch_diagnostics,
-                    std::vector<ScriptDiagnostic>& runtime_diagnostics) {
+                    std::vector<ScriptDiagnostic>& runtime_diagnostics,
+                    std::unordered_map<std::string, std::string>& bytecode_cache) {
   auto lua = luaL_newstate();
   if (lua == nullptr) {
     LuaHostContext host;
@@ -856,20 +930,37 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
 
   OpenSafeLuaLibraries(lua);
   const auto script_path = ResolveScriptPath(binding.source);
-  const auto script_text = ReadTextFile(script_path);
-  if (!script_text) {
-    AddLuaDiagnostic(host,
-                     ScriptDiagnosticSeverity::Error,
-                     "script source could not be read: " + script_path.generic_string());
-    lua_close(lua);
-    return false;
-  }
-
   const auto chunk_name = "@" + script_path.generic_string();
-  if (luaL_loadbufferx(lua, script_text->data(), script_text->size(), chunk_name.c_str(), "t") != LUA_OK) {
-    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "script compile failed: " + LuaErrorText(lua));
-    lua_close(lua);
-    return false;
+  const auto cache_key = script_path.generic_string();
+  bool chunk_loaded = false;
+  // Cache dumped Lua bytecode by resolved source path; stale cache entries are discarded on load failure.
+  if (auto cached = bytecode_cache.find(cache_key); cached != bytecode_cache.end()) {
+    if (luaL_loadbufferx(lua, cached->second.data(), cached->second.size(), chunk_name.c_str(), "b") == LUA_OK) {
+      chunk_loaded = true;
+    } else {
+      lua_pop(lua, 1);
+      bytecode_cache.erase(cached);
+    }
+  }
+  if (!chunk_loaded) {
+    const auto script_text = ReadTextFile(script_path);
+    if (!script_text) {
+      AddLuaDiagnostic(host,
+                       ScriptDiagnosticSeverity::Error,
+                       "script source could not be read: " + script_path.generic_string());
+      lua_close(lua);
+      return false;
+    }
+
+    if (luaL_loadbufferx(lua, script_text->data(), script_text->size(), chunk_name.c_str(), "t") != LUA_OK) {
+      AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "script compile failed: " + LuaErrorText(lua));
+      lua_close(lua);
+      return false;
+    }
+    std::string bytecode;
+    if (lua_dump(lua, LuaBytecodeWriter, &bytecode, 0) == 0 && !bytecode.empty()) {
+      bytecode_cache[cache_key] = std::move(bytecode);
+    }
   }
   if (lua_pcall(lua, 0, 1, 0) != LUA_OK) {
     AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "script load failed: " + LuaErrorText(lua));
@@ -884,6 +975,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
 
   lua_getfield(lua, -1, std::string(to_string(hook)).c_str());
   if (lua_isnil(lua, -1)) {
+    // Missing hook functions are normal and are counted as non-calls, not diagnostics.
     lua_close(lua);
     return false;
   }
@@ -924,7 +1016,9 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
                                                       vkpt::scene::WorldCommandBuffer& commands) {
   const auto current_bindings = BuildScriptBindings(world);
   if (current_bindings.size() != m_bindings.size()) {
+    // Entity/script topology changes invalidate stable dispatch order and compiled bytecode assumptions.
     m_bindings = current_bindings;
+    m_lua_bytecode_cache.clear();
   }
 
   ScriptDispatchSummary summary;
@@ -967,7 +1061,14 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
     }
 
 #ifdef PT_ENABLE_LUA
-    if (ExecuteLuaHook(binding, world, hook, context, commands, summary.diagnostics, m_diagnostics)) {
+    if (ExecuteLuaHook(binding,
+                       world,
+                       hook,
+                       context,
+                       commands,
+                       summary.diagnostics,
+                       m_diagnostics,
+                       m_lua_bytecode_cache)) {
       ++summary.hook_call_count;
     }
 #else

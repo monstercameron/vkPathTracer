@@ -27,7 +27,7 @@ bool as_bool(const vkpt::scene::JsonValue& object, std::string_view key, bool& o
   if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
   }
-  const auto it = object.object.find(std::string(key));
+  const auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::Boolean) {
     return false;
   }
@@ -39,7 +39,7 @@ bool as_u64(const vkpt::scene::JsonValue& object, std::string_view key, std::uin
   if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
   }
-  const auto it = object.object.find(std::string(key));
+  const auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::Number) {
     return false;
   }
@@ -59,7 +59,7 @@ bool as_double(const vkpt::scene::JsonValue& object, std::string_view key, doubl
   if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
   }
-  const auto it = object.object.find(std::string(key));
+  const auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::Number) {
     return false;
   }
@@ -71,7 +71,7 @@ bool as_double_optional(const vkpt::scene::JsonValue& object, std::string_view k
   if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
   }
-  const auto it = object.object.find(std::string(key));
+  const auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::Number) {
     return false;
   }
@@ -83,7 +83,7 @@ bool as_string(const vkpt::scene::JsonValue& object, std::string_view key, std::
   if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
   }
-  const auto it = object.object.find(std::string(key));
+  const auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::String) {
     return false;
   }
@@ -95,7 +95,7 @@ bool as_string_optional(const vkpt::scene::JsonValue& object, std::string_view k
   if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
   }
-  const auto it = object.object.find(std::string(key));
+  const auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::String) {
     return false;
   }
@@ -117,7 +117,7 @@ bool as_resolution(const vkpt::scene::JsonValue& object,
   if (object.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
   }
-  const auto it = object.object.find(std::string(key));
+  const auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::Object) {
     return false;
   }
@@ -126,10 +126,11 @@ bool as_resolution(const vkpt::scene::JsonValue& object,
 
 bool as_string_array(const vkpt::scene::JsonValue& object, std::string_view key, std::vector<std::string>& out) {
   out.clear();
-  const auto it = object.object.find(std::string(key));
+  const auto it = object.object.find(key);
   if (it == object.object.end() || it->second.kind != vkpt::scene::JsonValue::Kind::Array) {
     return false;
   }
+  out.reserve(it->second.array.size());
   for (const auto& value : it->second.array) {
     if (value.kind != vkpt::scene::JsonValue::Kind::String) {
       return false;
@@ -277,7 +278,8 @@ std::filesystem::path resolve_artifact_path(const std::filesystem::path& artifac
   if (path.is_absolute()) {
     return path;
   }
-  if (std::filesystem::exists(path)) {
+  std::error_code ec;
+  if (std::filesystem::exists(path, ec) && !ec) {
     return path;
   }
   return artifactDir / path.filename();
@@ -290,13 +292,13 @@ void validate_artifact_file(const std::filesystem::path& artifactDir,
                             BenchmarkArtifactValidation& out) {
   const auto path = artifactDir / name;
   std::error_code ec;
-  if (!std::filesystem::exists(path, ec)) {
+  if (!std::filesystem::exists(path, ec) || ec) {
     if (required) {
       out.missing_files.push_back(name);
     }
     return;
   }
-  if (!std::filesystem::is_regular_file(path, ec)) {
+  if (!std::filesystem::is_regular_file(path, ec) || ec) {
     out.invalid_files.push_back(name + ": not a regular file");
     return;
   }
@@ -315,6 +317,8 @@ vkpt::core::Result<BenchmarkResult> ParseBenchmarkResultFromText(std::string_vie
   }
 
   BenchmarkResult result;
+  // Required fields are the portable result schema; optional artifact paths
+  // below are normalized to empty strings for older benchmark outputs.
   if (!as_string(*root, "run_id", result.run_id) ||
       !as_string(*root, "scene", result.scene) ||
       !as_string(*root, "backend", result.backend) ||
@@ -492,6 +496,8 @@ vkpt::core::Result<BenchmarkRunDesc> ParseBenchmarkRunDescFromText(std::string_v
     desc.deterministic = false;
   }
 
+  // Runtime descriptors accept missing newer knobs, then validate after
+  // defaults so older saved descriptors can still be replayed.
   std::string issue;
   if (!ValidateBenchmarkRunDesc(desc, &issue)) {
     (void)issue;
@@ -778,7 +784,7 @@ BenchmarkArtifactValidation ValidateBenchmarkArtifactsOnDisk(std::string_view ar
   const auto contract = DefaultBenchmarkArtifactContract();
   std::error_code ec;
   if (out.artifact_directory.empty() || !std::filesystem::exists(artifactDir, ec) ||
-      !std::filesystem::is_directory(artifactDir, ec)) {
+      ec || !std::filesystem::is_directory(artifactDir, ec) || ec) {
     out.missing_files.push_back("artifact_directory");
     out.ok = false;
     return out;
@@ -808,19 +814,19 @@ BenchmarkArtifactValidation ValidateBenchmarkArtifactsOnDisk(std::string_view ar
         continue;
       }
       const auto resolved = resolve_artifact_path(artifactDir, item.second);
-      if (resolved.empty() || !std::filesystem::exists(resolved, ec)) {
+      if (resolved.empty() || !std::filesystem::exists(resolved, ec) || ec) {
         out.invalid_files.push_back("results.json: " + item.first + " does not resolve to an artifact file");
       }
     }
     if (!r.reference_exr.empty()) {
       const auto reference = resolve_artifact_path(artifactDir, r.reference_exr);
-      if (reference.empty() || !std::filesystem::exists(reference, ec)) {
+      if (reference.empty() || !std::filesystem::exists(reference, ec) || ec) {
         out.invalid_files.push_back("results.json: reference_exr does not resolve to an artifact file");
       }
     }
     if (!r.diff_heatmap_png.empty()) {
       const auto diff = resolve_artifact_path(artifactDir, r.diff_heatmap_png);
-      if (diff.empty() || !std::filesystem::exists(diff, ec)) {
+      if (diff.empty() || !std::filesystem::exists(diff, ec) || ec) {
         out.invalid_files.push_back("results.json: diff_heatmap_png does not resolve to an artifact file");
       }
     }

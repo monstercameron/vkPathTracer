@@ -1,3 +1,11 @@
+# Active third-person action scene TODOs
+
+* [x] Replace the custom block hero with an imported CC0 low-poly action hero model.
+* [x] Keep third-person movement, mouse-look steering, strafing, and chase camera behavior in Lua.
+* [x] Add parentable scene model imports so model assets can follow a Lua-controlled entity.
+* [x] Preserve the downloaded hero asset's authored walk/idle/action clips in source assets.
+* [ ] Add real skeletal/skinned glTF animation playback so the hero's authored walk clip can drive bones instead of static mesh pose.
+
 Below is the **six-agent parallel workstream plan** I would give to Codex agents. It preserves the uploaded plan’s core constraints: **C++23, Clang/LLVM, shared architecture, backend adapters, deterministic scheduling, renderer capability gates, ECS, scene schema, path tracing, benchmark mode, Jolt/Lua as staged systems, and multi-backend graphics support**. 
 
 The execution model is:

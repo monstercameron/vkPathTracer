@@ -38,6 +38,7 @@
 #include "build_info.generated.h"
 #include "core/Assert.h"
 #include "core/Config.h"
+#include "core/ExecutionTrace.h"
 #include "core/Logging.h"
 #include "benchmark/BenchmarkSchema.h"
 #include "app/AppBenchmarkActions.h"
@@ -195,6 +196,20 @@ int RunDynamicPhysicsPerformanceGate(std::string scenePath,
   (void)height;
   (void)frames;
   std::cerr << "dynamic physics gate requires a Qt/D3D12-enabled build\n";
+  return 2;
+}
+
+int RunThirdPersonScriptPerformanceGate(std::string scenePath,
+                                        std::string backend,
+                                        uint32_t width,
+                                        uint32_t height,
+                                        uint32_t frames) {
+  (void)scenePath;
+  (void)backend;
+  (void)width;
+  (void)height;
+  (void)frames;
+  std::cerr << "third-person script gate requires a Qt/D3D12/Lua-enabled build\n";
   return 2;
 }
 #endif
@@ -380,6 +395,7 @@ int RunApp(int argc, char** argv) {
   const bool uiModelSmoke = parsedOptions.ui_model_smoke;
   const bool uiReleaseGate = parsedOptions.ui_release_gate;
   const bool dynamicPhysicsGate = parsedOptions.dynamic_physics_gate;
+  const bool thirdPersonScriptGate = parsedOptions.third_person_script_gate;
   const bool openWindow = parsedOptions.open_window;
   const bool listGpus = parsedOptions.list_gpus;
   const bool autoExitWindow = parsedOptions.auto_exit_window;
@@ -490,6 +506,31 @@ int RunApp(int argc, char** argv) {
   LogRuntimeMetadata(logger, "post_config", requestedPlatform, selectedPlatform, effectivePlatform,
                      openWindow, doRender, autoExitWindow, windowFrameLimit,
                      config.ui_present_hz.value);
+  const std::string executionMode = [&]() {
+    if (doRender) return std::string("render");
+    if (openWindow) return std::string("window");
+    if (doctorMode) return std::string("doctor");
+    if (dynamicPhysicsGate) return std::string("dynamic_physics_gate");
+    if (thirdPersonScriptGate) return std::string("third_person_script_gate");
+    if (listBackends) return std::string("list_backends");
+    if (listAccelerators) return std::string("list_accelerators");
+    if (listGpus) return std::string("list_gpus");
+    if (showVersion) return std::string("version");
+    if (dumpConfig) return std::string("dump_config");
+    return std::string("headless_shell");
+  }();
+  vkpt::core::TraceExecution("app_route_resolved", {
+    {"mode", executionMode},
+    {"requested_backend", config.backend.value},
+    {"platform", config.platform.value},
+    {"scene", config.scene_path.value.empty() ? "builtin:cornell" : config.scene_path.value},
+    {"resolution", std::to_string(config.render_width.value) + "x" +
+                       std::to_string(config.render_height.value)},
+    {"spp", std::to_string(config.spp.value)},
+    {"headless", config.headless.value ? "true" : "false"},
+    {"qt_built", IsQtPlatformBuilt() ? "true" : "false"},
+    {"raw_built", IsRawPlatformBuilt() ? "true" : "false"}
+  });
   BootStep("command line parsed");
 
   // ---- Status tracking (A13) ------------------------------------------------
@@ -712,42 +753,139 @@ int RunApp(int argc, char** argv) {
       }
       qtStartupStep("qt window opened");
 
-      // ---- Path tracer setup ----
-      std::unique_ptr<vkpt::pathtracer::IPathTracer> qtTracer;
+      // ---- Runtime backend / path tracer setup ----
+      struct QtRuntimeTracerInit {
+        std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer;
+        std::string requested_backend;
+        std::string renderer_path;
+        std::string error;
+        bool background = false;
+      };
+      auto qtNormalizeRuntimeBackend = [](std::string_view backend) {
+        auto normalized = vkpt::render::NormalizeBackendName(backend);
+        if (normalized.empty()) {
+          return std::string("auto");
+        }
+        if (normalized == "cputiled" || normalized == "cpu-tiled" || normalized == "cpu") {
+          return std::string("cpu");
+        }
+        return normalized;
+      };
+      const auto qtRuntimeBackendOptions = [&]() {
+        std::vector<std::string> options;
+        const auto add = [&](std::string_view option) {
+          const std::string normalized = qtNormalizeRuntimeBackend(option);
+          if (std::find(options.begin(), options.end(), normalized) == options.end()) {
+            options.push_back(normalized);
+          }
+        };
+        add("auto");
+        add("cpu");
 #ifdef PT_ENABLE_D3D12
-      if (config.backend.value == "d3d12" || config.backend.value == "d3d12-dxr") {
-        qtStartupStep("initializing d3d12 tracer");
-        const bool requestDxr = (config.backend.value == "d3d12-dxr");
-        const std::string hlslPath =
-#ifdef PT_SHADER_HLSL_PATH
-            PT_SHADER_HLSL_PATH;
-#else
-            "src/shaders/gpu/pathtrace_cs.hlsl";
+        add("d3d12");
+        add("d3d12-dxr");
 #endif
-        auto gpuTracer = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(hlslPath);
-        if (gpuTracer->is_valid()) {
+#ifdef PT_ENABLE_VULKAN
+        add("vulkan");
+#endif
+        add("null");
+        return options;
+      }();
+      auto qtCreateRuntimeTracer = [&](std::string_view requestedBackend) {
+        QtRuntimeTracerInit out;
+        out.requested_backend = qtNormalizeRuntimeBackend(requestedBackend);
+        const std::string effectiveBackend =
+            (out.requested_backend == "auto") ? std::string("cpu") : out.requested_backend;
+        if (effectiveBackend == "cpu") {
+          vkpt::cpu::TiledRenderConfig tiledConfig{};
+          tiledConfig.worker_count = InteractiveCpuWorkerCount();
+          out.tracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
+          out.renderer_path = "cpu_tiled_background";
+          out.background = true;
+          return out;
+        }
+        if (effectiveBackend == "null") {
+          out.tracer = std::make_unique<vkpt::pathtracer::NullPathTracer>();
+          out.renderer_path = "null";
+          return out;
+        }
+#ifdef PT_ENABLE_D3D12
+        if (effectiveBackend == "d3d12" || effectiveBackend == "d3d12-dxr") {
+          const bool requestDxr = (effectiveBackend == "d3d12-dxr");
+          const std::string hlslPath =
+#ifdef PT_SHADER_HLSL_PATH
+              PT_SHADER_HLSL_PATH;
+#else
+              "src/shaders/gpu/pathtrace_cs.hlsl";
+#endif
+          auto gpuTracer = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(hlslPath);
+          if (!gpuTracer->is_valid()) {
+            out.error = "D3D12 tracer init failed: " + gpuTracer->last_error();
+            return out;
+          }
           gpuTracer->set_prefer_dxr(requestDxr);
           std::cout << "[gpu] D3D12 " << gpuTracer->gpu_name()
                     << "  " << gpuTracer->vram_mb() << " MB VRAM"
                     << "  DXR=" << (gpuTracer->dxr_supported() ? "yes" : "no") << "\n";
-          qtTracer = std::move(gpuTracer);
-        } else {
-          std::cerr << "[gpu] D3D12 tracer init failed: " << gpuTracer->last_error() << "\n";
-          writeStatus("error:d3d12_init_failed", gpuTracer->last_error());
+          out.renderer_path = requestDxr ? "d3d12_dxr" : "d3d12_compute";
+          out.tracer = std::move(gpuTracer);
+          return out;
+        }
+#endif
+#ifdef PT_ENABLE_VULKAN
+        if (effectiveBackend == "vulkan" || effectiveBackend == "vulkan-compute") {
+          const std::string spvPath =
+#ifdef PT_SHADER_SPV_PATH
+              PT_SHADER_SPV_PATH;
+#else
+              "shaders/pathtrace.spv";
+#endif
+          auto gpuTracer = std::make_unique<vkpt::gpu::VulkanGpuPathTracer>(spvPath);
+          if (!gpuTracer->is_valid()) {
+            out.error = "Vulkan tracer init failed: " + gpuTracer->last_error();
+            return out;
+          }
+          out.renderer_path = "vulkan_compute";
+          out.tracer = std::move(gpuTracer);
+          return out;
+        }
+#endif
+        out.error = "runtime backend is not supported by the Qt path tracer: " + out.requested_backend;
+        return out;
+      };
+
+      std::unique_ptr<vkpt::pathtracer::IPathTracer> qtTracer;
+      std::string qtRendererPath = "unselected";
+      qtStartupStep("initializing runtime backend");
+      auto qtInitialTracer = qtCreateRuntimeTracer(config.backend.value);
+      if (!qtInitialTracer.tracer) {
+        const auto initialBackend = qtNormalizeRuntimeBackend(config.backend.value);
+        const bool explicitGpuRequest =
+            initialBackend == "d3d12" || initialBackend == "d3d12-dxr" ||
+            initialBackend == "vulkan" || initialBackend == "vulkan-compute";
+        if (explicitGpuRequest) {
+          std::cerr << "[render] " << qtInitialTracer.error << "\n";
+          writeStatus("error:qt_renderer_init_failed", qtInitialTracer.error);
           platform->shutdown();
           return 1;
         }
+        std::cerr << "[render] " << qtInitialTracer.error << "; falling back to CPU\n";
+        config.backend = {std::string("cpu"), vkpt::config::ConfigSource::Default};
+        qtInitialTracer = qtCreateRuntimeTracer("cpu");
       }
-#endif
-      if (!qtTracer) {
-        qtStartupStep("falling back to cpu tiled tracer");
-        vkpt::cpu::TiledRenderConfig tiledConfig{};
-        tiledConfig.worker_count = InteractiveCpuWorkerCount();
-        qtTracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
+      if (!qtInitialTracer.tracer) {
+        std::cerr << "[render] CPU fallback failed: " << qtInitialTracer.error << "\n";
+        writeStatus("error:qt_renderer_init_failed", qtInitialTracer.error);
+        platform->shutdown();
+        return 1;
+      }
+      qtTracer = std::move(qtInitialTracer.tracer);
+      qtRendererPath = qtInitialTracer.renderer_path;
+      config.backend = {qtInitialTracer.requested_backend, config.backend.source};
+      if (qtInitialTracer.background) {
         std::cout << "[cpu] Using TiledCpuPathTracer workers="
-                  << tiledConfig.worker_count << " (interactive)\n";
+                  << InteractiveCpuWorkerCount() << " (interactive)\n";
       }
-
       // ---- Scene loading ----
       vkpt::pathtracer::RTSceneData qtScene;
       vkpt::scene::SceneDocument qtSceneDocument;
@@ -789,6 +927,16 @@ int RunApp(int argc, char** argv) {
         }
       }
       qtStartupStep("scene loaded");
+      vkpt::core::TraceExecution("qt_scene_ready", {
+        {"renderer_path", qtRendererPath},
+        {"scene", config.scene_path.value.empty() ? "builtin:cornell" : config.scene_path.value},
+        {"document_entities", std::to_string(qtSceneDocument.entities.size())},
+        {"document_geometry", std::to_string(qtSceneDocument.geometry.size())},
+        {"rt_vertices", std::to_string(qtScene.vertices.size())},
+        {"rt_indices", std::to_string(qtScene.indices.size())},
+        {"rt_instances", std::to_string(qtScene.instances.size())},
+        {"rt_lights", std::to_string(qtScene.lights.size())}
+      });
 
       // ---- Tracer configure ----
       vkpt::pathtracer::RenderSettings qtSettings{};
@@ -818,6 +966,12 @@ int RunApp(int argc, char** argv) {
       } else {
         qtStartupStep("tracer initialized");
       }
+      vkpt::core::TraceExecution("qt_renderer_initialized", {
+        {"renderer_path", qtRendererPath},
+        {"ready", qtTracerReady ? "true" : "false"},
+        {"resolution", std::to_string(qtSettings.width) + "x" + std::to_string(qtSettings.height)},
+        {"max_depth", std::to_string(qtSettings.max_depth)}
+      });
 
 #ifdef PT_ENABLE_QT
       std::vector<ViewportPickable> qtPickables =
@@ -877,15 +1031,19 @@ int RunApp(int argc, char** argv) {
       std::atomic<std::uint64_t> qtPublishedFrames{0u};
       std::atomic<std::uint64_t> qtDroppedFrames{0u};
       std::unique_ptr<vkpt::render::RenderCoordinator> qtRenderCoordinator;
-      const bool qtUseBg =
+      bool qtUseBg =
           (dynamic_cast<vkpt::cpu::TiledCpuPathTracer*>(qtTracer.get()) != nullptr);
 #ifdef PT_ENABLE_QT
       QtDockDeviceStats qtDeviceStats;
-      qtDeviceStats.selected_backend = config.backend.value.empty() ? "cpu" : config.backend.value;
-      qtDeviceStats.active_renderer_path = qtUseBg ? "cpu_tiled_background" : qtDeviceStats.selected_backend;
-      {
+      auto qtRefreshDeviceStats = [&]() {
+        auto retainedMetrics = std::move(qtDeviceStats.ray_metrics);
+        qtDeviceStats = QtDockDeviceStats{};
+        qtDeviceStats.ray_metrics = std::move(retainedMetrics);
+        qtDeviceStats.runtime_backend_options = qtRuntimeBackendOptions;
+        qtDeviceStats.selected_backend = config.backend.value.empty() ? "auto" : config.backend.value;
+        qtDeviceStats.active_renderer_path = qtRendererPath;
         qtDeviceStats.backend_caps.backend_name = qtDeviceStats.selected_backend;
-        const auto normalizedBackend = vkpt::render::NormalizeBackendName(qtDeviceStats.selected_backend);
+        const auto normalizedBackend = qtNormalizeRuntimeBackend(qtDeviceStats.selected_backend);
         if (normalizedBackend.find("d3d12") != std::string::npos ||
             normalizedBackend.find("dxr") != std::string::npos) {
           qtDeviceStats.accelerators = vkpt::render::EnumerateD3D12Accelerators(true, true);
@@ -909,7 +1067,8 @@ int RunApp(int argc, char** argv) {
             probeBackend->shutdown();
           }
         }
-      }
+      };
+      qtRefreshDeviceStats();
 #endif
       if (qtTracerReady && qtUseBg) {
         qtStartupStep("starting background cpu render coordinator");
@@ -936,7 +1095,7 @@ int RunApp(int argc, char** argv) {
       // Auto-orbit is too expensive on the CPU tiled tracer because each
       // camera step resets accumulation and may force a scene reload/rebuild.
       // Keep orbit enabled for non-bg (GPU/synchronous) paths only.
-      const bool qtEnableAutoOrbit = (windowFrameLimit == 0u) && !qtUseBg && !qtPhysicsRuntimeEnabled;
+      bool qtEnableAutoOrbit = (windowFrameLimit == 0u) && !qtUseBg && !qtPhysicsRuntimeEnabled;
       const float kQtOrbitDegPerSec = 7.5f;
       const float kQtOrbitMinStepDeg = 0.1f;
       vkpt::pathtracer::Vec3 qtOrbitCenter{};
@@ -981,6 +1140,7 @@ int RunApp(int argc, char** argv) {
       double qtSmoothedGpuBatchMs = 0.0;
 #ifdef PT_ENABLE_QT
 #include "AppRuntimeQtCameraAndScene.inc"
+#include "AppRuntimeQtBackendSwitch.inc"
 #include "AppRuntimeQtReloadAndSceneGraph.inc"
 #include "AppRuntimeQtAssetsAndPlayback.inc"
 #include "AppRuntimeQtDockPropertyEdits.inc"

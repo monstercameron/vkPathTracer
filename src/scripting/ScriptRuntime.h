@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "core/Types.h"
@@ -12,6 +13,7 @@
 
 namespace vkpt::scripting {
 
+/// Script table hooks. Names map directly through to_string(), e.g. OnUpdate -> "on_update".
 enum class ScriptLifecycleHook : std::uint8_t {
   OnLoad,
   OnSpawn,
@@ -32,6 +34,7 @@ enum class ScriptDiagnosticSeverity : std::uint8_t {
 
 struct ScriptExecutionContext {
   struct InputState {
+    /// Host key codes currently active for this frame.
     std::vector<int> active_keys;
     float mouse_delta_x = 0.0f;
     float mouse_delta_y = 0.0f;
@@ -43,13 +46,17 @@ struct ScriptExecutionContext {
   double elapsed_seconds = 0.0;
   double delta_seconds = 0.0;
   double fixed_delta_seconds = 1.0 / 60.0;
+  /// True when callers require deterministic behavior from script-visible state.
   bool deterministic = false;
+  /// Global runtime gate. Disabled scripts are counted but hook bodies are not executed.
   bool scripts_enabled = true;
+  /// Benchmark mode blocks script execution unless allow_benchmark_scripts is also true.
   bool benchmark_mode = false;
   bool allow_benchmark_scripts = false;
   InputState input;
 };
 
+/// Runtime binding produced from an entity ScriptComponent.
 struct ScriptBinding {
   vkpt::core::StableEntityId entity = 0;
   std::size_t stable_order = 0;
@@ -99,7 +106,9 @@ class IScriptRuntime {
  public:
   virtual ~IScriptRuntime() = default;
 
+  /// Rebuild the binding list from ECS state and clear runtime script caches.
   virtual ScriptBindingSummary reload_bindings(const vkpt::scene::SceneWorld& world) = 0;
+  /// Dispatch one lifecycle hook. Scripts enqueue world changes into `commands`; replay is caller-owned.
   virtual ScriptDispatchSummary dispatch_hook(const vkpt::scene::SceneWorld& world,
                                              ScriptLifecycleHook hook,
                                              const ScriptExecutionContext& context,
@@ -125,12 +134,16 @@ class EcsScriptRuntime final : public IScriptRuntime {
  private:
   std::vector<ScriptBinding> m_bindings;
   std::vector<ScriptDiagnostic> m_diagnostics;
+  std::unordered_map<std::string, std::string> m_lua_bytecode_cache;
 };
 
+/// Scan the world in stable entity order and create runnable script bindings.
 std::vector<ScriptBinding> BuildScriptBindings(const vkpt::scene::SceneWorld& world);
+/// Count binding states without touching runtime caches or executing scripts.
 ScriptBindingSummary SummarizeScriptBindings(const std::vector<ScriptBinding>& bindings,
                                              bool lua_compiled_in,
                                              bool execution_available);
+/// Create the default ECS-backed script runtime.
 std::unique_ptr<IScriptRuntime> CreateScriptRuntime();
 
 std::string_view to_string(ScriptLifecycleHook hook);

@@ -5,6 +5,12 @@ local MOUSE_PITCH_SENSITIVITY = 0.0035
 local MIN_CAMERA_PITCH = 0.08
 local MAX_CAMERA_PITCH = 0.62
 local CAMERA_TARGET_Y = 1.35
+local PLAYER_COLLISION_RADIUS = 0.42
+local CONTACT_SLOP = 0.015
+local CHARACTER_MODEL_NAMES = {
+  "Hero Character Model",
+}
+local CHARACTER_MODEL_SCALE = 0.31
 
 local function clamp(value, lo, hi)
   return math.max(lo, math.min(hi, value))
@@ -41,6 +47,11 @@ local function pitch_quat(pitch)
   return { x = math.sin(half), y = 0.0, z = 0.0, w = math.cos(half) }
 end
 
+local function roll_quat(roll)
+  local half = roll * 0.5
+  return { x = 0.0, y = 0.0, z = math.sin(half), w = math.cos(half) }
+end
+
 local function quat_mul(a, b)
   return {
     x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
@@ -68,6 +79,144 @@ local function normalize_vec3(x, y, z, fallback)
     return fallback.x, fallback.y, fallback.z
   end
   return x / len, y / len, z / len
+end
+
+local function entity_name(entity)
+  if entity == nil or entity.get_name == nil then
+    return ""
+  end
+  return entity:get_name() or ""
+end
+
+local function entity_physics(entity)
+  if entity == nil or entity.get_physics == nil then
+    return nil
+  end
+  return entity:get_physics()
+end
+
+local function max3(a, b, c)
+  return math.max(a, math.max(b, c))
+end
+
+local function is_floor_collider(entity, transform)
+  return entity_name(entity) == "Training Floor" or
+      (transform.scale.y <= 0.16 and transform.translation.y <= 0.05)
+end
+
+local function collect_contact_colliders(ctx, self_id)
+  local boxes = {}
+  local balls = {}
+  local root = ctx.world:find_entity("Third Person Demo Root")
+  if root == nil then
+    return boxes, balls
+  end
+
+  for _, entity in ipairs(ctx.world:children_of(root)) do
+    if entity:id() ~= self_id then
+      local body = entity_physics(entity)
+      local transform = transform_or_default(entity)
+      if body ~= nil and body.enabled and not body.trigger then
+        if body.dynamic and body.shape == "sphere" then
+          balls[#balls + 1] = {
+            entity = entity,
+            transform = transform,
+            radius = max3(transform.scale.x, transform.scale.y, transform.scale.z),
+          }
+        elseif not body.dynamic and body.body_type == "static" and body.shape == "box" and
+            not is_floor_collider(entity, transform) then
+          boxes[#boxes + 1] = {
+            x = transform.translation.x,
+            z = transform.translation.z,
+            half_x = math.abs(transform.scale.x) * 0.5,
+            half_z = math.abs(transform.scale.z) * 0.5,
+          }
+        end
+      end
+    end
+  end
+  return boxes, balls
+end
+
+local function resolve_circle_box(x, z, box)
+  local closest_x = clamp(x, box.x - box.half_x, box.x + box.half_x)
+  local closest_z = clamp(z, box.z - box.half_z, box.z + box.half_z)
+  local dx = x - closest_x
+  local dz = z - closest_z
+  local dist_sq = dx * dx + dz * dz
+  local radius = PLAYER_COLLISION_RADIUS + CONTACT_SLOP
+  if dist_sq >= radius * radius then
+    return x, z, false
+  end
+
+  if dist_sq > 0.000001 then
+    local dist = math.sqrt(dist_sq)
+    local push = radius - dist
+    return x + dx / dist * push, z + dz / dist * push, true
+  end
+
+  local left = math.abs(x - (box.x - box.half_x))
+  local right = math.abs((box.x + box.half_x) - x)
+  local back = math.abs(z - (box.z - box.half_z))
+  local front = math.abs((box.z + box.half_z) - z)
+  local min_axis = math.min(left, right, back, front)
+  if min_axis == left then
+    return box.x - box.half_x - radius, z, true
+  elseif min_axis == right then
+    return box.x + box.half_x + radius, z, true
+  elseif min_axis == back then
+    return x, box.z - box.half_z - radius, true
+  end
+  return x, box.z + box.half_z + radius, true
+end
+
+local function resolve_static_contacts(x, z, boxes)
+  for _ = 1, 3 do
+    local changed = false
+    for _, box in ipairs(boxes) do
+      local next_x, next_z, hit = resolve_circle_box(x, z, box)
+      x = next_x
+      z = next_z
+      changed = changed or hit
+    end
+    if not changed then
+      break
+    end
+  end
+  return x, z
+end
+
+local function resolve_dynamic_ball_contacts(x, z, balls, move_x, move_z, speed, dt)
+  for _, ball in ipairs(balls) do
+    local ball_transform = ball.transform
+    local dx = ball_transform.translation.x - x
+    local dz = ball_transform.translation.z - z
+    local min_dist = PLAYER_COLLISION_RADIUS + ball.radius + CONTACT_SLOP
+    local dist_sq = dx * dx + dz * dz
+    if dist_sq < min_dist * min_dist then
+      local nx = move_x
+      local nz = move_z
+      local dist = math.sqrt(math.max(0.0, dist_sq))
+      if dist > 0.000001 then
+        nx = dx / dist
+        nz = dz / dist
+      elseif length2(nx, nz) <= 0.000001 then
+        nx = 1.0
+        nz = 0.0
+      end
+
+      local penetration = min_dist - dist
+      local impulse = penetration + speed * dt * 0.85
+      ball_transform.translation.x = ball_transform.translation.x + nx * impulse
+      ball_transform.translation.z = ball_transform.translation.z + nz * impulse
+      ball.entity:set_transform(ball_transform)
+
+      local hero_push = math.min(penetration * 0.25, 0.08)
+      x = x - nx * hero_push
+      z = z - nz * hero_push
+    end
+  end
+  return x, z
 end
 
 local function cross(ax, ay, az, bx, by, bz)
@@ -141,13 +290,36 @@ local function set_limb(ctx, name, angle, lift)
   entity:set_transform(transform)
 end
 
-local function update_walk_pose(ctx, moving, running)
+local function update_walk_pose(ctx, moving, running, strafe_input)
   local t = ctx.elapsed_seconds or 0.0
   local stride_rate = running and 9.5 or 6.6
   local stride = math.sin(t * stride_rate)
   local counter = math.sin(t * stride_rate + math.pi)
   local amount = moving and (running and 0.78 or 0.54) or 0.08
   local body_bob = moving and math.abs(math.sin(t * stride_rate)) * 0.06 or math.sin(t * 2.0) * 0.015
+
+  local posed_model = false
+  local stride_lean = moving and stride * (running and 0.055 or 0.035) or 0.0
+  local strafe_lean = moving and -strafe_input * (running and 0.075 or 0.052) or 0.0
+  local pose_rotation = quat_mul(roll_quat(strafe_lean), pitch_quat(stride_lean))
+  for _, name in ipairs(CHARACTER_MODEL_NAMES) do
+    local model = ctx.world:find_entity(name)
+    if model ~= nil then
+      local transform = transform_or_default(model)
+      transform.translation.y = body_bob
+      transform.rotation = pose_rotation
+      transform.scale = {
+        x = CHARACTER_MODEL_SCALE,
+        y = CHARACTER_MODEL_SCALE,
+        z = CHARACTER_MODEL_SCALE,
+      }
+      model:set_transform(transform)
+      posed_model = true
+    end
+  end
+  if posed_model then
+    return
+  end
 
   set_limb(ctx, "Hero Left Arm", counter * amount * 0.7)
   set_limb(ctx, "Hero Right Arm", stride * amount * 0.7)
@@ -268,8 +440,14 @@ function script.on_update(self, ctx)
     move_x = move_x / move_len
     move_z = move_z / move_len
     local speed = running and 2.65 or 1.55
-    transform.translation.x = clamp(transform.translation.x + move_x * speed * dt, -4.8, 4.8)
-    transform.translation.z = clamp(transform.translation.z + move_z * speed * dt, -4.8, 4.8)
+    local next_x = clamp(transform.translation.x + move_x * speed * dt, -4.8, 4.8)
+    local next_z = clamp(transform.translation.z + move_z * speed * dt, -4.8, 4.8)
+    local boxes, balls = collect_contact_colliders(ctx, self:id())
+    next_x, next_z = resolve_static_contacts(next_x, next_z, boxes)
+    next_x, next_z = resolve_dynamic_ball_contacts(next_x, next_z, balls, move_x, move_z, speed, dt)
+    next_x, next_z = resolve_static_contacts(next_x, next_z, boxes)
+    transform.translation.x = clamp(next_x, -4.8, 4.8)
+    transform.translation.z = clamp(next_z, -4.8, 4.8)
   elseif not mouse_look then
     return
   end
@@ -277,7 +455,7 @@ function script.on_update(self, ctx)
   transform.rotation = yaw_quat(yaw)
   self:set_transform(transform)
   if moving then
-    update_walk_pose(ctx, moving, running)
+    update_walk_pose(ctx, moving, running, strafe_input)
   end
   update_camera(ctx, transform, yaw, pitch, running)
 end

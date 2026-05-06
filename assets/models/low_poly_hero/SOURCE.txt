@@ -1,0 +1,19 @@
+Animated Low Poly Hero with Sword and Shield
+
+Source: https://opengameart.org/content/animated-low-poly-hero-with-sword-and-shield
+Author: Robin Lamb
+License: CC0 1.0 Universal
+
+Files:
+- src/hero/character.glb
+- src/hero/charactershield.glb
+- src/hero/charactersword.glb
+- src/hero/character.blend
+- hero_1.zip
+
+Runtime conversion:
+- character.glb was converted to character.gltf plus character.bin with @gltf-transform/cli.
+- charactersword.glb was converted to charactersword.gltf plus charactersword.bin with @gltf-transform/cli.
+- charactershield.glb was converted to charactershield.gltf plus charactershield.bin with @gltf-transform/cli.
+- The source glTF contains attack, defend, die, hurt, idle, jump, and walk animation clips.
+- The current renderer imports the static skinned mesh and material slots; skeletal skinning playback is a later engine feature.

@@ -2,10 +2,12 @@
 
 #include <filesystem>
 #include <iostream>
+#include <string>
 #include <string_view>
 #include <vector>
 
 #include "benchmark/BenchmarkRuntime.h"
+#include "core/ExecutionTrace.h"
 
 namespace vkpt::benchmark::ptbench {
 
@@ -16,7 +18,8 @@ int RunBenchmarkCli(int argc, char** argv) {
     const Path pixAutorunConfig =
         (argc > 0 && argv[0] != nullptr) ? Path(argv[0]).parent_path() / "ptbench_pix_autorun.cfg"
                                          : Path("ptbench_pix_autorun.cfg");
-    if (ReadProcessEnvBool("PTBENCH_PIX_AUTORUN") || std::filesystem::exists(pixAutorunConfig)) {
+    std::error_code ec;
+    if (ReadProcessEnvBool("PTBENCH_PIX_AUTORUN") || (std::filesystem::exists(pixAutorunConfig, ec) && !ec)) {
       const auto ownedArgs = BuildPixAutorunArgs(pixAutorunConfig);
       const auto args = MakeArgViews(ownedArgs);
       return RunCommand(args);
@@ -27,6 +30,10 @@ int RunBenchmarkCli(int argc, char** argv) {
 
   const std::vector<std::string_view> args(argv, argv + argc);
   const auto command = args[1];
+  vkpt::core::TraceExecution("ptbench_command", {
+    {"command", std::string(command)},
+    {"argc", std::to_string(argc)}
+  });
 
   if (command == "--help" || command == "-h") {
     PrintHelp();

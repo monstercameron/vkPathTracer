@@ -217,6 +217,17 @@
           qtLastFpsDockRefresh = now;
         }
       };
+      auto qtLastTransformDockRefresh = std::chrono::steady_clock::time_point{};
+      constexpr auto kQtTransformDockRefreshInterval = std::chrono::milliseconds(125);
+      auto qtMarkTransformDockPanelsDirty = [&](bool immediate) {
+        const auto now = std::chrono::steady_clock::now();
+        if (immediate ||
+            qtLastTransformDockRefresh == std::chrono::steady_clock::time_point{} ||
+            now - qtLastTransformDockRefresh >= kQtTransformDockRefreshInterval) {
+          qtDockPanelsDirty = true;
+          qtLastTransformDockRefresh = now;
+        }
+      };
       auto qtDiscardFpsMovementResults = [&]() {
         qtPendingFpsMoveDt = 0.0f;
         qtFpsAppliedMoveSequence = qtFpsMoveSequence;
@@ -234,6 +245,7 @@
         float start_x = 0.0f;
         float start_y = 0.0f;
         std::vector<QtGizmoDragEntityStart> entities;
+        bool scene_reload_pending = false;
       } qtGizmoDrag;
       std::unordered_set<int> qtKeysDown;
       auto qtNormalizeKey = [](int key) {
@@ -493,17 +505,17 @@
       qtPromoteSceneObjectCamerasAndLights();
       qtEnsureRuntimeLightObject();
       qtSyncActiveCameraObjectFromPose();
-      auto qtApplySceneLightingFallback = [&]() {
-        bool hasLight = !qtScene.lights.empty();
+      auto qtApplySceneLightingFallbackTo = [](vkpt::pathtracer::RTSceneData& scene) {
+        bool hasLight = !scene.lights.empty();
         bool hasEmissive = false;
-        for (const auto& mat : qtScene.materials) {
+        for (const auto& mat : scene.materials) {
           if (mat.is_emissive()) {
             hasEmissive = true;
             break;
           }
         }
         if (!hasLight && !hasEmissive) {
-          qtScene.environment_color = {0.35f, 0.4f, 0.5f};
+          scene.environment_color = {0.35f, 0.4f, 0.5f};
         }
       };
       auto qtScriptRuntime = vkpt::scripting::CreateScriptRuntime();

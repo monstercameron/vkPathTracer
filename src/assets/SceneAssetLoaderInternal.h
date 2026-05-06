@@ -39,6 +39,7 @@ struct ObjGeometryBucket {
 };
 
 struct ObjLoadResult {
+  // Shared intermediate used by OBJ and glTF expansion before SceneDocument IDs are allocated.
   std::vector<ObjMaterial> materials;
   std::vector<ObjGeometryBucket> geometry;
   std::vector<std::string> texture_uris;

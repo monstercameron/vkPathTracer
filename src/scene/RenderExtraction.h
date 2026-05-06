@@ -11,8 +11,11 @@
 namespace vkpt::scene {
 
 struct SceneSnapshot {
+  /// Hash over authored scene inputs used for cache/export invalidation.
   vkpt::core::Hash256 scene_hash{};
+  /// Asset URIs referenced by the authored document.
   std::vector<std::string> asset_refs;
+  /// Stable entity IDs in document/world traversal order.
   std::vector<vkpt::core::StableId> entity_ids;
 
   struct RenderableObject {
@@ -41,9 +44,11 @@ struct SceneSnapshot {
 };
 
 struct RenderSceneProxy {
+  /// Scene content hash propagated to render backends for frame cache decisions.
   vkpt::core::Hash256 scene_hash{};
   vkpt::core::FrameIndex frame = 0;
 
+  /// Renderer-facing mesh instance with the resolved world transform baked in.
   struct Renderable {
     vkpt::core::StableEntityId entity_id = 0;
     vkpt::core::AssetId geometry_id = 0;
@@ -53,6 +58,7 @@ struct RenderSceneProxy {
     Vec3 scale{1.0f, 1.0f, 1.0f};
   };
 
+  /// Renderer-facing light with transform-derived position and world matrix.
   struct Light {
     vkpt::core::StableEntityId entity_id = 0;
     std::string type;
@@ -63,6 +69,7 @@ struct RenderSceneProxy {
     Vec3 position{};
   };
 
+  /// Renderer-facing material subset consumed by current path tracing backends.
   struct Material {
     vkpt::core::MaterialId id = 0;
     Vec3 albedo{1.0f, 1.0f, 1.0f};
@@ -71,6 +78,7 @@ struct RenderSceneProxy {
     float emission_intensity = 0.0f;
   };
 
+  /// Renderer-facing camera model including physical camera parameters.
   struct Camera {
     vkpt::core::StableEntityId entity_id = 0;
     float fov = 60.0f;

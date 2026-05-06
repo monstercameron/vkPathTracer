@@ -3,6 +3,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <utility>
 
@@ -29,8 +30,16 @@ std::string Trim(std::string_view text) {
 }
 
 std::string ExtensionOf(std::string_view uri) {
-  const auto path = std::filesystem::path(std::string(uri));
-  return ToLower(path.extension().string());
+  const auto slash = uri.find_last_of("/\\");
+  const auto dot = uri.find_last_of('.');
+  const auto segment_start = slash == std::string_view::npos ? 0u : slash + 1u;
+  if (dot == std::string_view::npos ||
+      (slash != std::string_view::npos && dot < slash) ||
+      dot == segment_start ||
+      dot + 1u >= uri.size()) {
+    return {};
+  }
+  return ToLower(uri.substr(dot));
 }
 
 bool HasExtension(std::string_view uri, const std::vector<std::string_view>& extensions) {
@@ -73,16 +82,19 @@ std::vector<std::byte> ReadFileBytes(std::string_view uri) {
   }
   file.seekg(0, std::ios::end);
   const auto size = file.tellg();
-  if (size <= 0) {
+  if (size <= 0 || size > std::streampos{std::numeric_limits<std::streamsize>::max()}) {
     return {};
   }
   file.seekg(0, std::ios::beg);
   std::vector<std::byte> bytes(static_cast<std::size_t>(size));
-  file.read(reinterpret_cast<char*>(bytes.data()), size);
+  if (!file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
+    return {};
+  }
   return bytes;
 }
 
 std::vector<std::byte> ResolveSourceBytes(const AssetImportSource& source) {
+  // Keep import hashes deterministic for callers that already staged bytes.
   if (!source.bytes.empty()) {
     return source.bytes;
   }
@@ -134,11 +146,19 @@ std::vector<std::string> SplitLines(std::string_view text) {
 }
 
 std::vector<std::string> SplitWords(std::string_view text) {
-  std::istringstream input{std::string(text)};
   std::vector<std::string> words;
-  std::string word;
-  while (input >> word) {
-    words.push_back(word);
+  std::size_t cursor = 0;
+  while (cursor < text.size()) {
+    while (cursor < text.size() && std::isspace(static_cast<unsigned char>(text[cursor]))) {
+      ++cursor;
+    }
+    const auto start = cursor;
+    while (cursor < text.size() && !std::isspace(static_cast<unsigned char>(text[cursor]))) {
+      ++cursor;
+    }
+    if (cursor > start) {
+      words.emplace_back(text.substr(start, cursor - start));
+    }
   }
   return words;
 }
@@ -269,7 +289,9 @@ std::vector<std::string> ExtractObjectNames(std::string_view json, std::string_v
   if (!array) {
     return names;
   }
-  for (const auto object : TopLevelObjects(*array)) {
+  const auto objects = TopLevelObjects(*array);
+  names.reserve(objects.size());
+  for (const auto object : objects) {
     if (auto name = ExtractStringValue(object, "name")) {
       names.push_back(*name);
     } else {
@@ -285,7 +307,9 @@ std::vector<std::string> ExtractImageUris(std::string_view json) {
   if (!array) {
     return uris;
   }
-  for (const auto object : TopLevelObjects(*array)) {
+  const auto objects = TopLevelObjects(*array);
+  uris.reserve(objects.size());
+  for (const auto object : objects) {
     if (auto uri = ExtractStringValue(object, "uri")) {
       uris.push_back(*uri);
     } else {
@@ -523,6 +547,7 @@ AssetImportResult GltfGlbImporter::import_source(const AssetImportSource& source
   const auto texture_count = texture_array ? detail::TopLevelObjects(*texture_array).size() : image_uris.size();
   const auto node_count = node_array ? detail::TopLevelObjects(*node_array).size() : 0u;
 
+  // MVP glTF import is metadata-first: records are stable even before buffer decode.
   AssetRecord scene;
   scene.asset_class = AssetClass::Scene;
   scene.name = detail::FileNameOrUri(source.uri);
@@ -612,7 +637,7 @@ std::string GltfGlbImporter::extract_json(const std::vector<std::byte>& bytes, b
   }
   const auto json_length = detail::ReadU32Le(bytes, 12);
   const auto json_begin = 20u;
-  if (json_begin + json_length > bytes.size()) {
+  if (bytes.size() < json_begin || json_length > bytes.size() - json_begin) {
     return {};
   }
   std::string text;
@@ -675,6 +700,7 @@ AssetImportResult ObjMtlImporter::import_source(const AssetImportSource& source,
   std::set<std::string> mtllibs;
   std::set<std::string> used_materials;
 
+  // OBJ is scanned once for deterministic inventory and compatibility diagnostics.
   for (const auto& raw_line : detail::SplitLines(text)) {
     const auto line = detail::Trim(raw_line);
     if (line.empty() || line[0] == '#') {

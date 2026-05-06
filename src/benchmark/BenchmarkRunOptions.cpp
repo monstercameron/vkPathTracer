@@ -1,8 +1,11 @@
 #include "benchmark/BenchmarkRuntimeInternal.h"
 
+#include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace vkpt::benchmark::ptbench {
@@ -151,9 +154,16 @@ bool ParseRunArgs(const std::vector<std::string_view>& args, RunOptions& out, st
         if (error) *error = "missing --duration value";
         return false;
       }
-      try {
-        out.duration = std::stod(std::string(args[++i]));
-      } catch (...) {
+      const auto value = args[++i];
+      auto numeric = value;
+      if (!numeric.empty() && numeric.front() == '+') {
+        numeric.remove_prefix(1);
+      }
+      const auto parsed = std::from_chars(numeric.data(), numeric.data() + numeric.size(), out.duration);
+      if (numeric.empty() ||
+          parsed.ec != std::errc{} ||
+          parsed.ptr != numeric.data() + numeric.size() ||
+          !std::isfinite(out.duration)) {
         if (error) *error = "invalid --duration";
         return false;
       }

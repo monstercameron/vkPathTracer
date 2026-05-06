@@ -165,11 +165,13 @@ std::string ResolveExecutable(std::string_view executable_name) {
     if (sibling.extension().empty()) {
       sibling += ".exe";
     }
-    if (std::filesystem::exists(sibling)) {
+    std::error_code ec;
+    if (std::filesystem::exists(sibling, ec) && !ec) {
       return sibling.string();
     }
     sibling = exeDir / "Release" / (std::string(executable_name) + ".exe");
-    if (std::filesystem::exists(sibling)) {
+    ec.clear();
+    if (std::filesystem::exists(sibling, ec) && !ec) {
       return sibling.string();
     }
   }
@@ -206,49 +208,66 @@ bool LaunchBenchmarkRun(const vkpt::editor::RunBenchmarkCommand& command,
 }
 
 std::optional<std::filesystem::path> FindLatestBenchmarkResultJson() {
-  std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> found;
   const std::filesystem::path root = "artifacts/benchmarks";
-  if (!std::filesystem::exists(root)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(root, ec) || ec) {
     return std::nullopt;
   }
-  for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
-    if (!entry.is_regular_file()) {
+  std::optional<std::pair<std::filesystem::file_time_type, std::filesystem::path>> latest;
+  for (std::filesystem::recursive_directory_iterator it(
+           root, std::filesystem::directory_options::skip_permission_denied, ec),
+       end;
+       it != end;
+       it.increment(ec)) {
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    const auto& entry = *it;
+    std::error_code entryEc;
+    if (!entry.is_regular_file(entryEc) || entryEc) {
       continue;
     }
     if (entry.path().filename() != "results.json") {
       continue;
     }
-    std::error_code ec;
-    const auto mtime = std::filesystem::last_write_time(entry.path(), ec);
-    if (!ec) {
-      found.emplace_back(mtime, entry.path());
+    const auto mtime = std::filesystem::last_write_time(entry.path(), entryEc);
+    if (!entryEc && (!latest || mtime > latest->first)) {
+      latest = std::make_pair(mtime, entry.path());
     }
   }
-  if (found.empty()) {
-    return std::nullopt;
+  if (latest) {
+    return latest->second;
   }
-  std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) {
-    return a.first > b.first;
-  });
-  return found.front().second;
+  return std::nullopt;
 }
 
 [[maybe_unused]] std::vector<std::filesystem::path> ListRecentBenchmarkResultDirs(std::size_t max_items = 16) {
   std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> found;
   const std::filesystem::path root = "artifacts/benchmarks";
-  if (!std::filesystem::exists(root)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(root, ec) || ec) {
     return {};
   }
-  for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
-    if (!entry.is_regular_file()) {
+  for (std::filesystem::recursive_directory_iterator it(
+           root, std::filesystem::directory_options::skip_permission_denied, ec),
+       end;
+       it != end;
+       it.increment(ec)) {
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    const auto& entry = *it;
+    std::error_code entryEc;
+    if (!entry.is_regular_file(entryEc) || entryEc) {
       continue;
     }
     if (entry.path().filename() != "results.json") {
       continue;
     }
-    std::error_code ec;
-    const auto mtime = std::filesystem::last_write_time(entry.path(), ec);
-    if (!ec) {
+    const auto mtime = std::filesystem::last_write_time(entry.path(), entryEc);
+    if (!entryEc) {
       found.emplace_back(mtime, entry.path().parent_path());
     }
   }

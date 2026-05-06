@@ -54,6 +54,7 @@ AssetImportResult TextureMetadataImporter::import_source(const AssetImportSource
     return result;
   }
 
+  // Channel semantic and color space are resolved here so downstream material packing stays declarative.
   desc.source_hash = detail::HashBytesHex(bytes);
   desc.channel_semantic = options.texture_semantic != TextureChannelSemantic::Unknown
       ? options.texture_semantic
@@ -129,7 +130,7 @@ bool TextureMetadataImporter::parse_jpeg(const std::vector<std::byte>& bytes, Te
     return false;
   }
   std::size_t i = 2u;
-  while (i + 8u < bytes.size()) {
+  while (bytes.size() - i > 8u) {
     while (i < bytes.size() && detail::Byte(bytes, i) != 0xff) {
       ++i;
     }
@@ -143,11 +144,11 @@ bool TextureMetadataImporter::parse_jpeg(const std::vector<std::byte>& bytes, Te
     if (marker == 0xd9u || marker == 0xdau) {
       break;
     }
-    if (i + 2u > bytes.size()) {
+    if (bytes.size() - i < 2u) {
       return false;
     }
     const auto segment_length = detail::ReadU16Be(bytes, i);
-    if (segment_length < 2u || i + segment_length > bytes.size()) {
+    if (segment_length < 2u || segment_length > bytes.size() - i) {
       return false;
     }
     const bool sof = (marker >= 0xc0u && marker <= 0xc3u) ||
@@ -155,6 +156,9 @@ bool TextureMetadataImporter::parse_jpeg(const std::vector<std::byte>& bytes, Te
                      (marker >= 0xc9u && marker <= 0xcbu) ||
                      (marker >= 0xcdu && marker <= 0xcfu);
     if (sof) {
+      if (segment_length < 8u) {
+        return false;
+      }
       const auto height = detail::ReadU16Be(bytes, i + 3u);
       const auto width = detail::ReadU16Be(bytes, i + 5u);
       const auto channels = detail::Byte(bytes, i + 7u);
@@ -229,6 +233,7 @@ AssetImportResult ExrPolicyImporter::import_source(const AssetImportSource& sour
   AssetImportResult result;
   const auto bytes = detail::ResolveSourceBytes(source);
   const auto source_hash = bytes.empty() ? HashTextHex(source.uri) : detail::HashBytesHex(bytes);
+  // EXR support is advertised as a policy record until an HDR pixel backend is linked in.
   TextureDesc desc;
   desc.width = 0u;
   desc.height = 0u;

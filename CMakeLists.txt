@@ -35,6 +35,10 @@ set(PT_JOLT_GIT_TAG "v5.5.0" CACHE STRING "Jolt Physics git tag used when PT_ENA
 set(PT_SANITIZER "disabled" CACHE STRING "Sanitizer flavor")
 set_property(CACHE PT_SANITIZER PROPERTY STRINGS disabled address thread)
 
+if(PT_ENABLE_AVX OR PT_ENABLE_AVX2 OR PT_ENABLE_AVX512 OR PT_ENABLE_NEON OR PT_ENABLE_SVE)
+  set(PT_ENABLE_CPU_SIMD ON)
+endif()
+
 if(PT_ENABLE_QT_EDITOR AND NOT PT_ENABLE_QT)
   message(FATAL_ERROR "PT_ENABLE_QT_EDITOR=ON requires PT_ENABLE_QT=ON.")
 endif()
@@ -393,6 +397,7 @@ set(PT_CPU_SOURCES
   src/jobs/JobSystem.cpp
 
   # CPU execution
+  src/cpu/BvhTriangleIntersector.cpp
   src/cpu/CpuFeatures.cpp
   src/cpu/ParallelBvhBuilder.cpp
   src/cpu/TiledCpuPathTracer.cpp
@@ -476,12 +481,14 @@ endif()
 
 if(PT_ENABLE_AVX2)
   set(PT_ENABLE_CPU_SIMD ON)
-  list(APPEND PT_CPU_SOURCES src/cpu/Avx2PathTracer.cpp)
+  list(APPEND PT_CPU_SOURCES
+    src/cpu/Avx2PathTracer.cpp
+    src/cpu/BvhTriangleIntersectorAvx2.cpp)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    set_source_files_properties(src/cpu/Avx2PathTracer.cpp src/cpu/CpuFeatures.cpp
+    set_source_files_properties(src/cpu/Avx2PathTracer.cpp src/cpu/BvhTriangleIntersectorAvx2.cpp src/cpu/CpuFeatures.cpp
       PROPERTIES COMPILE_FLAGS "-mavx2 -mfma")
   elseif(MSVC)
-    set_source_files_properties(src/cpu/Avx2PathTracer.cpp src/cpu/CpuFeatures.cpp
+    set_source_files_properties(src/cpu/Avx2PathTracer.cpp src/cpu/BvhTriangleIntersectorAvx2.cpp src/cpu/CpuFeatures.cpp
       PROPERTIES COMPILE_FLAGS "/arch:AVX2")
   endif()
 endif()
@@ -715,6 +722,8 @@ add_executable(pt_scripting_smoke EXCLUDE_FROM_ALL
   src/assets/SceneAssetLoaderSupport.cpp
   src/assets/SceneAssetObjLoader.cpp
   src/assets/SceneAssetGltfLoader.cpp
+  src/pathtracer/SceneConversion.cpp
+  src/physics/PhysicsWorld.cpp
   src/scene/SceneDocumentLoad.cpp
   src/scene/SceneWorld.cpp
   src/scene/SceneWorldExtraction.cpp
@@ -732,6 +741,13 @@ target_compile_features(pt_scripting_smoke PRIVATE cxx_std_23)
 if(PT_ENABLE_LUA)
   target_link_libraries(pt_scripting_smoke PRIVATE ${PT_LUA_TARGET})
   target_compile_definitions(pt_scripting_smoke PRIVATE PT_ENABLE_LUA)
+endif()
+
+if(PT_ENABLE_JOLT)
+  target_link_libraries(pt_scripting_smoke PRIVATE ${PT_JOLT_TARGET})
+  target_compile_definitions(pt_scripting_smoke PRIVATE
+    PT_ENABLE_JOLT
+    PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
 endif()
 
 add_custom_target(hello

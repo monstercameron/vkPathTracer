@@ -38,6 +38,15 @@
                                             std::max<uint32_t>(1u, config.spp.value));
   }
 
+  if (thirdPersonScriptGate) {
+    PrintNonGuiPlatformShellNotice("third-person-script-gate", selectedPlatform, effectivePlatform);
+    return RunThirdPersonScriptPerformanceGate(config.scene_path.value,
+                                               config.backend.value,
+                                               config.render_width.value,
+                                               config.render_height.value,
+                                               std::max<uint32_t>(1u, config.spp.value));
+  }
+
   // ---- --render -------------------------------------------------------------
   if (doRender) {
     PrintNonGuiPlatformShellNotice("render", selectedPlatform, effectivePlatform);
@@ -62,6 +71,16 @@
       document.metadata.scene_name = "cornell";
       vkpt::diagnostics::CrashRecorder::instance().update_scene("cornell_builtin");
     }
+    vkpt::core::TraceExecution("render_scene_document_loaded", {
+      {"scene", config.scene_path.value.empty() ? "builtin:cornell" : config.scene_path.value},
+      {"scene_name", document.metadata.scene_name},
+      {"entities", std::to_string(document.entities.size())},
+      {"geometry", std::to_string(document.geometry.size())},
+      {"materials", std::to_string(document.materials.size())},
+      {"assets", std::to_string(document.assets.size())},
+      {"lights", std::to_string(document.lights.size())},
+      {"sdf_primitives", std::to_string(document.sdf_primitives.size())}
+    });
 
     vkpt::pathtracer::RenderSettings settings{};
     settings.width     = std::max<uint32_t>(1, config.render_width.value);
@@ -82,6 +101,15 @@
       writeStatus("error:scene_conversion_failed", "scene_conversion_failed");
       return 2;
     }
+    vkpt::core::TraceExecution("render_rt_scene_ready", {
+      {"vertices", std::to_string(sceneResult.value().vertices.size())},
+      {"indices", std::to_string(sceneResult.value().indices.size())},
+      {"instances", std::to_string(sceneResult.value().instances.size())},
+      {"materials", std::to_string(sceneResult.value().materials.size())},
+      {"textures", std::to_string(sceneResult.value().textures.size())},
+      {"lights", std::to_string(sceneResult.value().lights.size())},
+      {"sdf_primitives", std::to_string(sceneResult.value().sdf_primitives.size())}
+    });
 
     // ---- Vulkan software-BVH compute path (C10 / Gate 4) ------------------
     const bool useVulkan = (config.backend.value == "vulkan" ||
@@ -131,6 +159,14 @@
                                     + " indices=" + std::to_string(bvhResult.index_buffer_count)
                                     + " bvh_nodes=" + std::to_string(bvhResult.bvh_node_estimate);
       status.performance_summary = perfSummary;
+      vkpt::core::TraceExecution("render_vulkan_bvh_complete", {
+        {"renderer_path", "vulkan_bvh_compute"},
+        {"output", config.output_path.value},
+        {"vertices", std::to_string(bvhResult.vertex_buffer_count)},
+        {"indices", std::to_string(bvhResult.index_buffer_count)},
+        {"instances", std::to_string(bvhResult.instance_count)},
+        {"bvh_nodes", std::to_string(bvhResult.bvh_node_estimate)}
+      });
       recordUiAction("app.render", "render", "vulkan render complete",
                      MakeUnsupportedUiCommand("app.render", "render_ok"));
       writeStatus("render_ok");
@@ -139,6 +175,7 @@
 
     // ---- CPU/GPU path tracer selection ----------------------------------------
     std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer;
+    std::string selectedTracerPath = "unselected";
 #ifdef PT_ENABLE_VULKAN
     if (config.backend.value == "vulkan" || config.backend.value == "vulkan-compute") {
       const std::string spvPath =
@@ -148,7 +185,10 @@
           "shaders/pathtrace.spv";
 #endif
       auto gpuT = std::make_unique<vkpt::gpu::VulkanGpuPathTracer>(spvPath);
-      if (gpuT->is_valid()) { tracer = std::move(gpuT); }
+      if (gpuT->is_valid()) {
+        selectedTracerPath = "vulkan_compute";
+        tracer = std::move(gpuT);
+      }
     }
 #endif
 #ifdef PT_ENABLE_D3D12
@@ -176,6 +216,9 @@
         tracer = std::move(gpuT);
         if (requestDxr) {
           status.selected_renderer_path = "d3d12_dxr_phase1";
+          selectedTracerPath = "d3d12_dxr";
+        } else {
+          selectedTracerPath = "d3d12_compute";
         }
       } else {
         const std::string errorMsg =
@@ -209,10 +252,21 @@
         vkpt::cpu::TiledRenderConfig tiledConfig{};
         tiledConfig.worker_count = 0;
         tracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
+        selectedTracerPath = "cpu_tiled";
       } else {
         tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
+        selectedTracerPath = "cpu_scalar";
       }
     }
+    vkpt::core::TraceExecution("render_tracer_selected", {
+      {"requested_backend", config.backend.value},
+      {"renderer_path", selectedTracerPath},
+      {"resolution", std::to_string(settings.width) + "x" + std::to_string(settings.height)},
+      {"spp", std::to_string(settings.spp)},
+      {"max_depth", std::to_string(settings.max_depth)},
+      {"denoiser", settings.enable_denoiser ? "true" : "false"},
+      {"temporal_aa", settings.enable_temporal_aa ? "true" : "false"}
+    });
     if (!tracer->configure(settings)) {
       std::cerr << "pathtracer configure failed\n";
       recordUiAction("app.render", "render", "pathtracer configure failed",
@@ -273,6 +327,14 @@
                                   + " rays=" + std::to_string(counters.rays)
                                   + " tri_hits=" + std::to_string(counters.triangle_hits);
     status.performance_summary = perfSummary;
+    vkpt::core::TraceExecution("render_complete", {
+      {"renderer_path", selectedTracerPath},
+      {"output", config.output_path.value},
+      {"samples", std::to_string(counters.samples)},
+      {"rays", std::to_string(counters.rays)},
+      {"triangle_hits", std::to_string(counters.triangle_hits)},
+      {"sdf_hits", std::to_string(counters.sdf_hits)}
+    });
     recordUiAction("app.render", "render", "cpu render complete",
                    MakeUnsupportedUiCommand("app.render", "render_ok"));
     writeStatus("render_ok");

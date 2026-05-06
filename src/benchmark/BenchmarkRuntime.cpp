@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -17,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_set>
 #include <utility>
@@ -26,6 +28,7 @@
 #include "benchmark/BenchmarkTraceProfiler.h"
 #include "benchmark/BenchmarkSchema.h"
 #include "build_info.generated.h"
+#include "core/ExecutionTrace.h"
 #include "diagnostics/CrashRecorder.h"
 #include "cpu/CpuFeatures.h"
 #include "cpu/PacketRay.h"
@@ -204,21 +207,30 @@ std::string EscapeJson(std::string_view text) {
 }
 
 bool ParseUnsigned(std::string_view text, std::uint32_t& out) {
-  try {
-    out = static_cast<std::uint32_t>(std::stoul(std::string(text)));
-    return true;
-  } catch (...) {
+  if (!text.empty() && text.front() == '+') {
+    text.remove_prefix(1);
+  }
+  std::uint64_t value = 0;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (text.empty() ||
+      parsed.ec != std::errc{} ||
+      parsed.ptr != text.data() + text.size() ||
+      value > std::numeric_limits<std::uint32_t>::max()) {
     return false;
   }
+  out = static_cast<std::uint32_t>(value);
+  return true;
 }
 
 bool ParseUnsigned64(std::string_view text, std::uint64_t& out) {
-  try {
-    out = std::stoull(std::string(text));
-    return true;
-  } catch (...) {
+  if (!text.empty() && text.front() == '+') {
+    text.remove_prefix(1);
+  }
+  if (text.empty()) {
     return false;
   }
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), out);
+  return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
 }
 
 bool ParseResolution(std::string_view text, std::uint32_t& width, std::uint32_t& height) {
@@ -431,6 +443,18 @@ int RunCommand(const std::vector<std::string_view>& args) {
   const bool wantsPixProgrammaticCapture =
       ReadProcessEnvBool("PTBENCH_PIX_PROGRAMMATIC_CAPTURE") &&
       (isD3D12ComputePath || isD3D12DxrPath);
+  vkpt::core::TraceExecution("ptbench_run_resolved", {
+    {"scene", opts.scenePath},
+    {"backend", normalizedBackend},
+    {"renderer_path", normalizedRenderer},
+    {"resolution", std::to_string(opts.width) + "x" + std::to_string(opts.height)},
+    {"spp", std::to_string(opts.spp)},
+    {"max_depth", std::to_string(opts.maxDepth)},
+    {"workers", std::to_string(opts.workers)},
+    {"tile_height", std::to_string(opts.tileHeight)},
+    {"deterministic", opts.deterministic ? "true" : "false"},
+    {"pix_capture", wantsPixProgrammaticCapture ? "true" : "false"}
+  });
   LoadPixGpuCapturerForProgrammaticCapture(wantsPixProgrammaticCapture);
   std::optional<ScopedPixProgrammaticCapture> pixCapture;
   if (wantsPixProgrammaticCapture) {
@@ -478,6 +502,15 @@ int RunCommand(const std::vector<std::string_view>& args) {
     }
     return 2;
   }
+  vkpt::core::TraceExecution("ptbench_scene_document_loaded", {
+    {"scene", opts.scenePath},
+    {"scene_name", scene.metadata.scene_name},
+    {"entities", std::to_string(scene.entities.size())},
+    {"geometry", std::to_string(scene.geometry.size())},
+    {"materials", std::to_string(scene.materials.size())},
+    {"assets", std::to_string(scene.assets.size())},
+    {"lights", std::to_string(scene.lights.size())}
+  });
 
   const Path artifactDir(opts.output);
   if (!EnsureDirectory(artifactDir)) {
@@ -541,6 +574,8 @@ int RunCommand(const std::vector<std::string_view>& args) {
   result.throughput.paths_per_sec = 0.0;
   result.throughput.samples_per_sec = 0.0;
 
+  // Benchmark timing starts at scene conversion so build/render/resolve rows
+  // stay comparable across CPU, Vulkan, and D3D12 paths.
   TraceProfiler profiler;
   const auto totalProfile = profiler.begin_event(vkpt::benchmark::ProfilerEventKind::FrameStage, "total", "frame", 0u);
   const auto buildStart = std::chrono::high_resolution_clock::now();
@@ -550,6 +585,15 @@ int RunCommand(const std::vector<std::string_view>& args) {
     std::cerr << "failed to build render scene data\n";
     return 2;
   }
+  vkpt::core::TraceExecution("ptbench_rt_scene_ready", {
+    {"vertices", std::to_string(sceneData.value().vertices.size())},
+    {"indices", std::to_string(sceneData.value().indices.size())},
+    {"instances", std::to_string(sceneData.value().instances.size())},
+    {"materials", std::to_string(sceneData.value().materials.size())},
+    {"textures", std::to_string(sceneData.value().textures.size())},
+    {"lights", std::to_string(sceneData.value().lights.size())},
+    {"sdf_primitives", std::to_string(sceneData.value().sdf_primitives.size())}
+  });
 
   vkpt::pathtracer::RenderSettings renderSettings;
   renderSettings.width = opts.width;
@@ -618,6 +662,13 @@ int RunCommand(const std::vector<std::string_view>& args) {
   } else {
     tracer = std::make_unique<vkpt::pathtracer::ScalarCpuPathTracer>();
   }
+  vkpt::core::TraceExecution("ptbench_tracer_selected", {
+    {"backend", normalizedBackend},
+    {"renderer_path", normalizedRenderer},
+    {"cpu_simd_mode", result.cpu_simd_mode},
+    {"gpu_name", result.device_info.gpu_name},
+    {"artifact_dir", result.artifact_directory}
+  });
   if (!tracer->configure(renderSettings) || !tracer->load_scene_snapshot(sceneData.value()) ||
       !tracer->build_or_update_acceleration()) {
     std::cerr << "path tracer init failed\n";
@@ -678,7 +729,8 @@ int RunCommand(const std::vector<std::string_view>& args) {
   result.timing.render_ms = renderMs;
   result.timing.cpu_ms = renderMs;
 
-  // Gate 10 (F18): profiler/timing breakdown schema.
+  // Keep these event names stable; artifact readers use them as the timing
+  // breakdown schema rather than as display-only labels.
   result.timing_breakdown.push_back({"scene_build", "scene", buildMs});
   result.timing_breakdown.push_back({"render_samples", "render", renderMs});
   result.timing_breakdown.push_back({"resolve_and_write", "io", resolveMs});
@@ -709,8 +761,16 @@ int RunCommand(const std::vector<std::string_view>& args) {
     result.reference_error = stats.mean_abs_error;
 
     const auto referencePath = Path(opts.referenceImage);
-    if (!std::filesystem::copy_file(referencePath, Path(result.reference_exr), std::filesystem::copy_options::overwrite_existing)) {
-      // continue; optional reference output.
+    {
+      std::error_code copyEc;
+      std::filesystem::copy_file(referencePath,
+                                 Path(result.reference_exr),
+                                 std::filesystem::copy_options::overwrite_existing,
+                                 copyEc);
+      if (copyEc) {
+        std::cerr << "warning: failed to copy reference image: "
+                  << copyEc.message() << "\n";
+      }
     }
     if (!referencePath.empty()) {
       const Path heatmapPath = Path(result.diff_heatmap_png);
@@ -813,6 +873,23 @@ int RunCommand(const std::vector<std::string_view>& args) {
     std::cerr << runError << "\n";
     return 2;
   }
+
+  vkpt::core::TraceExecution("ptbench_run_complete", {
+    {"scene", result.scene},
+    {"backend", result.backend},
+    {"renderer_path", result.renderer_path},
+    {"artifact_dir", result.artifact_directory},
+    {"beauty_png", result.beauty_png},
+    {"total_ms", std::to_string(result.timing.total_ms)},
+    {"render_ms", std::to_string(result.timing.render_ms)},
+    {"normalized_score", std::to_string(result.score.normalized_score)},
+    {"samples", std::to_string(counters.samples)},
+    {"rays", std::to_string(counters.rays)},
+    {"triangle_hits", std::to_string(counters.triangle_hits)},
+    {"sdf_hits", std::to_string(counters.sdf_hits)},
+    {"reference_image", opts.referenceImage.empty() ? "none" : opts.referenceImage},
+    {"reference_error", std::to_string(result.reference_error)}
+  });
 
   const auto artifactValidation = vkpt::benchmark::ValidateBenchmarkArtifactsOnDisk(artifactDir.string());
   if (!artifactValidation.ok) {
