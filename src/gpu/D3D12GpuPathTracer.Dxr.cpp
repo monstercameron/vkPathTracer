@@ -13,10 +13,10 @@ namespace vkpt::gpu {
 bool D3D12GpuPathTracer::create_dxr_desc_heap() {
   // Descriptor order is the DXR shader ABI: TLAS is a root SRV, while all
   // remaining scene buffers and the film UAV live in this shader-visible heap.
-  // 7 descriptors: slots 0-5 → scene SRVs (t1-t6), slot 6 → film UAV (u0)
+  // 16 descriptors: slots 0-14 -> scene SRVs (t1-t15), slot 15 -> film UAV (u0)
   D3D12_DESCRIPTOR_HEAP_DESC dh{};
   dh.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  dh.NumDescriptors = 13;
+  dh.NumDescriptors = 16;
   dh.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   const HRESULT hr = m_device->CreateDescriptorHeap(&dh, IID_PPV_ARGS(&m_dxrDescHeap));
   if (FAILED(hr)) {
@@ -50,12 +50,15 @@ bool D3D12GpuPathTracer::create_dxr_desc_heap() {
   makeSrv(9, m_envBuf.Get(), m_gpuEnv.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
   makeSrv(10, m_envMetaBuf.Get(), m_gpuEnvMeta.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
   makeSrv(11, m_sdfBuf.Get(), m_gpuSdfs.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+  makeSrv(12, m_bvhBuf.Get(), m_gpuBvh.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+  makeSrv(13, m_dynamicBvhBuf.Get(), m_gpuDynamicBvh.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+  makeSrv(14, m_localBvhBuf.Get(), m_gpuLocalBvh.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
 
   const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
   D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(filmSize);
-  D3D12_CPU_DESCRIPTOR_HANDLE h12 = cpu;
-  h12.ptr += 12 * inc;
-  m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h12);
+  D3D12_CPU_DESCRIPTOR_HANDLE h15 = cpu;
+  h15.ptr += 15 * inc;
+  m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h15);
   LogDebug("DXR descriptor heap created");
   return true;
 }
@@ -107,37 +110,8 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
     return true;
   };
 
-  // DXR build inputs reference upload-heap geometry directly. The resulting
-  // BLAS/TLAS live in default heaps and are retained for later dispatch/update.
-  const UINT64 vertBytes = static_cast<UINT64>(m_gpuVerts.size()) * sizeof(float);
-  const UINT64 idxBytes = static_cast<UINT64>(m_gpuIdx.size()) * sizeof(uint32_t);
-  if (!createBuffer(vertBytes,
-                    D3D12_HEAP_TYPE_UPLOAD,
-                    D3D12_RESOURCE_FLAG_NONE,
-                    D3D12_RESOURCE_STATE_GENERIC_READ,
-                    m_blasVertUpload) ||
-      !createBuffer(idxBytes,
-                    D3D12_HEAP_TYPE_UPLOAD,
-                    D3D12_RESOURCE_FLAG_NONE,
-                    D3D12_RESOURCE_STATE_GENERIC_READ,
-                    m_blasIdxUpload)) {
-    LogError("build_dxr_acceleration_structures: " + m_error);
-    return false;
-  }
-  void* uploadPtr = nullptr;
-  if (FAILED(m_blasVertUpload->Map(0, nullptr, &uploadPtr))) {
-    m_error = "DXR vertex upload map failed";
-    return false;
-  }
-  std::memcpy(uploadPtr, m_gpuVerts.data(), static_cast<std::size_t>(vertBytes));
-  m_blasVertUpload->Unmap(0, nullptr);
-  if (FAILED(m_blasIdxUpload->Map(0, nullptr, &uploadPtr))) {
-    m_error = "DXR index upload map failed";
-    return false;
-  }
-  std::memcpy(uploadPtr, m_gpuIdx.data(), static_cast<std::size_t>(idxBytes));
-  m_blasIdxUpload->Unmap(0, nullptr);
-
+  // BLAS inputs read the existing default-heap scene buffers. This avoids a
+  // second CPU copy into upload heaps and lets the AS builder consume GPU-local memory.
   if (!wait_for_gpu()) {
     LogError("build_dxr_acceleration_structures: " + m_error);
     return false;
@@ -171,12 +145,11 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
     D3D12_RAYTRACING_GEOMETRY_DESC geomDesc{};
     geomDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
     geomDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-    geomDesc.Triangles.VertexBuffer.StartAddress = m_blasVertUpload->GetGPUVirtualAddress();
+    geomDesc.Triangles.VertexBuffer.StartAddress = m_vertBuf->GetGPUVirtualAddress();
     geomDesc.Triangles.VertexBuffer.StrideInBytes = sizeof(float) * 3u;
     geomDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
     geomDesc.Triangles.VertexCount = static_cast<UINT>(m_gpuVerts.size() / 3u);
-    geomDesc.Triangles.IndexBuffer =
-        m_blasIdxUpload->GetGPUVirtualAddress() + firstIndex * sizeof(uint32_t);
+    geomDesc.Triangles.IndexBuffer = m_idxBuf->GetGPUVirtualAddress() + firstIndex * sizeof(uint32_t);
     geomDesc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
     geomDesc.Triangles.IndexCount = static_cast<UINT>(indexCount);
 
@@ -214,11 +187,6 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
     buildDesc.DestAccelerationStructureData = blas->GetGPUVirtualAddress();
     buildDesc.ScratchAccelerationStructureData = scratch->GetGPUVirtualAddress();
     buildList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
-
-    D3D12_RESOURCE_BARRIER barrier{};
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    barrier.UAV.pResource = blas.Get();
-    buildList->ResourceBarrier(1, &barrier);
 
     blasAddress = blas->GetGPUVirtualAddress();
     m_dxrBlasBuffers.push_back(blas);
@@ -275,6 +243,11 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
     LogError(m_error);
     return false;
   }
+  D3D12_RESOURCE_BARRIER blasBarrier{};
+  blasBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+  blasBarrier.UAV.pResource = nullptr;
+  buildList->ResourceBarrier(1, &blasBarrier);
+
   m_blasBuffer = m_dxrBlasBuffers.front();
   m_blasScratch = m_dxrBlasScratch.front();
 
@@ -575,6 +548,14 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   pc.temporal_feedback = 0.92f;
   pc.temporal_depth_sigma = 0.05f;
   pc.temporal_normal_power = 28.0f;
+  // DXR does not consume the compute temporal-AA constants; reuse those slots
+  // for BVH node counts so the shadow shader can skip empty acceleration trees.
+  pc.temporal_enabled = (m_staticTriangleCount > 0u)
+      ? static_cast<uint32_t>(m_gpuBvh.size() / 8u)
+      : 0u;
+  pc.temporal_history_valid = (m_dynamicInstanceCount > 0u)
+      ? static_cast<uint32_t>(m_gpuDynamicBvh.size() / 8u)
+      : 0u;
   pc.temporal_color_margin = 0.12f;
   FillPreviousCameraConstants(pc, m_temporalHistoryValid ? m_temporalPrevCamera : MakeTemporalCameraState(pc));
   if (doReadback && (!m_ldrBuf || !m_ldrReadbackBuf || !m_ldrReadbackPtr || !ensure_compute_srv_uav_heap())) {

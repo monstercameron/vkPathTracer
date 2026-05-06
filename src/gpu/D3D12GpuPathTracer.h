@@ -274,8 +274,6 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>  m_dxrBlasBuffers;
   std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>  m_dxrBlasScratch;
   std::vector<D3D12_RAYTRACING_INSTANCE_DESC>          m_dxrInstanceDescs;
-  Microsoft::WRL::ComPtr<ID3D12Resource>              m_blasVertUpload;
-  Microsoft::WRL::ComPtr<ID3D12Resource>              m_blasIdxUpload;
   Microsoft::WRL::ComPtr<ID3D12Resource>              m_tlasBuffer;
   Microsoft::WRL::ComPtr<ID3D12Resource>              m_tlasScratch;
   Microsoft::WRL::ComPtr<ID3D12Resource>              m_tlasInstanceBuf;
@@ -295,7 +293,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   uint32_t m_readbackInterval = 4;
   bool m_forceReadbackEverySample = false;
   bool m_dynamicInstanceTransformsAllowed = true;
-  std::string m_dxrBuildMode = "fast_trace";
+  std::string m_dxrBuildMode = "fast_build";
   uint32_t m_bvhLeafSize = 16;
   uint32_t m_bvhBucketCount = 16;
   std::string m_bvhSplitMode = "sah";
