@@ -5,7 +5,6 @@
 #include <memory>
 #include <vector>
 
-#include "cpu/CpuFeatures.h"
 #include "cpu/ParallelBvhBuilder.h"
 #include "jobs/JobSystem.h"
 #include "pathtracer/PathTracer.h"
@@ -66,13 +65,12 @@ class TiledCpuPathTracer final : public vkpt::pathtracer::IPathTracer, public vk
   vkpt::pathtracer::FilmBuffer m_film;
   vkpt::pathtracer::SampleCounters m_counters{};
   vkpt::pathtracer::IRayAccelerator* m_externalAccelerator = nullptr;
+  std::unique_ptr<vkpt::pathtracer::IRayAccelerator> m_sharedAccelerator;
 
   std::unique_ptr<vkpt::jobs::JobSystem> m_jobSystem;
-  ParallelBvhBuilder m_bvhBuilder;
   BvhBuildStats m_bvhStats{};
-  SimdDispatchInfo m_simdDispatch;
 
-  // One IPathTracer per tile (Scalar or AVX2 depending on CPU features)
+  // One scalar tracer per tile; each receives the shared accelerator above.
   struct TileState {
     uint32_t start_y = 0;
     uint32_t end_y = 0;

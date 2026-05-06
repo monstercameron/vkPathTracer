@@ -70,6 +70,7 @@ bool VulkanGpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   m_film.resize(s.width, s.height);
   m_film.set_resolve_settings(s.film_resolve);
   m_film.clear();
+  m_cpuFilmDirty = false;
   m_counters      = {};
   m_hasScene      = false;
   m_sceneUploaded = false;
@@ -88,6 +89,7 @@ bool VulkanGpuPathTracer::load_scene_snapshot(
   m_sceneData     = scene;
   m_film.set_resolve_settings(
       vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
+  m_cpuFilmDirty = false;
   m_hasScene      = true;
   m_sceneUploaded = false;
   return true;
@@ -181,6 +183,7 @@ bool VulkanGpuPathTracer::reset_accumulation() {
   std::memset(m_filmPtr, 0,
               static_cast<std::size_t>(m_filmPixels) * 4u * sizeof(float));
   m_film.clear();
+  m_cpuFilmDirty = false;
   m_counters = {};
   return true;
 }
@@ -277,21 +280,7 @@ bool VulkanGpuPathTracer::render_sample_batch(
   VK_CHK(vkWaitForFences(m_device, 1, &m_fence, VK_TRUE,
                           static_cast<uint64_t>(10e9)));
 
-  // GPU film buffer is HOST_COHERENT: directly readable by CPU.
-  // Rebuild the CPU FilmBuffer from the accumulated GPU data so resolve_ldr works.
-  const float* src = reinterpret_cast<const float*>(m_filmPtr);
-  m_film.resize(m_settings.width, m_settings.height);
-  m_film.clear();
-  for (uint32_t y = 0; y < m_settings.height; ++y) {
-    for (uint32_t x = 0; x < m_settings.width; ++x) {
-      const uint32_t p   = (y * m_settings.width + x) * 4u;
-      const float    cnt = std::max(1.0f, src[p + 3u]);
-      // Store the mean as a single synthetic sample so the film resolve
-      // divides by sample_count=1 and gives the correct average.
-      const vkpt::pathtracer::Vec3 avg{src[p]/cnt, src[p+1]/cnt, src[p+2]/cnt};
-      m_film.add_sample(x, y, avg);
-    }
-  }
+  m_cpuFilmDirty = true;
 
   const uint64_t sampleInc =
       static_cast<uint64_t>(m_settings.width) * m_settings.height;
@@ -301,9 +290,11 @@ bool VulkanGpuPathTracer::render_sample_batch(
 }
 
 vkpt::pathtracer::FilmLdr VulkanGpuPathTracer::resolve_ldr() const {
+  rebuild_cpu_film_from_gpu();
   return m_film.resolve_ldr();
 }
 vkpt::pathtracer::FilmHdr VulkanGpuPathTracer::resolve_hdr() const {
+  rebuild_cpu_film_from_gpu();
   return m_film.resolve_hdr();
 }
 vkpt::pathtracer::SampleCounters VulkanGpuPathTracer::read_counters() const {
@@ -328,6 +319,7 @@ void VulkanGpuPathTracer::shutdown() {
   if (m_device   != VK_NULL_HANDLE) { vkDestroyDevice(m_device, nullptr);                               m_device   = VK_NULL_HANDLE; }
   if (m_instance != VK_NULL_HANDLE) { vkDestroyInstance(m_instance, nullptr);                           m_instance = VK_NULL_HANDLE; }
   m_valid = false;
+  m_cpuFilmDirty = false;
 }
 
 // ============================================================================
@@ -595,10 +587,34 @@ bool VulkanGpuPathTracer::make_buffer(VkDeviceSize size,
   return true;
 }
 
+void VulkanGpuPathTracer::rebuild_cpu_film_from_gpu() const {
+  if (!m_cpuFilmDirty || !m_configured || !m_filmPtr) {
+    return;
+  }
+
+  const float* src = reinterpret_cast<const float*>(m_filmPtr);
+  m_film.resize(m_settings.width, m_settings.height);
+  m_film.set_resolve_settings(
+      vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
+  m_film.clear();
+  for (uint32_t y = 0; y < m_settings.height; ++y) {
+    for (uint32_t x = 0; x < m_settings.width; ++x) {
+      const uint32_t p = (y * m_settings.width + x) * 4u;
+      const float cnt = std::max(1.0f, src[p + 3u]);
+      // Store the mean as one synthetic sample so the FilmBuffer resolve does
+      // not divide the already-averaged GPU accumulation a second time.
+      const vkpt::pathtracer::Vec3 avg{src[p] / cnt, src[p + 1u] / cnt, src[p + 2u] / cnt};
+      m_film.add_sample(x, y, avg);
+    }
+  }
+  m_cpuFilmDirty = false;
+}
+
 void VulkanGpuPathTracer::destroy_film_buffers() {
   if (m_filmPtr != nullptr && m_filmMem != VK_NULL_HANDLE)
     vkUnmapMemory(m_device, m_filmMem);
   m_filmPtr = nullptr;
+  m_cpuFilmDirty = false;
   if (m_filmBuf != VK_NULL_HANDLE) { vkDestroyBuffer(m_device, m_filmBuf, nullptr); m_filmBuf = VK_NULL_HANDLE; }
   if (m_filmMem != VK_NULL_HANDLE) { vkFreeMemory(m_device, m_filmMem, nullptr);    m_filmMem = VK_NULL_HANDLE; }
 }

@@ -45,7 +45,10 @@ class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   vkpt::pathtracer::FilmLdr resolve_ldr() const override;
   vkpt::pathtracer::FilmHdr resolve_hdr() const override;
   vkpt::pathtracer::SampleCounters read_counters() const override;
-  const vkpt::pathtracer::FilmBuffer& film() const override { return m_film; }
+  const vkpt::pathtracer::FilmBuffer& film() const override {
+    rebuild_cpu_film_from_gpu();
+    return m_film;
+  }
   void shutdown() override;
 
   bool        is_valid()    const { return m_valid; }
@@ -72,6 +75,7 @@ class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer {
                    VkBufferUsageFlags usage,
                    VkMemoryPropertyFlags props,
                    VkBuffer& buf, VkDeviceMemory& mem);
+  void rebuild_cpu_film_from_gpu() const;
 
   // --- Vulkan handles --------------------------------------------------------
   VkInstance       m_instance   = VK_NULL_HANDLE;
@@ -108,6 +112,7 @@ class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   vkpt::pathtracer::RTSceneData           m_sceneData{};
   mutable vkpt::pathtracer::FilmBuffer    m_film;
   mutable vkpt::pathtracer::SampleCounters m_counters{};
+  mutable bool m_cpuFilmDirty = false;
 
   std::string m_spvPath;
   std::string m_error;
