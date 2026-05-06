@@ -1,5 +1,18 @@
 # Changelog
 
+## 2026-05-06 (session 34)
+
+### Runtime input, procedural wood, render controls, and dynamic updates
+
+- Added a layered Qt input router with explicit editor/FPS/script input modes, reusable Escape cancel handling, selection clearing, and mode-aware mouse/wheel behavior.
+- Added runtime-generated wood material variety for Louvre floor, bench, and portrait-frame surfaces, including distinct parquet, walnut, and sandalwood-style procedural variants.
+- Added Render Settings backend selection controls and validation so supported runtime backends can be selected from the Qt dock.
+- Added scene-tree filtering, particle rows, transform-delta publishing for edited entities, and richer Qt dock/property state plumbing.
+- Added particle still/sequence render controls, render-time/frame CLI options, and scripting smoke coverage for particle benchmark playback.
+- Added D3D12 dynamic instance BVH refit support so transform-only updates can avoid rebuilding the dynamic BVH when the instance set is unchanged.
+- Added threading/performance notes and refreshed active TODO planning docs for the current physics/render-update bottleneck work.
+- Verified `cmake --build build\default --target ptapp` and `build\default\bin\ptapp.exe --ui-model-smoke`.
+
 ## 2026-05-06 (session 33)
 
 ### Glass visibility, particles, gallery assets, and editor polish
