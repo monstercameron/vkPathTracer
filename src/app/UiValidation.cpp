@@ -306,6 +306,17 @@ bool RunUiModelSmokeTests() {
   const auto layout = CreateLayoutPreset(LayoutPreset::Benchmark);
   check_true("benchmark layout preset", layout.preset == LayoutPreset::Benchmark);
   check_true("benchmark layout panels", !layout.panels.empty());
+  const auto defaultLayout = CreateDefaultLayout();
+  const auto* defaultInspector = find_panel(defaultLayout, "inspector");
+  const auto* defaultScripting = find_panel(defaultLayout, "script_panel");
+  check_true("default layout shows inspector scripting tab",
+             defaultInspector != nullptr &&
+             defaultInspector->visible &&
+             defaultScripting != nullptr &&
+             defaultScripting->visible &&
+             defaultScripting->docked &&
+             defaultScripting->x == defaultInspector->x &&
+             defaultScripting->y == defaultInspector->y);
 
   const auto tmp = std::filesystem::temp_directory_path() / "vkpt-ui-layout-smoke.json";
   std::string save_error;
@@ -426,6 +437,14 @@ bool RunUiModelSmokeTests() {
   check_true("clear selection resets hovered entity", cleared.hovered_entity == 0);
   check_true("clear selection keeps source from last command", cleared.selection_source == SelectionSource::Inspector);
   check_true("clear selection removes hovered_entity", cleared.hovered_entity == 0);
+
+  EditorCommand escape_clear_selection;
+  escape_clear_selection.source_widget = "keyboard";
+  escape_clear_selection.kind = EditorCommandKind::kClearSelection;
+  escape_clear_selection.payload = ClearSelectionCommand{};
+  SelectionState escape_cleared = ApplySelectionCommand(selected_two, escape_clear_selection);
+  check_true("escape clear selection empties entities", escape_cleared.selected_entity_ids.empty());
+  check_true("escape clear selection resets active primary", escape_cleared.active_primary_entity == 0);
 
   auto mixed_field = BuildInspectorFieldStates("material.roughness", {"0.4", "0.8"});
   check_true("mixed inspector value marked mixed", mixed_field.size() == 1 && mixed_field[0].mixed);

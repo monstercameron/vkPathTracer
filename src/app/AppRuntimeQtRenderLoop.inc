@@ -1,8 +1,191 @@
+      enum class QtInputRouteResult {
+        Pass,
+        Handled,
+        Capture,
+      };
+
+      enum class QtInputMode {
+        Editor,
+        FpsCamera,
+        ScriptPlayback,
+      };
+
+      auto qtCurrentInputMode = [&]() -> QtInputMode {
+        if (qtFpsMode) {
+          return QtInputMode::FpsCamera;
+        }
+        if (qtScriptState.playing) {
+          return QtInputMode::ScriptPlayback;
+        }
+        return QtInputMode::Editor;
+      };
+
+      // Ordered input layers give Escape a single reusable cancel path before
+      // mode-specific shortcuts consume the same key event.
+      auto qtHandleEscapeCancelLayer = [&](int key, int rawKey) -> QtInputRouteResult {
+        if (key != kQtKeyEscape && rawKey != 27) {
+          return QtInputRouteResult::Pass;
+        }
+
+        const bool wasLuaPlayable = qtScriptState.playing;
+        const bool hadSelection =
+            !ui_selection_state.selected_entity_ids.empty() ||
+            ui_selection_state.active_primary_entity != 0u ||
+            ui_selection_state.hovered_entity != 0u;
+        if (qtSetFpsMode) {
+          qtSetFpsMode(false, qtFrameCount, "keyboard");
+        } else {
+          qtFpsMode = false;
+        }
+        ui_runtime_state.active_viewport_tool = vkpt::editor::ViewportTool::Select;
+        ui_runtime_state.active_gizmo_mode = vkpt::editor::GizmoMode::None;
+        qtHoveredGizmoHit = std::nullopt;
+        if (wasLuaPlayable) {
+          qtSetLuaPlayableMode(false, qtFrameCount, "keyboard");
+        } else if (hadSelection) {
+          vkpt::editor::EditorCommand clearCommand;
+          clearCommand.command_id = "keyboard.escape.clear_selection";
+          clearCommand.kind = vkpt::editor::EditorCommandKind::kClearSelection;
+          clearCommand.source_widget = "keyboard";
+          clearCommand.frame_index = qtFrameCount;
+          clearCommand.payload = vkpt::editor::ClearSelectionCommand{};
+          ui_selection_state = vkpt::editor::ApplySelectionCommand(ui_selection_state, clearCommand);
+          RebuildSelectionBounds(ui_selection_state, qtPickables);
+          ui_command_history.push(clearCommand);
+          rebuildQtMenuBar();
+          qtDockPanelsDirty = true;
+          ui_runtime_state.status_message = "selection cleared";
+          PushUiEvent(ui_event_log,
+                      "keyboard_clear_selection",
+                      "viewport",
+                      "keyboard",
+                      qtFrameCount,
+                      {},
+                      "escape",
+                      ui_runtime_state.status_message);
+        } else {
+          ui_runtime_state.status_message = "select camera mode";
+        }
+        updateQtSelectionOverlay();
+        qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
+        return QtInputRouteResult::Handled;
+      };
+
+      auto qtHandleCameraKeyLayer = [&](int key, int rawKey) -> QtInputRouteResult {
+        if (key == 'F' || rawKey == 'F') {
+          qtFocusSelected(qtFrameCount, "keyboard");
+          return QtInputRouteResult::Handled;
+        }
+        if (key == 'P' || rawKey == 'P') {
+          qtPickFocusAt(qtLastMouseX, qtLastMouseY, qtFrameCount, "keyboard", true);
+          return QtInputRouteResult::Handled;
+        }
+        if (key == 'V' || rawKey == 'V') {
+          if (qtSetFpsMode) {
+            qtSetFpsMode(!qtFpsMode, qtFrameCount, "keyboard");
+          }
+          return QtInputRouteResult::Handled;
+        }
+        return QtInputRouteResult::Pass;
+      };
+
+      auto qtHandleScriptKeyLayer = [&](int key, int rawKey) -> QtInputRouteResult {
+        if (key == 'B' || rawKey == 'B') {
+          qtSetLuaPlayableMode(!qtScriptState.playing, qtFrameCount, "keyboard");
+          return QtInputRouteResult::Handled;
+        }
+        return QtInputRouteResult::Pass;
+      };
+
+      auto qtHandleFpsKeyLayer = [&](int key, int rawKey) -> QtInputRouteResult {
+        if (qtCurrentInputMode() == QtInputMode::FpsCamera &&
+            (key == kQtKeySpace || rawKey == kQtKeySpace)) {
+          qtFpsPlayer.jump_queued = true;
+          qtUserCameraActive = true;
+          return QtInputRouteResult::Handled;
+        }
+        return QtInputRouteResult::Pass;
+      };
+
+      auto qtHandleViewportToolKeyLayer = [&](int key, int rawKey) -> QtInputRouteResult {
+        if (qtCurrentInputMode() != QtInputMode::Editor) {
+          return QtInputRouteResult::Pass;
+        }
+        if (key == 'C' || rawKey == 'C') {
+          qtPhysicsCollisionDetectionEnabled = !qtPhysicsCollisionDetectionEnabled;
+          qtPhysicsStepConfig.collision_detection_enabled = qtPhysicsCollisionDetectionEnabled;
+          qtDockPanelsDirty = true;
+          ui_runtime_state.status_message = qtPhysicsCollisionDetectionEnabled
+              ? "physics collision detection on"
+              : "physics collision detection off";
+          PushUiEvent(ui_event_log,
+                      "physics_collision_detection_toggle",
+                      "viewport",
+                      "keyboard",
+                      qtFrameCount,
+                      {},
+                      qtPhysicsCollisionDetectionEnabled ? "on" : "off",
+                      ui_runtime_state.status_message);
+          return QtInputRouteResult::Handled;
+        }
+        if (key == 'T' || rawKey == 'T') {
+          qtSetGizmoMode(vkpt::editor::GizmoMode::Translate, "keyboard", qtFrameCount);
+          return QtInputRouteResult::Handled;
+        }
+        if (key == 'R' || rawKey == 'R') {
+          qtSetGizmoMode(vkpt::editor::GizmoMode::Rotate, "keyboard", qtFrameCount);
+          return QtInputRouteResult::Handled;
+        }
+        if (key == 'G' || rawKey == 'G') {
+          qtSetGizmoMode(vkpt::editor::GizmoMode::Universal, "keyboard", qtFrameCount);
+          return QtInputRouteResult::Handled;
+        }
+        if (key == kQtKeyDelete || rawKey == kQtKeyDelete ||
+            key == kQtKeyBackspace || rawKey == kQtKeyBackspace ||
+            rawKey == 46 || rawKey == 8) {
+          auto deleteIds = ui_selection_state.selected_entity_ids;
+          if (deleteIds.empty() && ui_selection_state.active_primary_entity != 0u) {
+            deleteIds.push_back(ui_selection_state.active_primary_entity);
+          }
+          if (!deleteIds.empty()) {
+            qtDeleteSceneGraphTargets(std::move(deleteIds),
+                                      qtFrameCount,
+                                      "keyboard",
+                                      "delete");
+          } else {
+            ui_runtime_state.status_message = "delete failed: no scene graph item selected";
+            ui_runtime_state.last_warning_or_error = ui_runtime_state.status_message;
+            qtDockPanelsDirty = true;
+          }
+          return QtInputRouteResult::Handled;
+        }
+        return QtInputRouteResult::Pass;
+      };
+
+      auto qtRouteKeyDown = [&](int key, int rawKey) -> QtInputRouteResult {
+        QtInputRouteResult result = qtHandleEscapeCancelLayer(key, rawKey);
+        if (result != QtInputRouteResult::Pass) {
+          return result;
+        }
+        result = qtHandleScriptKeyLayer(key, rawKey);
+        if (result != QtInputRouteResult::Pass) {
+          return result;
+        }
+        result = qtHandleFpsKeyLayer(key, rawKey);
+        if (result != QtInputRouteResult::Pass) {
+          return result;
+        }
+        result = qtHandleCameraKeyLayer(key, rawKey);
+        if (result != QtInputRouteResult::Pass) {
+          return result;
+        }
+        return qtHandleViewportToolKeyLayer(key, rawKey);
+      };
+
       constexpr uint32_t kQtMaxGpuBatchesPerTick = 64u;
       while (window->is_open()) {
         const auto qtFrameStart = std::chrono::steady_clock::now();
 
-#ifdef PT_ENABLE_QT
         const float qtInputDt = ClampFloat(
             std::chrono::duration<float>(qtFrameStart - qtInputPrevTime).count(),
             0.0f,
@@ -128,76 +311,7 @@
                           {"lua_compiled_in", qtScriptRuntime->lua_compiled_in() ? "true" : "false"},
                           {"execution_available", qtScriptRuntime->execution_available() ? "true" : "false"}},
                          qtFrameCount);
-              if (key == 'F' || rawKey == 'F') {
-                qtFocusSelected(qtFrameCount, "keyboard");
-              } else if (key == 'P' || rawKey == 'P') {
-                qtPickFocusAt(qtLastMouseX, qtLastMouseY, qtFrameCount, "keyboard", true);
-              } else if (key == 'V' || rawKey == 'V') {
-                if (qtSetFpsMode) {
-                  qtSetFpsMode(!qtFpsMode, qtFrameCount, "keyboard");
-                }
-              } else if (key == 'B' || rawKey == 'B') {
-                qtSetLuaPlayableMode(!qtScriptState.playing, qtFrameCount, "keyboard");
-              } else if (qtFpsMode && (key == kQtKeySpace || rawKey == kQtKeySpace)) {
-                qtFpsPlayer.jump_queued = true;
-                qtUserCameraActive = true;
-              } else if (!qtFpsMode && (key == 'C' || rawKey == 'C')) {
-                qtPhysicsCollisionDetectionEnabled = !qtPhysicsCollisionDetectionEnabled;
-                qtPhysicsStepConfig.collision_detection_enabled = qtPhysicsCollisionDetectionEnabled;
-                qtDockPanelsDirty = true;
-                ui_runtime_state.status_message = qtPhysicsCollisionDetectionEnabled
-                    ? "physics collision detection on"
-                    : "physics collision detection off";
-                PushUiEvent(ui_event_log,
-                            "physics_collision_detection_toggle",
-                            "viewport",
-                            "keyboard",
-                            qtFrameCount,
-                            {},
-                            qtPhysicsCollisionDetectionEnabled ? "on" : "off",
-                            ui_runtime_state.status_message);
-              } else if (!qtFpsMode && (key == 'T' || rawKey == 'T')) {
-                qtSetGizmoMode(vkpt::editor::GizmoMode::Translate, "keyboard", qtFrameCount);
-              } else if (!qtFpsMode && (key == 'R' || rawKey == 'R')) {
-                qtSetGizmoMode(vkpt::editor::GizmoMode::Rotate, "keyboard", qtFrameCount);
-              } else if (!qtFpsMode && (key == 'G' || rawKey == 'G')) {
-                qtSetGizmoMode(vkpt::editor::GizmoMode::Universal, "keyboard", qtFrameCount);
-              } else if (!qtFpsMode &&
-                         (key == kQtKeyDelete || rawKey == kQtKeyDelete ||
-                          key == kQtKeyBackspace || rawKey == kQtKeyBackspace ||
-                          rawKey == 46 || rawKey == 8)) {
-                auto deleteIds = ui_selection_state.selected_entity_ids;
-                if (deleteIds.empty() && ui_selection_state.active_primary_entity != 0u) {
-                  deleteIds.push_back(ui_selection_state.active_primary_entity);
-                }
-                if (!deleteIds.empty()) {
-                  qtDeleteSceneGraphTargets(std::move(deleteIds),
-                                            qtFrameCount,
-                                            "keyboard",
-                                            "delete");
-                } else {
-                  ui_runtime_state.status_message = "delete failed: no scene graph item selected";
-                  ui_runtime_state.last_warning_or_error = ui_runtime_state.status_message;
-                  qtDockPanelsDirty = true;
-                }
-              } else if (key == kQtKeyEscape || rawKey == 27) {
-                const bool wasLuaPlayable = qtScriptState.playing;
-                if (qtSetFpsMode) {
-                  qtSetFpsMode(false, qtFrameCount, "keyboard");
-                } else {
-                  qtFpsMode = false;
-                }
-                ui_runtime_state.active_viewport_tool = vkpt::editor::ViewportTool::Select;
-                ui_runtime_state.active_gizmo_mode = vkpt::editor::GizmoMode::None;
-                qtHoveredGizmoHit = std::nullopt;
-                if (wasLuaPlayable) {
-                  qtSetLuaPlayableMode(false, qtFrameCount, "keyboard");
-                } else {
-                  ui_runtime_state.status_message = "select camera mode";
-                }
-                updateQtSelectionOverlay();
-                qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
-              }
+              (void)qtRouteKeyDown(key, rawKey);
               break;
             }
             case vkpt::platform::InputEventType::KeyUp: {
@@ -223,7 +337,7 @@
             case vkpt::platform::InputEventType::MouseButtonDown:
               qtLastMouseX = event.x;
               qtLastMouseY = event.y;
-              if (qtFpsMode) {
+              if (qtCurrentInputMode() == QtInputMode::FpsCamera) {
                 qtUserCameraActive = true;
                 qtLeftMouseDown = false;
                 qtRightMouseDown = false;
@@ -239,7 +353,7 @@
                 qtClickY = event.y;
                 qtClickDragPixels = 0.0f;
                 qtPotentialClick = true;
-                if (!qtFpsMode &&
+                if (qtCurrentInputMode() == QtInputMode::Editor &&
                     ui_runtime_state.active_gizmo_mode != vkpt::editor::GizmoMode::None &&
                     ui_selection_state.active_primary_entity != 0u) {
                   const auto activeBounds = qtActiveSelectionBounds();
@@ -285,7 +399,7 @@
               }
               break;
             case vkpt::platform::InputEventType::MouseButtonUp:
-              if (qtFpsMode) {
+              if (qtCurrentInputMode() == QtInputMode::FpsCamera) {
                 qtLeftMouseDown = false;
                 qtRightMouseDown = false;
                 qtMiddleMouseDown = false;
@@ -317,13 +431,14 @@
             case vkpt::platform::InputEventType::MouseMove: {
               qtLastMouseX = event.x;
               qtLastMouseY = event.y;
-              if (qtFpsMode) {
+              const QtInputMode inputMode = qtCurrentInputMode();
+              if (inputMode == QtInputMode::FpsCamera) {
                 qtUserCameraActive = true;
                 qtPendingFpsLookDx += event.delta_x;
                 qtPendingFpsLookDy += event.delta_y;
                 break;
               }
-              if (qtScriptState.playing) {
+              if (inputMode == QtInputMode::ScriptPlayback) {
                 qtUserCameraActive = true;
                 qtPendingFpsLookDx += event.delta_x;
                 qtPendingFpsLookDy += event.delta_y;
@@ -338,9 +453,9 @@
                 const float dy = event.y - qtClickY;
                 qtClickDragPixels = std::max(qtClickDragPixels, std::sqrt(dx * dx + dy * dy));
               }
-              if ((qtRightMouseDown || qtFpsMode) && !qtGizmoDrag.active) {
+              if ((qtRightMouseDown || inputMode == QtInputMode::FpsCamera) && !qtGizmoDrag.active) {
                 qtUserCameraActive = true;
-                if (qtFpsMode) {
+                if (inputMode == QtInputMode::FpsCamera) {
                   qtApplyFpsLookDelta(event.delta_x, event.delta_y);
                 } else {
                   qtApplyOrbitDrag(event.delta_x, event.delta_y);
@@ -355,7 +470,7 @@
               break;
             }
             case vkpt::platform::InputEventType::MouseWheel:
-              if (qtFpsMode || qtScriptState.playing) {
+              if (qtCurrentInputMode() != QtInputMode::Editor) {
                 break;
               }
               qtUserCameraActive = true;
@@ -440,7 +555,6 @@
           qtPendingFpsLookDy = 0.0f;
         }
         updateQtSelectionOverlay();
-#endif
 
         // ---- Camera orbit update — post to bg thread, never join ----
         if (qtTracerReady && qtEnableAutoOrbit && !qtUserCameraActive && kQtOrbitRadius > 1e-4f) {
