@@ -939,6 +939,50 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
       radiance += throughput * material.emissive * w;
     }
 
+    if (isTransmissive) {
+      const float transmission = clamp01(material.transmission);
+      const float absorption = clamp01(material.alpha);
+      const float clearPreview = transmission * (1.0f - absorption);
+      const float grazing = 1.0f - std::max(0.0f, dot(shadingNormal, -ray.direction));
+      const float previewWeight = clearPreview * (0.72f + (0.46f - 0.72f) * clamp01(grazing));
+      Ray previewRay{hit.position + ray.direction * 0.02f, ray.direction};
+      Vec3 through = SampleSceneEnvironment(m_scene, ray.direction);
+      for (uint32_t skip = 0; skip < 8u; ++skip) {
+        Hit previewHit;
+        if (!intersect_scene(previewRay, previewHit, counters)) {
+          break;
+        }
+        const auto previewMatIndex = std::min(previewHit.material_index,
+            static_cast<uint32_t>(m_scene.materials.size() - 1));
+        const auto& previewMaterial = m_scene.materials[previewMatIndex];
+        const bool previewTransmissive =
+            previewMaterial.material_model == 5u || previewMaterial.transmission > 0.05f;
+        if (previewTransmissive) {
+          previewRay.origin = previewHit.position + previewRay.direction * 0.015f;
+          continue;
+        }
+        Vec3 previewNormal = previewHit.normal;
+        if (dot(previewNormal, -ray.direction) < 0.0f) {
+          previewNormal = previewNormal * -1.0f;
+        }
+        const Vec3 surface = apply_material_effect(previewMaterial,
+                                                   previewHit.position,
+                                                   previewNormal,
+                                                   ray.direction);
+        float ndotl = 0.45f;
+        if (!m_scene.lights.empty()) {
+          const Vec3 ldir = normalize(m_scene.lights.front().position - previewHit.position);
+          ndotl = std::max(ndotl, std::max(0.0f, dot(previewNormal, ldir)));
+        }
+        through = surface * (0.28f + 0.72f * ndotl) + previewMaterial.emissive;
+        break;
+      }
+      const Vec3 white{1.0f, 1.0f, 1.0f};
+      const Vec3 tint = white * (1.0f - absorption) + materialAlbedo * absorption;
+      radiance += throughput * through * tint * previewWeight;
+      throughput = throughput * (1.0f - previewWeight * 0.12f);
+    }
+
     // NEE direct light sampling — skip for perfect mirrors (delta BSDF)
     if (m_settings.enable_nee && depth < m_settings.max_depth - 1u) {
       Hit lightSampleHit = hit;
@@ -970,7 +1014,7 @@ Vec3 ScalarCpuPathTracer::trace(const Ray& input,
     } else if (isTransmissive) {
       const float cosTheta = std::max(0.0f, dot(shadingNormal, -ray.direction));
       const float fresnel = schlick_fresnel(cosTheta, material.ior);
-      if (rng.next01() < std::min(0.98f, fresnel + material.clearcoat * 0.15f)) {
+      if (rng.next01() < std::min(0.98f, fresnel + material.clearcoat * 0.015f)) {
         outDir = ray.direction - 2.0f * dot(shadingNormal, ray.direction) * shadingNormal;
       } else {
         bool tir = false;

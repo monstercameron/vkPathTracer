@@ -576,7 +576,7 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
         float r0 = (1.0 - ior) / (1.0 + ior);
         r0 *= r0;
         float fresnel = r0 + (1.0 - r0) * Pow5Fast(1.0 - cosN);
-        if (RandF(rng) < min(0.98, fresnel + MatClearcoat(matIdx) * 0.15)) {
+        if (RandF(rng) < min(0.98, fresnel + MatClearcoat(matIdx) * 0.015)) {
             nextDir = WorldRayDirection() - 2.0 * dot(n, WorldRayDirection()) * n;
         } else {
             float eta = enteringSurface ? (1.0 / ior) : ior;

@@ -6,6 +6,7 @@
 
 - Fixed glass-lab regressions by removing stray slab-target quads, keeping the scene at the intended 9 mesh objects and 14 SDF glass samples.
 - Improved transmissive visibility across CPU and D3D12 preview paths so glass no longer behaves as an opaque blocker for direct-light visibility, and D3D12 SDF slabs render through shape-aware SDF dispatch.
+- Rebalanced glass lab clearcoat values and added forward transmission preview in scalar CPU, D3D12 compute, and legacy GLSL compute paths so slabs and spheres visibly show background geometry through glass instead of reading as dark opaque blockers.
 - Added scene particle emitter schema/load/export/script support plus rain and smoke conversion into renderable particle geometry for benchmark/demo scenes.
 - Added Louvre/Mona Lisa gallery scene assets, generator tools, and richer wood material family variants for parquet, walnut, sandalwood, pine, teak, and mahogany.
 - Preserved Qt dock tree scroll/top-row state across panel rebuilds, added scene edit reload timing diagnostics, and expanded light visibility delta smoke coverage.

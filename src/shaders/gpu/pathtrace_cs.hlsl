@@ -74,6 +74,7 @@ bool  MatDoubleSided(uint idx);
 bool  IntersectSdfPrimitive(uint sdf_index, float3 ro, float3 rd, inout Hit h);
 bool  OccludedSdfPrimitive(uint sdf_index, float3 ro, float3 rd, float max_t);
 bool  IsMaterialTransmissive(uint mat_index);
+float3 PreviewTransmission(float3 ro, float3 rd, float3 fallback_env);
 Hit   IntersectScene(float3 ro, float3 rd);
 bool  OccludedScene(float3 ro, float3 rd, float max_t);
 float3 SampleHemisphere(float3 n, inout uint rng);
@@ -1363,6 +1364,38 @@ bool MatIsEmissive(uint idx) {
     return e.x > 0.0 || e.y > 0.0 || e.z > 0.0;
 }
 
+float3 PreviewTransmission(float3 ro, float3 rd, float3 fallback_env) {
+    float3 origin = ro;
+    [loop]
+    for (uint skip = 0u; skip < 8u; ++skip) {
+        Hit preview_hit = IntersectScene(origin, rd);
+        if (!preview_hit.ok) {
+            return SampleSceneEnvironment(rd, fallback_env);
+        }
+
+        uint preview_mat = (num_mats > 0u) ? min(preview_hit.mat, num_mats - 1u) : 0u;
+        if (IsMaterialTransmissive(preview_mat)) {
+            origin = preview_hit.pos + rd * 0.015f;
+            continue;
+        }
+
+        float3 preview_n = preview_hit.n;
+        if (dot(preview_n, -rd) < 0.0f) {
+            preview_n = -preview_n;
+        }
+        float3 surface = MatSurfaceAlbedo(preview_mat, preview_hit.pos, preview_n, rd);
+        float3 emissive = MatEmissive(preview_mat);
+        float ndotl = 0.45f;
+        if (num_lights > 0u) {
+            float3 lpos = float3(LightBuf[0u], LightBuf[1u], LightBuf[2u]);
+            float3 ldir = normalize(lpos - preview_hit.pos);
+            ndotl = max(ndotl, saturate(dot(preview_n, ldir)));
+        }
+        return surface * (0.28f + 0.72f * ndotl) + emissive;
+    }
+    return SampleSceneEnvironment(rd, fallback_env);
+}
+
 float3 LoadEnvTexel(uint x, uint y, uint width) {
     uint base = (y * width + x) * 3u;
     return float3(EnvBuf[base], EnvBuf[base + 1u], EnvBuf[base + 2u]);
@@ -1429,6 +1462,18 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         bool  is_sheen = (model == 6u);
         bool  is_clearcoat = (model == 7u) || (MatClearcoat(mi) > 0.05);
         bool  is_toon = (model == 8u);
+
+        if (is_transmissive) {
+            float transmission = saturate(MatTransmission(mi));
+            float absorption = saturate(MatAlpha(mi));
+            float clear_preview = transmission * (1.0f - absorption);
+            float grazing = 1.0f - saturate(dot(n, -rd));
+            float preview_weight = clear_preview * lerp(0.72f, 0.46f, grazing);
+            float3 through = PreviewTransmission(hit.pos + rd * 0.02f, rd, env);
+            float3 tint = lerp(float3(1.0f, 1.0f, 1.0f), albedo, absorption);
+            rad += thr * through * tint * preview_weight;
+            thr *= 1.0f - preview_weight * 0.12f;
+        }
 
         // NEE: sample one point light. The editor preview also adds a compact
         // specular/direct term so mirror, metal, glass, and clearcoat families
@@ -1518,7 +1563,7 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
             float r0 = (1.0 - ior) / (1.0 + ior);
             r0 *= r0;
             float fresnel = r0 + (1.0 - r0) * Pow5Fast(1.0 - cosTheta);
-            if (RandF(rng) < min(0.98, fresnel + MatClearcoat(mi) * 0.15)) {
+            if (RandF(rng) < min(0.98, fresnel + MatClearcoat(mi) * 0.015)) {
                 out_dir = rd - 2.0 * dot(n, rd) * n;
             } else {
                 float eta = entering_surface ? (1.0 / ior) : ior;
