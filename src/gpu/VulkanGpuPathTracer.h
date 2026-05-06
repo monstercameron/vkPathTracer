@@ -9,7 +9,6 @@
 
 namespace vkpt::gpu {
 
-// Push constants layout — must match pathtrace.comp exactly.
 /// Push constants consumed by pathtrace.comp.
 ///
 /// This is the per-dispatch camera/render state. Keep the field order and
@@ -30,10 +29,6 @@ struct PathTracePushConstants {
 static_assert(sizeof(PathTracePushConstants) == 128,
               "PathTracePushConstants size mismatch");
 
-// Real Vulkan compute path tracer implementing IPathTracer.
-// Creates VkInstance/VkDevice, uploads scene data to GPU buffers,
-// dispatches the pathtrace.comp compute shader per sample, reads back
-// the RGBA32F film buffer, and converts to LDR via the CPU FilmBuffer.
 /// Vulkan compute implementation of IPathTracer.
 ///
 /// This backend uses host-visible storage buffers for scene and film data,
@@ -41,7 +36,6 @@ static_assert(sizeof(PathTracePushConstants) == 128,
 /// into FilmBuffer when CPU-side resolve APIs are called.
 class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer {
  public:
-  // spv_path: path to the compiled pathtrace.spv SPIR-V file
   /// spv_path is the compiled pathtrace.comp SPIR-V module.
   explicit VulkanGpuPathTracer(std::string spv_path);
   ~VulkanGpuPathTracer() override;
