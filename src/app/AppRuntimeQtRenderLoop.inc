@@ -241,6 +241,16 @@
                 break;
               }
 
+              if (actionId == "render.start_render") {
+                const bool rendered = qtStartRenderToFile(qtFrameCount);
+                qtLogMenuCommand(actionId,
+                                 menuAction,
+                                 rendered ? "menu action executed: render.start_render"
+                                          : "menu action failed: " + qtLastRenderMenuStatus,
+                                 qtFrameCount);
+                break;
+              }
+
               if (menuAction.kind == vkpt::editor::EditorCommandKind::kDeleteEntity) {
                 const auto ids = ResolveCommandEntityIds(menuAction, ui_selection_state);
                 const bool deleted = qtDeleteSceneGraphTargets(ids, qtFrameCount, "menu", actionId);

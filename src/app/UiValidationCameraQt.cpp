@@ -321,7 +321,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     check_true("qt scene graph name filter is case insensitive",
                !nameFilteredPanel.tree_rows.empty() &&
                nameFilteredPanel.tree_rows.front().children.size() == 1u &&
-               nameFilteredPanel.tree_rows.front().children.front().label == "Hero Model");
+               nameFilteredPanel.tree_rows.front().children.front().label == "Model");
 
     vkpt::scene::SceneParticleEmitterDefinition rainEmitter;
     rainEmitter.id = 100;
@@ -547,7 +547,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     renderFrame.render_mode = "on (event loop)";
     QtDockDeviceStats renderDevice;
     renderDevice.selected_backend = "cpu";
-    renderDevice.runtime_backend_options = {"auto", "cpu", "d3d12", "d3d12-dxr", "null"};
+    renderDevice.runtime_backend_options = {"auto", "cpu", "d3d12", "d3d12-dxr", "vulkan", "null"};
     const auto renderPanel = BuildQtRenderSettingsDock(
         vkpt::pathtracer::RTSceneData{},
         renderSettings,
@@ -591,7 +591,10 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                runtimeBackend->value == "cpu" &&
                std::find(runtimeBackend->options.begin(),
                          runtimeBackend->options.end(),
-                         "d3d12-dxr") != runtimeBackend->options.end());
+                         "d3d12-dxr") != runtimeBackend->options.end() &&
+               std::find(runtimeBackend->options.begin(),
+                         runtimeBackend->options.end(),
+                         "vulkan") != runtimeBackend->options.end());
   }
 
   {
@@ -614,7 +617,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     metricDevice.selected_backend = "d3d12";
     metricDevice.active_renderer_path = "d3d12-dxr";
     metricDevice.backend_caps.backend_name = "d3d12-dxr";
-    metricDevice.runtime_backend_options = {"auto", "cpu", "d3d12", "d3d12-dxr", "null"};
+    metricDevice.runtime_backend_options = {"auto", "cpu", "d3d12", "d3d12-dxr", "vulkan", "null"};
     metricDevice.has_selected_accelerator = true;
     metricDevice.selected_accelerator = measuredGpu;
     metricDevice.accelerators.push_back(measuredGpu);
@@ -651,7 +654,10 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                runtimeBackendProperty->value == "d3d12" &&
                std::find(runtimeBackendProperty->options.begin(),
                          runtimeBackendProperty->options.end(),
-                         "d3d12-dxr") != runtimeBackendProperty->options.end());
+                         "d3d12-dxr") != runtimeBackendProperty->options.end() &&
+               std::find(runtimeBackendProperty->options.begin(),
+                         runtimeBackendProperty->options.end(),
+                         "vulkan") != runtimeBackendProperty->options.end());
     check_true("device dock shows computer accumulated ray average",
                throughputProperty != nullptr &&
                throughputProperty->value.find("computer avg 80.00 MRays/s") != std::string::npos);

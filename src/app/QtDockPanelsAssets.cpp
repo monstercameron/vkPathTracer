@@ -144,8 +144,8 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
   QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_late_update", "Hooks", "on_late_update", "Fire");
 
   QtDockAddProperty(panel, "authored script entities", std::to_string(scripted));
+  QtDockAddProperty(panel, "runtime status", runtime != nullptr ? runtime->status : "runtime unavailable");
   if (runtime != nullptr) {
-    QtDockAddProperty(panel, "runtime status", runtime->status);
     QtDockAddProperty(panel, "lua compiled", QtDockBool(runtime->binding_summary.lua_compiled_in));
     QtDockAddProperty(panel, "execution available", QtDockBool(runtime->binding_summary.execution_available));
     QtDockAddProperty(panel, "bindings", std::to_string(runtime->binding_summary.binding_count));
