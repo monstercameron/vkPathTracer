@@ -32,7 +32,7 @@ struct QtRenderDialogSettings {
   std::uint32_t height = 1080;
   std::uint64_t max_rays = 67108864ull;
   std::string aspect_ratio = "16:9";
-  std::string quality = "High";
+  std::string budget = "Normal";
   std::string format = "png";
   std::string output_path = "artifacts/renders/render.png";
 };

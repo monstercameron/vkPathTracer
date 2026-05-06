@@ -510,14 +510,11 @@
         renderSettings.width = dialogSettings.width;
         renderSettings.height = dialogSettings.height;
         renderSettings.spp = renderSamples;
-        if (dialogSettings.quality == "Draft") {
+        if (dialogSettings.budget == "Quick") {
           renderSettings.max_depth = std::min<std::uint32_t>(renderSettings.max_depth, 3u);
           renderSettings.enable_denoiser = false;
           renderSettings.enable_temporal_aa = false;
-        } else if (dialogSettings.quality == "Preview") {
-          renderSettings.max_depth = std::max<std::uint32_t>(4u, std::min<std::uint32_t>(renderSettings.max_depth, 5u));
-          renderSettings.enable_temporal_aa = false;
-        } else if (dialogSettings.quality == "Final") {
+        } else if (dialogSettings.budget == "Quality") {
           renderSettings.max_depth = std::max<std::uint32_t>(renderSettings.max_depth, 8u);
           renderSettings.enable_denoiser = true;
           renderSettings.enable_temporal_aa = true;
@@ -556,6 +553,10 @@
             qtPublishedRays.store(qtTracer->read_counters().rays, std::memory_order_relaxed);
             qtWindow->set_framebuffer_rgba(std::move(ldr.rgba8), ldr.width, ldr.height);
             qtPublishedFrames.fetch_add(1u, std::memory_order_relaxed);
+            qtWindow->set_overlay_text("Still render\nAccumulated: " +
+                                        std::to_string(sample + 1u) + "/" +
+                                        std::to_string(renderSamples) + " spp\nBudget: " +
+                                        dialogSettings.budget);
             qtWindow->set_status_bar_text("Rendering still image " +
                                           std::to_string(sample + 1u) + "/" +
                                           std::to_string(renderSamples) + " spp");

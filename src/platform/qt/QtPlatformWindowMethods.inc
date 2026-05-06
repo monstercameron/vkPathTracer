@@ -291,6 +291,14 @@ bool QtWindow::request_render_settings(QtRenderDialogSettings& settings) {
   height->setSingleStep(64);
   height->setValue(static_cast<int>(settings.height));
 
+  auto* imageSize = new QComboBox(&dialog);
+  imageSize->addItems(QStringList{QStringLiteral("HD 1280x720"),
+                                  QStringLiteral("Full HD 1920x1080"),
+                                  QStringLiteral("QHD 2560x1440"),
+                                  QStringLiteral("4K UHD 3840x2160"),
+                                  QStringLiteral("Custom")});
+  imageSize->setCurrentIndex(1);
+
   auto* aspect = new QComboBox(&dialog);
   aspect->addItems(QStringList{QStringLiteral("16:9"),
                                QStringLiteral("4:3"),
@@ -301,13 +309,12 @@ bool QtWindow::request_render_settings(QtRenderDialogSettings& settings) {
   const int aspectIndex = aspect->findText(ToQString(settings.aspect_ratio));
   aspect->setCurrentIndex(aspectIndex >= 0 ? aspectIndex : 0);
 
-  auto* quality = new QComboBox(&dialog);
-  quality->addItems(QStringList{QStringLiteral("Draft"),
-                                QStringLiteral("Preview"),
-                                QStringLiteral("High"),
-                                QStringLiteral("Final")});
-  const int qualityIndex = quality->findText(ToQString(settings.quality));
-  quality->setCurrentIndex(qualityIndex >= 0 ? qualityIndex : 2);
+  auto* budget = new QComboBox(&dialog);
+  budget->addItems(QStringList{QStringLiteral("Quick"),
+                               QStringLiteral("Normal"),
+                               QStringLiteral("Quality")});
+  const int budgetIndex = budget->findText(ToQString(settings.budget));
+  budget->setCurrentIndex(budgetIndex >= 0 ? budgetIndex : 1);
 
   auto* format = new QComboBox(&dialog);
   format->addItems(QStringList{QStringLiteral("png"), QStringLiteral("exr")});
@@ -325,9 +332,53 @@ bool QtWindow::request_render_settings(QtRenderDialogSettings& settings) {
   outputLayout->addWidget(outputPath, 1);
   outputLayout->addWidget(browse);
 
+  const auto syncImageSizePreset = [&]() {
+    const int w = width->value();
+    const int h = height->value();
+    QSignalBlocker blocker(imageSize);
+    if (w == 1280 && h == 720) {
+      imageSize->setCurrentIndex(0);
+    } else if (w == 1920 && h == 1080) {
+      imageSize->setCurrentIndex(1);
+    } else if (w == 2560 && h == 1440) {
+      imageSize->setCurrentIndex(2);
+    } else if (w == 3840 && h == 2160) {
+      imageSize->setCurrentIndex(3);
+    } else {
+      imageSize->setCurrentIndex(4);
+    }
+  };
+
+  const auto applyImageSizePreset = [&]() {
+    const QString preset = imageSize->currentText();
+    int presetWidth = 0;
+    int presetHeight = 0;
+    if (preset == QStringLiteral("HD 1280x720")) {
+      presetWidth = 1280;
+      presetHeight = 720;
+    } else if (preset == QStringLiteral("Full HD 1920x1080")) {
+      presetWidth = 1920;
+      presetHeight = 1080;
+    } else if (preset == QStringLiteral("QHD 2560x1440")) {
+      presetWidth = 2560;
+      presetHeight = 1440;
+    } else if (preset == QStringLiteral("4K UHD 3840x2160")) {
+      presetWidth = 3840;
+      presetHeight = 2160;
+    }
+    if (presetWidth <= 0 || presetHeight <= 0) {
+      return;
+    }
+    const QSignalBlocker widthBlocker(width);
+    const QSignalBlocker heightBlocker(height);
+    width->setValue(presetWidth);
+    height->setValue(presetHeight);
+  };
+
   const auto applyAspect = [&]() {
     const QString ratio = aspect->currentText();
     if (ratio == QStringLiteral("Custom")) {
+      syncImageSizePreset();
       return;
     }
     const auto parts = ratio.split(QStringLiteral(":"));
@@ -347,18 +398,17 @@ bool QtWindow::request_render_settings(QtRenderDialogSettings& settings) {
         height->maximum());
     const QSignalBlocker blocker(height);
     height->setValue(adjustedHeight);
+    syncImageSizePreset();
   };
 
-  const auto applyQualityRays = [&]() {
-    const QString q = quality->currentText();
+  const auto applyBudgetRays = [&]() {
+    const QString q = budget->currentText();
     const std::uint64_t pixels =
         static_cast<std::uint64_t>(width->value()) * static_cast<std::uint64_t>(height->value());
-    std::uint64_t samples = 128ull;
-    if (q == QStringLiteral("Draft")) {
-      samples = 8ull;
-    } else if (q == QStringLiteral("Preview")) {
-      samples = 32ull;
-    } else if (q == QStringLiteral("Final")) {
+    std::uint64_t samples = 64ull;
+    if (q == QStringLiteral("Quick")) {
+      samples = 16ull;
+    } else if (q == QStringLiteral("Quality")) {
       samples = 256ull;
     }
     maxRays->setText(ToQString(std::to_string(std::max<std::uint64_t>(pixels, pixels * samples))));
@@ -373,9 +423,11 @@ bool QtWindow::request_render_settings(QtRenderDialogSettings& settings) {
     }
   };
 
+  QObject::connect(imageSize, &QComboBox::currentTextChanged, &dialog, applyImageSizePreset);
   QObject::connect(width, qOverload<int>(&QSpinBox::valueChanged), &dialog, applyAspect);
+  QObject::connect(height, qOverload<int>(&QSpinBox::valueChanged), &dialog, syncImageSizePreset);
   QObject::connect(aspect, &QComboBox::currentTextChanged, &dialog, applyAspect);
-  QObject::connect(quality, &QComboBox::currentTextChanged, &dialog, applyQualityRays);
+  QObject::connect(budget, &QComboBox::currentTextChanged, &dialog, applyBudgetRays);
   QObject::connect(format, &QComboBox::currentTextChanged, &dialog, normalizedOutputWithFormat);
   QObject::connect(browse, &QPushButton::clicked, &dialog, [&]() {
     const QString filter = format->currentText() == QStringLiteral("exr")
@@ -390,10 +442,13 @@ bool QtWindow::request_render_settings(QtRenderDialogSettings& settings) {
     }
   });
 
+  syncImageSizePreset();
+
+  form->addRow(QStringLiteral("Image Size"), imageSize);
   form->addRow(QStringLiteral("Width"), width);
   form->addRow(QStringLiteral("Height"), height);
   form->addRow(QStringLiteral("Aspect Ratio"), aspect);
-  form->addRow(QStringLiteral("Image Quality"), quality);
+  form->addRow(QStringLiteral("Render Budget"), budget);
   form->addRow(QStringLiteral("Image Format"), format);
   form->addRow(QStringLiteral("Max Rays"), maxRays);
   form->addRow(QStringLiteral("File Path"), outputRow);
@@ -423,7 +478,7 @@ bool QtWindow::request_render_settings(QtRenderDialogSettings& settings) {
     settings.height = static_cast<std::uint32_t>(height->value());
     settings.max_rays = static_cast<std::uint64_t>(rays);
     settings.aspect_ratio = aspect->currentText().toStdString();
-    settings.quality = quality->currentText().toStdString();
+    settings.budget = budget->currentText().toStdString();
     settings.format = format->currentText().toStdString();
     settings.output_path = outputPath->text().trimmed().toStdString();
     dialog.accept();

@@ -239,7 +239,12 @@
         if (qtWindow == nullptr) {
           return;
         }
-        qtWindow->set_overlay_text(std::string_view{});
+        std::ostringstream overlay;
+        overlay << "Accumulated: "
+                << qtPublishedSample.load(std::memory_order_relaxed)
+                << " spp\nFrame: " << qtFrameCount
+                << "\nRays: " << qtPublishedRays.load(std::memory_order_relaxed);
+        qtWindow->set_overlay_text(overlay.str());
         qtMaybeRefreshPendingViewportPickables(std::chrono::steady_clock::now());
         syncQtDockPanels(false);
         updateQtWindowTitle();
@@ -560,18 +565,16 @@
             qtPhysicsScenePublishPending = false;
             qtPreviewStatus = "physics transform update";
             ui_runtime_state.status_message = "physics transform update";
-          } else if (qtReloadEditedScene("physics simulation")) {
+          } else {
             const double publishMs =
                 std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - publishStart).count();
             qtPhysicsSceneReloadMs = qtPhysicsSceneReloadMs <= 0.0
                 ? publishMs
                 : (qtPhysicsSceneReloadMs * 0.75 + publishMs * 0.25);
-            qtPhysicsScenePublishPending = false;
-            qtPendingPhysicsInstanceUpdates.clear();
             qtPhysicsTransformUpdateSupported = false;
-            qtPreviewStatus = "physics simulation";
-            ui_runtime_state.status_message = "physics simulation";
+            qtPreviewStatus = "physics transform update blocked";
+            ui_runtime_state.status_message = "physics transform update blocked";
           }
         }
       };
