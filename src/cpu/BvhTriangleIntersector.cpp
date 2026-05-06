@@ -154,6 +154,7 @@ BvhTriangleHit intersect_neon(const BvhTriangleRay& ray,
 }  // namespace
 
 BvhTriangleIntersectorMode SelectBvhTriangleIntersectorMode(const CpuFeatureSet& features) {
+  (void)features;
 #if defined(PT_ENABLE_AVX2)
   if (features.avx2) {
     return BvhTriangleIntersectorMode::X86Avx2;
