@@ -180,6 +180,7 @@ class QtWindow final : public IWindow {
   void set_dock_panels(const std::vector<QtDockPanel>& panels);
   void set_status_bar_text(std::string_view text);
   void set_status_bar_text(const QtStatusBarText& status);
+  void set_viewport_mouse_locked(bool locked);
 
   void set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba,
                             std::size_t width, std::size_t height);
@@ -191,6 +192,7 @@ class QtWindow final : public IWindow {
   void emit_close_requested();
   void emit_key(std::int32_t key, std::int32_t raw_key, bool pressed);
   void emit_mouse_move(int x, int y);
+  void emit_mouse_move_delta(int x, int y, float dx, float dy);
   void emit_mouse_button(std::int32_t button, bool pressed, int x, int y);
   void emit_mouse_wheel(float delta_x, float delta_y, int x, int y);
   void emit_menu_command(std::uint32_t command_id);

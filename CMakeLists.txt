@@ -317,6 +317,7 @@ set(PT_CPU_SOURCES
   src/platform/HeadlessPlatform.cpp
   src/physics/PhysicsWorld.cpp
   src/scene/Scene.cpp
+  src/scripting/ScriptRuntime.cpp
   src/pathtracer/PathTracer.cpp
   src/materials/MaterialInterface.cpp
   src/materials/MaterialDescriptors.cpp
@@ -504,6 +505,19 @@ add_executable(ptdoctor
 )
 
 target_compile_features(ptdoctor PRIVATE cxx_std_23)
+
+# ---- focused smoke targets ---------------------------------------------------
+add_executable(pt_scripting_smoke EXCLUDE_FROM_ALL
+  tests/scripting_runtime_smoke.cpp
+  src/scene/Scene.cpp
+  src/scripting/ScriptRuntime.cpp
+)
+
+target_include_directories(pt_scripting_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_scripting_smoke PRIVATE cxx_std_23)
 
 add_custom_target(hello
   DEPENDS ptapp
