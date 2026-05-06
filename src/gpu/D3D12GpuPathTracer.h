@@ -23,6 +23,8 @@ namespace vkpt::gpu {
 
 static constexpr UINT kD3D12FrameCount = 2;
 
+/// Root constant buffer shared by the D3D12 compute shaders and DXR raygen.
+/// Keep this byte-for-byte aligned with the HLSL PathTraceConstants layout.
 struct PathTraceConstants {
     float  camera_pos_x;  float camera_pos_y;  float camera_pos_z;  float fov_tan_half;
     float  cam_fwd_x;     float cam_fwd_y;     float cam_fwd_z;     float aspect;
@@ -64,21 +66,37 @@ struct D3D12TemporalCameraState {
   float cam_up_z = 0.0f;
 };
 
+/// D3D12 path tracer backend with a compute primary path and optional DXR dispatch.
+///
+/// The backend owns device lifetime, scene buffer packing/upload, GPU film
+/// accumulation, optional post passes, and the DXR BLAS/TLAS/SBT objects used
+/// when hardware ray tracing is selected.
 class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
  public:
+  /// Creates the backend and defers most GPU resource allocation until configure/load.
   D3D12GpuPathTracer(std::string hlsl_path, std::string entry_point = "main");
   ~D3D12GpuPathTracer() override;
 
+  /// Allocates film resources and records render settings for subsequent uploads.
   bool configure(const vkpt::pathtracer::RenderSettings& s) override;
+  /// Stores a CPU scene snapshot; call build_or_update_acceleration() to upload it.
   bool load_scene_snapshot(const vkpt::pathtracer::RTSceneData& scene) override;
+  /// Packs scene data into shader layouts, uploads buffers, and builds DXR AS if enabled.
   bool build_or_update_acceleration() override;
+  /// Clears GPU and CPU-visible accumulation state without rebuilding scene buffers.
   bool reset_accumulation() override;
+  /// Updates only camera state after scene buffers exist; invalidates temporal history.
   bool update_camera(const vkpt::pathtracer::Vec3& pos,
                      const vkpt::pathtracer::Vec3& target,
                      const vkpt::pathtracer::Vec3& up,
                      float fov_deg) override;
+  bool update_camera_state(const vkpt::pathtracer::RTCameraState& camera) override;
+  /// Uploads dynamic instance transforms and refreshes the software BVH or DXR TLAS.
   bool update_instance_transforms(
       const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) override;
+  /// Applies material/light-only deltas that do not require triangle repacking.
+  bool update_scene_delta(const vkpt::pathtracer::RTSceneDeltaUpdate& update) override;
+  /// Dispatches one GPU sample batch and optionally readbacks the LDR display buffer.
   bool render_sample_batch(uint32_t sy, uint32_t ey,
                            uint32_t sample_idx, uint32_t frame_idx) override;
   vkpt::pathtracer::FilmLdr resolve_ldr() const override;
@@ -108,29 +126,42 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool        packed_triangle_buffer_enabled() const { return m_packedTriangleBufferEnabled; }
 
  private:
+  /// Creates the DXGI factory, device, queue, command list, fence, and upload heap.
   bool init_device();
+  /// Creates DXR-specific queue/list/fence objects after device capability probing.
   bool init_dxr_runtime_objects();
+  /// Builds the compute root signature and all compute/postprocess PSOs.
   bool create_root_sig_and_pso();
   bool create_tonemap_pso(const std::string& src);
   bool create_denoise_pso(const std::string& src);
   bool create_guide_pso(const std::string& src);
   bool create_temporal_pso(const std::string& src);
   bool create_film_buffer();
+  /// Creates or refreshes the shader-visible compute SRV/UAV descriptor heap.
   bool ensure_compute_srv_uav_heap();
   bool should_readback_sample(uint32_t sample_idx) const;
+  /// Stages all packed scene arrays through the persistent upload heap.
   bool upload_scene_buffers();
+  /// Uploads only the dynamic instance buffer and its dynamic-instance BVH.
   bool upload_instance_buffer();
+  /// Uploads material and/or light buffers for small scene deltas.
+  bool upload_material_light_buffers(bool uploadMaterials, bool uploadLights);
   bool build_texture_buffers();
   void destroy_scene_buffers();
   void destroy_film_buffer();
   bool wait_for_gpu();
   // DXR pipeline
+  /// Compiles the DXR HLSL library to DXIL with runtime feature defines.
   bool compile_dxil(const std::string& path, std::vector<uint8_t>& outDxil);
   bool create_dxr_global_root_sig();
+  /// Creates the DXR state object and shader binding table records.
   bool create_dxr_pipeline();
+  /// Builds BLAS objects for static/dynamic geometry and a TLAS for dispatch.
   bool build_dxr_acceleration_structures();
+  /// Refits the TLAS after dynamic instance transforms change.
   bool update_dxr_instance_buffer_and_tlas();
   bool create_dxr_desc_heap();
+  /// Dispatches the hardware ray tracing path and shared postprocess/readback chain.
   bool dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_idx, bool doReadback);
   bool wait_for_dxr_gpu();
   void destroy_dxr_resources();

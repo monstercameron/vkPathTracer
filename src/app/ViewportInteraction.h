@@ -206,6 +206,11 @@ int RunDynamicPhysicsPerformanceGate(std::string scenePath,
                                      uint32_t width,
                                      uint32_t height,
                                      uint32_t frames);
+int RunThirdPersonScriptPerformanceGate(std::string scenePath,
+                                        std::string backend,
+                                        uint32_t width,
+                                        uint32_t height,
+                                        uint32_t frames);
 void ExpandBounds(vkpt::editor::Bounds& bounds, const vkpt::pathtracer::Vec3& point);
 std::optional<vkpt::scene::SceneWorld> BuildSceneWorldSnapshot(
     const vkpt::scene::SceneDocument& document);

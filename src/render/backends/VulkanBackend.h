@@ -12,12 +12,14 @@
 
 namespace vkpt::render {
 
+/// Vulkan compute compiler facade; currently validates GLSL compute metadata.
 class VulkanShaderCompiler final : public IShaderCompiler {
  public:
   bool supports_feature(std::string_view feature) const override;
   bool compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) override;
 };
 
+/// In-memory cache for Vulkan skeleton shader artifacts and manifests.
 class VulkanShaderCache final : public IShaderCache {
  public:
   bool query(std::string_view key, std::string& binary) override;
@@ -27,9 +29,10 @@ class VulkanShaderCache final : public IShaderCache {
   std::vector<CachedManifest> dump_manifest() const override;
 
  private:
-  std::unordered_map<std::string, std::string> m_entries;
+  std::unordered_map<std::string, std::string, TransparentStringHash, std::equal_to<>> m_entries;
 };
 
+/// Simulated Vulkan resource allocator backed by CPU memory.
 class VulkanResourceAllocator final : public IRenderResourceAllocator {
  public:
   ResourceHandle create_buffer(const BufferDesc& desc) override;
@@ -55,6 +58,7 @@ class VulkanResourceAllocator final : public IRenderResourceAllocator {
   std::unordered_map<ResourceHandle, ResourceRecord> m_resources;
 };
 
+/// Command context matching the Vulkan backend contract without native Vk objects.
 class VulkanCommandContext final : public IRenderCommandContext {
  public:
   bool begin_frame() override;
@@ -66,6 +70,7 @@ class VulkanCommandContext final : public IRenderCommandContext {
   bool barrier(ResourceHandle resource, std::uint32_t usage_before, std::uint32_t usage_after) override;
 };
 
+/// Headless Vulkan swapchain placeholder.
 class VulkanSwapchain final : public IRenderSwapchain {
  public:
   explicit VulkanSwapchain(std::uint32_t width = 0u, std::uint32_t height = 0u);
@@ -79,6 +84,7 @@ class VulkanSwapchain final : public IRenderSwapchain {
   std::uint32_t m_height = 0u;
 };
 
+/// Simulated Vulkan device; command contexts are only created while begun.
 class VulkanDevice final : public IRenderDevice {
  public:
   explicit VulkanDevice(std::unique_ptr<VulkanResourceAllocator> allocator, std::unique_ptr<VulkanSwapchain> swapchain);
@@ -94,6 +100,7 @@ class VulkanDevice final : public IRenderDevice {
   bool m_running = false;
 };
 
+/// Vulkan compute backend skeleton used before native VkDevice integration.
 class VulkanComputeBackend final : public IRenderBackend {
  public:
   bool initialize() override;
@@ -113,9 +120,10 @@ class VulkanComputeBackend final : public IRenderBackend {
   std::unique_ptr<VulkanShaderCache> m_cache;
 };
 
+/// Execute a minimal graph/allocator smoke test against a Vulkan-compatible backend.
 bool RunVulkanComputeSmoke(vkpt::render::IRenderBackend& backend);
 
-// C10: Simulated Vulkan BVH pass result.
+/// Simulated Vulkan BVH/pathtrace pass result.
 struct VulkanBVHPassResult {
   bool success = false;
   uint32_t vertex_buffer_count = 0;   // vertices uploaded
@@ -125,12 +133,10 @@ struct VulkanBVHPassResult {
   std::string error;
 };
 
-// C10: Upload RTSceneData to the Vulkan allocator, perform a simulated BVH
-// build, and dispatch the pathtrace compute pass. Returns a result struct
-// describing the uploaded data and any error.
-//
-// This is the interface-completion stub for Gate 4.  No real Vulkan SDK is
-// required; all operations are performed on the simulated allocator.
+/// Upload RTSceneData, simulate BVH build, and execute a pathtrace graph.
+///
+/// No Vulkan SDK objects are required in this stub; all operations are performed
+/// through the simulated allocator and frame-graph contracts.
 VulkanBVHPassResult RunVulkanBVHPass(
     vkpt::render::VulkanComputeBackend& backend,
     const vkpt::pathtracer::RTSceneData& scene,

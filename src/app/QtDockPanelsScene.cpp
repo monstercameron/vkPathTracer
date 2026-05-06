@@ -19,10 +19,13 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
   QtDockAddProperty(panel, "geometry", std::to_string(document.geometry.size()));
   QtDockAddProperty(panel, "sdf primitives", std::to_string(document.sdf_primitives.size()));
 
+  std::unordered_set<vkpt::core::StableId> selected_ids;
+  selected_ids.reserve(selection.selected_entity_ids.size());
+  for (const auto id : selection.selected_entity_ids) {
+    selected_ids.insert(id);
+  }
   const auto is_selected = [&](vkpt::core::StableId id) {
-    return std::find(selection.selected_entity_ids.begin(),
-                     selection.selected_entity_ids.end(),
-                     id) != selection.selected_entity_ids.end();
+    return selected_ids.contains(id);
   };
 
   const auto entity_icon = [](const vkpt::scene::SceneEntityDefinition& entity) {
@@ -49,6 +52,8 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
 
   std::unordered_map<vkpt::core::StableId, std::vector<const vkpt::scene::SceneEntityDefinition*>> children;
   std::unordered_set<vkpt::core::StableId> entityIds;
+  children.reserve(document.entities.size());
+  entityIds.reserve(document.entities.size());
   for (const auto& entity : document.entities) {
     entityIds.insert(entity.id);
     children[entity.hierarchy.parent].push_back(&entity);

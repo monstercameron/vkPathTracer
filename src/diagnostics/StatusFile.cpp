@@ -38,11 +38,20 @@ bool WriteStatusFile(const StatusFileData& data,
                      const std::string& path,
                      std::string* error) {
   try {
-    std::filesystem::create_directories(
-        std::filesystem::path(path).parent_path());
+    const auto parent = std::filesystem::path(path).parent_path();
+    if (!parent.empty()) {
+      std::error_code ec;
+      std::filesystem::create_directories(parent, ec);
+      if (ec) {
+        if (error) *error = "cannot create status directory: " + ec.message();
+        return false;
+      }
+    }
 
     const std::string ts = data.timestamp.empty() ? StatusTimestampNow() : data.timestamp;
 
+    // Keep this status document small and flat; launchers and CI probes read it
+    // before opening heavier crash or benchmark artifacts.
     std::ostringstream json;
     json << "{\n"
          << "  \"build_status\": \""           << EscJson(data.build_status)           << "\",\n"

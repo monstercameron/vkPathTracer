@@ -101,7 +101,8 @@ DoctorCheckResult CheckBuild() {
     std::ofstream probe(probePath.string());
     probe << "ptapp self-test\n";
     probe.close();
-    if (!std::filesystem::exists(probePath)) {
+    ec.clear();
+    if (!std::filesystem::exists(probePath, ec) || ec) {
       ok = false;
       detail << " write_probe=FAIL";
     } else {
@@ -203,18 +204,31 @@ DoctorCheckResult CheckAssets() {
   DoctorCheckResult r;
   r.name = "assets";
   const std::filesystem::path sceneDir = "assets/scenes";
-  if (!std::filesystem::exists(sceneDir)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(sceneDir, ec) || ec) {
     r.passed = false;
     r.detail = "assets/scenes directory missing";
     return r;
   }
   std::size_t count = 0;
-  for (const auto& e : std::filesystem::directory_iterator(sceneDir)) {
-    if (e.path().extension() == ".json") ++count;
+  for (std::filesystem::directory_iterator it(sceneDir, std::filesystem::directory_options::skip_permission_denied, ec),
+       end;
+       it != end;
+       it.increment(ec)) {
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    if (it->path().extension() == ".json") ++count;
   }
   r.passed = count > 0;
+  auto absoluteSceneDir = std::filesystem::absolute(sceneDir, ec);
+  if (ec) {
+    absoluteSceneDir = sceneDir;
+    ec.clear();
+  }
   r.detail = std::string("scene_files=") + std::to_string(count)
-           + " path=" + std::filesystem::absolute(sceneDir).string();
+           + " path=" + absoluteSceneDir.string();
   return r;
 }
 
@@ -222,14 +236,24 @@ DoctorCheckResult CheckShaders() {
   DoctorCheckResult r;
   r.name = "shaders";
   const std::filesystem::path shaderDir = "src/shaders";
-  if (!std::filesystem::exists(shaderDir)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(shaderDir, ec) || ec) {
     r.passed = false;
     r.detail = "src/shaders directory missing";
     return r;
   }
   std::size_t count = 0;
-  for (const auto& e : std::filesystem::recursive_directory_iterator(shaderDir)) {
-    if (e.is_regular_file()) ++count;
+  for (std::filesystem::recursive_directory_iterator it(
+           shaderDir, std::filesystem::directory_options::skip_permission_denied, ec),
+       end;
+       it != end;
+       it.increment(ec)) {
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    std::error_code entryEc;
+    if (it->is_regular_file(entryEc) && !entryEc) ++count;
   }
   r.passed = true;
   r.detail = std::string("shader_files=") + std::to_string(count);
@@ -255,16 +279,25 @@ DoctorCheckResult CheckSceneSchema() {
   DoctorCheckResult r;
   r.name = "scene_schema";
   const std::filesystem::path sceneDir = "assets/scenes";
-  if (!std::filesystem::exists(sceneDir)) {
+  std::error_code ec;
+  if (!std::filesystem::exists(sceneDir, ec) || ec) {
     r.passed = true;
     r.detail = "skipped(assets/scenes not found)";
     return r;
   }
 
   std::vector<std::filesystem::path> scenePaths;
-  for (const auto& entry : std::filesystem::directory_iterator(sceneDir)) {
-    if (entry.is_regular_file() && entry.path().extension() == ".json") {
-      scenePaths.push_back(entry.path());
+  for (std::filesystem::directory_iterator it(sceneDir, std::filesystem::directory_options::skip_permission_denied, ec),
+       end;
+       it != end;
+       it.increment(ec)) {
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    std::error_code entryEc;
+    if (it->is_regular_file(entryEc) && !entryEc && it->path().extension() == ".json") {
+      scenePaths.push_back(it->path());
     }
   }
   std::sort(scenePaths.begin(), scenePaths.end());
@@ -282,6 +315,8 @@ DoctorCheckResult CheckSceneSchema() {
   std::size_t totalSdfPrimitives = 0;
 
   auto checkRuntimeMaterialPresets = [&]() {
+    // This synthetic scene catches material-family default drift even when no
+    // checked-in sample happens to exercise a preset.
     vkpt::scene::SceneDocument presetDoc;
     presetDoc.metadata.schema = "1.0";
     presetDoc.metadata.scene_name = "material_preset_smoke";
@@ -411,7 +446,8 @@ DoctorCheckResult CheckBenchmarkArtifactWrite() {
     std::ofstream probe(probePath.string());
     probe << "{\"self_test\":true,\"schema\":\"benchmark_result\"}\n";
   }
-  r.passed = std::filesystem::exists(probePath);
+  ec.clear();
+  r.passed = std::filesystem::exists(probePath, ec) && !ec;
   r.detail = r.passed ? "bench_probe.json=ok" : "bench_probe.json=FAIL";
   return r;
 }

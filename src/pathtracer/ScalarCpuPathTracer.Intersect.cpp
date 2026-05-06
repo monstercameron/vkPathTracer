@@ -32,6 +32,9 @@ bool ScalarCpuPathTracer::intersect_scene(const Ray& ray, Hit& out, SampleCounte
   const bool use_accelerator = accelerator && m_accel_info.built && m_accel_info.primitive_count > 0u;
 
   if (use_accelerator) {
+    // Triangle geometry can be delegated to an acceleration structure, but SDF
+    // primitives are still tested below. bestT carries the closest accelerated
+    // hit forward so analytic/SDF hits can only replace it if they are nearer.
     RayQueryHit accel_hit{};
     RayQueryStats stats{};
     if (accelerator->intersect(ray, accel_hit, &stats) && accel_hit.hit) {
@@ -47,6 +50,8 @@ bool ScalarCpuPathTracer::intersect_scene(const Ray& ray, Hit& out, SampleCounte
     counters.bvh_node_visits += stats.bvh_node_visits;
     counters.bvh_leaf_visits += stats.bvh_leaf_visits;
   } else {
+    // Fallback path for tiny scenes, disabled acceleration, or tests: brute
+    // force every instance triangle using the same hit contract as the BVH.
     for (const auto& instance : m_scene.instances) {
       for (uint32_t triangle = 0; triangle < instance.triangle_count; ++triangle) {
         const uint32_t baseTri = (instance.first_triangle + triangle) * 3;
@@ -84,6 +89,9 @@ bool ScalarCpuPathTracer::intersect_scene(const Ray& ray, Hit& out, SampleCounte
   }
 
   for (const auto& primitive : m_scene.sdf_primitives) {
+    // SDF primitives intentionally live outside the triangle BVH because their
+    // intersection methods are shape-specific. They share the same nearest-hit
+    // reduction so mixed mesh/SDF scenes produce one closest surface.
     float t = 0.0f;
     Vec3 normal{};
     bool hit = false;

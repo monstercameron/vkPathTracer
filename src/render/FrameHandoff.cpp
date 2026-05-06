@@ -6,6 +6,8 @@ namespace vkpt::render {
 
 void FrameHandoff::publish(DisplayFrame frame) {
   std::scoped_lock lock(m_mutex);
+  // Mailbox semantics: keep only the newest producer frame and account for the
+  // overwritten one as dropped.
   if (m_pending.has_value()) {
     ++m_stats.dropped;
   }
@@ -26,6 +28,7 @@ std::optional<DisplayFrame> FrameHandoff::acquire_latest() {
     return std::nullopt;
   }
 
+  // Move ownership to the caller so large pixel buffers are not copied.
   auto frame = std::move(m_pending);
   m_pending.reset();
   ++m_stats.acquired;

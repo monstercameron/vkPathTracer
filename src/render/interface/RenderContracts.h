@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <utility>
 #include <variant>
@@ -14,6 +15,22 @@
 #include "render/interface/ResourceRegistry.h"
 
 namespace vkpt::render {
+
+struct TransparentStringHash {
+  using is_transparent = void;
+
+  std::size_t operator()(std::string_view value) const noexcept {
+    return std::hash<std::string_view>{}(value);
+  }
+
+  std::size_t operator()(const std::string& value) const noexcept {
+    return std::hash<std::string_view>{}(value);
+  }
+
+  std::size_t operator()(const char* value) const noexcept {
+    return std::hash<std::string_view>{}(value == nullptr ? std::string_view{} : std::string_view{value});
+  }
+};
 
 enum class BackendKind {
   Null,
@@ -109,6 +126,7 @@ struct ShaderManifest {
   bool validation_success = false;
 };
 
+/// Bitmask describing how a resource is bound during a pass or pipeline.
 enum class ResourceBindingUsage : std::uint32_t {
   None = 0u,
   Read = 1u << 0u,
@@ -142,6 +160,7 @@ using ResourceHandle = vkpt::core::RuntimeHandle;
 
 constexpr ResourceHandle kInvalidHandle = 0u;
 
+/// Backend-independent buffer creation contract.
 struct BufferDesc {
   std::string debug_label;
   std::uint64_t size_bytes = 0u;
@@ -153,6 +172,7 @@ struct BufferDesc {
   ResourceLifetime lifetime = ResourceLifetime::Unknown;
 };
 
+/// Backend-independent texture allocation contract.
 struct TextureDesc {
   std::string debug_label;
   std::uint32_t width = 0u;
@@ -167,6 +187,7 @@ struct TextureDesc {
   ResourceLifetime lifetime = ResourceLifetime::Unknown;
 };
 
+/// Immutable sampler state contract.
 struct SamplerDesc {
   std::string debug_label;
   std::string mag_filter = "Nearest";
@@ -176,6 +197,7 @@ struct SamplerDesc {
   ResourceLifetime lifetime = ResourceLifetime::Unknown;
 };
 
+/// Shared shader/pipeline identity used for cache keys and diagnostics.
 struct PipelineDesc {
   std::string debug_label;
   std::string source_path;
@@ -220,6 +242,7 @@ struct ReadbackDesc {
   bool wait_for_idle = true;
 };
 
+/// Platform facts that influence backend selection and surface availability.
 struct PlatformCapabilities {
   std::string platform_name = "unknown";
   std::string os = "unknown";
@@ -338,6 +361,7 @@ struct RenderBackendCapabilities {
   MemoryBudgetCapabilities memory_budget;
 };
 
+/// Discovered execution target used by multi-accelerator planners.
 struct AcceleratorCapabilities {
   std::string id;
   std::string name = "unknown";
@@ -367,6 +391,7 @@ struct AcceleratorCapabilities {
   RenderBackendCapabilities backend_caps;
 };
 
+/// Input to the ray-budget planner for splitting path tracing around raster work.
 struct RayBudgetRequest {
   AcceleratorSelectionPreset accelerator_preset = AcceleratorSelectionPreset::Auto;
   double polygon_frame_budget_ms = 16.6667;
@@ -382,6 +407,7 @@ struct RayBudgetRequest {
   bool require_ray_tracing = false;
 };
 
+/// Per-accelerator work assignment emitted by the ray-budget planner.
 struct RayBudgetAssignment {
   std::string accelerator_id;
   std::string accelerator_name;
@@ -397,6 +423,7 @@ struct RayBudgetAssignment {
   std::string reason;
 };
 
+/// Complete planner result including diagnostics and estimated samples per pixel.
 struct RayBudgetPlan {
   double polygon_frame_budget_ms = 0.0;
   double reserved_polygon_ms = 0.0;
@@ -410,6 +437,7 @@ struct RayBudgetPlan {
   std::vector<std::string> diagnostics;
 };
 
+/// Serializable renderer state intended for crash logs and diagnostics.
 struct RenderCrashState {
   std::string selected_backend;
   std::string device_name;
@@ -453,6 +481,7 @@ struct FrameContext {
   std::string debug_label;
 };
 
+/// Serializable pass declaration consumed by IFrameGraph::build().
 struct FrameGraphPassDesc {
   std::uint32_t id = 0u;
   std::string name;
@@ -461,6 +490,7 @@ struct FrameGraphPassDesc {
   std::vector<ResourceHandle> writes;
 };
 
+/// Declarative frame graph plus transient resource declarations.
 struct FrameGraphDesc {
   std::string debug_label;
   std::vector<FrameGraphPassDesc> passes;
@@ -472,6 +502,7 @@ struct FrameGraphDesc {
   bool validate_hazards = true;
 };
 
+/// Backend advertised to the selection policy before an instance is created.
 struct BackendCandidateDesc {
   std::string name;
   BackendKind kind = BackendKind::Unknown;
@@ -486,6 +517,7 @@ struct BackendCandidateDesc {
   std::string unavailable_reason;
 };
 
+/// Constraints and preferences used by SelectBackend().
 struct BackendSelectionRequest {
   std::string explicit_backend;
   std::string config_backend;
@@ -498,6 +530,7 @@ struct BackendSelectionRequest {
   bool allow_null_fallback = false;
 };
 
+/// Backend selection result, including rejected candidates for diagnostics.
 struct BackendSelectionDecision {
   std::string selected_backend;
   BackendKind selected_kind = BackendKind::Unknown;
@@ -508,6 +541,7 @@ struct BackendSelectionDecision {
   std::vector<std::string> diagnostics;
 };
 
+/// Minimal command recording interface consumed by frame-graph execution.
 class IRenderCommandContext {
  public:
   virtual ~IRenderCommandContext() = default;
@@ -521,6 +555,7 @@ class IRenderCommandContext {
   virtual bool barrier(ResourceHandle resource, std::uint32_t usage_before, std::uint32_t usage_after) = 0;
 };
 
+/// Backend-owned resource allocator contract for buffers, textures, uploads, and readback.
 class IRenderResourceAllocator {
  public:
   virtual ~IRenderResourceAllocator() = default;
@@ -533,6 +568,7 @@ class IRenderResourceAllocator {
   virtual bool readback(ResourceHandle source, void* out_data, std::size_t out_size) const = 0;
 };
 
+/// Presentation surface contract; headless backends may expose a zero-sized stub.
 class IRenderSwapchain {
  public:
   virtual ~IRenderSwapchain() = default;
@@ -542,6 +578,7 @@ class IRenderSwapchain {
   virtual bool resize(std::uint32_t width, std::uint32_t height) = 0;
 };
 
+/// Logical render device lifetime and command-context factory.
 class IRenderDevice {
  public:
   virtual ~IRenderDevice() = default;
@@ -552,6 +589,7 @@ class IRenderDevice {
   virtual IRenderSwapchain* swapchain() const = 0;
 };
 
+/// Shader compiler facade used by backend skeletons and future native compilers.
 class IShaderCompiler {
  public:
   virtual ~IShaderCompiler() = default;
@@ -578,8 +616,10 @@ class IShaderCache {
   virtual std::vector<CachedManifest> dump_manifest() const = 0;
 };
 
+/// Declarative render pass graph with dependency and resource-hazard validation.
 class IFrameGraph {
  public:
+  /// Concrete pass record after a graph has assigned dense ids.
   struct Pass {
     std::uint32_t id = 0u;
     std::string name;
@@ -605,6 +645,7 @@ class IFrameGraph {
   virtual const std::vector<std::pair<std::uint32_t, std::uint32_t>>& dependencies() const = 0;
 };
 
+/// Backend module contract for initialization, device creation, compiler/cache, and graphs.
 class IRenderBackend {
  public:
   virtual ~IRenderBackend() = default;

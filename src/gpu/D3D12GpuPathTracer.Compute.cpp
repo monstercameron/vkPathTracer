@@ -16,6 +16,8 @@ namespace vkpt::gpu {
 bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
   if (m_srvUavHeap) return true;
 
+  // The heap layout is part of the shader ABI. New buffers must be appended
+  // deliberately and mirrored in create_root_sig_and_pso() and HLSL bindings.
   // Slots: t0-t10 (11 SRVs), u0 = FilmBuf, u1 = LdrBuf,
   // u2 = denoised HDR, u3 = current guide, u4 = temporal HDR,
   // u5 = temporal history, u6 = previous guide.
@@ -117,6 +119,8 @@ bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
 
 bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     uint32_t sample_idx, uint32_t frame_idx) {
+  // The D3D12 backend ignores the tile range and dispatches the whole film.
+  // Sample batching is controlled by m_raysPerPixelPerDispatch in constants.
   const uint64_t callIndex = ++g_d3d12RenderBatchCalls;
   const bool verbose = D3D12VerboseLoggingEnabled() &&
       ((sample_idx % 16u == 0u) || (frame_idx % 16u == 0u));
@@ -268,13 +272,15 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
        << " right=(" << rn[0] << "," << rn[1] << "," << rn[2] << ")"
        << " up=(" << un[0] << "," << un[1] << "," << un[2] << ")";
     LogDebug(st.str());
-    auto* pcWords = reinterpret_cast<const uint32_t*>(&pc);
+    std::array<uint32_t, kPathTraceRoot32BitValues> pcWords{};
+    static_assert(sizeof(pcWords) <= sizeof(PathTraceConstants));
+    std::memcpy(pcWords.data(), &pc, sizeof(pcWords));
     std::ostringstream dump;
     dump << "render_sample_batch constant_u32=";
     for (UINT i = 0u; i < kPathTraceRoot32BitValues; ++i) {
       if (i) dump << ",";
       dump << "0x" << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
-           << pcWords[i];
+           << pcWords[static_cast<std::size_t>(i)];
     }
     dump << std::dec;
     LogDebug(dump.str());
@@ -305,7 +311,8 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     return false;
   }
 
-  // Upload constants
+  // Upload constants through the persistent upload heap and bind it as a CBV.
+  // The command list is fenced before this memory is reused on the next submit.
   m_cmdList->SetComputeRootSignature(m_rootSig.Get());
 
   // Create descriptor heap for SRVs/UAVs lazily and reuse across samples.
@@ -420,6 +427,8 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   m_cmdList->EndEvent();
 
   if (doReadback) {
+  // Post passes are only scheduled for display/readback samples. Accumulation
+  // samples that are not read back leave only the HDR film in UAV state briefly.
   // UAV barrier on FilmBuf: ensure path trace writes are visible before tonemap reads.
   D3D12_RESOURCE_BARRIER uavBarrier{};
   uavBarrier.Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
@@ -471,6 +480,8 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   m_cmdList->ResourceBarrier(1, &uavBarrier);
 
   if (doTemporal) {
+    // Preserve the previous temporal output and guide buffers on GPU so the
+    // next readback sample can reproject without a CPU round trip.
     const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
     const UINT64 guideSize = static_cast<UINT64>(m_filmPixels) * 8u * sizeof(float);
     std::array<D3D12_RESOURCE_BARRIER, 4> copyStartBarriers = {
@@ -601,6 +612,8 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
 }
 
 bool D3D12GpuPathTracer::create_root_sig_and_pso() {
+  // Compute and postprocess shaders share one compact root signature: a CBV for
+  // PathTraceConstants plus one descriptor table for all scene/film buffers.
   // Root sig: param0 = constants CBV (b0), param1 = descriptor table
   D3D12_ROOT_PARAMETER params[2]{};
   // Constants (b0)
@@ -652,11 +665,21 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
     LogError("create_root_sig_and_pso: " + m_error);
     return false;
   }
-  const auto sz = static_cast<size_t>(f.tellg());
+  const std::streampos shaderEnd = f.tellg();
+  if (shaderEnd <= std::streampos{0}) {
+    m_error = "HLSL file is empty or unreadable: " + m_hlslPath;
+    LogError("create_root_sig_and_pso: " + m_error);
+    return false;
+  }
+  const auto sz = static_cast<size_t>(shaderEnd);
   LogDebug("compile shader " + m_hlslPath + " size=" + std::to_string(sz) + " bytes");
   f.seekg(0);
   std::string src(sz, '\0');
-  f.read(&src[0], static_cast<std::streamsize>(sz));
+  if (!f.read(src.data(), static_cast<std::streamsize>(src.size()))) {
+    m_error = "Failed to read HLSL: " + m_hlslPath;
+    LogError("create_root_sig_and_pso: " + m_error);
+    return false;
+  }
   f.close();
 
   UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;

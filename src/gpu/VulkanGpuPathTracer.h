@@ -10,6 +10,10 @@
 namespace vkpt::gpu {
 
 // Push constants layout — must match pathtrace.comp exactly.
+/// Push constants consumed by pathtrace.comp.
+///
+/// This is the per-dispatch camera/render state. Keep the field order and
+/// size aligned with the shader struct because Vulkan copies it byte-for-byte.
 struct PathTracePushConstants {
     float camera_pos[3];  float fov_tan_half;  // 16
     float cam_forward[3]; float aspect;         // 32
@@ -30,16 +34,26 @@ static_assert(sizeof(PathTracePushConstants) == 128,
 // Creates VkInstance/VkDevice, uploads scene data to GPU buffers,
 // dispatches the pathtrace.comp compute shader per sample, reads back
 // the RGBA32F film buffer, and converts to LDR via the CPU FilmBuffer.
+/// Vulkan compute implementation of IPathTracer.
+///
+/// This backend uses host-visible storage buffers for scene and film data,
+/// dispatches pathtrace.comp for each sample, then lazily mirrors the GPU film
+/// into FilmBuffer when CPU-side resolve APIs are called.
 class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer {
  public:
   // spv_path: path to the compiled pathtrace.spv SPIR-V file
+  /// spv_path is the compiled pathtrace.comp SPIR-V module.
   explicit VulkanGpuPathTracer(std::string spv_path);
   ~VulkanGpuPathTracer() override;
 
+  /// Allocates the host-visible film buffer and resets descriptor bindings.
   bool configure(const vkpt::pathtracer::RenderSettings& s) override;
+  /// Stores a CPU scene snapshot; build_or_update_acceleration() performs upload.
   bool load_scene_snapshot(const vkpt::pathtracer::RTSceneData& scene) override;
+  /// Packs RTSceneData into shader-facing buffers and refreshes descriptors.
   bool build_or_update_acceleration() override;
   bool reset_accumulation() override;
+  /// Records and submits one compute dispatch for the requested sample index.
   bool render_sample_batch(uint32_t sy, uint32_t ey,
                            uint32_t sample_idx, uint32_t frame_idx) override;
   vkpt::pathtracer::FilmLdr resolve_ldr() const override;
@@ -60,9 +74,13 @@ class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer {
 
  private:
   // --- init / teardown -------------------------------------------------------
+  /// Creates a headless Vulkan instance, selects a compute-capable GPU, and opens a queue.
   bool init_device();
+  /// Allocates the reusable primary command buffer and completion fence.
   bool create_cmd_pool();
+  /// Loads SPIR-V and creates descriptor layout, pipeline layout, and compute PSO.
   bool create_pipeline();
+  /// Allocates/writes the storage-buffer descriptor set once buffers exist.
   bool create_descriptors();
   void destroy_scene_buffers();
   void destroy_film_buffers();
@@ -71,10 +89,12 @@ class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer {
 
   // --- helpers ---------------------------------------------------------------
   uint32_t find_mem_type(uint32_t type_bits, VkMemoryPropertyFlags flags) const;
+  /// Creates a VkBuffer and owns cleanup on partial allocation/bind failures.
   bool make_buffer(VkDeviceSize size,
                    VkBufferUsageFlags usage,
                    VkMemoryPropertyFlags props,
                    VkBuffer& buf, VkDeviceMemory& mem);
+  /// Copies the accumulated host-visible GPU film into the CPU FilmBuffer cache.
   void rebuild_cpu_film_from_gpu() const;
 
   // --- Vulkan handles --------------------------------------------------------

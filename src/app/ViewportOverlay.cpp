@@ -191,6 +191,7 @@ BuildSelectionOverlayBoxes(const vkpt::editor::SelectionState &selection,
                            vkpt::editor::GizmoMode gizmoMode,
                            const std::optional<ViewportGizmoHit> &activeHover) {
   std::vector<vkpt::platform::QtSelectionOverlayBox> boxes;
+  boxes.reserve(selection.selected_entity_ids.size());
   for (const auto selectedId : selection.selected_entity_ids) {
     auto bounds = std::optional<vkpt::editor::Bounds>{};
     std::string label = "entity " + std::to_string(selectedId);
@@ -231,6 +232,7 @@ BuildSelectionOverlayBoxes(const vkpt::editor::SelectionState &selection,
 void RebuildSelectionBounds(vkpt::editor::SelectionState &selection,
                             const std::vector<ViewportPickable> &pickables) {
   selection.per_item_bounds.clear();
+  selection.per_item_bounds.reserve(selection.selected_entity_ids.size());
   selection.aggregate_bounds = {};
   for (const auto selectedId : selection.selected_entity_ids) {
     const auto it =

@@ -42,6 +42,7 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
                         std::size_t element_size,
                         std::size_t element_count,
                         std::size_t alignment) {
+    // Manifest entries mirror current CPU packing so backend upload code can assert offsets.
     GpuLayoutField out;
     out.struct_name = struct_name;
     out.field = field;
@@ -61,6 +62,7 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
   RTSceneLayoutManifest manifest;
   manifest.schema_version = "1.0";
 
+  // Build from fallback scene data to include every RTSceneData array used by conversion.
   std::size_t cpuCursor = 0u;
   std::size_t gpuCursor = 0u;
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_position", sizeof(Vec3), 1u, alignof(Vec3));

@@ -45,6 +45,8 @@ bool RunD3D12ComputeSmoke(vkpt::render::IRenderBackend& backend) {
     return false;
   }
 
+  // The smoke graph exercises copy, compute, and readback pass ordering through
+  // the backend-neutral frame graph before native D3D12 command recording exists.
   FrameGraphDesc graphDesc;
   graphDesc.debug_label = "d3d12_compute_smoke";
   graphDesc.passes = {

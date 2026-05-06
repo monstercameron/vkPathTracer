@@ -10,6 +10,7 @@
 
 namespace vkpt::render {
 
+/// CPU-displayable frame published by the render worker and consumed by the UI.
 struct DisplayFrame {
   std::vector<std::uint8_t> rgba8;
   std::uint32_t width = 0u;
@@ -20,6 +21,7 @@ struct DisplayFrame {
   vkpt::pathtracer::SampleCounters counters{};
 };
 
+/// Counters describing latest-frame mailbox behavior.
 struct FrameHandoffStats {
   std::uint64_t published = 0u;
   std::uint64_t acquired = 0u;
@@ -32,11 +34,19 @@ struct FrameHandoffStats {
   std::size_t latest_height = 0u;
 };
 
+/// Single-slot latest-frame handoff between producer and consumer threads.
+///
+/// Publishing replaces any unacquired frame and counts it as dropped. Consumers
+/// acquire by move, so the producer never blocks on display-side ownership.
 class FrameHandoff {
  public:
+  /// Publish a new latest frame, assigning a monotonically increasing frame id.
   void publish(DisplayFrame frame);
+  /// Move out the latest pending frame, if one exists.
   std::optional<DisplayFrame> acquire_latest();
+  /// Return a stable snapshot of mailbox counters.
   FrameHandoffStats stats() const;
+  /// Drop any pending frame while preserving historical counters.
   void clear();
 
  private:

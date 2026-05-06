@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <chrono>
 #include <fstream>
+#include <limits>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <algorithm>
@@ -82,21 +84,41 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
           HBITMAP dib = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &dibBits, nullptr, 0);
           if (dib && dibBits) {
             std::memcpy(dibBits, framebuffer.data(), framebuffer.size());
+            bool blitted = false;
             HDC memDc = CreateCompatibleDC(hdc);
-            HGDIOBJ oldBmp = SelectObject(memDc, dib);
-            StretchBlt(hdc,
-                      clientRect.left,
-                      clientRect.top,
-                      clientRect.right - clientRect.left,
-                      clientRect.bottom - clientRect.top,
-                      memDc,
-                      0,
-                      0,
-                      static_cast<int>(framebufferWidth),
-                      static_cast<int>(framebufferHeight),
-                      SRCCOPY);
-            SelectObject(memDc, oldBmp);
-            DeleteDC(memDc);
+            if (memDc) {
+              HGDIOBJ oldBmp = SelectObject(memDc, dib);
+              if (oldBmp && oldBmp != HGDI_ERROR) {
+                blitted = StretchBlt(hdc,
+                                    clientRect.left,
+                                    clientRect.top,
+                                    clientRect.right - clientRect.left,
+                                    clientRect.bottom - clientRect.top,
+                                    memDc,
+                                    0,
+                                    0,
+                                    static_cast<int>(framebufferWidth),
+                                    static_cast<int>(framebufferHeight),
+                                    SRCCOPY) != FALSE;
+                SelectObject(memDc, oldBmp);
+              }
+              DeleteDC(memDc);
+            }
+            if (!blitted) {
+              StretchDIBits(hdc,
+                            clientRect.left,
+                            clientRect.top,
+                            clientRect.right - clientRect.left,
+                            clientRect.bottom - clientRect.top,
+                            0,
+                            0,
+                            static_cast<int>(framebufferWidth),
+                            static_cast<int>(framebufferHeight),
+                            framebuffer.data(),
+                            &bmi,
+                            DIB_RGB_COLORS,
+                            SRCCOPY);
+            }
           } else {
             // Fallback for platforms/drivers that fail DIBSection creation.
             StretchDIBits(hdc,
@@ -230,17 +252,21 @@ bool DesktopWindow::initialize(std::size_t width, std::size_t height, std::strin
 #ifdef _WIN32
   const auto className = L"vkpt-desktop-window";
   static bool classRegistered = false;
-  if (!classRegistered) {
-    WNDCLASSEXW wc{};
-    wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc = DesktopWndProc;
-    wc.hInstance = GetModuleHandleW(nullptr);
-    wc.lpszClassName = className;
-    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-      return false;
+  static std::mutex classRegistrationMutex;
+  {
+    std::scoped_lock classRegistrationLock(classRegistrationMutex);
+    if (!classRegistered) {
+      WNDCLASSEXW wc{};
+      wc.cbSize = sizeof(wc);
+      wc.style = CS_HREDRAW | CS_VREDRAW;
+      wc.lpfnWndProc = DesktopWndProc;
+      wc.hInstance = GetModuleHandleW(nullptr);
+      wc.lpszClassName = className;
+      if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        return false;
+      }
+      classRegistered = true;
     }
-    classRegistered = true;
   }
 
   const auto wideTitle = ToWide(title);
@@ -293,7 +319,10 @@ void DesktopWindow::close() {
 #ifdef _WIN32
   m_open = false;
   if (m_hwnd) {
-    DestroyWindow(static_cast<HWND>(m_hwnd));
+    const auto hwnd = static_cast<HWND>(m_hwnd);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+    DestroyWindow(hwnd);
+    m_hwnd = nullptr;
   }
 #else
   m_open = false;
@@ -310,6 +339,8 @@ bool DesktopWindow::poll_events() {
   if (!m_hwnd) {
     return false;
   }
+  // The platform owns the native message pump; callers consume normalized
+  // events later through the window/input interfaces.
   MSG msg;
   while (PeekMessageW(&msg, static_cast<HWND>(m_hwnd), 0, 0, PM_REMOVE)) {
     TranslateMessage(&msg);
@@ -382,7 +413,16 @@ void DesktopWindow::set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba,
     clear_framebuffer();
     return;
   }
+  constexpr auto maxSize = std::numeric_limits<std::size_t>::max();
+  if (width > maxSize / height) {
+    clear_framebuffer();
+    return;
+  }
   const std::size_t pixelCount = width * height;
+  if (pixelCount > maxSize / 4u) {
+    clear_framebuffer();
+    return;
+  }
   const std::size_t byteCount = pixelCount * 4u;
   if (rgba.size() < byteCount) {
     clear_framebuffer();

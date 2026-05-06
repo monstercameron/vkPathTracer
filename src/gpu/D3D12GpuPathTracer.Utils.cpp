@@ -35,8 +35,13 @@ std::string WStringToUtf8(const wchar_t* src) {
   if (!src) return {};
   int len = WideCharToMultiByte(CP_UTF8, 0, src, -1, nullptr, 0, nullptr, nullptr);
   if (len <= 0) return {};
-  std::string out(static_cast<size_t>(len > 0 ? len - 1 : 0), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, src, -1, &out[0], len, nullptr, nullptr);
+  std::string out(static_cast<size_t>(len), '\0');
+  const int written = WideCharToMultiByte(CP_UTF8, 0, src, -1, out.data(), len, nullptr, nullptr);
+  if (written <= 0) return {};
+  out.resize(static_cast<size_t>(written));
+  if (!out.empty() && out.back() == '\0') {
+    out.pop_back();
+  }
   return out;
 }
 
@@ -56,15 +61,18 @@ std::string LowercaseExtension(const std::filesystem::path& path) {
 
 std::filesystem::path ResolveTexturePath(std::string_view uri) {
   std::filesystem::path path{std::string(uri)};
-  if (std::filesystem::exists(path)) {
+  std::error_code ec;
+  if (std::filesystem::exists(path, ec) && !ec) {
     return path.lexically_normal();
   }
   const auto cwdPath = (std::filesystem::current_path() / path).lexically_normal();
-  if (std::filesystem::exists(cwdPath)) {
+  ec.clear();
+  if (std::filesystem::exists(cwdPath, ec) && !ec) {
     return cwdPath;
   }
   const auto sceneRelative = (std::filesystem::current_path() / "assets" / "scenes" / path).lexically_normal();
-  if (std::filesystem::exists(sceneRelative)) {
+  ec.clear();
+  if (std::filesystem::exists(sceneRelative, ec) && !ec) {
     return sceneRelative;
   }
   return path.lexically_normal();
@@ -146,8 +154,8 @@ bool LoadTgaRgba8(const std::filesystem::path& path,
   const uint32_t pixelCount = static_cast<uint32_t>(width) * height;
   const uint32_t bytesPerPixel = bitsPerPixel / 8u;
   if (imageType == 2u || imageType == 3u) {
-    const std::size_t required = offset + static_cast<std::size_t>(pixelCount) * bytesPerPixel;
-    if (required > bytes.size()) {
+    const std::size_t required = static_cast<std::size_t>(pixelCount) * bytesPerPixel;
+    if (required > bytes.size() - offset) {
       if (error) *error = "TGA pixel data truncated";
       return false;
     }
@@ -169,7 +177,7 @@ bool LoadTgaRgba8(const std::filesystem::path& path,
       const uint8_t packet = bytes[offset++];
       const uint32_t count = static_cast<uint32_t>(packet & 0x7fu) + 1u;
       if ((packet & 0x80u) != 0u) {
-        if (offset + bytesPerPixel > bytes.size()) {
+        if (offset > bytes.size() || bytesPerPixel > bytes.size() - offset) {
           if (error) *error = "TGA RLE packet truncated";
           return false;
         }
@@ -187,7 +195,7 @@ bool LoadTgaRgba8(const std::filesystem::path& path,
         }
       } else {
         for (uint32_t i = 0; i < count && written < pixelCount; ++i) {
-          if (offset + bytesPerPixel > bytes.size()) {
+          if (offset > bytes.size() || bytesPerPixel > bytes.size() - offset) {
             if (error) *error = "TGA raw packet truncated";
             return false;
           }
@@ -218,14 +226,22 @@ bool LoadTextureRgba8(std::string_view uri, uint32_t maxDimension, LoadedTexture
   if (LowercaseExtension(path) == ".tga") {
     return LoadTgaRgba8(path, maxDimension, out, error);
   }
-  static bool s_wicComInitialized = false;
-  if (!s_wicComInitialized) {
-    const HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(coHr) && coHr != RPC_E_CHANGED_MODE) {
-      if (error) *error = "COM init failed hr=" + FormatHr(coHr);
-      return false;
+  struct ComApartmentScope {
+    explicit ComApartmentScope(HRESULT result_in)
+        : result(result_in),
+          needs_uninitialize(result_in == S_OK || result_in == S_FALSE) {}
+    ~ComApartmentScope() {
+      if (needs_uninitialize) {
+        CoUninitialize();
+      }
     }
-    s_wicComInitialized = true;
+    HRESULT result = E_FAIL;
+    bool needs_uninitialize = false;
+  };
+  ComApartmentScope comScope(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+  if (FAILED(comScope.result) && comScope.result != RPC_E_CHANGED_MODE) {
+    if (error) *error = "COM init failed hr=" + FormatHr(comScope.result);
+    return false;
   }
   Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
   HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory,

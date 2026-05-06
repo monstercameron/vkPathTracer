@@ -1,6 +1,8 @@
 #ifdef PT_ENABLE_D3D12
 #include "gpu/D3D12GpuPathTracerInternal.h"
 #include <array>
+#include <atomic>
+#include <cstddef>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -9,6 +11,8 @@
 namespace vkpt::gpu {
 
 bool D3D12GpuPathTracer::create_dxr_desc_heap() {
+  // Descriptor order is the DXR shader ABI: TLAS is a root SRV, while all
+  // remaining scene buffers and the film UAV live in this shader-visible heap.
   // 7 descriptors: slots 0-5 → scene SRVs (t1-t6), slot 6 → film UAV (u0)
   D3D12_DESCRIPTOR_HEAP_DESC dh{};
   dh.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -67,6 +71,12 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
   m_dxrBlasBuffers.clear();
   m_dxrBlasScratch.clear();
   m_dxrInstanceDescs.clear();
+  const uint32_t sceneInstanceCount = static_cast<uint32_t>(m_gpuInsts.size() / kGpuInstanceStrideU32);
+  const std::size_t maxBlasCount =
+      static_cast<std::size_t>(m_staticTriangleCount > 0u ? 1u : 0u) + sceneInstanceCount;
+  m_dxrBlasBuffers.reserve(maxBlasCount);
+  m_dxrBlasScratch.reserve(maxBlasCount);
+  m_dxrInstanceDescs.reserve(maxBlasCount);
 
   auto createBuffer = [&](UINT64 bytes,
                           D3D12_HEAP_TYPE heapType,
@@ -94,6 +104,8 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
     return true;
   };
 
+  // DXR build inputs reference upload-heap geometry directly. The resulting
+  // BLAS/TLAS live in default heaps and are retained for later dispatch/update.
   const UINT64 vertBytes = static_cast<UINT64>(m_gpuVerts.size()) * sizeof(float);
   const UINT64 idxBytes = static_cast<UINT64>(m_gpuIdx.size()) * sizeof(uint32_t);
   if (!createBuffer(vertBytes,
@@ -143,9 +155,12 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
   auto buildBlasRange = [&](uint32_t firstTriangle,
                             uint32_t triangleCount,
                             D3D12_GPU_VIRTUAL_ADDRESS& blasAddress) -> bool {
+    // Static geometry can share one BLAS; dynamic instances get individual
+    // BLAS objects so TLAS refits only need updated instance transforms.
     const uint64_t firstIndex = static_cast<uint64_t>(firstTriangle) * 3ull;
     const uint64_t indexCount = static_cast<uint64_t>(triangleCount) * 3ull;
-    if (triangleCount == 0u || firstIndex + indexCount > m_gpuIdx.size()) {
+    const uint64_t gpuIndexCount = static_cast<uint64_t>(m_gpuIdx.size());
+    if (triangleCount == 0u || firstIndex > gpuIndexCount || indexCount > gpuIndexCount - firstIndex) {
       m_error = "build_dxr_acceleration_structures: invalid BLAS triangle range";
       return false;
     }
@@ -222,8 +237,7 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
         {1.0f, 1.0f, 1.0f}));
   }
 
-  const uint32_t instanceCount = static_cast<uint32_t>(m_gpuInsts.size() / kGpuInstanceStrideU32);
-  for (uint32_t instanceIndex = 0u; instanceIndex < instanceCount; ++instanceIndex) {
+  for (uint32_t instanceIndex = 0u; instanceIndex < sceneInstanceCount; ++instanceIndex) {
     const std::size_t ib = static_cast<std::size_t>(instanceIndex) * kGpuInstanceStrideU32;
     const uint32_t firstTriangle = m_gpuInsts[ib + 0u];
     const uint32_t triangleCount = m_gpuInsts[ib + 1u];
@@ -360,6 +374,8 @@ bool D3D12GpuPathTracer::update_dxr_instance_buffer_and_tlas() {
     return false;
   }
 
+  // Only instance transforms change here. BLAS geometry addresses remain stable,
+  // so the TLAS can be updated in place with PERFORM_UPDATE.
   for (auto& desc : m_dxrInstanceDescs) {
     if (desc.InstanceID == kDxrStaticInstanceId) {
       continue;
@@ -569,7 +585,8 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
     return false;
   }
 
-  // Set global root signature and bind resources
+  // Set the DXR global root signature for DispatchRays. Postprocess dispatches
+  // below switch back to the compute root signature before running.
   cl4->SetComputeRootSignature(m_dxrGlobalRootSig.Get());
   std::memcpy(m_uploadPtr, &pc, sizeof(pc));
   cl4->SetComputeRootConstantBufferView(0, m_uploadBuf->GetGPUVirtualAddress());
@@ -592,9 +609,8 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
 
   // Log dispatch constants once when verbose D3D12 diagnostics are enabled.
   if (D3D12VerboseLoggingEnabled()) {
-    static bool s_logged = false;
-    if (!s_logged) {
-      s_logged = true;
+    static std::atomic_bool s_logged{false};
+    if (!s_logged.exchange(true, std::memory_order_acq_rel)) {
       std::ostringstream dc;
       dc << "dispatch_dxr_rays constants: env=(" << pc.env_r << "," << pc.env_g << "," << pc.env_b
          << ") maxDepth=" << pc.max_depth_f << " rpp=" << pc.rays_per_pixel
@@ -620,6 +636,9 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   cl4->EndEvent();
 
   if (doReadback) {
+    // The hardware raygen writes the same HDR film buffer as the compute path.
+    // Readback samples then reuse compute PSOs for guide, temporal, denoise,
+    // tonemap, and LDR copy-out so both render paths produce identical output.
     D3D12_RESOURCE_BARRIER uavBarrier{};
     uavBarrier.Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     uavBarrier.UAV.pResource = m_filmBuf.Get();
@@ -707,6 +726,8 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
     cl4->ResourceBarrier(1, &uavBarrier);
 
     if (doTemporal) {
+      // Keep history copies GPU-local and state-transition them around the copy
+      // because the next frame samples them as UAV/SRV-style raw buffers.
       const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
       const UINT64 guideSize = static_cast<UINT64>(m_filmPixels) * 8u * sizeof(float);
       std::array<D3D12_RESOURCE_BARRIER, 4> copyStartBarriers = {
@@ -767,7 +788,12 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
     cl4->ResourceBarrier(1, &filmBarrier);
   }
 
-  cl4->Close();
+  const HRESULT closeHr = cl4->Close();
+  if (FAILED(closeHr)) {
+    m_error = "DXR dispatch command list close hr=" + FormatHr(closeHr);
+    LogError("dispatch_dxr_rays: " + m_error);
+    return false;
+  }
   ID3D12CommandList* lists[] = {cl4.Get()};
   m_cmdQueue->ExecuteCommandLists(1, lists);
   if (!wait_for_gpu()) {
@@ -779,15 +805,18 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   if (D3D12VerboseLoggingEnabled()) {
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> iq;
     if (SUCCEEDED(m_device->QueryInterface(IID_PPV_ARGS(&iq)))) {
-      static bool s_iqLogged = false;
-      if (!s_iqLogged) {
-        s_iqLogged = true;
+      static std::atomic_bool s_iqLogged{false};
+      if (!s_iqLogged.exchange(true, std::memory_order_acq_rel)) {
         const UINT64 n = iq->GetNumStoredMessages();
         for (UINT64 i = 0; i < n; ++i) {
           SIZE_T len = 0;
           iq->GetMessage(i, nullptr, &len);
-          std::vector<char> buf(len);
-          auto* msg = reinterpret_cast<D3D12_MESSAGE*>(buf.data());
+          if (len < sizeof(D3D12_MESSAGE)) {
+            continue;
+          }
+          std::vector<std::max_align_t> storage(
+              (len + sizeof(std::max_align_t) - 1u) / sizeof(std::max_align_t));
+          auto* msg = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
           if (SUCCEEDED(iq->GetMessage(i, msg, &len))) {
             std::string sev = (msg->Severity == D3D12_MESSAGE_SEVERITY_ERROR)   ? "ERROR"   :
                               (msg->Severity == D3D12_MESSAGE_SEVERITY_WARNING) ? "WARNING" : "INFO";

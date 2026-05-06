@@ -667,16 +667,16 @@ bool LoadSelectionFromFile(const std::string& path, SelectionState* out_selectio
 }
 
 bool SaveSelectionToFile(const std::string& path, const SelectionState& selection, std::string* error) {
-  try {
-    const auto parent = std::filesystem::path(path).parent_path();
-    if (!parent.empty()) {
-      std::filesystem::create_directories(parent);
+  const auto parent = std::filesystem::path(path).parent_path();
+  if (!parent.empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      if (error) {
+        *error = "failed to create parent directory: " + ec.message();
+      }
+      return false;
     }
-  } catch (...) {
-    if (error) {
-      *error = "failed to create parent directory";
-    }
-    return false;
   }
   std::ofstream out(path);
   if (!out) {
@@ -781,13 +781,16 @@ bool LoadLayoutFromFile(const std::string& path, UiLayoutDocument* out_layout) {
 }
 
 bool SaveLayoutToFile(const std::string& path, const UiLayoutDocument& layout, std::string* error) {
-  try {
-    std::filesystem::create_directories(std::filesystem::path(path).parent_path());
-  } catch (...) {
-    if (error) {
-      *error = "failed to create parent directory";
+  const auto parent = std::filesystem::path(path).parent_path();
+  if (!parent.empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(parent, ec);
+    if (ec) {
+      if (error) {
+        *error = "failed to create parent directory: " + ec.message();
+      }
+      return false;
     }
-    return false;
   }
   std::ofstream out(path);
   if (!out) {

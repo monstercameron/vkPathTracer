@@ -1,11 +1,38 @@
 #include "render/RenderCoordinator.h"
 
+#include "core/Logging.h"
+#include "diagnostics/CrashRecorder.h"
 #include "jobs/JobSystem.h"
 
 #include <algorithm>
+#include <exception>
+#include <new>
+#include <string>
 #include <utility>
 
 namespace vkpt::render {
+
+namespace {
+
+void LogCoordinatorException(std::string_view error) noexcept {
+  try {
+    vkpt::log::Logger::instance().log(
+        vkpt::log::Severity::Error,
+        "render",
+        "render coordinator thread exception",
+        {{"error", std::string(error)}});
+  } catch (...) {
+  }
+  try {
+    auto& recorder = vkpt::diagnostics::CrashRecorder::instance();
+    recorder.set_last_error(error);
+    recorder.record_checkpoint(
+        "render_coordinator_exception", 0, "render", error, false);
+  } catch (...) {
+  }
+}
+
+}  // namespace
 
 RenderCoordinator::RenderCoordinator(std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer,
                                      vkpt::pathtracer::RenderSettings settings,
@@ -35,7 +62,26 @@ bool RenderCoordinator::start() {
   auto tracer = std::move(m_initialTracer);
   m_thread = std::jthread([this, tracer = std::move(tracer)](std::stop_token stop) mutable {
     vkpt::jobs::ApplyCurrentThreadPriority(vkpt::jobs::WorkerThreadPriority::Background);
-    run(stop, std::move(tracer));
+    const auto failFromException = [this](std::string_view error) noexcept {
+      if (error.empty()) {
+        error = "render coordinator exception";
+      }
+      try {
+        mark_failed(std::string(error));
+      } catch (...) {
+      }
+      LogCoordinatorException(error);
+    };
+    try {
+      run(stop, std::move(tracer));
+    } catch (const std::bad_alloc& ex) {
+      (void)ex;
+      failFromException("render coordinator out of memory");
+    } catch (const std::exception& ex) {
+      failFromException(ex.what());
+    } catch (...) {
+      failFromException("render coordinator non-standard exception");
+    }
   });
   return true;
 }
@@ -66,12 +112,54 @@ void RenderCoordinator::post_instance_transforms(
     return;
   }
   std::scoped_lock lock(m_commandMutex);
-  m_pending.instance_transforms = std::move(updates);
+  if (!m_pending.instance_transforms) {
+    m_pending.instance_transforms = std::move(updates);
+    return;
+  }
+  auto& pending = *m_pending.instance_transforms;
+  pending.reserve(pending.size() + updates.size());
+  const auto sameTarget =
+      [](const vkpt::pathtracer::RTInstanceTransformUpdate& lhs,
+         const vkpt::pathtracer::RTInstanceTransformUpdate& rhs) {
+    if (lhs.instance_index != vkpt::pathtracer::kInvalidRTInstanceIndex &&
+        rhs.instance_index != vkpt::pathtracer::kInvalidRTInstanceIndex) {
+      return lhs.instance_index == rhs.instance_index;
+    }
+    return lhs.entity_id != 0u && lhs.entity_id == rhs.entity_id;
+  };
+  for (auto& update : updates) {
+    const auto it = std::find_if(pending.begin(),
+                                 pending.end(),
+                                 [&](const auto& existing) {
+                                   return sameTarget(existing, update);
+                                 });
+    if (it != pending.end()) {
+      *it = std::move(update);
+    } else {
+      pending.push_back(std::move(update));
+    }
+  }
+}
+
+void RenderCoordinator::post_scene_delta(vkpt::pathtracer::RTSceneDeltaUpdate update) {
+  if (update.materials.empty() &&
+      update.lights.empty() &&
+      !update.environment_color_changed) {
+    return;
+  }
+  std::scoped_lock lock(m_commandMutex);
+  if (m_pending.scene_delta) {
+    vkpt::pathtracer::MergeSceneDeltaUpdates(*m_pending.scene_delta, update);
+  } else {
+    m_pending.scene_delta = std::move(update);
+  }
 }
 
 void RenderCoordinator::post_scene(vkpt::pathtracer::RTSceneData scene) {
   std::scoped_lock lock(m_commandMutex);
   m_pending.scene = std::move(scene);
+  m_pending.scene_delta.reset();
+  m_pending.instance_transforms.reset();
 }
 
 void RenderCoordinator::post_settings(vkpt::pathtracer::RenderSettings settings) {
@@ -83,6 +171,8 @@ void RenderCoordinator::post_settings(vkpt::pathtracer::RenderSettings settings,
                                       vkpt::pathtracer::RTSceneData scene) {
   std::scoped_lock lock(m_commandMutex);
   m_pending.settings = PendingCommands::SettingsCommand{std::move(settings), std::move(scene)};
+  m_pending.scene_delta.reset();
+  m_pending.instance_transforms.reset();
 }
 
 std::optional<DisplayFrame> RenderCoordinator::acquire_latest_frame() {
@@ -98,6 +188,7 @@ RenderCoordinatorStats RenderCoordinator::stats() const {
 
 RenderCoordinator::PendingCommands RenderCoordinator::drain_commands() {
   std::scoped_lock lock(m_commandMutex);
+  // Drain by move so bursts of UI changes collapse into one worker-side update.
   PendingCommands out = std::move(m_pending);
   m_pending = {};
   return out;
@@ -160,6 +251,8 @@ void RenderCoordinator::run(std::stop_token stop,
     auto commands = drain_commands();
     bool resetPublishClock = false;
 
+    // Apply structural updates before sample work. Each accepted mutation bumps
+    // the generation, resets accumulation, and clears stale display frames.
     if (commands.settings) {
       settings = std::move(commands.settings->settings);
       if (commands.settings->scene) {
@@ -183,6 +276,27 @@ void RenderCoordinator::run(std::stop_token stop,
           !tracer->build_or_update_acceleration() ||
           !tracer->reset_accumulation()) {
         mark_failed("render coordinator scene update failed");
+        break;
+      }
+      resetPublishClock = true;
+    }
+
+    if (commands.scene_delta) {
+      auto nextScene = scene;
+      if (!vkpt::pathtracer::ApplySceneDeltaUpdate(nextScene, *commands.scene_delta)) {
+        mark_failed("render coordinator scene delta was invalid");
+        break;
+      }
+      scene = std::move(nextScene);
+      ++generation;
+      sample = 0u;
+      bool deltaOk = tracer->update_scene_delta(*commands.scene_delta);
+      if (!deltaOk) {
+        deltaOk = tracer->load_scene_snapshot(scene) &&
+                  tracer->build_or_update_acceleration();
+      }
+      if (!deltaOk || !tracer->reset_accumulation()) {
+        mark_failed("render coordinator scene delta update failed");
         break;
       }
       resetPublishClock = true;
@@ -233,6 +347,11 @@ void RenderCoordinator::run(std::stop_token stop,
       sample = 0u;
       bool transformOk = tracer->update_instance_transforms(*commands.instance_transforms);
       if (!transformOk) {
+        vkpt::log::Logger::instance().log(
+            vkpt::log::Severity::Warning,
+            "render",
+            "instance transform update fell back to scene rebuild",
+            {{"updates", std::to_string(commands.instance_transforms->size())}});
         transformOk = tracer->load_scene_snapshot(scene) &&
                       tracer->build_or_update_acceleration();
       }
@@ -266,6 +385,8 @@ void RenderCoordinator::run(std::stop_token stop,
     update_stats(generation, sample, settings, counters);
 
     const auto now = std::chrono::steady_clock::now();
+    // Publish the first few samples immediately for responsiveness, then throttle
+    // steady-state updates to the configured display cadence.
     const bool publishNow =
         sample <= m_config.immediate_publish_count ||
         lastPublish == std::chrono::steady_clock::time_point{} ||

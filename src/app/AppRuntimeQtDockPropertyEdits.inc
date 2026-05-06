@@ -118,7 +118,30 @@
           }
           changed = true;
         } else if (parts.size() >= 2u && parts[0] == "render") {
-          if (parts.size() == 3u && parts[1] == "resolution") {
+          if (parts.size() == 2u && parts[1] == "backend") {
+            const std::string requestedBackend = QtTrim(edit.value);
+            if (requestedBackend.empty()) {
+              return failEdit("expected backend name");
+            }
+            const bool switched = qtSwitchRuntimeBackend
+                ? qtSwitchRuntimeBackend(requestedBackend, "dock")
+                : false;
+            PushUiEvent(ui_event_log,
+                        switched ? "dock_backend_switch" : "dock_backend_switch_failed",
+                        edit.panel_id,
+                        "dock",
+                        frameIndex,
+                        {},
+                        edit.property_id,
+                        requestedBackend);
+            UpdateCrashArtifactsFromUiState(ui_runtime_state,
+                                           ui_selection_state,
+                                           ui_layout_state,
+                                           ui_event_log,
+                                           ui_command_history);
+            updateQtSelectionOverlay();
+            return switched;
+          } else if (parts.size() == 3u && parts[1] == "resolution") {
             float value = 0.0f;
             if (!QtParseFloat(edit.value, value)) {
               return failEdit("expected numeric render resolution");

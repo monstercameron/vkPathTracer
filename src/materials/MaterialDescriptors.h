@@ -126,6 +126,7 @@ struct MaterialSamplerBinding {
 };
 
 struct MaterialDesc {
+  // Runtime-facing material payload; descriptor presets fill this before scene conversion packs RTMaterial.
   MaterialFamily family = MaterialFamily::Unknown;
   std::string id;
   std::string display_name;
@@ -169,6 +170,7 @@ class IMaterialRegistry {
 
 class MaterialRegistry final : public IMaterialRegistry {
  public:
+  // Owns both family descriptors and concrete presets so validation can select fallbacks consistently.
   MaterialRegistry();
 
   bool register_family(MaterialDescriptor descriptor) override;

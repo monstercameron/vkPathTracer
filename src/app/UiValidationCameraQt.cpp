@@ -338,6 +338,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     metricDevice.selected_backend = "d3d12";
     metricDevice.active_renderer_path = "d3d12-dxr";
     metricDevice.backend_caps.backend_name = "d3d12-dxr";
+    metricDevice.runtime_backend_options = {"auto", "cpu", "d3d12", "d3d12-dxr", "null"};
     metricDevice.has_selected_accelerator = true;
     metricDevice.selected_accelerator = measuredGpu;
     metricDevice.accelerators.push_back(measuredGpu);
@@ -366,6 +367,15 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     };
     const auto* throughputProperty = findProperty("Ray throughput");
     const auto* activeDeviceProperty = findProperty("Active ray device");
+    const auto* runtimeBackendProperty = findProperty("Runtime backend");
+    check_true("device dock exposes runtime backend dropdown",
+               runtimeBackendProperty != nullptr &&
+               runtimeBackendProperty->id == "render.backend" &&
+               runtimeBackendProperty->editor == "dropdown" &&
+               runtimeBackendProperty->value == "d3d12" &&
+               std::find(runtimeBackendProperty->options.begin(),
+                         runtimeBackendProperty->options.end(),
+                         "d3d12-dxr") != runtimeBackendProperty->options.end());
     check_true("device dock shows computer accumulated ray average",
                throughputProperty != nullptr &&
                throughputProperty->value.find("computer avg 80.00 MRays/s") != std::string::npos);

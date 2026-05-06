@@ -26,7 +26,11 @@ bool FrameGraph::build(const FrameGraphDesc& desc, std::vector<std::string>* dia
   }
   m_passes.clear();
   m_dependencies.clear();
+  m_passes.reserve(desc.passes.size());
+  m_dependencies.reserve(desc.dependencies.size());
 
+  // Re-number descriptor passes into this graph's dense id space; dependency ids
+  // are expected to reference the descriptor order.
   for (const auto& pass : desc.passes) {
     (void)pass.id;
     add_pass(pass.name, pass.type, pass.reads, pass.writes);
@@ -86,6 +90,7 @@ bool FrameGraph::topo_sort(std::vector<std::uint32_t>& out, std::vector<std::str
   if (m_passes.empty()) {
     return true;
   }
+  out.reserve(m_passes.size());
 
   std::vector<std::uint32_t> indegree(m_passes.size(), 0);
   for (const auto& dep : m_dependencies) {
@@ -118,6 +123,8 @@ bool FrameGraph::topo_sort(std::vector<std::uint32_t>& out, std::vector<std::str
     }
   }
 
+  // Kahn's algorithm leaves nodes unvisited only when every remaining node is
+  // blocked by a cycle.
   if (out.size() != m_passes.size()) {
     if (diagnostics) {
       diagnostics->push_back("frame graph has dependency cycle");
@@ -138,7 +145,18 @@ bool FrameGraph::validate(std::vector<std::string>* diagnostics) const {
 
   std::unordered_map<ResourceHandle, std::uint32_t> lastWriter;
   std::unordered_map<ResourceHandle, std::vector<std::uint32_t>> lastReaders;
+  std::size_t resourceRefCount = 0u;
+  for (const auto& pass : m_passes) {
+    resourceRefCount += pass.reads.size() + pass.writes.size();
+  }
+  lastWriter.reserve(resourceRefCount);
+  lastReaders.reserve(resourceRefCount);
+  std::vector<bool> visited(m_passes.size(), false);
 
+  // Hazard validation walks topological order while remembering the most recent
+  // writer and still-unordered readers for each resource. Every read-after-write,
+  // write-after-write, and write-after-read relationship must have an explicit
+  // dependency path.
   for (std::size_t passIndex = 0; passIndex < order.size(); ++passIndex) {
     const auto currentId = order[passIndex];
     const auto& current = m_passes[currentId];
@@ -146,7 +164,7 @@ bool FrameGraph::validate(std::vector<std::string>* diagnostics) const {
     for (const auto read : current.reads) {
       const auto writerIt = lastWriter.find(read);
       if (writerIt != lastWriter.end()) {
-        std::vector<bool> visited(m_passes.size(), false);
+        std::fill(visited.begin(), visited.end(), false);
         if (!has_path(writerIt->second, currentId, visited)) {
           if (diagnostics) {
             diagnostics->push_back("hazard: pass '" + current.name + "' reads resource without write dependency from pass " +
@@ -161,7 +179,7 @@ bool FrameGraph::validate(std::vector<std::string>* diagnostics) const {
     for (const auto write : current.writes) {
       const auto writerIt = lastWriter.find(write);
       if (writerIt != lastWriter.end() && writerIt->second != currentId) {
-        std::vector<bool> visited(m_passes.size(), false);
+        std::fill(visited.begin(), visited.end(), false);
         if (!has_path(writerIt->second, currentId, visited)) {
           if (diagnostics) {
             diagnostics->push_back("hazard: pass '" + current.name + "' writes same resource as pass " +
@@ -174,7 +192,7 @@ bool FrameGraph::validate(std::vector<std::string>* diagnostics) const {
       const auto readersIt = lastReaders.find(write);
       if (readersIt != lastReaders.end()) {
         for (const auto reader : readersIt->second) {
-          std::vector<bool> visited(m_passes.size(), false);
+          std::fill(visited.begin(), visited.end(), false);
           if (!has_path(reader, currentId, visited)) {
             if (diagnostics) {
               diagnostics->push_back("hazard: pass '" + current.name + "' writes resource with pending read from pass " +
@@ -209,6 +227,7 @@ bool FrameGraph::execute(IRenderCommandContext& context,
 
   std::vector<std::uint32_t> order;
   if (execution_order && !execution_order->empty()) {
+    order.reserve(execution_order->size());
     for (const auto id : *execution_order) {
       if (id >= m_passes.size()) {
         return false;
@@ -230,6 +249,8 @@ bool FrameGraph::execute(IRenderCommandContext& context,
       return false;
     }
     if (pass.type == PassType::Compute) {
+      // The interface-level executor uses an 8x8 workgroup convention for
+      // skeleton backends; native backends can replace this at command recording.
       const auto dispatchX = std::max<std::uint32_t>(1u, (frame.viewport_width + 7u) / 8u);
       const auto dispatchY = std::max<std::uint32_t>(1u, (frame.viewport_height + 7u) / 8u);
       if (!context.dispatch(dispatchX, dispatchY, 1)) {

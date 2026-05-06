@@ -12,12 +12,14 @@
 
 namespace vkpt::render {
 
+/// D3D12 shader compiler facade; currently validates HLSL compute descriptors.
 class D3D12ShaderCompiler final : public IShaderCompiler {
  public:
   bool supports_feature(std::string_view feature) const override;
   bool compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) override;
 };
 
+/// In-memory cache for D3D12 skeleton shader artifacts and manifests.
 class D3D12ShaderCache final : public IShaderCache {
  public:
   bool query(std::string_view key, std::string& binary) override;
@@ -27,9 +29,10 @@ class D3D12ShaderCache final : public IShaderCache {
   std::vector<CachedManifest> dump_manifest() const override;
 
  private:
-  std::unordered_map<std::string, std::string> m_entries;
+  std::unordered_map<std::string, std::string, TransparentStringHash, std::equal_to<>> m_entries;
 };
 
+/// Simulated D3D12 allocator backed by CPU memory.
 class D3D12ResourceAllocator final : public IRenderResourceAllocator {
  public:
   ResourceHandle create_buffer(const BufferDesc& desc) override;
@@ -55,6 +58,7 @@ class D3D12ResourceAllocator final : public IRenderResourceAllocator {
   std::unordered_map<ResourceHandle, ResourceRecord> m_resources;
 };
 
+/// Command context matching D3D12 command-list shape without native objects.
 class D3D12CommandContext final : public IRenderCommandContext {
  public:
   bool begin_frame() override;
@@ -66,6 +70,7 @@ class D3D12CommandContext final : public IRenderCommandContext {
   bool barrier(ResourceHandle resource, std::uint32_t usage_before, std::uint32_t usage_after) override;
 };
 
+/// Headless swapchain placeholder for D3D12 presentation contracts.
 class D3D12Swapchain final : public IRenderSwapchain {
  public:
   explicit D3D12Swapchain(std::uint32_t width = 0u, std::uint32_t height = 0u);
@@ -79,6 +84,7 @@ class D3D12Swapchain final : public IRenderSwapchain {
   std::uint32_t m_height = 0u;
 };
 
+/// Simulated D3D12 device; command contexts require an active begin/end scope.
 class D3D12Device final : public IRenderDevice {
  public:
   explicit D3D12Device(std::unique_ptr<D3D12ResourceAllocator> allocator, std::unique_ptr<D3D12Swapchain> swapchain);
@@ -94,6 +100,7 @@ class D3D12Device final : public IRenderDevice {
   bool m_running = false;
 };
 
+/// D3D12 compute backend skeleton plus native accelerator discovery helpers.
 class D3D12Backend final : public IRenderBackend {
  public:
   bool initialize() override;
@@ -112,9 +119,12 @@ class D3D12Backend final : public IRenderBackend {
   std::unique_ptr<D3D12ShaderCache> m_cache;
 };
 
+/// Enumerate CPU and, when available, native D3D12/DXR accelerators.
 std::vector<AcceleratorCapabilities> EnumerateD3D12Accelerators(bool include_cpu = true,
                                                                 bool include_warp = false);
+/// Build a conservative per-accelerator ray budget for D3D12-oriented rendering.
 RayBudgetPlan BuildD3D12RayBudgetPlan(const RayBudgetRequest& request);
+/// Execute a minimal graph/allocator smoke test against a D3D12-compatible backend.
 bool RunD3D12ComputeSmoke(vkpt::render::IRenderBackend& backend);
 
 }  // namespace vkpt::render
