@@ -1,0 +1,213 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Animated Cube Test",
+    "author": "vkPathTracer"
+  },
+  "assets": [
+    {
+      "id": 700,
+      "type": "model/gltf",
+      "uri": "../models/animated_cube/AnimatedCube.gltf"
+    }
+  ],
+  "materials": [
+    {
+      "id": 610,
+      "name": "Neutral studio floor",
+      "family": "concrete",
+      "albedo": [
+        0.42,
+        0.43,
+        0.45
+      ],
+      "roughness": 0.82,
+      "metallic": 0.0
+    },
+    {
+      "id": 611,
+      "name": "Soft blue backdrop",
+      "family": "plaster",
+      "albedo": [
+        0.30,
+        0.35,
+        0.42
+      ],
+      "roughness": 0.88,
+      "metallic": 0.0
+    }
+  ],
+  "geometry": [
+    {
+      "id": 620,
+      "primitive": "triangle",
+      "material_id": 610,
+      "vertices": [
+        [
+          -4.0,
+          -1.05,
+          -4.0
+        ],
+        [
+          4.0,
+          -1.05,
+          -4.0
+        ],
+        [
+          4.0,
+          -1.05,
+          4.0
+        ],
+        [
+          -4.0,
+          -1.05,
+          4.0
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    },
+    {
+      "id": 621,
+      "primitive": "triangle",
+      "material_id": 611,
+      "vertices": [
+        [
+          -4.0,
+          -1.05,
+          -2.75
+        ],
+        [
+          4.0,
+          -1.05,
+          -2.75
+        ],
+        [
+          4.0,
+          3.25,
+          -2.75
+        ],
+        [
+          -4.0,
+          3.25,
+          -2.75
+        ]
+      ],
+      "indices": [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "id": 601,
+      "name": "Studio floor",
+      "mesh": {
+        "mesh_id": 620,
+        "material_id": 610
+      }
+    },
+    {
+      "id": 602,
+      "name": "Studio backdrop",
+      "mesh": {
+        "mesh_id": 621,
+        "material_id": 611
+      }
+    },
+    {
+      "id": 603,
+      "name": "Warm key light",
+      "transform": {
+        "translation": [
+          -2.0,
+          3.2,
+          2.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [
+          1.0,
+          0.86,
+          0.68
+        ],
+        "intensity": 20.0,
+        "radius": 1.1
+      }
+    },
+    {
+      "id": 604,
+      "name": "Cool rim light",
+      "transform": {
+        "translation": [
+          2.4,
+          2.0,
+          -1.8
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "light": {
+        "type": "point",
+        "color": [
+          0.55,
+          0.72,
+          1.0
+        ],
+        "intensity": 6.0,
+        "radius": 0.65
+      }
+    },
+    {
+      "id": 605,
+      "name": "Low studio ambient",
+      "light": {
+        "type": "environment",
+        "color": [
+          0.08,
+          0.10,
+          0.13
+        ],
+        "intensity": 0.35,
+        "radius": 0.0
+      }
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 96,
+    "warmup_frames": 8
+  }
+}

@@ -3618,6 +3618,8 @@ QtDockPanelContent BuildQtTimelineDock(const vkpt::scene::SceneDocument& documen
     if (!entity.animation.clip.empty()) {
       ++animated;
       QtDockAddRow(panel, QtEntityDisplayName(entity) + " clip=" + entity.animation.clip +
+          " duration=" + QtDockNumber(entity.animation.duration_seconds, 2) + "s" +
+          " speed=" + QtDockNumber(entity.animation.playback_speed, 2) +
           (entity.animation.looping ? " loop" : " once"));
     }
   }
@@ -4022,7 +4024,66 @@ float DegToRad(float degrees) {
   return degrees * (3.14159265358979323846f / 180.0f);
 }
 
+bool AnimationHasAuthoredMotion(const vkpt::scene::AnimationComponent& animation) {
+  constexpr float kEpsilon = 1.0e-6f;
+  return std::fabs(animation.translation_amplitude.x) > kEpsilon ||
+         std::fabs(animation.translation_amplitude.y) > kEpsilon ||
+         std::fabs(animation.translation_amplitude.z) > kEpsilon ||
+         std::fabs(animation.rotation_degrees.x) > kEpsilon ||
+         std::fabs(animation.rotation_degrees.y) > kEpsilon ||
+         std::fabs(animation.rotation_degrees.z) > kEpsilon ||
+         std::fabs(animation.scale_amplitude.x) > kEpsilon ||
+         std::fabs(animation.scale_amplitude.y) > kEpsilon ||
+         std::fabs(animation.scale_amplitude.z) > kEpsilon;
+}
+
+vkpt::scene::Quat QuatFromEulerDegrees(const vkpt::scene::Vec3& degrees) {
+  const auto qx = QuatFromAxisAngle({1.0f, 0.0f, 0.0f}, DegToRad(degrees.x));
+  const auto qy = QuatFromAxisAngle({0.0f, 1.0f, 0.0f}, DegToRad(degrees.y));
+  const auto qz = QuatFromAxisAngle({0.0f, 0.0f, 1.0f}, DegToRad(degrees.z));
+  return QuatMultiply(qz, QuatMultiply(qy, qx));
+}
+
+vkpt::scene::TransformComponent SampleAnimationTransform(
+    const vkpt::scene::TransformComponent& base,
+    const vkpt::scene::AnimationComponent& animation,
+    float elapsed_seconds) {
+  vkpt::scene::TransformComponent out = base;
+  const float duration = std::max(1.0f / 60.0f, animation.duration_seconds);
+  float local_time = elapsed_seconds * animation.playback_speed;
+  if (animation.looping) {
+    local_time = std::fmod(local_time, duration);
+    if (local_time < 0.0f) {
+      local_time += duration;
+    }
+  } else {
+    local_time = ClampFloat(local_time, 0.0f, duration);
+  }
+  const float phase = duration > 0.0f ? ClampFloat(local_time / duration, 0.0f, 1.0f) : 0.0f;
+  const float wave = std::sin(phase * 6.28318530717958647692f);
+
+  out.translation.x += animation.translation_amplitude.x * wave;
+  out.translation.y += animation.translation_amplitude.y * wave;
+  out.translation.z += animation.translation_amplitude.z * wave;
+
+  const vkpt::scene::Vec3 animated_degrees{
+      animation.rotation_degrees.x * phase,
+      animation.rotation_degrees.y * phase,
+      animation.rotation_degrees.z * phase};
+  out.rotation = QuatMultiply(QuatFromEulerDegrees(animated_degrees), base.rotation);
+
+  out.scale.x = std::max(1.0e-5f, base.scale.x * (1.0f + animation.scale_amplitude.x * wave));
+  out.scale.y = std::max(1.0e-5f, base.scale.y * (1.0f + animation.scale_amplitude.y * wave));
+  out.scale.z = std::max(1.0e-5f, base.scale.z * (1.0f + animation.scale_amplitude.z * wave));
+  out.dirty = true;
+  return out;
+}
+
 vkpt::pathtracer::Vec3 ToPtVec3(const vkpt::scene::Vec3& v) {
+  return {v.x, v.y, v.z};
+}
+
+vkpt::scene::Vec3 ToSceneVec3(const vkpt::pathtracer::Vec3& v) {
   return {v.x, v.y, v.z};
 }
 
@@ -8474,11 +8535,131 @@ int main(int argc, char** argv) {
         qtDockPanelsDirty = true;
         qtSyncPhysicsFromSceneDocument();
         qtPreviewStatus = qtTracerReady ? "scene edited" : "scene edit renderer reload failed";
-        ui_runtime_state.status_message = std::string("gizmo ") + std::string(reason);
+        ui_runtime_state.status_message = reason == std::string_view{"animation playback"}
+            ? std::string("animation playback")
+            : std::string("gizmo ") + std::string(reason);
         qtPublishedRays.store(0u, std::memory_order_relaxed);
         updateQtSelectionOverlay();
         return qtTracerReady;
       };
+      std::unordered_map<vkpt::core::StableId, vkpt::scene::TransformComponent>
+          qtAnimationBaseTransforms;
+      auto qtRefreshAnimationBaseTransforms = [&](bool replaceExisting) {
+        for (const auto& entity : qtSceneDocument.entities) {
+          if (entity.animation.clip.empty()) {
+            continue;
+          }
+          if (!replaceExisting && qtAnimationBaseTransforms.contains(entity.id)) {
+            continue;
+          }
+          qtAnimationBaseTransforms[entity.id] =
+              entity.has_transform ? entity.transform : vkpt::scene::TransformComponent{};
+        }
+      };
+      auto qtEntityHasAnimatedTransformPath =
+          [&](const vkpt::scene::SceneEntityDefinition& entity) {
+        if (!entity.animation.clip.empty()) {
+          return true;
+        }
+        std::unordered_set<vkpt::core::StableId> visited;
+        vkpt::core::StableId parent = entity.has_hierarchy ? entity.hierarchy.parent : 0u;
+        while (parent != 0u && visited.insert(parent).second) {
+          const auto* parentEntity = static_cast<const vkpt::scene::SceneEntityDefinition*>(nullptr);
+          for (const auto& candidate : qtSceneDocument.entities) {
+            if (candidate.id == parent) {
+              parentEntity = &candidate;
+              break;
+            }
+          }
+          if (parentEntity == nullptr) {
+            break;
+          }
+          if (!parentEntity->animation.clip.empty()) {
+            return true;
+          }
+          parent = parentEntity->has_hierarchy ? parentEntity->hierarchy.parent : 0u;
+        }
+        return false;
+      };
+      uint32_t qtAnimationTransformRevision = 1u;
+      const auto qtAnimationStartTime = std::chrono::steady_clock::now();
+      auto qtApplySceneAnimation = [&](std::chrono::steady_clock::time_point now) {
+        if (qtGizmoDrag.active) {
+          return false;
+        }
+        qtRefreshAnimationBaseTransforms(false);
+        bool animated = false;
+        const float elapsedSeconds =
+            std::chrono::duration<float>(now - qtAnimationStartTime).count();
+        for (auto& entity : qtSceneDocument.entities) {
+          if (entity.animation.clip.empty() ||
+              !AnimationHasAuthoredMotion(entity.animation)) {
+            continue;
+          }
+          const auto baseIt = qtAnimationBaseTransforms.find(entity.id);
+          if (baseIt == qtAnimationBaseTransforms.end()) {
+            continue;
+          }
+          entity.has_transform = true;
+          entity.transform = SampleAnimationTransform(baseIt->second,
+                                                      entity.animation,
+                                                      elapsedSeconds);
+          animated = true;
+        }
+        if (!animated) {
+          return false;
+        }
+
+        const auto worldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
+        const auto* world = worldSnapshot ? &worldSnapshot.value() : nullptr;
+        std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates;
+        for (const auto& entity : qtSceneDocument.entities) {
+          if (!entity.has_mesh || !qtEntityHasAnimatedTransformPath(entity)) {
+            continue;
+          }
+          const uint32_t instanceIndex = qtFindRtInstanceIndex(entity.id);
+          if (instanceIndex == vkpt::pathtracer::kInvalidRTInstanceIndex) {
+            continue;
+          }
+          const auto worldTransform = ResolveEntityWorldTransform(entity, world);
+          vkpt::pathtracer::RTInstanceTransformUpdate update;
+          update.entity_id = entity.id;
+          update.instance_index = instanceIndex;
+          update.flags = vkpt::pathtracer::kRTInstanceFlagDynamicTransform |
+                         vkpt::pathtracer::kRTInstanceFlagTransformDirty;
+          update.transform_revision = qtAnimationTransformRevision++;
+          update.translation = ToPtVec3(worldTransform.translation);
+          update.rotation = ToPtQuat4(worldTransform.rotation);
+          update.scale = ToPtVec3(worldTransform.scale);
+          updates.push_back(update);
+        }
+
+        if (!updates.empty() && !qtUseBg && qtTracerReady &&
+            qtTracer->update_instance_transforms(updates)) {
+          for (const auto& update : updates) {
+            if (update.instance_index >= qtScene.instances.size()) {
+              continue;
+            }
+            auto& instance = qtScene.instances[update.instance_index];
+            instance.translation = update.translation;
+            instance.rotation = update.rotation;
+            instance.scale = update.scale;
+            instance.flags |= update.flags;
+            instance.transform_revision = update.transform_revision;
+          }
+          qtTracerReady = qtTracer->reset_accumulation();
+          qtSampleIndex = 0u;
+          qtPublishedSample.store(0u, std::memory_order_relaxed);
+          qtPublishedRays.store(0u, std::memory_order_relaxed);
+          qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
+          RebuildSelectionBounds(ui_selection_state, qtPickables);
+          updateQtSelectionOverlay();
+          qtPreviewStatus = "animation playback";
+          return qtTracerReady;
+        }
+        return qtReloadEditedScene("animation playback");
+      };
+      qtRefreshAnimationBaseTransforms(true);
       auto qtReloadRenderSettings = [&](std::string_view reason) {
         qtPublishedSample.store(0u, std::memory_order_relaxed);
         qtPublishedRays.store(0u, std::memory_order_relaxed);
@@ -10835,6 +11016,7 @@ int main(int argc, char** argv) {
         }
         qtApplyContinuousFpsMovement(qtInputDt);
         qtApplyPhysicsSimulation(qtFrameStart);
+        qtApplySceneAnimation(qtFrameStart);
         updateQtSelectionOverlay();
 #endif
 

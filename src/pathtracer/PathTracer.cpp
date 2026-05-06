@@ -2130,6 +2130,26 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     entityById[entity.id] = &entity;
   }
 
+  auto entity_has_animated_transform_path =
+      [&](const vkpt::scene::SceneEntityDefinition& entity) {
+    if (!entity.animation.clip.empty()) {
+      return true;
+    }
+    std::unordered_set<vkpt::core::StableId> visited;
+    vkpt::core::StableId parent = entity.has_hierarchy ? entity.hierarchy.parent : 0u;
+    while (parent != 0u && visited.insert(parent).second) {
+      const auto parentIt = entityById.find(parent);
+      if (parentIt == entityById.end() || parentIt->second == nullptr) {
+        break;
+      }
+      if (!parentIt->second->animation.clip.empty()) {
+        return true;
+      }
+      parent = parentIt->second->has_hierarchy ? parentIt->second->hierarchy.parent : 0u;
+    }
+    return false;
+  };
+
   auto resolve_entity_transform = [&](vkpt::core::StableId id,
                                       const vkpt::scene::TransformComponent* local_transform,
                                       bool* has_transform) {
@@ -2211,8 +2231,14 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     instance.first_triangle = firstTriangle;
     instance.triangle_count = static_cast<uint32_t>(geometry->indices.size() / 3u);
     instance.material_index = materialIndex;
-    if (entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic) {
-      instance.flags |= kRTInstanceFlagDynamicTransform | kRTInstanceFlagPhysicsControlled;
+    const bool physics_dynamic =
+        entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
+    const bool animation_dynamic = entity_has_animated_transform_path(entity);
+    if (physics_dynamic || animation_dynamic) {
+      instance.flags |= kRTInstanceFlagDynamicTransform;
+      if (physics_dynamic) {
+        instance.flags |= kRTInstanceFlagPhysicsControlled;
+      }
       instance.local_first_vertex = static_cast<uint32_t>(scene.local_vertices.size());
       instance.local_vertex_count = static_cast<uint32_t>(geometry->vertices.size());
       for (const auto& vertex : geometry->vertices) {

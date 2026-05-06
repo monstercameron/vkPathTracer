@@ -181,11 +181,20 @@ struct PhysicsBodyComponent {
 
 struct ScriptComponent {
   std::string script;
+  std::string language = "lua";
+  std::string entry = "default";
+  bool enabled = true;
+  bool reload_on_save = true;
 };
 
 struct AnimationComponent {
   std::string clip;
   bool looping = true;
+  float duration_seconds = 1.0f;
+  float playback_speed = 1.0f;
+  Vec3 translation_amplitude{0.0f, 0.0f, 0.0f};
+  Vec3 rotation_degrees{0.0f, 0.0f, 0.0f};
+  Vec3 scale_amplitude{0.0f, 0.0f, 0.0f};
 };
 
 struct BenchmarkTagComponent {

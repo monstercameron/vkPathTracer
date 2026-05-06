@@ -260,6 +260,12 @@ void AddEntityProperties(QtPanelRow& row, const vkpt::scene::SceneEntityDefiniti
                                       QtPanelPropertyKind::Asset, true));
     row.properties.push_back(Property("animation.looping", "Looping", BoolText(entity.animation.looping), "Animation",
                                       QtPanelPropertyKind::Toggle, true));
+    row.properties.push_back(Property("animation.duration_seconds", "Duration", FloatText(entity.animation.duration_seconds),
+                                      "Animation", QtPanelPropertyKind::Number, true));
+    row.properties.push_back(Property("animation.playback_speed", "Speed", FloatText(entity.animation.playback_speed),
+                                      "Animation", QtPanelPropertyKind::Number, true));
+    row.properties.push_back(Property("animation.rotation_degrees", "Rotation", Vec3Text(entity.animation.rotation_degrees),
+                                      "Animation", QtPanelPropertyKind::Vector3, true));
   }
   row.properties.push_back(Property("physics.enabled", "Physics Enabled",
                                     BoolText(entity.has_physics_body && entity.physics_body.enabled),
@@ -979,6 +985,12 @@ QtPanelModel BuildTimelinePanelModel(const QtPanelBuildContext& context) {
                                         QtPanelPropertyKind::Asset, true));
       row.properties.push_back(Property("animation.looping", "Looping", BoolText(entity.animation.looping), "Animation",
                                         QtPanelPropertyKind::Toggle, true));
+      row.properties.push_back(Property("animation.duration_seconds", "Duration", FloatText(entity.animation.duration_seconds),
+                                        "Animation", QtPanelPropertyKind::Number, true));
+      row.properties.push_back(Property("animation.playback_speed", "Speed", FloatText(entity.animation.playback_speed),
+                                        "Animation", QtPanelPropertyKind::Number, true));
+      row.properties.push_back(Property("animation.rotation_degrees", "Rotation", Vec3Text(entity.animation.rotation_degrees),
+                                        "Animation", QtPanelPropertyKind::Vector3, true));
       model.rows.push_back(std::move(row));
     }
   }

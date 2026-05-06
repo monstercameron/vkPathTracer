@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-05 (session 26)
+
+### glTF animation playback and animated test asset
+
+- Added scene animation playback fields for duration, playback speed, and transform amplitudes, with scene JSON parse/export validation.
+- Expanded scene model assets to load external-buffer glTF mesh geometry, material texture references, and basic transform animation clip metadata.
+- Marked animated mesh instance paths as dynamic so Qt can update animated transforms without rebuilding the full D3D12 scene each frame, with CPU fallback scene refresh.
+- Added the CC0 Khronos AnimatedCube glTF sample and `assets/scenes/animated_cube_test.json` as a focused animation playback test scene.
+
 ## 2026-05-05 (session 25)
 
 ### Textured asset imports, D3D12 texture pipeline, and docs relocation
