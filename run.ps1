@@ -2,7 +2,9 @@ param(
     [switch]$NoBuild,
     [string]$Preset = "windows-clangcl-d3d12-qt-debug",
     [string]$Scene = "assets\scenes\cornell_native.json",
-    [string]$Backend = "d3d12",
+    [string]$Backend = "d3d12-dxr",
+    [string]$D3D12AcceleratorPreset = "high-performance",
+    [string]$D3D12AdapterNameFilter = "B580;UHD Graphics 770;UHD 770",
     [uint32]$Width = 960,
     [uint32]$Height = 540,
     [uint32]$MaxDepth = 2,
@@ -47,6 +49,9 @@ param(
 #   crash_artifact_dir.
 # - ptapp/runtime env flags:
 #   PT_D3D12_RAYS_PER_PIXEL, PT_D3D12_READBACK_INTERVAL,
+#   PT_D3D12_ACCELERATOR_PRESET, PT_D3D12_INCLUDE_CPU,
+#   PT_D3D12_INCLUDE_INTEGRATED_GPU, PT_D3D12_INCLUDE_WARP,
+#   PT_D3D12_ADAPTER_NAME_FILTER,
 #   PTAPP_BACKEND, PTAPP_LOG_LEVEL, PTAPP_SCENE, PTAPP_PLATFORM,
 #   PTAPP_HEADLESS, PTAPP_BENCHMARK_MODE, PTAPP_UI_PRESENT_HZ,
 #   PTAPP_RENDER_WIDTH, PTAPP_RENDER_HEIGHT, PTAPP_SPP, PTAPP_MAX_DEPTH,
@@ -111,12 +116,17 @@ param(
 #   discrete GPU, then integrated GPU, then CPU.
 # - high-performance: use every eligible real accelerator at once:
 #   discrete GPU + integrated GPU + capped CPU workers.
+# - This launcher requests high-performance GPU-only D3D12 policy for Intel B580
+#   plus UHD 770 class adapters and disables CPU participation. The current Qt
+#   path tracer still renders through one concrete D3D12 tracer instance; explicit
+#   d3d12/d3d12-dxr backend selection refuses CPU fallback if GPU init fails.
 # - WARP / Microsoft Basic Render Driver is a software fallback and should stay
 #   opt-in; it is listed for diagnostics but not part of default high-performance
 #   ray generation.
 # - ptapp --list-accelerators prints both auto and high-performance plans today.
-# - There is not yet a ptapp runtime flag for accelerator_preset. When that lands,
-#   add a launcher parameter here, default it to auto, and pass it through to ptapp.
+# - There is not yet a ptapp CLI flag for accelerator_preset. Keep the process
+#   environment policy here so planner/runtime code can consume it without
+#   changing the launcher command line.
 
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
@@ -231,6 +241,8 @@ if (-not $NoEnvFile) {
 Use-EnvString "Preset" "VKPT_RUN_PRESET" ([ref]$Preset)
 Use-EnvString "Scene" "PTAPP_SCENE" ([ref]$Scene)
 Use-EnvString "Backend" "PTAPP_BACKEND" ([ref]$Backend)
+Use-EnvString "D3D12AcceleratorPreset" "PT_D3D12_ACCELERATOR_PRESET" ([ref]$D3D12AcceleratorPreset)
+Use-EnvString "D3D12AdapterNameFilter" "PT_D3D12_ADAPTER_NAME_FILTER" ([ref]$D3D12AdapterNameFilter)
 Use-EnvUInt32 "Width" "PTAPP_RENDER_WIDTH" ([ref]$Width)
 Use-EnvUInt32 "Height" "PTAPP_RENDER_HEIGHT" ([ref]$Height)
 Use-EnvUInt32 "MaxDepth" "PTAPP_MAX_DEPTH" ([ref]$MaxDepth)
@@ -284,6 +296,17 @@ if (-not (Test-Path $scenePath)) {
 $env:PATH = "$bin;$env:PATH"
 $env:PT_D3D12_RAYS_PER_PIXEL = [string]$D3D12RaysPerPixel
 $env:PT_D3D12_READBACK_INTERVAL = [string]$D3D12ReadbackInterval
+$env:PT_D3D12_ACCELERATOR_PRESET = $D3D12AcceleratorPreset
+$env:PT_D3D12_INCLUDE_CPU = "0"
+$env:PT_D3D12_INCLUDE_INTEGRATED_GPU = "1"
+$env:PT_D3D12_INCLUDE_WARP = "0"
+$env:PT_D3D12_ADAPTER_NAME_FILTER = $D3D12AdapterNameFilter
+
+$normalizedBackend = $Backend.Trim().ToLowerInvariant()
+if ($normalizedBackend -in @("auto", "cpu", "cpu-tiled", "cputiled")) {
+    Write-Error "[run] CPU backends are disabled by this launcher. Use -Backend d3d12-dxr for DXR or -Backend d3d12 for compute."
+    exit 1
+}
 
 $ptappArgs = @(
     "--window",
@@ -309,5 +332,6 @@ if ($Console -or $Terminal) {
 }
 
 $consoleMode = if ($Console -or $Terminal) { "console diagnostics on" } else { "console diagnostics off" }
-Write-Host "[run] Launching Qt demo ($Backend backend, scene '$Scene', internal ${Width}x${Height}, depth ${MaxDepth}, ${D3D12RaysPerPixel} rays/pixel/dispatch, readback every ${D3D12ReadbackInterval} batches, ${UiPresentHz}Hz UI, ${consoleMode})..." -ForegroundColor Cyan
+$acceleratorMode = "D3D12 preset ${D3D12AcceleratorPreset}, adapters '${D3D12AdapterNameFilter}', CPU off, iGPU on, WARP off"
+Write-Host "[run] Launching Qt demo ($Backend backend, scene '$Scene', internal ${Width}x${Height}, depth ${MaxDepth}, ${D3D12RaysPerPixel} rays/pixel/dispatch, readback every ${D3D12ReadbackInterval} batches, ${UiPresentHz}Hz UI, ${acceleratorMode}, ${consoleMode})..." -ForegroundColor Cyan
 & $exe @ptappArgs
