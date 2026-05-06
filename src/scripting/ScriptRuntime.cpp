@@ -703,6 +703,32 @@ int LuaWorldChildrenOf(lua_State* lua) {
   return 1;
 }
 
+int LuaWorldDestroyEntity(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr || host->commands == nullptr) {
+    return 0;
+  }
+  vkpt::core::StableEntityId entity_id = 0;
+  if (lua_istable(lua, 2)) {
+    entity_id = LuaSelfEntity(lua, 2);
+  } else if (lua_isinteger(lua, 2) || lua_isnumber(lua, 2)) {
+    entity_id = static_cast<vkpt::core::StableEntityId>(std::max<lua_Integer>(0, lua_tointeger(lua, 2)));
+  } else if (lua_isstring(lua, 2) && host->world != nullptr) {
+    const std::string_view name{lua_tostring(lua, 2)};
+    for (const auto candidate : host->world->all_entities()) {
+      const auto* entity = host->world->get_entity(candidate);
+      if (entity != nullptr && entity->identity.name == name) {
+        entity_id = candidate;
+        break;
+      }
+    }
+  }
+  if (entity_id != 0) {
+    host->commands->add_destroy_entity(entity_id);
+  }
+  return 0;
+}
+
 int LuaWorldSpawnEntity(lua_State* lua) {
   auto* host = Host(lua);
   if (host == nullptr || host->commands == nullptr || !lua_istable(lua, 2)) {
@@ -737,6 +763,27 @@ int LuaWorldSpawnEntity(lua_State* lua) {
     mesh.mesh_id = LuaStableIdField(lua, -1, "mesh_id");
     mesh.material_id = LuaStableIdField(lua, -1, "material_id");
     host->commands->add_set_component(entity_id, vkpt::scene::ComponentKind::MeshRenderer, mesh);
+  }
+  lua_pop(lua, 1);
+
+  lua_getfield(lua, def, "sdf_primitive");
+  if (lua_istable(lua, -1)) {
+    vkpt::scene::SdfPrimitiveComponent sdf;
+    sdf.shape = LuaStringField(lua, -1, "shape", sdf.shape);
+    sdf.radius = LuaNumberField(lua, -1, "radius", 0, sdf.radius);
+    sdf.param_a = LuaNumberField(lua, -1, "param_a", 0, sdf.param_a);
+    sdf.param_b = LuaNumberField(lua, -1, "param_b", 0, sdf.param_b);
+    host->commands->add_set_component(entity_id, vkpt::scene::ComponentKind::SdfPrimitive, sdf);
+  }
+  lua_pop(lua, 1);
+
+  lua_getfield(lua, def, "material");
+  if (lua_istable(lua, -1)) {
+    vkpt::scene::MaterialOverrideComponent material;
+    material.material_id = LuaStableIdField(lua, -1, "id");
+    if (material.material_id != 0) {
+      host->commands->add_set_component(entity_id, vkpt::scene::ComponentKind::MaterialOverride, material);
+    }
   }
   lua_pop(lua, 1);
 
@@ -848,6 +895,8 @@ void PushWorldTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "children_of");
   PushHostClosure(lua, host, LuaWorldSpawnEntity);
   lua_setfield(lua, -2, "spawn_entity");
+  PushHostClosure(lua, host, LuaWorldDestroyEntity);
+  lua_setfield(lua, -2, "destroy_entity");
 }
 
 void PushInputTable(lua_State* lua, LuaHostContext& host) {

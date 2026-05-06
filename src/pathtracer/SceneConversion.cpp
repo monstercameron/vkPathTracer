@@ -108,6 +108,10 @@ Vec3 operator+(const Vec3& lhs, const Vec3& rhs) {
   return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
 }
 
+Vec3 operator-(const Vec3& lhs, const Vec3& rhs) {
+  return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
+}
+
 Vec3 operator*(const Vec3& lhs, float rhs) {
   return {lhs.x * rhs, lhs.y * rhs, lhs.z * rhs};
 }
@@ -138,6 +142,16 @@ Vec3 normalize(const Vec3& value) {
     return {0.0f, 1.0f, 0.0f};
   }
   return value / l;
+}
+
+float random01(uint64_t seed, uint32_t stream) {
+  constexpr float kInv24Bit = 1.0f / 16777216.0f;
+  return static_cast<float>((splitmix64(seed + static_cast<uint64_t>(stream)) >> 40u) & 0x00ffffffu) *
+         kInv24Bit;
+}
+
+float random_signed(uint64_t seed, uint32_t stream) {
+  return random01(seed, stream) * 2.0f - 1.0f;
 }
 
 Vec3 rotate_quat(const Vec3& value, const vkpt::scene::Quat& rotation) {
@@ -236,6 +250,14 @@ bool is_environment_light_type(std::string_view type) {
   return id == "environment" || id == "environment_sky" || id == "environment_hdri" ||
          id == "environmenthdri" || id == "hdri" || id == "hdri_sky" ||
          id == "open_sky" || id == "sky";
+}
+
+bool is_rain_particle_type(std::string_view type) {
+  return normalize_material_id(type) == "rain";
+}
+
+bool is_smoke_particle_type(std::string_view type) {
+  return normalize_material_id(type) == "smoke";
 }
 
 bool is_spot_light_type(std::string_view type) {
@@ -521,7 +543,10 @@ uint32_t material_effect_from_family(std::string_view family) {
   if (id == "normal_mapped_pbr") return 13u;
   if (id == "xray") return 14u;
   if (id == "volumetric_medium" || id == "volumetric_shafts" || id == "smoke") return 15u;
-  if (id == "wood" || id == "oak" || id == "walnut" || id == "parquet") return 16u;
+  if (id == "parquet" || id == "oak") return 17u;
+  if (id == "walnut" || id == "mahogany") return 18u;
+  if (id == "sandalwood" || id == "pine" || id == "teak" || id == "cedar") return 19u;
+  if (id == "wood") return 16u;
   return 0u;
 }
 
@@ -539,15 +564,24 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
   textureLookup.reserve(doc.assets.size() + doc.materials.size() * 2u);
   scene.textures.reserve(doc.assets.size() + doc.materials.size() * 2u);
   scene.materials.reserve(std::max<std::size_t>(1u, doc.materials.size()));
-  scene.instances.reserve(doc.entities.size());
+  scene.instances.reserve(doc.entities.size() + doc.particle_emitters.size());
   scene.lights.reserve(doc.entities.size() + doc.lights.size());
-  scene.sdf_primitives.reserve(doc.entities.size() + doc.sdf_primitives.size());
+  scene.sdf_primitives.reserve(doc.entities.size() + doc.sdf_primitives.size() + doc.particle_emitters.size() * 16u);
   scene.tessellation_requests.reserve(doc.entities.size());
   std::size_t estimated_vertices = 0u;
   std::size_t estimated_indices = 0u;
   for (const auto& geometry : doc.geometry) {
     estimated_vertices += geometry.vertices.size();
     estimated_indices += geometry.indices.size();
+  }
+  for (const auto& emitter : doc.particle_emitters) {
+    if (emitter.enabled && is_rain_particle_type(emitter.type)) {
+      estimated_vertices += static_cast<std::size_t>(emitter.count) * 12u;
+      estimated_indices += static_cast<std::size_t>(emitter.count) * 24u;
+    } else if (emitter.enabled && is_smoke_particle_type(emitter.type)) {
+      estimated_vertices += static_cast<std::size_t>(emitter.count) * 12u;
+      estimated_indices += static_cast<std::size_t>(emitter.count) * 24u;
+    }
   }
   scene.vertices.reserve(estimated_vertices);
   scene.texcoords.reserve(estimated_vertices);
@@ -1023,11 +1057,318 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
     }
   }
 
-  auto add_light = [&](vkpt::core::StableId id, const vkpt::scene::LightComponent& light) {
-    if (light.intensity <= 0.0f) {
+  auto material_index_for_id = [&](vkpt::core::StableId materialId) {
+    if (materialId != 0) {
+      if (auto mi = materialLookup.find(materialId); mi != materialLookup.end()) {
+        return mi->second;
+      }
+    }
+    return 0u;
+  };
+
+  auto make_particle_material_variant = [&](uint32_t baseMaterialIndex,
+                                            float brightness,
+                                            float emissionBoost,
+                                            float alphaScale) {
+    RTMaterial material = scene.materials.empty()
+                              ? RTMaterial{}
+                              : scene.materials[std::min<std::size_t>(baseMaterialIndex, scene.materials.size() - 1u)];
+    material.albedo = {
+        std::min(1.5f, material.albedo.x * brightness),
+        std::min(1.5f, material.albedo.y * brightness),
+        std::min(1.5f, material.albedo.z * brightness)};
+    material.emissive = {
+        material.emissive.x + material.albedo.x * emissionBoost,
+        material.emissive.y + material.albedo.y * emissionBoost,
+        material.emissive.z + material.albedo.z * emissionBoost};
+    material.alpha = clamp01(material.alpha * alphaScale);
+    scene.materials.push_back(material);
+    return static_cast<uint32_t>(scene.materials.size() - 1u);
+  };
+
+  auto emitter_world_position = [&](const vkpt::scene::SceneParticleEmitterDefinition& emitter,
+                                    const Vec3& local) {
+    return transform_point(
+        local,
+        Vec3{emitter.transform.translation.x, emitter.transform.translation.y, emitter.transform.translation.z},
+        emitter.transform.rotation,
+        Vec3{emitter.transform.scale.x, emitter.transform.scale.y, emitter.transform.scale.z});
+  };
+
+  struct ParticlePhysicsSample {
+    Vec3 position{};
+    Vec3 velocity{};
+  };
+
+  auto simulate_emitter_particle = [&](const vkpt::scene::SceneParticleEmitterDefinition& emitter,
+                                       const Vec3& basePosition,
+                                       const Vec3& velocityJitter,
+                                       uint64_t seed,
+                                       float age) {
+    const Vec3 baseVelocity{
+        emitter.velocity.x + velocityJitter.x,
+        emitter.velocity.y + velocityJitter.y,
+        emitter.velocity.z + velocityJitter.z};
+    const Vec3 acceleration{
+        emitter.wind.x,
+        emitter.wind.y - 9.80665f * emitter.gravity_scale,
+        emitter.wind.z};
+    const float dragDamping = std::exp(-std::max(0.0f, emitter.drag) * age);
+    Vec3 position = basePosition + baseVelocity * (age * dragDamping) +
+                    acceleration * (0.5f * age * age * dragDamping);
+    Vec3 velocity = (baseVelocity + acceleration * age) * dragDamping;
+
+    if (std::fabs(emitter.vortex_strength) > 1.0e-6f) {
+      const float radiusScale = std::sqrt(std::max(0.0f, position.x * position.x + position.z * position.z));
+      const float angle = emitter.vortex_strength * age * (0.35f + 0.65f * random01(seed, 31u));
+      const float c = std::cos(angle);
+      const float s = std::sin(angle);
+      const Vec3 before = position;
+      position.x = before.x * c - before.z * s;
+      position.z = before.x * s + before.z * c;
+      velocity.x += -position.z * emitter.vortex_strength * 0.1f * radiusScale;
+      velocity.z += position.x * emitter.vortex_strength * 0.1f * radiusScale;
+    }
+
+    if (emitter.bounce > 0.0f && position.y < emitter.collision_plane_y) {
+      position.y = emitter.collision_plane_y + (emitter.collision_plane_y - position.y) * emitter.bounce;
+      if (velocity.y < 0.0f) {
+        velocity.y = -velocity.y * emitter.bounce;
+      }
+      velocity.x *= 1.0f - 0.25f * emitter.bounce;
+      velocity.z *= 1.0f - 0.25f * emitter.bounce;
+    }
+    return ParticlePhysicsSample{position, velocity};
+  };
+
+  auto append_rain_emitter = [&](const vkpt::scene::SceneParticleEmitterDefinition& emitter) {
+    if (!emitter.enabled || emitter.count == 0u) {
       return;
     }
+    if (scene.vertices.size() >
+        static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) -
+            static_cast<std::size_t>(emitter.count) * 12u) {
+      log_scene_conversion_warning("skipped rain emitter because vertex range exceeds uint32",
+                                   emitter.id,
+                                   0u);
+      return;
+    }
+    const uint32_t baseMaterialIndex = material_index_for_id(emitter.material_id);
+    constexpr uint32_t kRainBuckets = 4u;
+    std::array<uint32_t, kRainBuckets> materialBuckets{
+        make_particle_material_variant(baseMaterialIndex, 0.75f, 0.00f, 0.80f),
+        make_particle_material_variant(baseMaterialIndex, 0.95f, 0.01f, 0.95f),
+        make_particle_material_variant(baseMaterialIndex, 1.18f, 0.025f, 1.05f),
+        make_particle_material_variant(baseMaterialIndex, 1.42f, 0.05f, 1.15f)};
+    const float halfRadius = std::max(0.001f, emitter.radius);
+    const float streakLength = std::max(0.002f, emitter.length);
+    const Vec3 bounds{
+        std::max(0.001f, emitter.bounds.x),
+        std::max(0.001f, emitter.bounds.y),
+        std::max(0.001f, emitter.bounds.z)};
+    for (uint32_t bucket = 0u; bucket < kRainBuckets; ++bucket) {
+      const uint32_t firstTriangle = static_cast<uint32_t>(scene.indices.size() / 3u);
+      const uint32_t firstVertex = static_cast<uint32_t>(scene.vertices.size());
+      uint32_t bucketDroplets = 0u;
+      for (uint32_t i = 0u; i < emitter.count; ++i) {
+        const uint64_t seed = (static_cast<uint64_t>(emitter.seed) << 32u) ^
+                              static_cast<uint64_t>(emitter.id) ^
+                              static_cast<uint64_t>(i) * 0x9e3779b97f4a7c15ULL;
+        const uint32_t particleBucket = static_cast<uint32_t>(random01(seed, 23u) * kRainBuckets) % kRainBuckets;
+        if (particleBucket != bucket) {
+          continue;
+        }
+      const float phase = std::fmod(random01(seed, 11u) + emitter.time / emitter.lifetime, 1.0f);
+      const Vec3 local{
+          random_signed(seed, 1u) * bounds.x,
+          (0.5f - phase) * 2.0f * bounds.y,
+          random_signed(seed, 3u) * bounds.z};
+      const Vec3 jitter{
+          random_signed(seed, 5u) * emitter.velocity_jitter.x,
+          random_signed(seed, 6u) * emitter.velocity_jitter.y,
+          random_signed(seed, 7u) * emitter.velocity_jitter.z};
+      const auto physics = simulate_emitter_particle(
+          emitter,
+          local,
+          jitter,
+          seed,
+          phase * emitter.lifetime);
+      const Vec3 particleDirection = normalize(
+          length_sq(physics.velocity) <= kEpsilon ? Vec3{0.0f, -1.0f, 0.0f} : physics.velocity);
+      Vec3 basisA = normalize(cross(particleDirection, Vec3{0.0f, 0.0f, 1.0f}));
+      if (length_sq(basisA) <= kEpsilon) {
+        basisA = normalize(cross(particleDirection, Vec3{1.0f, 0.0f, 0.0f}));
+      }
+      const Vec3 basisB = normalize(cross(particleDirection, basisA));
+      const Vec3 center = emitter_world_position(emitter, physics.position);
+      const float widthJitter = 0.72f + random01(seed, 29u) * 0.75f;
+      const Vec3 a = basisA * (halfRadius * widthJitter);
+      const Vec3 b = basisB * (halfRadius * widthJitter);
+      const Vec3 tip = center + particleDirection * (streakLength * 0.48f);
+      const Vec3 neck = center + particleDirection * (streakLength * 0.15f);
+      const Vec3 belly = center + particleDirection * (-streakLength * 0.28f);
+      const Vec3 tail = center + particleDirection * (-streakLength * 0.58f);
+      const uint32_t v = static_cast<uint32_t>(scene.vertices.size());
+      scene.vertices.push_back(tip);
+      scene.vertices.push_back(neck + a * -0.42f);
+      scene.vertices.push_back(neck + a * 0.42f);
+      scene.vertices.push_back(belly + a * -1.35f);
+      scene.vertices.push_back(belly + a * 1.35f);
+      scene.vertices.push_back(tail);
+      scene.vertices.push_back(tip);
+      scene.vertices.push_back(neck + b * -0.42f);
+      scene.vertices.push_back(neck + b * 0.42f);
+      scene.vertices.push_back(belly + b * -1.35f);
+      scene.vertices.push_back(belly + b * 1.35f);
+      scene.vertices.push_back(tail);
+      for (uint32_t uv = 0u; uv < 12u; ++uv) {
+        scene.texcoords.push_back(Vec2{});
+      }
+      const uint32_t quadIndices[] = {
+          v + 0u, v + 1u, v + 2u,
+          v + 1u, v + 3u, v + 4u,
+          v + 1u, v + 4u, v + 2u,
+          v + 3u, v + 5u, v + 4u,
+          v + 6u, v + 7u, v + 8u,
+          v + 7u, v + 9u, v + 10u,
+          v + 7u, v + 10u, v + 8u,
+          v + 9u, v + 11u, v + 10u};
+      scene.indices.insert(scene.indices.end(), std::begin(quadIndices), std::end(quadIndices));
+        ++bucketDroplets;
+      }
+      if (bucketDroplets == 0u) {
+        continue;
+      }
+      RTInstance instance;
+      instance.entity_id = emitter.id + bucket;
+      instance.geometry_id = static_cast<uint32_t>((emitter.id + bucket) & 0xffffffffu);
+      instance.first_triangle = firstTriangle;
+      instance.triangle_count = static_cast<uint32_t>((scene.indices.size() / 3u) - firstTriangle);
+      instance.material_index = materialBuckets[bucket];
+      instance.transform_revision = static_cast<uint32_t>(scene.instances.size() + 1u);
+      instance.translation = {emitter.transform.translation.x, emitter.transform.translation.y, emitter.transform.translation.z};
+      instance.rotation = {emitter.transform.rotation.x, emitter.transform.rotation.y, emitter.transform.rotation.z, emitter.transform.rotation.w};
+      instance.scale = {emitter.transform.scale.x, emitter.transform.scale.y, emitter.transform.scale.z};
+      scene.instances.push_back(instance);
+      (void)firstVertex;
+    }
+  };
+
+  auto append_smoke_emitter = [&](const vkpt::scene::SceneParticleEmitterDefinition& emitter) {
+    if (!emitter.enabled || emitter.count == 0u) {
+      return;
+    }
+    const uint32_t materialIndex = make_particle_material_variant(
+        material_index_for_id(emitter.material_id), 1.08f, 0.0f, 0.72f);
+    const uint32_t firstTriangle = static_cast<uint32_t>(scene.indices.size() / 3u);
+    const Vec3 bounds{
+        std::max(0.001f, emitter.bounds.x),
+        std::max(0.001f, emitter.bounds.y),
+        std::max(0.001f, emitter.bounds.z)};
+    uint32_t sheetCount = 0u;
+    for (uint32_t i = 0u; i < emitter.count; ++i) {
+      const uint64_t seed = (static_cast<uint64_t>(emitter.seed) << 32u) ^
+                            static_cast<uint64_t>(emitter.id) ^
+                            static_cast<uint64_t>(i) * 0xbf58476d1ce4e5b9ULL;
+      const float phase = std::fmod(random01(seed, 17u) + emitter.time / emitter.lifetime, 1.0f);
+      const Vec3 baseLocal{
+          random_signed(seed, 1u) * bounds.x,
+          random_signed(seed, 2u) * bounds.y,
+          random_signed(seed, 3u) * bounds.z};
+      const Vec3 jitter{
+          random_signed(seed, 5u) * emitter.velocity_jitter.x,
+          random_signed(seed, 6u) * emitter.velocity_jitter.y,
+          random_signed(seed, 7u) * emitter.velocity_jitter.z};
+      auto physics = simulate_emitter_particle(
+          emitter,
+          baseLocal,
+          jitter,
+          seed,
+          phase * emitter.lifetime);
+      Vec3 local = physics.position;
+      local.x += random_signed(seed, 8u) * emitter.turbulence * phase;
+      local.z += random_signed(seed, 9u) * emitter.turbulence * phase;
+
+      const Vec3 center = emitter_world_position(emitter, local);
+      const float growth = 0.65f + 0.85f * phase;
+      const float wobble = 0.75f + random01(seed, 13u) * 0.65f;
+      const float plumeHeight = std::max(0.04f, emitter.radius * (2.2f + 3.0f * phase) * wobble);
+      const float plumeWidth = std::max(0.03f, emitter.radius * (0.9f + 1.9f * phase) * wobble);
+      const float angle = random01(seed, 41u) * 6.28318530718f + emitter.vortex_strength * phase;
+      const Vec3 axisA{std::cos(angle), 0.0f, std::sin(angle)};
+      const Vec3 axisB{-axisA.z, 0.0f, axisA.x};
+      const Vec3 up{0.0f, 1.0f, 0.0f};
+      const Vec3 bottom = center - up * (plumeHeight * 0.35f);
+      const Vec3 mid = center + up * (plumeHeight * 0.10f);
+      const Vec3 top = center + up * (plumeHeight * 0.65f);
+      const uint32_t v = static_cast<uint32_t>(scene.vertices.size());
+      scene.vertices.push_back(bottom + axisA * (-plumeWidth * 0.28f));
+      scene.vertices.push_back(bottom + axisA * (plumeWidth * 0.28f));
+      scene.vertices.push_back(mid + axisA * (plumeWidth * 0.95f));
+      scene.vertices.push_back(mid + axisA * (-plumeWidth * 0.95f));
+      scene.vertices.push_back(top + axisA * (-plumeWidth * 0.42f));
+      scene.vertices.push_back(top + axisA * (plumeWidth * 0.42f));
+      scene.vertices.push_back(bottom + axisB * (-plumeWidth * 0.22f));
+      scene.vertices.push_back(bottom + axisB * (plumeWidth * 0.22f));
+      scene.vertices.push_back(mid + axisB * (plumeWidth * 0.82f));
+      scene.vertices.push_back(mid + axisB * (-plumeWidth * 0.82f));
+      scene.vertices.push_back(top + axisB * (-plumeWidth * 0.36f));
+      scene.vertices.push_back(top + axisB * (plumeWidth * 0.36f));
+      for (uint32_t uv = 0u; uv < 12u; ++uv) {
+        scene.texcoords.push_back(Vec2{});
+      }
+      const uint32_t plumeIndices[] = {
+          v + 0u, v + 1u, v + 2u, v + 0u, v + 2u, v + 3u,
+          v + 3u, v + 2u, v + 5u, v + 3u, v + 5u, v + 4u,
+          v + 6u, v + 7u, v + 8u, v + 6u, v + 8u, v + 9u,
+          v + 9u, v + 8u, v + 11u, v + 9u, v + 11u, v + 10u};
+      scene.indices.insert(scene.indices.end(), std::begin(plumeIndices), std::end(plumeIndices));
+      ++sheetCount;
+
+      if ((i % 5u) == 0u) {
+        RTSdfPrimitive puff{};
+        puff.shape = SdfShape::Sphere;
+        puff.position = center + up * (plumeHeight * 0.15f);
+        puff.rotation = {0.0f, 0.0f, 0.0f};
+        puff.radius = std::max(0.01f, emitter.radius * growth * wobble * 0.45f);
+        puff.scale = {1.0f, 1.5f + random01(seed, 14u), 1.0f};
+        puff.param_a = phase;
+        puff.param_b = emitter.turbulence;
+        puff.material_index = materialIndex;
+        scene.sdf_primitives.push_back(puff);
+      }
+    }
+    if (sheetCount != 0u) {
+      RTInstance instance;
+      instance.entity_id = emitter.id;
+      instance.geometry_id = static_cast<uint32_t>(emitter.id & 0xffffffffu);
+      instance.first_triangle = firstTriangle;
+      instance.triangle_count = static_cast<uint32_t>((scene.indices.size() / 3u) - firstTriangle);
+      instance.material_index = materialIndex;
+      instance.transform_revision = static_cast<uint32_t>(scene.instances.size() + 1u);
+      instance.translation = {emitter.transform.translation.x, emitter.transform.translation.y, emitter.transform.translation.z};
+      instance.rotation = {emitter.transform.rotation.x, emitter.transform.rotation.y, emitter.transform.rotation.z, emitter.transform.rotation.w};
+      instance.scale = {emitter.transform.scale.x, emitter.transform.scale.y, emitter.transform.scale.z};
+      scene.instances.push_back(instance);
+    }
+  };
+
+  for (const auto& emitter : doc.particle_emitters) {
+    if (is_rain_particle_type(emitter.type)) {
+      append_rain_emitter(emitter);
+    } else if (is_smoke_particle_type(emitter.type)) {
+      append_smoke_emitter(emitter);
+    }
+  }
+
+  auto add_light = [&](vkpt::core::StableId id,
+                       const vkpt::scene::LightComponent& light,
+                       bool enabled) {
+    const float effectiveIntensity = enabled ? std::max(0.0f, light.intensity) : 0.0f;
     if (is_environment_light_type(light.type)) {
+      if (effectiveIntensity <= 0.0f) {
+        return;
+      }
       const Vec3 env = environment_color_from_light(light);
       scene.environment_color = {
           scene.environment_color.x + env.x,
@@ -1063,6 +1404,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       direction,
       spotInnerCos,
       spotOuterCos});
+    scene.lights.back().intensity = effectiveIntensity;
   };
 
   std::unordered_set<vkpt::core::StableId> ecsLightIds;
@@ -1072,14 +1414,12 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::Sc
       continue;
     }
     ecsLightIds.insert(entity.id);
-    if (entity_visible_path(entity)) {
-      add_light(entity.id, entity.light);
-    }
+    add_light(entity.id, entity.light, entity_visible_path(entity));
   }
 
   for (const auto& light : doc.lights) {
     if (!ecsLightIds.contains(light.id)) {
-      add_light(light.id, light.light);
+      add_light(light.id, light.light, true);
     }
   }
 

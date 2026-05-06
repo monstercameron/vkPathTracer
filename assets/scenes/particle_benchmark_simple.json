@@ -1,0 +1,224 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Simple Particle Benchmark",
+    "author": "vkPathTracer"
+  },
+  "materials": [
+    {
+      "id": 1,
+      "name": "Matte ground",
+      "family": "diffuse",
+      "albedo": [0.18, 0.19, 0.2],
+      "roughness": 1.0
+    },
+    {
+      "id": 2,
+      "name": "Rain benchmark streaks",
+      "family": "water_fluid_surface",
+      "albedo": [0.68, 0.8, 0.95],
+      "roughness": 0.04,
+      "transmission": 0.55,
+      "alpha": 0.35
+    },
+    {
+      "id": 3,
+      "name": "Smoke benchmark puffs",
+      "family": "smoke",
+      "albedo": [0.5, 0.52, 0.54],
+      "roughness": 1.0,
+      "alpha": 0.45
+    },
+    {
+      "id": 4,
+      "name": "Benchmark light card",
+      "family": "emissive",
+      "albedo": [1.0, 0.88, 0.7],
+      "emission": [1.0, 0.88, 0.7],
+      "emission_intensity": 5.0
+    }
+  ],
+  "geometry": [
+    {
+      "id": 1,
+      "primitive": "triangle",
+      "material_id": 1,
+      "vertices": [
+        [-4.0, 0.0, -4.0],
+        [4.0, 0.0, -4.0],
+        [4.0, 0.0, 4.0],
+        [-4.0, 0.0, 4.0]
+      ],
+      "indices": [0, 2, 1, 0, 3, 2]
+    },
+    {
+      "id": 2,
+      "primitive": "triangle",
+      "material_id": 4,
+      "vertices": [
+        [-0.5, 2.4, -1.6],
+        [0.5, 2.4, -1.6],
+        [0.5, 3.0, -1.6],
+        [-0.5, 3.0, -1.6]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 50,
+      "primitive": "triangle",
+      "material_id": 2,
+      "vertices": [
+        [0.0, 0.08, 0.0],
+        [-0.018, 0.02, 0.0],
+        [0.018, 0.02, 0.0],
+        [-0.04, -0.055, 0.0],
+        [0.04, -0.055, 0.0],
+        [0.0, -0.105, 0.0],
+        [0.0, 0.08, 0.0],
+        [0.0, 0.02, -0.018],
+        [0.0, 0.02, 0.018],
+        [0.0, -0.055, -0.04],
+        [0.0, -0.055, 0.04],
+        [0.0, -0.105, 0.0]
+      ],
+      "indices": [
+        0, 1, 2,
+        1, 3, 4,
+        1, 4, 2,
+        3, 5, 4,
+        6, 7, 8,
+        7, 9, 10,
+        7, 10, 8,
+        9, 11, 10
+      ]
+    }
+  ],
+  "particle_emitters": [
+    {
+      "id": 100,
+      "name": "Benchmark rain",
+      "type": "rain",
+      "material_id": 2,
+      "count": 256,
+      "seed": 1001,
+      "time": 0.25,
+      "lifetime": 1.0,
+      "radius": 0.006,
+      "length": 0.5,
+      "bounds": [3.0, 2.4, 2.0],
+      "velocity": [0.05, -8.5, -0.2],
+      "velocity_jitter": [0.25, 0.7, 0.25],
+      "wind": [0.8, 0.0, -0.25],
+      "gravity_scale": 0.9,
+      "drag": 0.12,
+      "bounce": 0.28,
+      "collision_plane_y": -2.2,
+      "vortex_strength": 0.18,
+      "transform": {
+        "translation": [0.0, 2.3, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 101,
+      "name": "Benchmark smoke",
+      "type": "smoke",
+      "material_id": 3,
+      "count": 32,
+      "seed": 2002,
+      "time": 0.5,
+      "lifetime": 4.0,
+      "radius": 0.2,
+      "length": 0.0,
+      "turbulence": 0.35,
+      "bounds": [0.65, 0.22, 0.45],
+      "velocity": [0.0, 0.85, 0.0],
+      "velocity_jitter": [0.12, 0.22, 0.12],
+      "wind": [0.45, 0.08, -0.15],
+      "gravity_scale": -0.08,
+      "drag": 0.38,
+      "bounce": 0.0,
+      "collision_plane_y": 0.0,
+      "vortex_strength": 1.15,
+      "transform": {
+        "translation": [-0.8, 0.28, -0.15],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    }
+  ],
+  "entities": [
+    {
+      "id": 1,
+      "name": "camera",
+      "transform": {
+        "translation": [0.0, 1.25, 4.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "camera": {
+        "fov": 50.0,
+        "near_plane": 0.1,
+        "far_plane": 1000.0
+      }
+    },
+    {
+      "id": 2,
+      "name": "ground",
+      "mesh": {
+        "mesh_id": 1,
+        "material_id": 1
+      },
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 3,
+      "name": "light_card",
+      "mesh": {
+        "mesh_id": 2,
+        "material_id": 4
+      },
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 4,
+      "name": "environment",
+      "light": {
+        "type": "environment",
+        "color": [0.2, 0.23, 0.3],
+        "intensity": 0.5,
+        "radius": 0.0
+      }
+    },
+    {
+      "id": 5,
+      "name": "Lua Particle Spawner",
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "script": {
+        "source": "assets/scripts/particle_benchmark_spawner.lua",
+        "language": "lua",
+        "entry": "default",
+        "enabled": true,
+        "reload_on_save": true
+      }
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 64,
+    "warmup_frames": 4
+  }
+}

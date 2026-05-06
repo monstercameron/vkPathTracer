@@ -1,0 +1,167 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Rain and Smoke Particle Emitters",
+    "author": "vkPathTracer"
+  },
+  "materials": [
+    {
+      "id": 1,
+      "name": "Wet asphalt",
+      "family": "wet_surface",
+      "albedo": [0.12, 0.13, 0.13],
+      "roughness": 0.22
+    },
+    {
+      "id": 2,
+      "name": "Rain streaks",
+      "family": "water_fluid_surface",
+      "albedo": [0.72, 0.82, 0.95],
+      "roughness": 0.04,
+      "transmission": 0.55,
+      "alpha": 0.38
+    },
+    {
+      "id": 3,
+      "name": "Soft smoke",
+      "family": "smoke",
+      "albedo": [0.55, 0.57, 0.58],
+      "roughness": 1.0,
+      "alpha": 0.42
+    },
+    {
+      "id": 4,
+      "name": "Warm practical light",
+      "family": "emissive",
+      "albedo": [1.0, 0.78, 0.52],
+      "emission": [1.0, 0.78, 0.52],
+      "emission_intensity": 4.0
+    }
+  ],
+  "geometry": [
+    {
+      "id": 1,
+      "primitive": "triangle",
+      "material_id": 1,
+      "vertices": [
+        [-5.0, 0.0, -5.0],
+        [5.0, 0.0, -5.0],
+        [5.0, 0.0, 5.0],
+        [-5.0, 0.0, 5.0]
+      ],
+      "indices": [0, 2, 1, 0, 3, 2]
+    },
+    {
+      "id": 2,
+      "primitive": "triangle",
+      "material_id": 4,
+      "vertices": [
+        [-0.35, 2.2, -1.2],
+        [0.35, 2.2, -1.2],
+        [0.35, 2.8, -1.2],
+        [-0.35, 2.8, -1.2]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    }
+  ],
+  "particle_emitters": [
+    {
+      "id": 100,
+      "name": "Rain curtain",
+      "type": "rain",
+      "material_id": 2,
+      "count": 420,
+      "seed": 42,
+      "time": 0.35,
+      "lifetime": 1.0,
+      "radius": 0.006,
+      "length": 0.55,
+      "bounds": [3.6, 2.8, 2.4],
+      "velocity": [0.15, -9.0, -0.25],
+      "velocity_jitter": [0.35, 0.8, 0.35],
+      "transform": {
+        "translation": [0.0, 2.4, 0.1],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 101,
+      "name": "Ground smoke",
+      "type": "smoke",
+      "material_id": 3,
+      "count": 42,
+      "seed": 77,
+      "time": 0.6,
+      "lifetime": 4.0,
+      "radius": 0.22,
+      "length": 0.0,
+      "turbulence": 0.38,
+      "bounds": [0.7, 0.25, 0.5],
+      "velocity": [0.0, 0.9, 0.0],
+      "velocity_jitter": [0.15, 0.25, 0.15],
+      "transform": {
+        "translation": [-0.9, 0.25, -0.2],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    }
+  ],
+  "entities": [
+    {
+      "id": 1,
+      "name": "camera",
+      "transform": {
+        "translation": [0.0, 1.4, 4.2],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "camera": {
+        "fov": 48.0,
+        "near_plane": 0.1,
+        "far_plane": 1000.0
+      }
+    },
+    {
+      "id": 2,
+      "name": "ground",
+      "mesh": {
+        "mesh_id": 1,
+        "material_id": 1
+      },
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 3,
+      "name": "light card",
+      "mesh": {
+        "mesh_id": 2,
+        "material_id": 4
+      },
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "id": 4,
+      "name": "cool sky",
+      "light": {
+        "type": "environment",
+        "color": [0.18, 0.22, 0.3],
+        "intensity": 0.65,
+        "radius": 0.0
+      }
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 1,
+    "warmup_frames": 0
+  }
+}

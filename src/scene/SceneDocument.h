@@ -20,6 +20,7 @@ class SceneDocument {
   std::vector<SceneMaterialDefinition> materials;
   std::vector<SceneGeometryDefinition> geometry;
   std::vector<SceneSdfPrimitiveDefinition> sdf_primitives;
+  std::vector<SceneParticleEmitterDefinition> particle_emitters;
   /// Canonical authored entity records. Legacy top-level transform/camera/light
   /// sections are merged with these records when constructing a SceneWorld.
   std::vector<SceneEntityDefinition> entities;

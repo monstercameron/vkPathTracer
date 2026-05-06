@@ -101,6 +101,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       !require_kind_if_present("materials", JsonValue::Kind::Array) ||
       !require_kind_if_present("geometry", JsonValue::Kind::Array) ||
       !require_kind_if_present("sdf_primitives", JsonValue::Kind::Array) ||
+      !require_kind_if_present("particle_emitters", JsonValue::Kind::Array) ||
       !require_kind_if_present("entities", JsonValue::Kind::Array) ||
       !require_kind_if_present("transforms", JsonValue::Kind::Array) ||
       !require_kind_if_present("cameras", JsonValue::Kind::Array) ||
@@ -242,6 +243,46 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       }
       usedIds.insert(primitive.id);
       doc.sdf_primitives.push_back(std::move(primitive));
+    }
+  }
+
+  usedIds.clear();
+  if (const auto particlesNode = rootObj.object.find("particle_emitters");
+      particlesNode != rootObj.object.end() &&
+      particlesNode->second.kind == JsonValue::Kind::Array) {
+    doc.particle_emitters.reserve(particlesNode->second.array.size());
+    usedIds.reserve(particlesNode->second.array.size());
+    for (const auto& item : particlesNode->second.array) {
+      SceneParticleEmitterDefinition emitter;
+      read_u64(item, "id", emitter.id);
+      read_string(item, "name", emitter.name);
+      read_string(item, "type", emitter.type);
+      read_bool(item, "enabled", emitter.enabled);
+      read_u64(item, "material_id", emitter.material_id);
+      read_u32(item, "count", emitter.count);
+      read_u32(item, "seed", emitter.seed);
+      read_float(item, "time", emitter.time);
+      read_float(item, "lifetime", emitter.lifetime);
+      read_float(item, "radius", emitter.radius);
+      read_float(item, "length", emitter.length);
+      read_float(item, "turbulence", emitter.turbulence);
+      read_float(item, "gravity_scale", emitter.gravity_scale);
+      read_float(item, "drag", emitter.drag);
+      read_float(item, "bounce", emitter.bounce);
+      read_float(item, "collision_plane_y", emitter.collision_plane_y);
+      read_float(item, "vortex_strength", emitter.vortex_strength);
+      read_vec3(item, "bounds", emitter.bounds);
+      read_vec3(item, "velocity", emitter.velocity);
+      read_vec3(item, "velocity_jitter", emitter.velocity_jitter);
+      read_vec3(item, "wind", emitter.wind);
+      if (const auto transformNode = item.object.find("transform"); transformNode != item.object.end()) {
+        emitter.transform = read_transform(transformNode->second);
+      }
+      if (emitter.id == 0) {
+        emitter.id = allocate_id(usedIds);
+      }
+      usedIds.insert(emitter.id);
+      doc.particle_emitters.push_back(std::move(emitter));
     }
   }
 
@@ -604,6 +645,49 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
     }
   }
 
+  std::unordered_set<vkpt::core::StableId> particleIds;
+  particleIds.reserve(particle_emitters.size());
+  for (const auto& emitter : particle_emitters) {
+    if (emitter.id == 0) {
+      report("particle emitter id is zero");
+    }
+    if (!particleIds.insert(emitter.id).second) {
+      report("duplicate particle emitter id " + std::to_string(emitter.id));
+    }
+    const std::string type = LowerCopy(emitter.type);
+    if (type != "rain" && type != "smoke") {
+      report("particle emitter type is unsupported " + std::to_string(emitter.id));
+    }
+    if (!valid_transform_values(emitter.transform) ||
+        !finite_vec3(emitter.bounds) ||
+        !finite_vec3(emitter.velocity) ||
+        !finite_vec3(emitter.velocity_jitter) ||
+        !finite_vec3(emitter.wind)) {
+      report("particle emitter contains invalid vectors " + std::to_string(emitter.id));
+    }
+    if (emitter.bounds.x < 0.0f || emitter.bounds.y < 0.0f || emitter.bounds.z < 0.0f) {
+      report("particle emitter bounds are negative " + std::to_string(emitter.id));
+    }
+    if (emitter.count > 20000u) {
+      report("particle emitter count exceeds limit " + std::to_string(emitter.id));
+    }
+    if (!std::isfinite(emitter.time) ||
+        !std::isfinite(emitter.lifetime) || emitter.lifetime <= 0.0f ||
+        !std::isfinite(emitter.radius) || emitter.radius <= 0.0f ||
+        !std::isfinite(emitter.length) || emitter.length < 0.0f ||
+        !std::isfinite(emitter.turbulence) || emitter.turbulence < 0.0f ||
+        !std::isfinite(emitter.gravity_scale) ||
+        !std::isfinite(emitter.drag) || emitter.drag < 0.0f ||
+        !std::isfinite(emitter.bounce) || emitter.bounce < 0.0f || emitter.bounce > 1.0f ||
+        !std::isfinite(emitter.collision_plane_y) ||
+        !std::isfinite(emitter.vortex_strength)) {
+      report("particle emitter scalar values are invalid " + std::to_string(emitter.id));
+    }
+    if (emitter.material_id != 0 && !materialIds.empty() && !materialIds.contains(emitter.material_id)) {
+      report("particle emitter references missing material " + std::to_string(emitter.material_id));
+    }
+  }
+
   for (const auto& entity : entities) {
     if (entity.id == 0) {
       report("entity id is zero");
@@ -745,7 +829,7 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
 
 bool SceneDocument::has_section(std::string_view name) const {
   return name == "schema" || name == "metadata" || name == "assets" || name == "materials" ||
-      name == "geometry" || name == "sdf_primitives" || name == "entities" ||
+      name == "geometry" || name == "sdf_primitives" || name == "particle_emitters" || name == "entities" ||
       name == "transforms" || name == "cameras" || name == "lights" || name == "benchmark";
 }
 

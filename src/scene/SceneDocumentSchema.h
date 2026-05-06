@@ -127,6 +127,31 @@ struct SceneSdfPrimitiveDefinition {
   SdfPrimitiveComponent primitive;
 };
 
+struct SceneParticleEmitterDefinition {
+  vkpt::core::StableId id = 0;
+  std::string name;
+  std::string type = "rain";
+  bool enabled = true;
+  TransformComponent transform;
+  Vec3 bounds{4.0f, 4.0f, 4.0f};
+  Vec3 velocity{0.0f, -8.0f, 0.0f};
+  Vec3 velocity_jitter{0.5f, 1.0f, 0.5f};
+  Vec3 wind{0.0f, 0.0f, 0.0f};
+  vkpt::core::StableId material_id = 0;
+  std::uint32_t count = 128u;
+  std::uint32_t seed = 1u;
+  float time = 0.0f;
+  float lifetime = 1.0f;
+  float radius = 0.015f;
+  float length = 0.45f;
+  float turbulence = 0.25f;
+  float gravity_scale = 1.0f;
+  float drag = 0.0f;
+  float bounce = 0.0f;
+  float collision_plane_y = 0.0f;
+  float vortex_strength = 0.0f;
+};
+
 struct SceneMetadata {
   std::string schema = "1.0";
   std::string scene_name;
