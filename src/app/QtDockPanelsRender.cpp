@@ -8,13 +8,47 @@
 #include <string>
 #include <vector>
 
+#include "render/backends/BackendFactory.h"
+
 namespace vkpt::app {
+
+namespace {
+
+std::vector<std::string> QtRenderSettingsBackendOptions(const QtDockDeviceStats& device_stats,
+                                                        std::string_view selected_backend) {
+  std::vector<std::string> options;
+  const auto add = [&](std::string_view option) {
+    if (option.empty()) {
+      return;
+    }
+    std::string normalized = vkpt::render::NormalizeBackendName(option);
+    if (normalized == "cpu-tiled" || normalized == "cputiled") {
+      normalized = "cpu";
+    }
+    if (std::find(options.begin(), options.end(), normalized) == options.end()) {
+      options.push_back(std::move(normalized));
+    }
+  };
+  add("auto");
+  add("cpu");
+  for (const auto& option : device_stats.runtime_backend_options) {
+    add(option);
+  }
+  for (const auto& option : vkpt::render::AvailableBackendNames()) {
+    add(option);
+  }
+  add(selected_backend);
+  return options;
+}
+
+}  // namespace
 
 QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::RTSceneData& scene,
                                              const vkpt::pathtracer::RenderSettings& settings,
                                              const vkpt::editor::UiRuntimeState& runtime,
                                              const vkpt::editor::UiLayoutDocument& layout,
-                                             const QtDockFrameStats& frame_stats) {
+                                             const QtDockFrameStats& frame_stats,
+                                             const QtDockDeviceStats& device_stats) {
   (void)scene;
   auto panel = MakeQtDockPanel(layout, "render_settings", "Render Settings", true, 420.0f, 460.0f);
   const std::string sceneName = runtime.active_scene.empty() ? "builtin:preview" : runtime.active_scene;
@@ -22,7 +56,15 @@ QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::RTSceneData
       ? (frame_stats.tracer_ready ? "path tracing on" : "renderer not ready")
       : frame_stats.render_mode;
   QtDockAddProperty(panel, "Scene", sceneName);
-  QtDockAddProperty(panel, "Backend", runtime.active_renderer_backend.empty() ? "unknown" : runtime.active_renderer_backend);
+  const std::string selectedBackend = device_stats.selected_backend.empty()
+      ? (runtime.active_renderer_backend.empty() ? std::string("unknown") : runtime.active_renderer_backend)
+      : device_stats.selected_backend;
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.backend",
+                                   "Runtime",
+                                   "Backend",
+                                   selectedBackend,
+                                   QtRenderSettingsBackendOptions(device_stats, selectedBackend));
   QtDockAddProperty(panel, "Render resolution",
                     std::to_string(settings.width) + "x" + std::to_string(settings.height));
   QtDockAddSliderGroupedProperty(panel,

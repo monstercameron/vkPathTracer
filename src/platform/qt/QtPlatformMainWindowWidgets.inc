@@ -195,6 +195,7 @@
         const bool usesValueWidget = isDropdownProperty(property) ||
                                      isToggleProperty(property) ||
                                      isSliderProperty(property) ||
+                                     isTextProperty(property) ||
                                      isButtonProperty(property);
         auto* nameItem = new QTableWidgetItem(ToQString(property.name));
         auto* valueItem = new QTableWidgetItem(ToQString(property.value));
@@ -416,6 +417,33 @@
           });
 
           table->setCellWidget(row, valueColumn, editor);
+          table->setRowHeight(row, compactProperties ? 38 : 32);
+        } else if (isTextProperty(property)) {
+          auto* lineEdit = new QLineEdit(ToQString(property.value), table);
+          lineEdit->setEnabled(property.enabled);
+          lineEdit->setClearButtonEnabled(true);
+          lineEdit->setPlaceholderText(ToQString(property.name));
+          lineEdit->setToolTip(ToQString(property.name));
+          QObject::connect(lineEdit,
+                           &QLineEdit::editingFinished,
+                           lineEdit,
+                           [owner = m_owner,
+                            lineEdit,
+                            valueItem,
+                            panelId = panel.id,
+                            propertyId = property.id]() {
+                             const QString text = lineEdit != nullptr ? lineEdit->text() : QString{};
+                             if (valueItem != nullptr) {
+                               valueItem->setText(text);
+                               valueItem->setToolTip(text);
+                             }
+                             if (owner != nullptr && !propertyId.empty()) {
+                               owner->emit_dock_property_edit(panelId,
+                                                              propertyId,
+                                                              ToUtf8String(text));
+                             }
+                           });
+          table->setCellWidget(row, valueColumn, lineEdit);
           table->setRowHeight(row, compactProperties ? 38 : 32);
         } else if (isButtonProperty(property)) {
           auto* button = new QPushButton(ToQString(property.value.empty() ? property.name : property.value), table);

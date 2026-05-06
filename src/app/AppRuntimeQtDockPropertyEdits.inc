@@ -6,7 +6,9 @@
         bool settingsAffecting = false;
         bool cameraAffecting = false;
         bool cameraPoseAffecting = false;
+        bool entityTransformAffecting = false;
         vkpt::core::StableId cameraAffectingEntityId = 0u;
+        std::unordered_set<vkpt::core::StableId> transformTouchedIds;
 
         auto failEdit = [&](std::string message) {
           ui_runtime_state.status_message = "property edit rejected: " + std::move(message);
@@ -73,6 +75,41 @@
             }
           } else {
             return failEdit("unknown script property");
+          }
+          changed = true;
+          qtDockPanelsDirty = true;
+        } else if (parts.size() >= 3u && parts[0] == "scene_tree" && parts[1] == "filter") {
+          auto filterBitForName = [](const std::string& name) -> std::uint32_t {
+            if (name == "camera") return kQtSceneTreeFilterCamera;
+            if (name == "light") return kQtSceneTreeFilterLight;
+            if (name == "model") return kQtSceneTreeFilterModel;
+            if (name == "sdf") return kQtSceneTreeFilterSdf;
+            if (name == "physics") return kQtSceneTreeFilterPhysics;
+            if (name == "script") return kQtSceneTreeFilterScript;
+            if (name == "animation") return kQtSceneTreeFilterAnimation;
+            if (name == "entity") return kQtSceneTreeFilterEntity;
+            if (name == "particle") return kQtSceneTreeFilterParticle;
+            return 0u;
+          };
+          if (parts[2] == "name") {
+            ui_runtime_state.scene_tree_name_filter = QtTrim(edit.value);
+          } else if (parts[2] == "clear") {
+            ui_runtime_state.scene_tree_name_filter.clear();
+            ui_runtime_state.scene_tree_type_filter_mask = 0u;
+          } else {
+            const std::uint32_t bit = filterBitForName(parts[2]);
+            if (bit == 0u) {
+              return failEdit("unknown scene tree filter");
+            }
+            bool value = false;
+            if (!QtParseBool(edit.value, value)) {
+              return failEdit("expected true or false");
+            }
+            if (value) {
+              ui_runtime_state.scene_tree_type_filter_mask |= bit;
+            } else {
+              ui_runtime_state.scene_tree_type_filter_mask &= ~bit;
+            }
           }
           changed = true;
           qtDockPanelsDirty = true;
@@ -341,6 +378,12 @@
               return failEdit("unknown transform field");
             }
             entity->transform.dirty = true;
+            entityTransformAffecting = !entity->has_light &&
+                                       !entity->has_camera &&
+                                       !entity->has_sdf_primitive;
+            if (entityTransformAffecting) {
+              transformTouchedIds.insert(entityId);
+            }
             if (entity->has_camera) {
               cameraAffecting = true;
               cameraPoseAffecting = true;
@@ -849,6 +892,21 @@
               "camera settings edited",
               cameraPoseAffecting);
           if (!reloadOk && renderAffecting) {
+            reloadOk = qtReloadEditedScene("property edit");
+          }
+        } else if (renderAffecting && entityTransformAffecting &&
+                   !transformTouchedIds.empty()) {
+          auto transformBuild = qtBuildInstanceTransformUpdatesForTouchedEntities(
+              transformTouchedIds,
+              0u,
+              qtScriptTransformRevision);
+          if (!transformBuild.unsupported_instances &&
+              !transformBuild.updates.empty() &&
+              qtPublishInstanceTransformUpdates &&
+              qtPublishInstanceTransformUpdates(transformBuild.updates)) {
+            reloadOk = true;
+            qtPreviewStatus = "instance transform update";
+          } else {
             reloadOk = qtReloadEditedScene("property edit");
           }
         } else if (renderAffecting) {

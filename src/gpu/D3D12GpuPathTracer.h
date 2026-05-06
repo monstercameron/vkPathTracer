@@ -142,8 +142,9 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool should_readback_sample(uint32_t sample_idx) const;
   /// Stages all packed scene arrays through the persistent upload heap.
   bool upload_scene_buffers();
-  /// Uploads only the dynamic instance buffer and its dynamic-instance BVH.
-  bool upload_instance_buffer();
+  /// Uploads dynamic instance changes and the dynamic-instance BVH.
+  bool upload_instance_buffer(uint32_t firstInstance = 0u,
+                              uint32_t instanceCount = std::numeric_limits<uint32_t>::max());
   /// Uploads material and/or light buffers for small scene deltas.
   bool upload_material_light_buffers(bool uploadMaterials, bool uploadLights);
   bool build_texture_buffers();

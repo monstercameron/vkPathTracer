@@ -242,6 +242,8 @@ struct UiRuntimeState {
   std::string active_drag_drop_operation;
   std::vector<vkpt::core::StableId> expanded_tree_nodes;
   std::vector<vkpt::core::StableId> collapsed_tree_nodes;
+  std::string scene_tree_name_filter;
+  std::uint32_t scene_tree_type_filter_mask = 0;
   ViewportTool active_viewport_tool = ViewportTool::None;
   GizmoMode active_gizmo_mode = GizmoMode::None;
   float dpi_scale = 1.0f;

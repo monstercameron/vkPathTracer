@@ -19,6 +19,16 @@
 
 namespace vkpt::app {
 
+inline constexpr std::uint32_t kQtSceneTreeFilterCamera = 1u << 0u;
+inline constexpr std::uint32_t kQtSceneTreeFilterLight = 1u << 1u;
+inline constexpr std::uint32_t kQtSceneTreeFilterModel = 1u << 2u;
+inline constexpr std::uint32_t kQtSceneTreeFilterSdf = 1u << 3u;
+inline constexpr std::uint32_t kQtSceneTreeFilterPhysics = 1u << 4u;
+inline constexpr std::uint32_t kQtSceneTreeFilterScript = 1u << 5u;
+inline constexpr std::uint32_t kQtSceneTreeFilterAnimation = 1u << 6u;
+inline constexpr std::uint32_t kQtSceneTreeFilterEntity = 1u << 7u;
+inline constexpr std::uint32_t kQtSceneTreeFilterParticle = 1u << 8u;
+
 struct QtDockProperty {
   std::string id;
   std::string group;
@@ -189,12 +199,14 @@ std::string QtEntityDisplayName(const vkpt::scene::SceneEntityDefinition& entity
 
 QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& document,
                                         const vkpt::editor::SelectionState& selection,
+                                        const vkpt::editor::UiRuntimeState& runtime,
                                         const vkpt::editor::UiLayoutDocument& layout);
 QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::RTSceneData& scene,
                                              const vkpt::pathtracer::RenderSettings& settings,
                                              const vkpt::editor::UiRuntimeState& runtime,
                                              const vkpt::editor::UiLayoutDocument& layout,
-                                             const QtDockFrameStats& frame_stats);
+                                             const QtDockFrameStats& frame_stats,
+                                             const QtDockDeviceStats& device_stats);
 QtDockPanelContent BuildQtDeviceDock(const vkpt::pathtracer::RTSceneData& scene,
                                      const vkpt::editor::UiRuntimeState& runtime,
                                      const vkpt::editor::UiLayoutDocument& layout,
