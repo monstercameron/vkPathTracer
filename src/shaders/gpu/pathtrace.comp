@@ -247,6 +247,38 @@ bool  mat_is_emissive(uint idx) {
     return e.r > 0.0 || e.g > 0.0 || e.b > 0.0;
 }
 
+vec3 preview_transmission(vec3 ro, vec3 rd, vec3 fallback_env) {
+    vec3 origin = ro;
+    for (uint skip = 0u; skip < 8u; ++skip) {
+        Hit preview_hit = intersect_scene(origin, rd);
+        if (!preview_hit.ok) {
+            return fallback_env;
+        }
+
+        uint preview_mat = (pc.num_mats > 0u) ? min(preview_hit.mat, pc.num_mats - 1u) : 0u;
+        bool preview_transmissive = (mat_model(preview_mat) == 5u) || (mat_transmission(preview_mat) > 0.05);
+        if (preview_transmissive) {
+            origin = preview_hit.pos + rd * 0.015;
+            continue;
+        }
+
+        vec3 preview_n = preview_hit.n;
+        if (dot(preview_n, -rd) < 0.0) {
+            preview_n = -preview_n;
+        }
+        vec3 surface = mat_surface_albedo(preview_mat, preview_hit.pos, preview_n, rd);
+        vec3 emissive = mat_emissive(preview_mat);
+        float ndotl = 0.45;
+        if (pc.num_lights > 0u) {
+            vec3 lpos = vec3(lights[0u], lights[1u], lights[2u]);
+            vec3 ldir = normalize(lpos - preview_hit.pos);
+            ndotl = max(ndotl, clamp(dot(preview_n, ldir), 0.0, 1.0));
+        }
+        return surface * (0.28 + 0.72 * ndotl) + emissive;
+    }
+    return fallback_env;
+}
+
 // ---- Path trace one ray -----------------------------------------------------
 vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
     vec3 rad = vec3(0.0);
@@ -285,6 +317,19 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
         bool  is_sheen = (model == 6u);
         bool  is_clearcoat = (model == 7u) || (mat_clearcoat(mi) > 0.05);
         bool  is_toon = (model == 8u);
+
+        if (is_transmissive) {
+            float transmission = clamp(mat_transmission(mi), 0.0, 1.0);
+            float absorption = clamp(mat_alpha(mi), 0.0, 1.0);
+            float clear_preview = transmission * (1.0 - absorption);
+            float grazing = 1.0 - clamp(dot(n, -rd), 0.0, 1.0);
+            float preview_weight = clear_preview * mix(0.72, 0.46, grazing);
+            vec3 env = vec3(pc.env_r, pc.env_g, pc.env_b);
+            vec3 through = preview_transmission(hit.pos + rd * 0.02, rd, env);
+            vec3 tint = mix(vec3(1.0), albedo, absorption);
+            rad += thr * through * tint * preview_weight;
+            thr *= 1.0 - preview_weight * 0.12;
+        }
 
         // NEE: sample one point light — skip for perfect mirrors
         if (pc.num_lights > 0u) {
@@ -373,7 +418,7 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
             float r0 = (1.0 - ior) / (1.0 + ior);
             r0 *= r0;
             float fresnel = r0 + (1.0 - r0) * pow5_fast(1.0 - cosTheta);
-            if (rand_f(rng) < min(0.98, fresnel + mat_clearcoat(mi) * 0.15)) {
+            if (rand_f(rng) < min(0.98, fresnel + mat_clearcoat(mi) * 0.015)) {
                 out_dir = rd - 2.0 * dot(n, rd) * n;
             } else {
                 float eta = entering_surface ? (1.0 / ior) : ior;
