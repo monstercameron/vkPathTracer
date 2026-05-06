@@ -88,6 +88,8 @@ struct QtDockRow {
   std::string icon;
   vkpt::core::StableId entity_id = 0;
   bool selected = false;
+  bool activatable = false;
+  bool draggable = false;
   std::vector<QtDockRow> children;
 };
 
@@ -121,6 +123,13 @@ struct QtDockRowActivation {
   vkpt::core::StableId entity_id = 0;
   bool append = false;
   bool range_mode = false;
+  bool viewport_drop = false;
+  float x = 0.0f;
+  float y = 0.0f;
+  std::string action;
+  std::vector<std::string> row_ids;
+  std::vector<vkpt::core::StableId> entity_ids;
+  vkpt::core::StableId target_entity_id = 0;
 };
 
 struct QtDockPanel {
@@ -133,6 +142,10 @@ struct QtDockPanel {
   bool closable = true;
   bool movable = true;
   bool floatable = true;
+  bool tree_single_column = false;
+  int tree_stretch = -1;
+  int property_stretch = -1;
+  int property_preferred_height = 0;
   int preferred_width = 0;
   int preferred_height = 0;
   std::vector<std::string> rows;
@@ -181,8 +194,11 @@ class QtWindow final : public IWindow {
   void set_status_bar_text(std::string_view text);
   void set_status_bar_text(const QtStatusBarText& status);
   void set_viewport_mouse_locked(bool locked);
+  bool confirm_scene_replacement(std::string_view scene_path);
 
   void set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba,
+                            std::size_t width, std::size_t height);
+  void set_framebuffer_rgba(std::vector<std::uint8_t>&& rgba,
                             std::size_t width, std::size_t height);
   void clear_framebuffer();
   QtFramebufferStats framebuffer_stats() const;
@@ -203,7 +219,14 @@ class QtWindow final : public IWindow {
                                 std::string row_id,
                                 vkpt::core::StableId entity_id,
                                 bool append,
-                                bool range_mode);
+                                bool range_mode,
+                                bool viewport_drop = false,
+                                float x = 0.0f,
+                                float y = 0.0f,
+                                std::string action = {},
+                                std::vector<std::string> row_ids = {},
+                                std::vector<vkpt::core::StableId> entity_ids = {},
+                                vkpt::core::StableId target_entity_id = 0);
   std::vector<InputEvent> drain_events();
   std::vector<QtDockPropertyEdit> drain_dock_property_edits();
   std::vector<QtDockRowActivation> drain_dock_row_activations();
@@ -233,6 +256,9 @@ class QtWindow final : public IWindow {
   void queue_event(InputEvent event);
   void update_metrics_from_widget();
   bool request_framebuffer_clear();
+  void set_framebuffer_rgba_impl(std::vector<std::uint8_t> rgba,
+                                 std::size_t width,
+                                 std::size_t height);
   bool enqueue_frame_update_locked(QWidget* widget);
   void deliver_pending_frame_to_widget(QWidget* widget);
   void show_startup_splash();

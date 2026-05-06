@@ -1,0 +1,335 @@
+#ifdef PT_ENABLE_QT
+
+#include "app/QtDockPanelsInternal.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace vkpt::app {
+
+QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::RTSceneData& scene,
+                                             const vkpt::pathtracer::RenderSettings& settings,
+                                             const vkpt::editor::UiRuntimeState& runtime,
+                                             const vkpt::editor::UiLayoutDocument& layout,
+                                             const QtDockFrameStats& frame_stats) {
+  (void)scene;
+  auto panel = MakeQtDockPanel(layout, "render_settings", "Render Settings", true, 420.0f, 460.0f);
+  const std::string sceneName = runtime.active_scene.empty() ? "builtin:preview" : runtime.active_scene;
+  const std::string renderState = frame_stats.render_mode.empty()
+      ? (frame_stats.tracer_ready ? "path tracing on" : "renderer not ready")
+      : frame_stats.render_mode;
+  QtDockAddProperty(panel, "Scene", sceneName);
+  QtDockAddProperty(panel, "Backend", runtime.active_renderer_backend.empty() ? "unknown" : runtime.active_renderer_backend);
+  QtDockAddProperty(panel, "Render resolution",
+                    std::to_string(settings.width) + "x" + std::to_string(settings.height));
+  QtDockAddSliderGroupedProperty(panel,
+                                 "render.resolution.width",
+                                 "Resolution",
+                                 "Render width",
+                                 settings.width,
+                                 16.0,
+                                 8192.0,
+                                 1.0,
+                                 320.0);
+  QtDockAddSliderGroupedProperty(panel,
+                                 "render.resolution.height",
+                                 "Resolution",
+                                 "Render height",
+                                 settings.height,
+                                 16.0,
+                                 8192.0,
+                                 1.0,
+                                 240.0);
+  QtDockAddProperty(panel, "Published framebuffer",
+                    std::to_string(frame_stats.frame_width) + "x" +
+                    std::to_string(frame_stats.frame_height));
+  if (frame_stats.canvas_width > 0u && frame_stats.canvas_height > 0u) {
+    QtDockAddProperty(panel, "Viewport canvas",
+                      std::to_string(frame_stats.canvas_width) + "x" +
+                      std::to_string(frame_stats.canvas_height));
+  }
+  if (frame_stats.displayed_image_width > 0u && frame_stats.displayed_image_height > 0u) {
+    QtDockAddProperty(panel, "Displayed image",
+                      std::to_string(frame_stats.displayed_image_width) + "x" +
+                      std::to_string(frame_stats.displayed_image_height));
+  }
+  QtDockAddProperty(panel, "Accumulation",
+                    std::to_string(frame_stats.sample_count) + " spp, " + renderState);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "render.denoiser",
+                                 "",
+                                 "GPU denoiser",
+                                 settings.enable_denoiser);
+  QtDockAddToggleGroupedProperty(panel,
+                                 "render.temporal_aa",
+                                 "",
+                                 "Temporal AA",
+                                 settings.enable_temporal_aa);
+  QtDockAddSliderProperty(panel,
+                          "render.max_depth",
+                          "Max depth",
+                          settings.max_depth,
+                          1.0,
+                          64.0,
+                          1.0,
+                          6.0);
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.nee",
+                                   "",
+                                   "Direct lighting",
+                                   QtDockBool(settings.enable_nee),
+                                   QtBoolOptions());
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.mis",
+                                   "",
+                                   "MIS",
+                                   QtDockBool(settings.enable_mis),
+                                   QtBoolOptions());
+  QtDockAddSliderProperty(panel,
+                          "render.film.exposure",
+                          "Exposure",
+                          settings.film_resolve.exposure,
+                          0.0,
+                          8.0,
+                          0.01,
+                          1.0);
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.film.tone_map",
+                                   "",
+                                   "Tone mapper",
+                                   QtToneMapName(settings.film_resolve.tone_map),
+                                   QtToneMapOptions());
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.film.output_transform",
+                                   "",
+                                   "Display transform",
+                                   QtOutputTransformName(settings.film_resolve.output_transform),
+                                   QtOutputTransformOptions());
+  QtDockAddSliderProperty(panel,
+                          "render.film.gamma",
+                          "Gamma",
+                          settings.film_resolve.gamma,
+                          0.1,
+                          4.0,
+                          0.01,
+                          2.2);
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "render.film.clamp_output",
+                                   "",
+                                   "Clamp output",
+                                   QtDockBool(settings.film_resolve.clamp_output),
+                                   QtBoolOptions());
+  return panel;
+}
+
+QtDockPanelContent BuildQtBenchmarkDock(const vkpt::editor::BenchmarkPanelModel& benchmark,
+                                        const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "benchmark_panel", "Benchmark", false, 560.0f, 480.0f);
+  QtDockAddProperty(panel, "scene", benchmark.run_desc.scene_path);
+  QtDockAddProperty(panel, "backend", benchmark.run_desc.backend);
+  QtDockAddProperty(panel, "renderer", benchmark.run_desc.renderer_path);
+  QtDockAddProperty(panel, "resolution", std::to_string(benchmark.run_desc.resolution.width) +
+      "x" + std::to_string(benchmark.run_desc.resolution.height));
+  QtDockAddProperty(panel, "spp", std::to_string(benchmark.run_desc.samples_per_pixel));
+  QtDockAddProperty(panel, "max depth", std::to_string(benchmark.run_desc.max_depth));
+  QtDockAddProperty(panel, "can run", QtDockBool(benchmark.can_run));
+  QtDockAddProperty(panel, "summary", benchmark.result_summary);
+  QtDockAddProperty(panel, "score", QtDockNumber(benchmark.score.normalized_score, 3));
+  QtDockAddProperty(panel, "confidence", benchmark.score.confidence);
+  for (const auto& action : benchmark.calibration_actions) {
+    QtDockAddRow(panel, action.label + " [" + (action.supported ? "available" : action.unavailable_reason) + "]");
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtDiagnosticsDock(const vkpt::editor::UiRuntimeState& runtime,
+                                          const vkpt::editor::SelectionState& selection,
+                                          const vkpt::editor::UiLayoutDocument& layout,
+                                          const QtDockFrameStats& frame_stats) {
+  auto panel = MakeQtDockPanel(layout, "diagnostics", "Diagnostics", true, 720.0f, 260.0f);
+  QtDockAddProperty(panel, "status", runtime.status_message);
+  QtDockAddProperty(panel, "last warning/error", runtime.last_warning_or_error);
+  QtDockAddProperty(panel, "last menu action", runtime.last_menu_action);
+  QtDockAddProperty(panel, "last clicked entity", std::to_string(runtime.last_clicked_entity));
+  QtDockAddProperty(panel, "focused panel", runtime.focused_panel);
+  QtDockAddProperty(panel, "active modal", runtime.active_modal.empty() ? "none" : runtime.active_modal);
+  QtDockAddProperty(panel, "tracer ready", QtDockBool(frame_stats.tracer_ready));
+  QtDockAddProperty(panel, "preview status", frame_stats.preview_status);
+  QtDockAddProperty(panel, "selection source", vkpt::editor::ToString(selection.selection_source));
+  return panel;
+}
+
+QtDockPanelContent BuildQtPerformanceDock(const vkpt::editor::UiRuntimeState& runtime,
+                                          const vkpt::editor::UiLayoutDocument& layout,
+                                          const QtDockFrameStats& frame_stats) {
+  auto panel = MakeQtDockPanel(layout, "performance", "Performance", true, 360.0f, 320.0f);
+  QtDockAddProperty(panel, "ui fps", QtDockNumber(runtime.fps, 1));
+  QtDockAddProperty(panel, "ui frame ms", QtDockNumber(runtime.frame_ms, 2));
+  QtDockAddProperty(panel, "samples", std::to_string(frame_stats.sample_count));
+  QtDockAddProperty(panel, "published", std::to_string(frame_stats.render_published));
+  QtDockAddProperty(panel, "render dropped", std::to_string(frame_stats.render_dropped));
+  QtDockAddProperty(panel, "window received", std::to_string(frame_stats.window_received));
+  QtDockAddProperty(panel, "window presented", std::to_string(frame_stats.window_presented));
+  QtDockAddProperty(panel, "window dropped", std::to_string(frame_stats.window_dropped));
+  QtDockAddProperty(panel, "publish cap", frame_stats.publish_cap.empty()
+      ? std::to_string(frame_stats.preview_publish_hz) + " fps"
+      : frame_stats.publish_cap);
+  QtDockAddProperty(panel, "gpu batches/tick", frame_stats.background_thread
+      ? std::string("background")
+      : std::to_string(frame_stats.gpu_batches_per_tick));
+  QtDockAddProperty(panel, "gpu batch ms", QtDockNumber(frame_stats.gpu_batch_ms, 3));
+  QtDockAddProperty(panel, "background jobs", std::to_string(runtime.background_job_count));
+  return panel;
+}
+
+QtDockPanelContent BuildQtDeviceDock(const vkpt::pathtracer::RTSceneData& scene,
+                                     const vkpt::editor::UiRuntimeState& runtime,
+                                     const vkpt::editor::UiLayoutDocument& layout,
+                                     const QtDockFrameStats& frame_stats,
+                                     const QtDockDeviceStats& device_stats) {
+  auto panel = MakeQtDockPanel(layout, "device", "Device", true, 460.0f, 360.0f);
+  const auto& caps = device_stats.backend_caps;
+  const auto selectedBackend = device_stats.selected_backend.empty()
+      ? runtime.active_renderer_backend
+      : device_stats.selected_backend;
+  const auto rendererPath = device_stats.active_renderer_path.empty()
+      ? runtime.active_renderer_path
+      : device_stats.active_renderer_path;
+
+  const vkpt::render::AcceleratorCapabilities* selectedAccel =
+      device_stats.has_selected_accelerator ? &device_stats.selected_accelerator : nullptr;
+  const auto& selectedBudget = selectedAccel != nullptr
+      ? selectedAccel->backend_caps.memory_budget
+      : caps.memory_budget;
+  const std::uint64_t usage = selectedAccel != nullptr && selectedAccel->current_usage_bytes > 0u
+      ? selectedAccel->current_usage_bytes
+      : selectedBudget.current_usage_bytes;
+  const std::uint64_t budget = selectedAccel != nullptr && selectedAccel->current_budget_bytes > 0u
+      ? selectedAccel->current_budget_bytes
+      : selectedBudget.current_budget_bytes;
+  const std::uint64_t dedicatedMemory = selectedAccel != nullptr && selectedAccel->dedicated_video_memory_bytes > 0u
+      ? selectedAccel->dedicated_video_memory_bytes
+      : selectedBudget.dedicated_video_memory_bytes;
+  const std::uint64_t sharedMemory = selectedAccel != nullptr && selectedAccel->shared_system_memory_bytes > 0u
+      ? selectedAccel->shared_system_memory_bytes
+      : selectedBudget.shared_system_memory_bytes;
+  const std::string deviceName = selectedAccel != nullptr
+      ? selectedAccel->name
+      : (caps.platform.platform_name.empty() ? std::string("unknown") : caps.platform.platform_name);
+  const std::string deviceKind = selectedAccel != nullptr
+      ? QtDockAcceleratorKind(*selectedAccel)
+      : (caps.is_simulated ? std::string("Simulated") : std::string("Unknown"));
+
+  const std::string backendValue = !rendererPath.empty() && rendererPath != selectedBackend
+      ? selectedBackend + " / " + rendererPath
+      : selectedBackend;
+  QtDockAddProperty(panel, "Backend", backendValue);
+  QtDockAddProperty(panel, "Render mode",
+                    frame_stats.background_thread ? "background render thread" : "event loop renderer");
+
+  std::ostringstream throughput;
+  const double computerAverage = frame_stats.accumulated_rays_per_second > 0.0
+      ? frame_stats.accumulated_rays_per_second
+      : frame_stats.rolling_rays_per_second;
+  throughput << "computer avg " << QtDockRate(computerAverage);
+  if (frame_stats.rolling_rays_per_second > 0.0) {
+    throughput << " | rolling " << QtDockRate(frame_stats.rolling_rays_per_second);
+  }
+  if (frame_stats.sample_count > 0u) {
+    throughput << " @ " << frame_stats.sample_count << " spp";
+  }
+  QtDockAddProperty(panel, "Ray throughput", throughput.str());
+
+  const auto activeMetricKey = selectedAccel != nullptr
+      ? QtDockRayDeviceKeyForAccelerator(*selectedAccel)
+      : QtDockActiveRayDeviceKey(device_stats);
+  const auto* activeMetric = QtDockFindRayMetric(device_stats.ray_metrics, activeMetricKey);
+  if (selectedAccel != nullptr) {
+    QtDockAddProperty(panel, "Active ray device",
+                      QtDockAcceleratorSummary(*selectedAccel, true, activeMetric));
+  } else {
+    std::vector<std::string> tags;
+    tags.push_back(deviceKind);
+    QtDockAppendRayMetricTags(tags, activeMetric);
+    const auto tagText = QtDockJoin(tags);
+    QtDockAddProperty(panel,
+                      "Active ray device",
+                      tagText.empty() ? deviceName : deviceName + "\n" + tagText);
+  }
+
+  std::vector<const vkpt::render::AcceleratorCapabilities*> gpuCandidates;
+  std::vector<const vkpt::render::AcceleratorCapabilities*> cpuFallbacks;
+  std::vector<const vkpt::render::AcceleratorCapabilities*> softwareFallbacks;
+  for (const auto& accelerator : device_stats.accelerators) {
+    if (!QtDockRayDeviceEligible(accelerator)) {
+      continue;
+    }
+    if (selectedAccel != nullptr && QtDockSameAccelerator(accelerator, *selectedAccel)) {
+      continue;
+    }
+    if (accelerator.cpu) {
+      cpuFallbacks.push_back(&accelerator);
+    } else if (accelerator.warp) {
+      softwareFallbacks.push_back(&accelerator);
+    } else {
+      gpuCandidates.push_back(&accelerator);
+    }
+  }
+
+  if (!gpuCandidates.empty()) {
+    QtDockAddProperty(panel, "Other GPUs",
+                      QtDockAcceleratorGroupSummary(gpuCandidates, device_stats.ray_metrics));
+  }
+  if (!cpuFallbacks.empty()) {
+    QtDockAddProperty(panel, "CPU fallback",
+                      QtDockAcceleratorGroupSummary(cpuFallbacks, device_stats.ray_metrics, 2u));
+  }
+  if (!softwareFallbacks.empty()) {
+    QtDockAddProperty(panel, "Software fallback",
+                      QtDockAcceleratorGroupSummary(softwareFallbacks, device_stats.ray_metrics, 2u));
+  }
+
+  QtDockAddProperty(panel, "Device memory",
+                    QtDockMemoryUsage(usage, budget, selectedBudget.budget_unavailable_reason));
+  if (dedicatedMemory > 0u || sharedMemory > 0u) {
+    std::vector<std::string> memoryParts;
+    if (dedicatedMemory > 0u) {
+      memoryParts.push_back("dedicated " + QtDockBytes(dedicatedMemory));
+    }
+    if (sharedMemory > 0u &&
+        (selectedAccel == nullptr || selectedAccel->unified_memory || dedicatedMemory == 0u)) {
+      memoryParts.push_back("shared " + QtDockBytes(sharedMemory));
+    }
+    const auto memoryText = QtDockJoin(memoryParts);
+    if (!memoryText.empty()) {
+      QtDockAddProperty(panel, "Memory pool", memoryText);
+    }
+  }
+  QtDockAddProperty(panel, "Scene buffers", QtDockBytes(EstimateQtSceneMemoryBytes(scene)));
+  const auto featureSummary = QtDockFeatureSummary(caps);
+  if (!featureSummary.empty() && featureSummary != "basic") {
+    QtDockAddProperty(panel, "Capabilities", featureSummary);
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtDebugViewsDock(const vkpt::editor::UiRuntimeState& runtime,
+                                         const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "debug_views", "Debug Views", false, 320.0f, 300.0f);
+  QtDockAddProperty(panel, "selected view", runtime.selected_debug_view.empty() ? "beauty" : runtime.selected_debug_view);
+  QtDockAddProperty(panel, "active channel", runtime.active_debug_channel.empty() ? "rgb" : runtime.active_debug_channel);
+  QtDockAddRow(panel, "beauty");
+  QtDockAddRow(panel, "albedo");
+  QtDockAddRow(panel, "normal");
+  QtDockAddRow(panel, "depth");
+  QtDockAddRow(panel, "sample_count");
+  QtDockAddRow(panel, "selection_id");
+  return panel;
+}
+
+}  // namespace vkpt::app
+
+#endif  // PT_ENABLE_QT
