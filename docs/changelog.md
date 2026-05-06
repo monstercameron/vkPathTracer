@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-06 (session 31)
+
+### Third-person scene, render deltas, and C++ cache cleanup
+
+- Replaced the block-built third-person hero with the imported low-poly hero asset, kept Lua-driven movement/camera behavior, and added parentable scene model import support plus a third-person script performance gate.
+- Added render-scene delta plumbing for camera, dynamic transforms, materials, and lights so interactive edits can avoid full path-tracer scene rebuilds when the geometry layout is unchanged.
+- Hardened C++ error handling and lifetime edges across image IO, asset import, JSON/scene loading, physics/Jolt sync, D3D12/DXR dispatch, job waits, and CPU/GPU BVH setup.
+- Reduced cache and allocation overhead in scene conversion, CPU BVH construction, frame graph validation, film resolve, PNG writing, D3D12/Vulkan GPU buffer packing, and scripting/physics binding collection.
+- Expanded benchmark, doctor, UI validation, and scripting smoke coverage for the imported third-person scene, backend switching, and transform-only update paths.
+- Verified default, desktop Clang, and Windows clang-cl D3D12+Qt builds, `ptbench`, `pt_scripting_smoke`, scripting smoke execution, whitespace checks, and CTest discovery.
+
 ## 2026-05-06 (session 30)
 
 ### Cross-platform shell stubs and Lua playable-mode updates
