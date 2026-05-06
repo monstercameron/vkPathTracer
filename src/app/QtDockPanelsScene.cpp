@@ -51,11 +51,14 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
   };
 
   std::unordered_map<vkpt::core::StableId, std::vector<const vkpt::scene::SceneEntityDefinition*>> children;
+  std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneEntityDefinition*> entityById;
   std::unordered_set<vkpt::core::StableId> entityIds;
   children.reserve(document.entities.size());
+  entityById.reserve(document.entities.size());
   entityIds.reserve(document.entities.size());
   for (const auto& entity : document.entities) {
     entityIds.insert(entity.id);
+    entityById.emplace(entity.id, &entity);
     children[entity.hierarchy.parent].push_back(&entity);
   }
 
@@ -86,6 +89,65 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
     }
     return false;
   };
+  auto is_visibility_target = [](const vkpt::scene::SceneEntityDefinition& entity) {
+    return entity.has_mesh || entity.has_sdf_primitive || entity.has_light;
+  };
+
+  std::unordered_map<vkpt::core::StableId, bool> visiblePathCache;
+  visiblePathCache.reserve(document.entities.size());
+  auto entity_visible_path =
+      [&](const vkpt::scene::SceneEntityDefinition& entity) {
+    if (const auto cached = visiblePathCache.find(entity.id);
+        cached != visiblePathCache.end()) {
+      return cached->second;
+    }
+    bool visible = true;
+    const auto* current = &entity;
+    std::unordered_set<vkpt::core::StableId> visitedPath;
+    visitedPath.reserve(8u);
+    for (std::size_t depth = 0u;
+         current != nullptr && depth <= document.entities.size() &&
+         visitedPath.insert(current->id).second;
+         ++depth) {
+      if (!current->visible) {
+        visible = false;
+        break;
+      }
+      const vkpt::core::StableId parent = current->hierarchy.parent;
+      if (parent == 0u) {
+        break;
+      }
+      const auto parentIt = entityById.find(parent);
+      current = parentIt == entityById.end() ? nullptr : parentIt->second;
+    }
+    visiblePathCache.emplace(entity.id, visible);
+    return visible;
+  };
+
+  std::unordered_map<vkpt::core::StableId, bool> visibilityTargetCache;
+  visibilityTargetCache.reserve(document.entities.size());
+  auto subtree_has_visibility_target =
+      [&](auto&& self, vkpt::core::StableId entityId) -> bool {
+    if (const auto cached = visibilityTargetCache.find(entityId);
+        cached != visibilityTargetCache.end()) {
+      return cached->second;
+    }
+    bool hasTarget = false;
+    if (const auto entityIt = entityById.find(entityId);
+        entityIt != entityById.end() && entityIt->second != nullptr) {
+      hasTarget = is_visibility_target(*entityIt->second);
+    }
+    if (const auto childIt = children.find(entityId); childIt != children.end()) {
+      for (const auto* child : childIt->second) {
+        if (child != nullptr && self(self, child->id)) {
+          hasTarget = true;
+          break;
+        }
+      }
+    }
+    visibilityTargetCache.emplace(entityId, hasTarget);
+    return hasTarget;
+  };
 
   std::unordered_set<vkpt::core::StableId> visited;
   auto build_entity_row = [&](auto&& self,
@@ -98,6 +160,12 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
     row.value = "#" + std::to_string(entity.id) + "  " + QtEntityComponentSummary(entity);
     if (entity.hierarchy.parent != 0u && !entityIds.contains(entity.hierarchy.parent)) {
       row.value += "  missing parent #" + std::to_string(entity.hierarchy.parent);
+    }
+    row.visible = entity_visible_path(entity);
+    row.visibility_toggle_enabled = subtree_has_visibility_target(
+        subtree_has_visibility_target, entity.id);
+    if (!row.visible) {
+      row.value += "  hidden";
     }
     row.icon = entity_icon(entity);
     row.entity_id = entity.id;

@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -118,6 +119,43 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
   for (const auto &geometry : document.geometry) {
     geometryById[geometry.id] = &geometry;
   }
+  std::unordered_map<vkpt::core::StableId,
+                     const vkpt::scene::SceneEntityDefinition *>
+      entityById;
+  entityById.reserve(document.entities.size());
+  for (const auto &entity : document.entities) {
+    entityById[entity.id] = &entity;
+  }
+  std::unordered_map<vkpt::core::StableId, bool> visiblePathCache;
+  visiblePathCache.reserve(document.entities.size());
+  auto entityVisiblePath =
+      [&](const vkpt::scene::SceneEntityDefinition &entity) {
+    if (const auto cached = visiblePathCache.find(entity.id);
+        cached != visiblePathCache.end()) {
+      return cached->second;
+    }
+    bool visible = true;
+    const auto *current = &entity;
+    std::unordered_set<vkpt::core::StableId> visited;
+    visited.reserve(8u);
+    for (std::size_t depth = 0u;
+         current != nullptr && depth <= document.entities.size() &&
+         visited.insert(current->id).second;
+         ++depth) {
+      if (!current->visible) {
+        visible = false;
+        break;
+      }
+      const vkpt::core::StableId parent = current->hierarchy.parent;
+      if (parent == 0u) {
+        break;
+      }
+      const auto parentIt = entityById.find(parent);
+      current = parentIt == entityById.end() ? nullptr : parentIt->second;
+    }
+    visiblePathCache.emplace(entity.id, visible);
+    return visible;
+  };
 
   struct MeshPickableRef {
     vkpt::core::StableId entity_id = 0;
@@ -129,7 +167,7 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
   // RT instances are emitted in document mesh order, so keep the same compact
   // entity list before pairing them with backend geometry below.
   for (const auto &entity : document.entities) {
-    if (!entity.has_mesh) {
+    if (!entity.has_mesh || !entityVisiblePath(entity)) {
       continue;
     }
     const auto geometryIt = geometryById.find(entity.mesh.mesh_id);
@@ -147,7 +185,7 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
 
   auto appendEntitySdfPickables = [&]() {
     for (const auto &entity : document.entities) {
-      if (!entity.has_sdf_primitive) {
+      if (!entity.has_sdf_primitive || !entityVisiblePath(entity)) {
         continue;
       }
       const auto transform = ResolveEntityWorldTransform(entity, world);
@@ -268,7 +306,7 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
   }
 
   for (const auto &entity : document.entities) {
-    if (!entity.has_mesh) {
+    if (!entity.has_mesh || !entityVisiblePath(entity)) {
       continue;
     }
     const auto geometryIt = geometryById.find(entity.mesh.mesh_id);

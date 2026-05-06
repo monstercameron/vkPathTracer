@@ -21,6 +21,7 @@
 #include <QAbstractAnimation>
 #include <QApplication>
 #include <QByteArray>
+#include <QBrush>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QCloseEvent>
@@ -56,6 +57,7 @@
 #include <QMouseEvent>
 #include <QObject>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPaintEvent>
 #include <QPalette>
 #include <QPoint>
@@ -83,6 +85,7 @@
 #include <QTableWidgetItem>
 #include <QTextEdit>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QtGlobal>

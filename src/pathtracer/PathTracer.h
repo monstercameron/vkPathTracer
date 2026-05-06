@@ -307,6 +307,10 @@ struct RTSceneData {
   std::vector<std::string> textures;
   std::vector<RTHitLight> lights;
   Vec3 environment_color{0.0f, 0.0f, 0.0f};
+  std::vector<Vec3> environment_map;
+  Vec3 environment_map_scale{0.0f, 0.0f, 0.0f};
+  uint32_t environment_map_width = 0u;
+  uint32_t environment_map_height = 0u;
   Vec3 camera_position{};
   Vec3 camera_target{0.0f, 0.0f, -1.0f};
   Vec3 camera_up{0.0f, 1.0f, 0.0f};
@@ -365,10 +369,17 @@ struct RTSceneDeltaUpdate {
   Vec3 environment_color{};
 };
 
+enum class RTInstanceTransformApplyMode {
+  MetadataOnly,
+  RebakeCpuVertices,
+};
+
 RTCameraState ExtractCameraState(const RTSceneData& scene);
 void ApplyCameraState(RTSceneData& scene, const RTCameraState& camera);
 bool ApplyInstanceTransformUpdates(RTSceneData& scene,
-                                   const std::vector<RTInstanceTransformUpdate>& updates);
+                                   const std::vector<RTInstanceTransformUpdate>& updates,
+                                   RTInstanceTransformApplyMode mode =
+                                       RTInstanceTransformApplyMode::RebakeCpuVertices);
 bool ApplySceneDeltaUpdate(RTSceneData& scene, const RTSceneDeltaUpdate& update);
 void MergeSceneDeltaUpdates(RTSceneDeltaUpdate& dst, const RTSceneDeltaUpdate& src);
 std::optional<RTSceneDeltaUpdate> BuildSceneDeltaUpdate(const RTSceneData& before,
@@ -408,6 +419,7 @@ struct FilmHdr {
 FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings);
 FilmResolveSettings CameraAdjustedFilmResolveSettings(const FilmResolveSettings& base,
                                                        const RTSceneData& scene);
+Vec3 SampleSceneEnvironment(const RTSceneData& scene, const Vec3& direction);
 Vec3 WhiteBalanceScale(float kelvin);
 std::string SerializeFilmResolveSettings(const FilmResolveSettings& settings);
 

@@ -19,7 +19,7 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
   const auto sceneResult = BuildSceneDataFromDocument(vkpt::scene::SceneDocument{});
   if (!sceneResult) {
     if (diagnostics) {
-      diagnostics->push_back("failed to construct fallback scene data");
+      diagnostics->push_back("failed to construct empty scene data");
     }
     return vkpt::core::Result<RTSceneLayoutManifest>::error(vkpt::core::ErrorCode::Internal);
   }
@@ -62,7 +62,7 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
   RTSceneLayoutManifest manifest;
   manifest.schema_version = "1.0";
 
-  // Build from fallback scene data to include every RTSceneData array used by conversion.
+  // Build from empty scene data to include every RTSceneData field used by conversion.
   std::size_t cpuCursor = 0u;
   std::size_t gpuCursor = 0u;
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_position", sizeof(Vec3), 1u, alignof(Vec3));
@@ -84,6 +84,10 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_iris_roundness", sizeof(float), 1u, alignof(float));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_anamorphic_squeeze", sizeof(float), 1u, alignof(float));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_color", sizeof(Vec3), 1u, alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_map_scale", sizeof(Vec3), 1u, alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_map_width", sizeof(std::uint32_t), 1u, alignof(std::uint32_t));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_map_height", sizeof(std::uint32_t), 1u, alignof(std::uint32_t));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_map", sizeof(Vec3), scene.environment_map.size(), alignof(Vec3));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "materials", sizeof(RTMaterial), scene.materials.size(), alignof(RTMaterial));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "vertices", sizeof(Vec3), scene.vertices.size(), alignof(Vec3));
   append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "texcoords", sizeof(Vec2), scene.texcoords.size(), alignof(Vec2));
@@ -101,7 +105,7 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
   manifest.total_gpu_bytes = gpuCursor;
 
   if (diagnostics) {
-    diagnostics->push_back("layout manifest built from fallback scene template");
+    diagnostics->push_back("layout manifest built from empty scene template");
   }
   return vkpt::core::Result<RTSceneLayoutManifest>::ok(std::move(manifest));
 }

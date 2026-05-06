@@ -467,14 +467,23 @@
 
         if (stepped) {
           bool sceneChanged = false;
-          const auto preWriteWorldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
-          const auto* preWriteWorld =
-              preWriteWorldSnapshot ? &preWriteWorldSnapshot.value() : nullptr;
+          std::optional<vkpt::scene::SceneWorld> preWriteWorldSnapshot;
+          auto preWriteWorldFor = [&](const vkpt::scene::SceneEntityDefinition& entity)
+              -> const vkpt::scene::SceneWorld* {
+            if (!entity.has_hierarchy || entity.hierarchy.parent == 0u) {
+              return nullptr;
+            }
+            if (!preWriteWorldSnapshot) {
+              preWriteWorldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
+            }
+            return preWriteWorldSnapshot ? &preWriteWorldSnapshot.value() : nullptr;
+          };
           for (const auto& write : qtPhysics->extract_transform_writes()) {
             auto* entity = qtFindEntity(write.entity);
             if (entity == nullptr) {
               continue;
             }
+            const auto* preWriteWorld = preWriteWorldFor(*entity);
             const auto currentWorld = ResolveEntityWorldTransform(*entity, preWriteWorld);
             const auto& next = write.transform;
             const bool transformChanged =

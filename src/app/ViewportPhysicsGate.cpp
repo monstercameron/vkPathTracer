@@ -584,7 +584,10 @@ int RunThirdPersonScriptPerformanceGate(std::string scenePath,
     if (updates.empty()) {
       return fail("script movement produced no render instance transform updates");
     }
-    vkpt::pathtracer::ApplyInstanceTransformUpdates(rtScene, updates);
+    vkpt::pathtracer::ApplyInstanceTransformUpdates(
+        rtScene,
+        updates,
+        vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly);
 
     const auto publishStart = std::chrono::steady_clock::now();
     const bool updated = tracer->update_instance_transforms(updates);

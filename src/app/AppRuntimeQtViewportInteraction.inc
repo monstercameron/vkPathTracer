@@ -182,6 +182,54 @@
         }
         applyQtCameraPose(qtFpsMode ? "fps dolly" : "orbit dolly");
       };
+      auto qtCameraFlatForward = [&]() {
+        const auto forward = qtCameraForward();
+        const auto flat = vkpt::pathtracer::Vec3{forward.x, 0.0f, forward.z};
+        return PtNormalize(flat, forward);
+      };
+      auto qtCameraFlatRight = [&]() {
+        return PtNormalize(PtCross(qtCameraFlatForward(), {0.0f, 1.0f, 0.0f}),
+                           {1.0f, 0.0f, 0.0f});
+      };
+      auto qtApplyContinuousOrbitCameraMovement = [&](float dtSeconds) {
+        if (qtFpsMode || qtScriptState.playing || dtSeconds <= 0.0f) {
+          return;
+        }
+        if (qtKeyActive(kQtKeyControl) || qtKeyActive(17) ||
+            qtKeyActive(kQtKeyAlt) || IsCtrlDown() || IsAltDown()) {
+          return;
+        }
+
+        vkpt::pathtracer::Vec3 wishMove{};
+        if (qtKeyActive('W') || qtKeyActive(kQtKeyUp)) {
+          wishMove = PtAdd(wishMove, qtCameraFlatForward());
+        }
+        if (qtKeyActive('S') || qtKeyActive(kQtKeyDown)) {
+          wishMove = PtSub(wishMove, qtCameraFlatForward());
+        }
+        if (qtKeyActive('D') || qtKeyActive(kQtKeyRight)) {
+          wishMove = PtAdd(wishMove, qtCameraFlatRight());
+        }
+        if (qtKeyActive('A') || qtKeyActive(kQtKeyLeft)) {
+          wishMove = PtSub(wishMove, qtCameraFlatRight());
+        }
+        if (PtLength(wishMove) <= 1.0e-5f) {
+          return;
+        }
+
+        float speed = qtCameraMoveUnitsPerSecond;
+        if (qtKeyActive(kQtKeyShift) || qtKeyActive(16)) {
+          speed *= 2.5f;
+        }
+
+        const auto delta = PtMul(PtNormalize(wishMove), speed * dtSeconds);
+        qtCameraPose.position = PtAdd(qtCameraPose.position, delta);
+        qtCameraPose.target = PtAdd(qtCameraPose.target, delta);
+        qtMoveCameraFocusBy(delta);
+        syncQtFpsAnglesFromPose();
+        qtUserCameraActive = true;
+        applyQtCameraPose("wasd move");
+      };
       auto qtApplyContinuousFpsMovement = [&](float dtSeconds) {
         if (!qtFpsMode || dtSeconds <= 0.0f) {
           return;
@@ -619,6 +667,10 @@
           qtReparentSceneGraphTargets(activation.entity_ids,
                                       activation.target_entity_id,
                                       frameIndex);
+          return;
+        }
+        if (activation.action == "toggle_visibility") {
+          qtToggleSceneGraphVisibility(activation.entity_id, frameIndex);
           return;
         }
 

@@ -34,6 +34,8 @@ vkpt::platform::QtDockRow ToQtPlatformDockRow(const QtDockTreeRow& row) {
   out.selected = row.selected;
   out.activatable = row.activatable;
   out.draggable = row.draggable;
+  out.visible = row.visible;
+  out.visibility_toggle_enabled = row.visibility_toggle_enabled;
   out.children.reserve(row.children.size());
   for (const auto& child : row.children) {
     out.children.push_back(ToQtPlatformDockRow(child));

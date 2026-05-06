@@ -7,10 +7,73 @@
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 
 namespace vkpt::app {
+
+namespace {
+
+constexpr std::string_view kQtFallbackLightingGroupName = "Fallback Lighting (off by default)";
+constexpr std::string_view kQtLegacyFallbackLightingGroupName = "Fallback Lighting";
+constexpr std::string_view kQtFallbackKeyLightName = "Fallback Key Light";
+constexpr std::string_view kQtFallbackEnvironmentLightName = "Fallback Environment Light";
+
+vkpt::scene::SceneEntityDefinition* FindQtSceneEntityByName(
+    vkpt::scene::SceneDocument& document,
+    std::string_view name) {
+  const auto it = std::find_if(document.entities.begin(),
+                               document.entities.end(),
+                               [name](const vkpt::scene::SceneEntityDefinition& entity) {
+                                 return entity.name == name;
+                               });
+  return it == document.entities.end() ? nullptr : &*it;
+}
+
+vkpt::scene::SceneEntityDefinition* FindQtSceneEntityByNameOrLegacy(
+    vkpt::scene::SceneDocument& document,
+    std::string_view name,
+    std::string_view legacyName) {
+  if (auto* entity = FindQtSceneEntityByName(document, name)) {
+    return entity;
+  }
+  if (!legacyName.empty()) {
+    if (auto* entity = FindQtSceneEntityByName(document, legacyName)) {
+      entity->name = std::string(name);
+      return entity;
+    }
+  }
+  return nullptr;
+}
+
+vkpt::scene::SceneEntityDefinition& EnsureQtNamedSceneEntity(
+    vkpt::scene::SceneDocument& document,
+    std::string_view name,
+    std::string_view legacyName,
+    bool& created) {
+  if (auto* entity = FindQtSceneEntityByNameOrLegacy(document, name, legacyName)) {
+    created = false;
+    return *entity;
+  }
+  created = true;
+  return EnsureQtSceneObjectEntity(document, 0u, name);
+}
+
+void EnsureQtSceneEntityParent(vkpt::scene::SceneDocument& document,
+                               vkpt::scene::SceneEntityDefinition& entity,
+                               vkpt::core::StableId parentId) {
+  if (parentId == 0u) {
+    return;
+  }
+  entity.has_hierarchy = true;
+  entity.hierarchy.parent = parentId;
+  if (entity.hierarchy.sibling_order == 0u) {
+    entity.hierarchy.sibling_order = NextQtSceneSiblingOrder(document, parentId);
+  }
+}
+
+}  // namespace
 
 vkpt::scene::SceneEntityDefinition* FindQtSceneEntity(vkpt::scene::SceneDocument& document,
                                                       vkpt::core::StableId id) {
@@ -229,6 +292,64 @@ void PromoteQtSceneObjectCamerasAndLights(vkpt::scene::SceneDocument& document) 
       RemoveQtLegacyTransformEntry(document, entity.id);
     }
   }
+}
+
+void EnsureQtFallbackLightingEntities(vkpt::scene::SceneDocument& document) {
+  PromoteQtSceneObjectCamerasAndLights(document);
+
+  bool groupCreated = false;
+  auto& group = EnsureQtNamedSceneEntity(document,
+                                         kQtFallbackLightingGroupName,
+                                         kQtLegacyFallbackLightingGroupName,
+                                         groupCreated);
+  if (groupCreated) {
+    group.visible = false;
+  }
+  group.has_camera = false;
+  group.has_light = false;
+  group.has_mesh = false;
+  group.has_sdf_primitive = false;
+  const auto rootId = FindQtSceneRootEntityId(document);
+  EnsureQtSceneEntityParent(document, group, rootId);
+  RemoveQtLegacyTransformEntry(document, group.id);
+
+  bool keyCreated = false;
+  auto& key = EnsureQtNamedSceneEntity(document, kQtFallbackKeyLightName, {}, keyCreated);
+  if (keyCreated) {
+    key.visible = true;
+    key.has_transform = true;
+    key.transform.translation = {0.0f, 3.0f, 3.0f};
+    key.transform.dirty = true;
+  } else if (!key.has_transform) {
+    key.has_transform = true;
+    key.transform.translation = {0.0f, 3.0f, 3.0f};
+  }
+  key.has_light = true;
+  key.light.type = "point";
+  key.light.color = {1.0f, 0.96f, 0.88f};
+  if (key.light.intensity <= 0.0f) {
+    key.light.intensity = 10.0f;
+  }
+  if (key.light.radius <= 0.0f) {
+    key.light.radius = 0.2f;
+  }
+  EnsureQtSceneEntityParent(document, key, group.id);
+  RemoveQtLegacyTransformEntry(document, key.id);
+
+  bool environmentCreated = false;
+  auto& environment =
+      EnsureQtNamedSceneEntity(document, kQtFallbackEnvironmentLightName, {}, environmentCreated);
+  if (environmentCreated) {
+    environment.visible = true;
+  }
+  environment.has_light = true;
+  environment.light.type = "environment";
+  environment.light.color = {0.35f, 0.4f, 0.5f};
+  if (environment.light.intensity <= 0.0f) {
+    environment.light.intensity = 1.0f;
+  }
+  EnsureQtSceneEntityParent(document, environment, group.id);
+  RemoveQtLegacyTransformEntry(document, environment.id);
 }
 
 }  // namespace vkpt::app

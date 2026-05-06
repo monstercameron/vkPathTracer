@@ -4,6 +4,7 @@
 #include "scene/Scene.h"
 
 #ifdef PT_ENABLE_QT
+#include "app/AppQtSceneDocumentActions.h"
 #include "app/QtDockPanels.h"
 #include "app/ViewportInteraction.h"
 #endif
@@ -265,7 +266,148 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                !sceneGraphPanel.tree_rows.empty() &&
                sceneGraphPanel.tree_rows.front().children.size() >= 2u &&
                sceneGraphPanel.tree_rows.front().children[1].icon == "light");
+    check_true("qt scene graph exposes model visibility toggle",
+               !sceneGraphPanel.tree_rows.empty() &&
+               sceneGraphPanel.tree_rows.front().children.size() >= 1u &&
+               sceneGraphPanel.tree_rows.front().children.front().visibility_toggle_enabled &&
+               sceneGraphPanel.tree_rows.front().children.front().visible);
   }
+
+  {
+    vkpt::scene::SceneDocument visibilityDoc;
+    vkpt::scene::SceneGeometryDefinition tri;
+    tri.id = 100;
+    tri.vertices = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    tri.indices = {0, 1, 2};
+    visibilityDoc.geometry.push_back(tri);
+    vkpt::scene::SceneEntityDefinition hiddenRoot;
+    hiddenRoot.id = 200;
+    hiddenRoot.name = "Hidden Root";
+    hiddenRoot.visible = false;
+    vkpt::scene::SceneEntityDefinition mesh;
+    mesh.id = 201;
+    mesh.name = "Hidden Mesh";
+    mesh.has_mesh = true;
+    mesh.mesh.mesh_id = tri.id;
+    mesh.has_hierarchy = true;
+    mesh.hierarchy.parent = hiddenRoot.id;
+    visibilityDoc.entities = {hiddenRoot, mesh};
+    const auto hiddenScene = vkpt::pathtracer::BuildSceneDataFromDocument(visibilityDoc);
+    check_true("hidden scene graph branch skips render instances",
+               hiddenScene &&
+               hiddenScene.value().instances.empty() &&
+               hiddenScene.value().vertices.empty());
+  }
+
+  {
+    vkpt::scene::SceneDocument hiddenLightDoc;
+    vkpt::scene::SceneGeometryDefinition tri;
+    tri.id = 300;
+    tri.vertices = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    tri.indices = {0, 1, 2};
+    hiddenLightDoc.geometry.push_back(tri);
+    vkpt::scene::SceneEntityDefinition camera;
+    camera.id = 301;
+    camera.name = "Camera";
+    camera.has_camera = true;
+    vkpt::scene::SceneEntityDefinition mesh;
+    mesh.id = 302;
+    mesh.name = "Mesh";
+    mesh.has_mesh = true;
+    mesh.mesh.mesh_id = tri.id;
+    vkpt::scene::SceneEntityDefinition hiddenLight;
+    hiddenLight.id = 303;
+    hiddenLight.name = "Hidden Light";
+    hiddenLight.visible = false;
+    hiddenLight.has_light = true;
+    hiddenLight.light.intensity = 10.0f;
+    hiddenLightDoc.entities = {camera, mesh, hiddenLight};
+    const auto hiddenLightScene = vkpt::pathtracer::BuildSceneDataFromDocument(hiddenLightDoc);
+    check_true("hidden authored light does not create fallback lighting",
+               hiddenLightScene &&
+               hiddenLightScene.value().instances.size() == 1u &&
+               hiddenLightScene.value().lights.empty());
+  }
+
+  {
+    vkpt::scene::SceneDocument unlitDoc;
+    vkpt::scene::SceneGeometryDefinition tri;
+    tri.id = 360;
+    tri.vertices = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    tri.indices = {0, 1, 2};
+    unlitDoc.geometry.push_back(tri);
+    vkpt::scene::SceneEntityDefinition camera;
+    camera.id = 361;
+    camera.name = "Camera";
+    camera.has_camera = true;
+    vkpt::scene::SceneEntityDefinition mesh;
+    mesh.id = 362;
+    mesh.name = "Mesh";
+    mesh.has_mesh = true;
+    mesh.mesh.mesh_id = tri.id;
+    unlitDoc.entities = {camera, mesh};
+    const auto unlitScene = vkpt::pathtracer::BuildSceneDataFromDocument(unlitDoc);
+    check_true("authored unlit scene does not get implicit render lighting",
+               unlitScene &&
+               unlitScene.value().instances.size() == 1u &&
+               unlitScene.value().lights.empty() &&
+               std::max({unlitScene.value().environment_color.x,
+                         unlitScene.value().environment_color.y,
+                         unlitScene.value().environment_color.z}) <= 1.0e-6f);
+  }
+
+  {
+    const auto emptyScene = vkpt::pathtracer::BuildSceneDataFromDocument(vkpt::scene::SceneDocument{});
+    check_true("empty scene document does not create implicit render content",
+               emptyScene &&
+               emptyScene.value().vertices.empty() &&
+               emptyScene.value().indices.empty() &&
+               emptyScene.value().instances.empty() &&
+               emptyScene.value().sdf_primitives.empty() &&
+               emptyScene.value().lights.empty());
+  }
+
+#ifdef PT_ENABLE_QT
+  {
+    vkpt::scene::SceneDocument fallbackLightingDoc;
+    vkpt::scene::SceneGeometryDefinition tri;
+    tri.id = 400;
+    tri.vertices = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}};
+    tri.indices = {0, 1, 2};
+    fallbackLightingDoc.geometry.push_back(tri);
+    vkpt::scene::SceneEntityDefinition mesh;
+    mesh.id = 401;
+    mesh.name = "Mesh";
+    mesh.has_mesh = true;
+    mesh.mesh.mesh_id = tri.id;
+    fallbackLightingDoc.entities = {mesh};
+    EnsureQtFallbackLightingEntities(fallbackLightingDoc);
+    const auto hiddenFallbackScene =
+        vkpt::pathtracer::BuildSceneDataFromDocument(fallbackLightingDoc);
+    const auto fallbackGroup = std::find_if(
+        fallbackLightingDoc.entities.begin(),
+        fallbackLightingDoc.entities.end(),
+        [](const vkpt::scene::SceneEntityDefinition& entity) {
+          return entity.name == "Fallback Lighting (off by default)";
+        });
+    check_true("qt fallback lighting is injected hidden by default",
+               fallbackGroup != fallbackLightingDoc.entities.end() &&
+               !fallbackGroup->visible &&
+               hiddenFallbackScene &&
+               hiddenFallbackScene.value().lights.empty());
+    if (fallbackGroup != fallbackLightingDoc.entities.end()) {
+      fallbackGroup->visible = true;
+    }
+    const auto visibleFallbackScene =
+        vkpt::pathtracer::BuildSceneDataFromDocument(fallbackLightingDoc);
+    check_true("qt fallback lighting can be enabled from scene graph",
+               visibleFallbackScene &&
+               !visibleFallbackScene.value().lights.empty() &&
+               std::max({visibleFallbackScene.value().environment_color.x,
+                         visibleFallbackScene.value().environment_color.y,
+                         visibleFallbackScene.value().environment_color.z}) > 1.0e-6f);
+  }
+#endif
 
   {
     vkpt::pathtracer::RenderSettings renderSettings;

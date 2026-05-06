@@ -342,7 +342,10 @@ void RenderCoordinator::run(std::stop_token stop,
     }
 
     if (commands.instance_transforms && !commands.instance_transforms->empty()) {
-      vkpt::pathtracer::ApplyInstanceTransformUpdates(scene, *commands.instance_transforms);
+      vkpt::pathtracer::ApplyInstanceTransformUpdates(
+          scene,
+          *commands.instance_transforms,
+          vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly);
       ++generation;
       sample = 0u;
       bool transformOk = tracer->update_instance_transforms(*commands.instance_transforms);

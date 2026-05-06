@@ -557,6 +557,7 @@ std::vector<std::string> QtMaterialFamilyOptions() {
       "fabric_cloth",
       "toon_surface",
       "emissive",
+      "wood",
       "procedural_material",
       "marble_scattering",
       "rust_progression",

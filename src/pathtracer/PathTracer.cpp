@@ -161,6 +161,14 @@ bool same_light(const vkpt::pathtracer::RTHitLight& lhs,
          lhs.spot_outer_cos == rhs.spot_outer_cos;
 }
 
+bool same_environment_map(const vkpt::pathtracer::RTSceneData& lhs,
+                          const vkpt::pathtracer::RTSceneData& rhs) {
+  return lhs.environment_map_width == rhs.environment_map_width &&
+         lhs.environment_map_height == rhs.environment_map_height &&
+         same_vec3(lhs.environment_map_scale, rhs.environment_map_scale) &&
+         same_vector(lhs.environment_map, rhs.environment_map, same_vec3);
+}
+
 bool same_camera_scene_fields(const vkpt::pathtracer::RTSceneData& lhs,
                               const vkpt::pathtracer::RTSceneData& rhs) {
   return same_vec3(lhs.camera_position, rhs.camera_position) &&
@@ -186,6 +194,67 @@ bool same_camera_scene_fields(const vkpt::pathtracer::RTSceneData& lhs,
 }  // namespace
 
 namespace vkpt::pathtracer {
+
+Vec3 SampleSceneEnvironment(const RTSceneData& scene, const Vec3& direction) {
+  const auto width = scene.environment_map_width;
+  const auto height = scene.environment_map_height;
+  if (width == 0u || height == 0u ||
+      scene.environment_map.size() < static_cast<std::size_t>(width) * height) {
+    return scene.environment_color;
+  }
+
+  constexpr float kInvTwoPi = 0.15915494309189533577f;
+  constexpr float kInvPi = 0.31830988618379067154f;
+  const float len_sq = direction.x * direction.x +
+                       direction.y * direction.y +
+                       direction.z * direction.z;
+  if (len_sq <= 1.0e-12f) {
+    return scene.environment_color;
+  }
+  const float inv_len = 1.0f / std::sqrt(len_sq);
+  const Vec3 dir{direction.x * inv_len, direction.y * inv_len, direction.z * inv_len};
+  float u = 0.5f + std::atan2(dir.z, dir.x) * kInvTwoPi;
+  u -= std::floor(u);
+  const float v = std::acos(std::clamp(dir.y, -1.0f, 1.0f)) * kInvPi;
+
+  const float x = u * static_cast<float>(width);
+  const float y = std::clamp(v, 0.0f, 1.0f) * static_cast<float>(height - 1u);
+  const auto x0 = static_cast<uint32_t>(std::floor(x)) % width;
+  const auto x1 = (x0 + 1u) % width;
+  const auto y0 = static_cast<uint32_t>(std::floor(y));
+  const auto y1 = std::min(y0 + 1u, height - 1u);
+  const float tx = x - std::floor(x);
+  const float ty = y - std::floor(y);
+
+  const auto texel = [&](uint32_t px, uint32_t py) -> Vec3 {
+    return scene.environment_map[static_cast<std::size_t>(py) * width + px];
+  };
+  const Vec3 c00 = texel(x0, y0);
+  const Vec3 c10 = texel(x1, y0);
+  const Vec3 c01 = texel(x0, y1);
+  const Vec3 c11 = texel(x1, y1);
+  const Vec3 top{
+      c00.x + (c10.x - c00.x) * tx,
+      c00.y + (c10.y - c00.y) * tx,
+      c00.z + (c10.z - c00.z) * tx};
+  const Vec3 bottom{
+      c01.x + (c11.x - c01.x) * tx,
+      c01.y + (c11.y - c01.y) * tx,
+      c01.z + (c11.z - c01.z) * tx};
+  Vec3 color{
+      top.x + (bottom.x - top.x) * ty,
+      top.y + (bottom.y - top.y) * ty,
+      top.z + (bottom.z - top.z) * ty};
+
+  Vec3 scale = scene.environment_map_scale;
+  if (std::max({scale.x, scale.y, scale.z}) <= 1.0e-6f) {
+    scale = {1.0f, 1.0f, 1.0f};
+  }
+  color.x *= scale.x;
+  color.y *= scale.y;
+  color.z *= scale.z;
+  return color;
+}
 
 PathTraceSettings MakePathTraceSettings(const RenderSettings& settings) {
   PathTraceSettings out;
@@ -274,7 +343,8 @@ void ApplyCameraState(RTSceneData& scene, const RTCameraState& camera) {
 }
 
 bool ApplyInstanceTransformUpdates(RTSceneData& scene,
-                                   const std::vector<RTInstanceTransformUpdate>& updates) {
+                                   const std::vector<RTInstanceTransformUpdate>& updates,
+                                   RTInstanceTransformApplyMode mode) {
   bool changed = false;
   for (const auto& update : updates) {
     uint32_t instance_index = update.instance_index;
@@ -299,6 +369,10 @@ bool ApplyInstanceTransformUpdates(RTSceneData& scene,
       instance.transform_revision = update.transform_revision;
     }
     changed = true;
+
+    if (mode == RTInstanceTransformApplyMode::MetadataOnly) {
+      continue;
+    }
 
     const uint32_t first_scene_index = instance.first_triangle * 3u;
     if (instance.local_vertex_count == 0u ||
@@ -402,6 +476,7 @@ std::optional<RTSceneDeltaUpdate> BuildSceneDeltaUpdate(const RTSceneData& befor
       same_vector(before.tessellation_requests, after.tessellation_requests, same_tessellation_request) &&
       same_vector(before.sdf_primitives, after.sdf_primitives, same_sdf) &&
       before.textures == after.textures &&
+      same_environment_map(before, after) &&
       before.materials.size() == after.materials.size() &&
       before.lights.size() == after.lights.size() &&
       same_camera_scene_fields(before, after);

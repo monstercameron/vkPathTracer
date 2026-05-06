@@ -189,12 +189,24 @@ class QtMainWindow final : public QMainWindow {
     out << row.entity_id << ','
         << (row.selected ? '1' : '0')
         << (row.activatable ? '1' : '0')
-        << (row.draggable ? '1' : '0') << ';';
+        << (row.draggable ? '1' : '0')
+        << (row.visible ? '1' : '0')
+        << (row.visibility_toggle_enabled ? '1' : '0') << ';';
     out << row.children.size() << '[';
     for (const auto& child : row.children) {
       appendRowSignature(out, child);
     }
     out << ']';
+  }
+
+  static bool hasTreeRowVisibilityToggles(const std::vector<QtDockRow>& rows) {
+    for (const auto& row : rows) {
+      if (row.visibility_toggle_enabled ||
+          hasTreeRowVisibilityToggles(row.children)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static std::string panelContentSignature(const QtDockPanel& panel) {
@@ -353,10 +365,34 @@ class QtMainWindow final : public QMainWindow {
     return QIcon(pixmap);
   }
 
-  static QTreeWidgetItem* buildTreeItem(const QtDockRow& row) {
+  static QIcon visibilityIcon(bool visible) {
+    QPixmap pixmap(18, 18);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QColor stroke = visible ? QColor(206, 218, 232) : QColor(126, 136, 148);
+    painter.setPen(QPen(stroke, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(Qt::NoBrush);
+    const QRectF eyeRect(2.4, 5.1, 13.2, 7.8);
+    QPainterPath eye;
+    eye.moveTo(2.4, 9.0);
+    eye.cubicTo(5.2, 5.0, 12.8, 5.0, 15.6, 9.0);
+    eye.cubicTo(12.8, 13.0, 5.2, 13.0, 2.4, 9.0);
+    painter.drawPath(eye);
+    if (visible) {
+      painter.setBrush(stroke);
+      painter.drawEllipse(QRectF(7.0, 7.0, 4.0, 4.0));
+    } else {
+      painter.drawLine(QPointF(4.0, 14.0), QPointF(14.0, 4.0));
+      painter.drawArc(eyeRect, 200 * 16, 140 * 16);
+    }
+    return QIcon(pixmap);
+  }
+
+  static QTreeWidgetItem* buildTreeItem(const QtDockRow& row, bool actionColumn = false) {
     auto* item = new QTreeWidgetItem();
     item->setText(0, ToQString(row.label));
-    item->setText(1, ToQString(row.value));
+    item->setText(1, actionColumn ? QString{} : ToQString(row.value));
     if (!row.icon.empty()) {
       item->setIcon(0, dockRowIcon(row.icon));
     }
@@ -369,6 +405,10 @@ class QtMainWindow final : public QMainWindow {
     if (row.draggable) {
       item->setData(0, Qt::UserRole + 3, true);
     }
+    if (row.visibility_toggle_enabled) {
+      item->setData(0, Qt::UserRole + 4, true);
+      item->setData(0, Qt::UserRole + 5, row.visible);
+    }
     if (row.entity_id != 0u) {
       item->setData(0, Qt::UserRole + 1, QVariant::fromValue<qulonglong>(
           static_cast<qulonglong>(row.entity_id)));
@@ -378,13 +418,67 @@ class QtMainWindow final : public QMainWindow {
       item->setFlags(flags);
     }
     item->setSelected(row.selected);
+    if (!row.visible) {
+      const QBrush hiddenBrush(QColor(126, 136, 148));
+      item->setForeground(0, hiddenBrush);
+      item->setForeground(1, hiddenBrush);
+    }
     if (!row.value.empty()) {
       item->setToolTip(0, ToQString(row.label + "\n" + row.value));
     }
     for (const auto& child : row.children) {
-      item->addChild(buildTreeItem(child));
+      item->addChild(buildTreeItem(child, actionColumn));
     }
     return item;
+  }
+
+  void installTreeItemWidgets(QTreeWidget* tree,
+                              const QtDockRow& row,
+                              QTreeWidgetItem* item,
+                              const std::string& panelId) {
+    if (tree == nullptr || item == nullptr) {
+      return;
+    }
+    if (row.visibility_toggle_enabled) {
+      auto* button = new QToolButton(tree);
+      button->setAutoRaise(true);
+      button->setCursor(Qt::PointingHandCursor);
+      button->setFocusPolicy(Qt::NoFocus);
+      button->setFixedSize(24, 20);
+      button->setText(QString{});
+      button->setIcon(visibilityIcon(row.visible));
+      button->setIconSize(QSize(18, 18));
+      button->setToolTip(row.visible
+          ? QStringLiteral("Hide from scene")
+          : QStringLiteral("Show in scene"));
+      button->setAccessibleName(row.visible
+          ? QStringLiteral("Hide scene item")
+          : QStringLiteral("Show scene item"));
+      tree->setItemWidget(item, 1, button);
+      QObject::connect(button,
+                       &QToolButton::clicked,
+                       tree,
+                       [this, panelId, rowId = row.id, entityId = row.entity_id]() {
+                         if (m_owner == nullptr || entityId == 0u) {
+                           return;
+                         }
+                         m_owner->emit_dock_row_activation(panelId,
+                                                           rowId,
+                                                           entityId,
+                                                           false,
+                                                           false,
+                                                           false,
+                                                           0.0f,
+                                                           0.0f,
+                                                           "toggle_visibility");
+                       });
+    }
+    const int childCount = std::min<int>(
+        item->childCount(), static_cast<int>(row.children.size()));
+    for (int index = 0; index < childCount; ++index) {
+      installTreeItemWidgets(tree, row.children[static_cast<std::size_t>(index)],
+                             item->child(index), panelId);
+    }
   }
 
   void emitDockTreeActivation(const std::string& panelId, QTreeWidgetItem* item) {

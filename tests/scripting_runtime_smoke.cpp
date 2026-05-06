@@ -502,6 +502,7 @@ int RunScriptingRuntimeSmoke() {
   bool mouse_steered_hero = false;
   bool mouse_steered_movement = false;
   bool mouse_steered_camera = false;
+  bool mouse_sensitivity_tamed = false;
   bool have_mouse_hero = false;
   bool have_mouse_camera = false;
   vkpt::scene::TransformComponent mouse_hero_transform;
@@ -518,12 +519,15 @@ int RunScriptingRuntimeSmoke() {
       if (set_transform->transform.rotation.y < -0.01f) {
         mouse_steered_hero = true;
       }
-      if (set_transform->transform.translation.x < -0.0001f &&
+      if (set_transform->transform.rotation.y > -0.12f) {
+        mouse_sensitivity_tamed = true;
+      }
+      if (set_transform->transform.translation.x > 0.0001f &&
           set_transform->transform.translation.z < -0.0001f) {
         mouse_steered_movement = true;
       }
     }
-    if (set_transform->id == 9101u && set_transform->transform.translation.x > 0.1f) {
+    if (set_transform->id == 9101u && set_transform->transform.translation.x < -0.1f) {
       mouse_steered_camera = true;
       mouse_camera_transform = set_transform->transform;
       have_mouse_camera = true;
@@ -534,11 +538,44 @@ int RunScriptingRuntimeSmoke() {
       !Check(third_person_mouse_dispatch.command_count_after >= 3u,
              "mouse look with W should emit gameplay transform commands") ||
       !Check(mouse_steered_hero, "mouse look should rotate the hero") ||
+      !Check(mouse_sensitivity_tamed, "mouse look should be damped enough for controlled third-person aiming") ||
       !Check(mouse_steered_movement, "mouse look should steer W movement direction") ||
       !Check(mouse_steered_camera, "mouse look should rotate the chase camera around the hero") ||
       !Check(have_mouse_hero && have_mouse_camera &&
                  CameraLooksAtHeroCenter(mouse_camera_transform, mouse_hero_transform),
              "mouse look camera should remain centered on the hero")) {
+    return 1;
+  }
+
+  vkpt::scene::WorldCommandBuffer third_person_idle_mouse_commands;
+  vkpt::scripting::ScriptExecutionContext third_person_idle_mouse_context;
+  third_person_idle_mouse_context.frame = 4;
+  third_person_idle_mouse_context.delta_seconds = 1.0 / 60.0;
+  third_person_idle_mouse_context.input.mouse_delta_x = 100.0f;
+  third_person_idle_mouse_context.input.mouse_delta_y = 0.0f;
+  const auto third_person_idle_mouse_dispatch = third_person_runtime->dispatch_hook(
+      third_person_world_result.value(),
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      third_person_idle_mouse_context,
+      third_person_idle_mouse_commands);
+  const auto* idle_mouse_hero =
+      FindSetTransform(third_person_idle_mouse_commands, 9110u);
+  const auto* idle_mouse_camera =
+      FindSetTransform(third_person_idle_mouse_commands, 9101u);
+  if (!Check(third_person_idle_mouse_dispatch.hook_call_count == 1u,
+             "idle mouse-look dispatch should call the player update hook") ||
+      !Check(idle_mouse_hero != nullptr,
+             "idle mouse look should rotate the hero model with the camera") ||
+      !Check(idle_mouse_camera != nullptr,
+             "idle mouse look should orbit the camera") ||
+      !Check(idle_mouse_hero->transform.rotation.y < -0.01f &&
+                 idle_mouse_hero->transform.rotation.y > -0.12f,
+             "idle mouse look should turn the hero model at a one-for-one camera-derived rate") ||
+      !Check(std::abs(idle_mouse_hero->transform.translation.x) < 0.0001f &&
+                 std::abs(idle_mouse_hero->transform.translation.z) < 0.0001f,
+             "idle mouse look should not drift the hero position") ||
+      !Check(CameraLooksAtHeroCenter(idle_mouse_camera->transform, idle_mouse_hero->transform),
+             "idle mouse-look camera should remain centered on the hero")) {
     return 1;
   }
 
