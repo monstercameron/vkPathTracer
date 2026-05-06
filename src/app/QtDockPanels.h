@@ -44,6 +44,8 @@ struct QtDockTreeRow {
   std::string icon;
   vkpt::core::StableId entity_id = 0;
   bool selected = false;
+  bool activatable = false;
+  bool draggable = false;
   std::vector<QtDockTreeRow> children;
 };
 
@@ -54,6 +56,10 @@ struct QtDockPanelContent {
   bool docked = true;
   bool floating = false;
   bool collapsed = false;
+  bool tree_single_column = false;
+  int tree_stretch = -1;
+  int property_stretch = -1;
+  int property_preferred_height = 0;
   float width = 320.0f;
   float height = 240.0f;
   std::vector<QtDockProperty> properties;
@@ -191,6 +197,10 @@ QtDockPanelContent BuildQtDeviceDock(const vkpt::pathtracer::RTSceneData& scene,
                                      const vkpt::editor::UiLayoutDocument& layout,
                                      const QtDockFrameStats& frame_stats,
                                      const QtDockDeviceStats& device_stats);
+QtDockPanelContent BuildQtAssetBrowserDock(const vkpt::scene::SceneDocument& document,
+                                           const vkpt::pathtracer::RTSceneData& scene,
+                                           const vkpt::editor::UiRuntimeState& runtime,
+                                           const vkpt::editor::UiLayoutDocument& layout);
 std::vector<QtDockPanelContent> BuildQtDockPanels(
     const vkpt::scene::SceneDocument& document,
     const vkpt::pathtracer::RTSceneData& scene,

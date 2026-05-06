@@ -1,0 +1,655 @@
+#ifdef PT_ENABLE_QT
+
+#include "app/QtDockPanelsInternal.h"
+
+#include <algorithm>
+#include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+
+namespace vkpt::app {
+
+QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& document,
+                                        const vkpt::editor::SelectionState& selection,
+                                        const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "scene_graph", "Scene Graph", true, 280.0f, 600.0f);
+  panel.tree_single_column = true;
+  QtDockAddProperty(panel, "entities", std::to_string(document.entities.size()));
+  QtDockAddProperty(panel, "geometry", std::to_string(document.geometry.size()));
+  QtDockAddProperty(panel, "sdf primitives", std::to_string(document.sdf_primitives.size()));
+
+  const auto is_selected = [&](vkpt::core::StableId id) {
+    return std::find(selection.selected_entity_ids.begin(),
+                     selection.selected_entity_ids.end(),
+                     id) != selection.selected_entity_ids.end();
+  };
+
+  const auto entity_icon = [](const vkpt::scene::SceneEntityDefinition& entity) {
+    if (entity.has_camera) {
+      return std::string("camera");
+    }
+    if (entity.has_light) {
+      return std::string("light");
+    }
+    if (entity.has_mesh) {
+      return std::string("model");
+    }
+    if (entity.has_physics_body) {
+      return std::string("physics");
+    }
+    if (!entity.script.script.empty()) {
+      return std::string("script");
+    }
+    if (!entity.animation.clip.empty()) {
+      return std::string("animation");
+    }
+    return std::string("entity");
+  };
+
+  std::unordered_map<vkpt::core::StableId, std::vector<const vkpt::scene::SceneEntityDefinition*>> children;
+  std::unordered_set<vkpt::core::StableId> entityIds;
+  for (const auto& entity : document.entities) {
+    entityIds.insert(entity.id);
+    children[entity.hierarchy.parent].push_back(&entity);
+  }
+
+  auto has_authored_payload = [](const vkpt::scene::SceneEntityDefinition& entity) {
+    return entity.has_camera ||
+           entity.has_light ||
+           entity.has_mesh ||
+           entity.has_physics_body ||
+           entity.has_benchmark_tag ||
+           entity.has_sdf_primitive ||
+           !entity.script.script.empty() ||
+           !entity.animation.clip.empty();
+  };
+  auto is_transparent_group = [&](const vkpt::scene::SceneEntityDefinition& entity) {
+    if (has_authored_payload(entity)) {
+      return false;
+    }
+    const auto lowerName = QtDockToLower(entity.name);
+    if (lowerName == "cameras" ||
+        lowerName == "lights" ||
+        lowerName == "geometry" ||
+        lowerName == "physics") {
+      return true;
+    }
+    if (lowerName.starts_with("imported ")) {
+      const auto childIt = children.find(entity.id);
+      return childIt != children.end() && childIt->second.size() == 1u;
+    }
+    return false;
+  };
+
+  std::unordered_set<vkpt::core::StableId> visited;
+  auto build_entity_row = [&](auto&& self,
+                              const vkpt::scene::SceneEntityDefinition& entity) -> QtDockTreeRow {
+    visited.insert(entity.id);
+
+    QtDockTreeRow row;
+    row.id = "entity." + std::to_string(entity.id);
+    row.label = QtEntityDisplayName(entity);
+    row.value = "#" + std::to_string(entity.id) + "  " + QtEntityComponentSummary(entity);
+    if (entity.hierarchy.parent != 0u && !entityIds.contains(entity.hierarchy.parent)) {
+      row.value += "  missing parent #" + std::to_string(entity.hierarchy.parent);
+    }
+    row.icon = entity_icon(entity);
+    row.entity_id = entity.id;
+    row.selected = is_selected(entity.id);
+    const auto lowerName = QtDockToLower(entity.name);
+    const bool sceneRoot = entity.hierarchy.parent == 0u &&
+                           (lowerName == "scene root" || lowerName == "scene_root" || lowerName == "root");
+    row.draggable = !sceneRoot;
+
+    if (const auto childIt = children.find(entity.id); childIt != children.end()) {
+      for (const auto* child : childIt->second) {
+        if (child == nullptr || visited.contains(child->id)) {
+          continue;
+        }
+        if (is_transparent_group(*child)) {
+          visited.insert(child->id);
+          if (const auto grandChildIt = children.find(child->id); grandChildIt != children.end()) {
+            for (const auto* grandChild : grandChildIt->second) {
+              if (grandChild == nullptr || visited.contains(grandChild->id)) {
+                continue;
+              }
+              row.children.push_back(self(self, *grandChild));
+            }
+          }
+          continue;
+        }
+        row.children.push_back(self(self, *child));
+      }
+    }
+    return row;
+  };
+
+  for (const auto& entity : document.entities) {
+    if (visited.contains(entity.id)) {
+      continue;
+    }
+    if (entity.hierarchy.parent == 0u || !entityIds.contains(entity.hierarchy.parent)) {
+      if (is_transparent_group(entity)) {
+        visited.insert(entity.id);
+        if (const auto childIt = children.find(entity.id); childIt != children.end()) {
+          for (const auto* child : childIt->second) {
+            if (child == nullptr || visited.contains(child->id)) {
+              continue;
+            }
+            QtDockAddTreeRow(panel, build_entity_row(build_entity_row, *child));
+          }
+        }
+      } else {
+        QtDockAddTreeRow(panel, build_entity_row(build_entity_row, entity));
+      }
+    }
+  }
+  for (const auto& entity : document.entities) {
+    if (!visited.contains(entity.id)) {
+      QtDockAddTreeRow(panel, build_entity_row(build_entity_row, entity));
+    }
+  }
+
+  if (!document.sdf_primitives.empty()) {
+    QtDockTreeRow sdfGroup;
+    sdfGroup.id = "sdf_primitives";
+    sdfGroup.label = "SDF Primitives";
+    sdfGroup.value = std::to_string(document.sdf_primitives.size()) + " authored";
+    sdfGroup.icon = "group";
+    for (const auto& primitive : document.sdf_primitives) {
+      const std::string shape = primitive.shape.empty()
+          ? (primitive.primitive.shape.empty() ? std::string("sphere") : primitive.primitive.shape)
+          : primitive.shape;
+      QtDockTreeRow row;
+      row.id = "sdf." + std::to_string(primitive.id);
+      row.label = "SDF " + shape;
+      row.value = "#" + std::to_string(primitive.id);
+      row.icon = "sdf";
+      row.entity_id = primitive.id;
+      row.selected = is_selected(primitive.id);
+      sdfGroup.children.push_back(std::move(row));
+    }
+    QtDockAddTreeRow(panel, std::move(sdfGroup));
+  }
+
+  if (panel.tree_rows.empty()) {
+    QtDockAddRow(panel, "No authored entities in document");
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtInspectorDock(const vkpt::scene::SceneDocument& document,
+                                        const vkpt::editor::SelectionState& selection,
+                                        const vkpt::editor::UiRuntimeState& runtime,
+                                        const vkpt::editor::UiLayoutDocument& layout) {
+  (void)runtime;
+  auto panel = MakeQtDockPanel(layout, "inspector", "Inspector", true, 420.0f, 600.0f);
+  const auto primaryId = QtPrimarySelectionId(selection);
+
+  if (primaryId == 0u) {
+    QtDockAddProperty(panel, "Selection", "No object selected");
+    return panel;
+  }
+
+  const auto* entity = FindQtSceneEntity(document, primaryId);
+  if (entity == nullptr) {
+    const auto* primitive = FindQtSceneSdfPrimitive(document, primaryId);
+    if (primitive == nullptr) {
+      QtDockAddProperty(panel, "Selection", "Selected object is not in the loaded document");
+      return panel;
+    }
+
+    QtDockAddProperty(panel, "Name", "sdf " + std::to_string(primitive->id));
+    QtDockAddProperty(panel, "Type", "SDF Primitive");
+    if (const auto* bounds = FindQtSelectionBounds(selection, primaryId)) {
+      QtDockAddProperty(panel, "Bounds", QtDockBounds(*bounds));
+    }
+
+    const std::string sdfPrefix = "sdf." + std::to_string(primitive->id) + ".";
+    QtDockAddInspectorTransformControls(panel,
+                                        sdfPrefix + "transform.",
+                                        primitive->transform);
+
+    const std::string shape = primitive->shape.empty()
+        ? (primitive->primitive.shape.empty() ? std::string("sphere") : primitive->primitive.shape)
+        : primitive->shape;
+    QtDockAddDropdownGroupedProperty(panel,
+                                     sdfPrefix + "shape",
+                                     "",
+                                     "SDF shape",
+                                     shape,
+                                     QtSdfShapeOptions());
+    QtDockAddSliderGroupedProperty(panel,
+                                   sdfPrefix + "primitive.radius",
+                                   "",
+                                   "SDF radius",
+                                   primitive->primitive.radius,
+                                   0.01,
+                                   10.0,
+                                   0.01,
+                                   1.0);
+    QtDockAddSliderGroupedProperty(panel,
+                                   sdfPrefix + "primitive.param_a",
+                                   "",
+                                   "SDF param A",
+                                   primitive->primitive.param_a,
+                                   -10.0,
+                                   10.0,
+                                   0.01,
+                                   0.0);
+    QtDockAddSliderGroupedProperty(panel,
+                                   sdfPrefix + "primitive.param_b",
+                                   "",
+                                   "SDF param B",
+                                   primitive->primitive.param_b,
+                                   -10.0,
+                                   10.0,
+                                   0.01,
+                                   0.0);
+    return panel;
+  }
+
+  QtDockAddEditableGroupedProperty(panel,
+                                   "entity." + std::to_string(entity->id) + ".name",
+                                   "",
+                                   "Name",
+                                   QtEntityDisplayName(*entity));
+  QtDockAddProperty(panel, "Type", QtEntityComponentSummary(*entity));
+  if (const auto* bounds = FindQtSelectionBounds(selection, primaryId)) {
+    QtDockAddProperty(panel, "Bounds", QtDockBounds(*bounds));
+  }
+
+  const std::string entityPrefix = "entity." + std::to_string(entity->id) + ".";
+
+  if (entity->has_transform) {
+    QtDockAddInspectorTransformControls(panel,
+                                        entityPrefix + "transform.",
+                                        entity->transform);
+  }
+  if (entity->has_mesh) {
+    QtDockAddDropdownGroupedProperty(panel,
+                                     entityPrefix + "mesh.mesh_id",
+                                     "",
+                                     "Mesh",
+                                     QtGeometryDisplayLabel(document, entity->mesh.mesh_id),
+                                     QtGeometryIdOptions(document, entity->mesh.mesh_id));
+    QtDockAddDropdownGroupedProperty(panel,
+                                     entityPrefix + "mesh.material_id",
+                                     "",
+                                     "Material",
+                                     QtMaterialDisplayLabel(document, entity->mesh.material_id),
+                                     QtMaterialIdOptions(document, entity->mesh.material_id));
+    if (const auto* material = FindQtSceneMaterial(document, entity->mesh.material_id)) {
+      const std::string materialPrefix = "material." + std::to_string(material->id) + ".";
+      QtDockAddDropdownGroupedProperty(panel,
+                                       materialPrefix + "family",
+                                       "",
+                                       "Material model",
+                                       material->family.empty() ? std::string("diffuse") : material->family,
+                                       QtMaterialFamilyOptions());
+      QtDockAddVec3Sliders(panel,
+                           materialPrefix + "albedo",
+                           "",
+                           "Base color",
+                           material->albedo,
+                           vkpt::scene::Vec3{0.8f, 0.8f, 0.8f},
+                           0.0,
+                           1.0,
+                           0.01);
+      QtDockAddSliderGroupedProperty(panel,
+                                     materialPrefix + "roughness",
+                                     "",
+                                     "Roughness",
+                                     material->roughness,
+                                     0.0,
+                                     1.0,
+                                     0.01,
+                                     0.6);
+      QtDockAddSliderGroupedProperty(panel,
+                                     materialPrefix + "metallic",
+                                     "",
+                                     "Metallic",
+                                     material->metallic,
+                                     0.0,
+                                     1.0,
+                                     0.01,
+                                     0.0);
+      if (material->emission_intensity > 0.0f ||
+          material->emission.x > 0.0f ||
+          material->emission.y > 0.0f ||
+          material->emission.z > 0.0f) {
+        QtDockAddSliderGroupedProperty(panel,
+                                       materialPrefix + "emission_intensity",
+                                       "",
+                                       "Emission",
+                                       material->emission_intensity,
+                                       0.0,
+                                       50.0,
+                                       0.1,
+                                       0.0);
+      }
+    }
+  }
+  if (entity->has_sdf_primitive) {
+    QtDockAddDropdownGroupedProperty(panel,
+                                     entityPrefix + "sdf_primitive.shape",
+                                     "",
+                                     "SDF shape",
+                                     entity->sdf_primitive.shape.empty()
+                                         ? std::string("sphere")
+                                         : entity->sdf_primitive.shape,
+                                     QtSdfShapeOptions());
+    QtDockAddSliderGroupedProperty(panel,
+                                   entityPrefix + "sdf_primitive.radius",
+                                   "",
+                                   "SDF radius",
+                                   entity->sdf_primitive.radius,
+                                   0.01,
+                                   10.0,
+                                   0.01,
+                                   1.0);
+    QtDockAddSliderGroupedProperty(panel,
+                                   entityPrefix + "sdf_primitive.param_a",
+                                   "",
+                                   "SDF param A",
+                                   entity->sdf_primitive.param_a,
+                                   -10.0,
+                                   10.0,
+                                   0.01,
+                                   0.0);
+    QtDockAddSliderGroupedProperty(panel,
+                                   entityPrefix + "sdf_primitive.param_b",
+                                   "",
+                                   "SDF param B",
+                                   entity->sdf_primitive.param_b,
+                                   -10.0,
+                                   10.0,
+                                   0.01,
+                                   0.0);
+    QtDockAddDropdownGroupedProperty(panel,
+                                     entityPrefix + "material.material_id",
+                                     "",
+                                     "Material",
+                                     QtMaterialDisplayLabel(document, entity->material.material_id),
+                                     QtMaterialIdOptions(document, entity->material.material_id));
+  }
+  if (entity->has_light) {
+    QtDockAddDropdownGroupedProperty(panel,
+                                     entityPrefix + "light.type",
+                                     "",
+                                     "Light type",
+                                     entity->light.type.empty() ? std::string("point") : entity->light.type,
+                                     QtLightTypeOptions());
+    QtDockAddVec3Sliders(panel,
+                         entityPrefix + "light.color",
+                         "",
+                         "Light color",
+                         entity->light.color,
+                         vkpt::scene::Vec3{1.0f, 1.0f, 1.0f},
+                         0.0,
+                         1.0,
+                         0.01);
+    QtDockAddSliderGroupedProperty(panel,
+                                   entityPrefix + "light.intensity",
+                                   "",
+                                   "Light intensity",
+                                   entity->light.intensity,
+                                   0.0,
+                                   100.0,
+                                   0.1,
+                                   1.0);
+    QtDockAddSliderGroupedProperty(panel,
+                                   entityPrefix + "light.radius",
+                                   "",
+                                   "Light radius",
+                                   entity->light.radius,
+                                   0.0,
+                                   10.0,
+                                   0.01,
+                                   0.0);
+    if (QtTrim(entity->light.type) == "spot") {
+      QtDockAddVec3Sliders(panel,
+                           entityPrefix + "light.direction",
+                           "",
+                           "Spot direction",
+                           entity->light.direction,
+                           vkpt::scene::Vec3{0.0f, -1.0f, 0.0f},
+                           -1.0,
+                           1.0,
+                           0.01);
+      QtDockAddSliderGroupedProperty(panel,
+                                     entityPrefix + "light.beam_angle",
+                                     "",
+                                     "Spot beam",
+                                     entity->light.beam_angle_degrees,
+                                     1.0,
+                                     120.0,
+                                     0.5,
+                                     35.0);
+      QtDockAddSliderGroupedProperty(panel,
+                                     entityPrefix + "light.blend",
+                                     "",
+                                     "Spot edge",
+                                     entity->light.blend,
+                                     0.0,
+                                     1.0,
+                                     0.01,
+                                     0.35);
+    }
+  }
+  if (entity->has_camera) {
+    QtDockAddPrimaryCameraControls(panel, entityPrefix + "camera.", entity->camera);
+  }
+  QtDockAddDropdownGroupedProperty(panel,
+                                   entityPrefix + "physics.enabled",
+                                   "",
+                                   "Physics",
+                                   QtDockBool(entity->has_physics_body && entity->physics_body.enabled),
+                                   QtBoolOptions());
+  if (entity->has_physics_body) {
+    QtDockAddDropdownGroupedProperty(panel,
+                                     entityPrefix + "physics.body_type",
+                                     "",
+                                     "Body type",
+                                     entity->physics_body.dynamic
+                                         ? std::string("dynamic")
+                                         : entity->physics_body.body_type,
+                                     QtPhysicsBodyTypeOptions());
+    QtDockAddDropdownGroupedProperty(panel,
+                                     entityPrefix + "physics.shape",
+                                     "",
+                                     "Collision shape",
+                                     entity->physics_body.shape.empty()
+                                         ? std::string("box")
+                                         : entity->physics_body.shape,
+                                     QtPhysicsShapeOptions());
+    QtDockAddSliderGroupedProperty(panel,
+                                   entityPrefix + "physics.mass",
+                                   "",
+                                   "Mass",
+                                   entity->physics_body.mass,
+                                   0.01,
+                                   1000.0,
+                                   0.01,
+                                   1.0);
+    QtDockAddSliderGroupedProperty(panel,
+                                   entityPrefix + "physics.friction",
+                                   "",
+                                   "Friction",
+                                   entity->physics_body.friction,
+                                   0.0,
+                                   2.0,
+                                   0.01,
+                                   0.5);
+    QtDockAddSliderGroupedProperty(panel,
+                                   entityPrefix + "physics.restitution",
+                                   "",
+                                   "Bounce",
+                                   entity->physics_body.restitution,
+                                   0.0,
+                                   1.0,
+                                   0.01,
+                                   0.0);
+  }
+  if (!entity->script.script.empty()) {
+    QtDockAddProperty(panel, "Script", entity->script.script);
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtMaterialsDock(const vkpt::scene::SceneDocument& document,
+                                        const vkpt::pathtracer::RTSceneData& scene,
+                                        const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "materials", "Materials", true, 520.0f, 420.0f);
+  QtDockAddProperty(panel, "authored materials", std::to_string(document.materials.size()));
+  QtDockAddProperty(panel, "runtime materials", std::to_string(scene.materials.size()));
+  for (const auto& material : document.materials) {
+    std::ostringstream row;
+    row << "#" << material.id << " "
+        << (material.name.empty() ? "material" : material.name)
+        << " albedo=(" << QtDockVec3(material.albedo) << ")"
+        << " roughness=" << QtDockNumber(material.roughness, 2);
+    if (material.emission_intensity > 0.0f) {
+      row << " emissive=" << QtDockNumber(material.emission_intensity, 2);
+    }
+    QtDockAddRow(panel, row.str());
+  }
+  if (document.materials.empty()) {
+    for (std::size_t i = 0; i < scene.materials.size(); ++i) {
+      const auto& material = scene.materials[i];
+      std::ostringstream row;
+      row << "runtime[" << i << "] albedo=(" << QtDockVec3(material.albedo)
+          << ") roughness=" << QtDockNumber(material.roughness, 2)
+          << " emissive=" << QtDockBool(material.is_emissive());
+      QtDockAddRow(panel, row.str());
+    }
+  }
+  QtDockLimitRows(panel, 96u);
+  return panel;
+}
+
+QtDockPanelContent BuildQtLightsDock(const vkpt::scene::SceneDocument& document,
+                                     const vkpt::pathtracer::RTSceneData& scene,
+                                     const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "lights", "Lights", true, 360.0f, 360.0f);
+  const auto lightObjectCount = static_cast<std::size_t>(std::count_if(
+      document.entities.begin(),
+      document.entities.end(),
+      [](const vkpt::scene::SceneEntityDefinition& entity) {
+        return entity.has_light;
+      })) + document.lights.size();
+  QtDockAddProperty(panel, "light objects", std::to_string(lightObjectCount));
+  if (!document.lights.empty()) {
+    QtDockAddProperty(panel, "legacy lights", std::to_string(document.lights.size()));
+  }
+  QtDockAddProperty(panel, "runtime lights", std::to_string(scene.lights.size()));
+  for (const auto& entity : document.entities) {
+    if (!entity.has_light) {
+      continue;
+    }
+    std::ostringstream row;
+    row << QtEntityDisplayName(entity) << " #" << entity.id
+        << " " << entity.light.type
+        << " intensity=" << QtDockNumber(entity.light.intensity, 2)
+        << " color=(" << QtDockVec3(entity.light.color) << ")";
+    QtDockAddRow(panel, row.str());
+  }
+  for (std::size_t i = 0; i < scene.lights.size(); ++i) {
+    const auto& light = scene.lights[i];
+    std::ostringstream row;
+    row << "runtime[" << i << "] pos=(" << QtDockVec3(light.position)
+        << ") intensity=" << QtDockNumber(light.intensity, 2)
+        << " radius=" << QtDockNumber(light.radius, 2);
+    QtDockAddRow(panel, row.str());
+  }
+  if (panel.rows.empty()) {
+    QtDockAddRow(panel, "No lights in the loaded document or render scene");
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtCameraDock(const vkpt::scene::SceneDocument& document,
+                                     const vkpt::pathtracer::RTSceneData& scene,
+                                     const vkpt::editor::UiRuntimeState& runtime,
+                                     const vkpt::editor::UiLayoutDocument& layout,
+                                     const QtDockFrameStats& frame_stats,
+                                     int active_shot_slot,
+                                     const std::array<bool, 4>& saved_shot_slots) {
+  auto panel = MakeQtDockPanel(layout, "camera", "Camera", true, 420.0f, 560.0f);
+  QtDockAddProperty(panel, "Active", runtime.active_camera.empty() ? "runtime camera" : runtime.active_camera);
+  QtDockAddProperty(panel, "Mode", frame_stats.camera_mode.empty() ? "authored" : frame_stats.camera_mode);
+  QtDockAddProperty(panel, "Runtime focus", QtDockNumber(scene.camera_focus_distance, 2));
+  QtDockAddButtonGroupedProperty(panel,
+                                 "camera.mode.fps_toggle",
+                                 "",
+                                 frame_stats.camera_mode == "fps" ? "Exit FPS" : "Enter FPS",
+                                 frame_stats.camera_mode == "fps" ? "Exit FPS" : "Enter FPS");
+  if (frame_stats.camera_mode == "fps") {
+    QtDockAddProperty(panel,
+                      "FPS body",
+                      frame_stats.fps_player_grounded ? "grounded" : "airborne");
+    QtDockAddProperty(panel, "FPS speed", QtDockNumber(frame_stats.fps_player_speed, 2));
+    QtDockAddProperty(panel, "FPS eye height", QtDockNumber(frame_stats.fps_player_eye_height, 2));
+    QtDockAddProperty(panel, "Run", QtDockBool(frame_stats.fps_player_running));
+    QtDockAddProperty(panel, "Crouch", QtDockBool(frame_stats.fps_player_crouching));
+  }
+  QtDockAddButtonGroupedProperty(panel,
+                                 "camera.focus.pick",
+                                 "",
+                                 "Focus under cursor",
+                                 "Focus Under Cursor");
+  QtDockAddButtonGroupedProperty(panel,
+                                 "camera.focus.selected",
+                                 "",
+                                 "Focus selected",
+                                 "Focus Selected");
+  const int clampedShotSlot = std::clamp(active_shot_slot, 0, 3);
+  QtDockAddDropdownGroupedProperty(panel,
+                                   "camera.shot.slot",
+                                   "",
+                                   "Shot slot",
+                                   std::to_string(clampedShotSlot + 1),
+                                   {"1", "2", "3", "4"});
+  QtDockAddButtonGroupedProperty(panel,
+                                 "camera.shot.save",
+                                 "",
+                                 "Save shot",
+                                 "Save Shot");
+  QtDockAddButtonGroupedProperty(panel,
+                                 "camera.shot.recall",
+                                 "",
+                                 "Recall shot",
+                                 "Recall Shot");
+  std::ostringstream savedSlots;
+  for (std::size_t i = 0; i < saved_shot_slots.size(); ++i) {
+    if (i > 0u) {
+      savedSlots << "  ";
+    }
+    savedSlots << (i + 1u) << ":" << (saved_shot_slots[i] ? "saved" : "empty");
+  }
+  QtDockAddProperty(panel, "Saved shots", savedSlots.str());
+  QtDockAddProperty(panel, "Viewport tool", vkpt::editor::ToString(runtime.active_viewport_tool));
+  bool addedCameraControls = false;
+  for (const auto& entity : document.entities) {
+    if (entity.has_camera) {
+      QtDockAddProperty(panel, "Editing", QtEntityDisplayName(entity) + " #" + std::to_string(entity.id));
+      QtDockAddPrimaryCameraControls(panel,
+                                     "entity." + std::to_string(entity.id) + ".camera.",
+                                     entity.camera);
+      addedCameraControls = true;
+      break;
+    }
+  }
+  if (!addedCameraControls) {
+    QtDockAddProperty(panel, "Lens", QtDockNumber(scene.camera_focal_length_mm, 1) + " mm");
+    QtDockAddProperty(panel, "Aperture", QtDockNumber(scene.camera_aperture_radius, 3));
+    QtDockAddProperty(panel, "Exposure", QtDockNumber(scene.camera_exposure_compensation, 2) + " EV");
+    QtDockAddProperty(panel, "White balance", QtDockNumber(scene.camera_white_balance_kelvin, 0) + " K");
+  }
+  return panel;
+}
+
+}  // namespace vkpt::app
+
+#endif  // PT_ENABLE_QT

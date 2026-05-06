@@ -1,0 +1,999 @@
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cctype>
+#include <cfloat>
+#include <cmath>
+#include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
+#include <deque>
+#include <iomanip>
+#include <iostream>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <numeric>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <variant>
+#include <vector>
+#include <thread>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+#include "build_info.generated.h"
+#include "core/Assert.h"
+#include "core/Config.h"
+#include "core/Logging.h"
+#include "benchmark/BenchmarkSchema.h"
+#include "app/AppBenchmarkActions.h"
+#include "app/AppEditorWorldSupport.h"
+#include "app/AppRuntime.h"
+#include "app/AppOptions.h"
+#include "app/AppRuntimeSupport.h"
+#include "app/DoctorChecks.h"
+#include "app/UiValidation.h"
+#include "editor/UiModels.h"
+#include "diagnostics/CrashHooks.h"
+#include "diagnostics/CrashRecorder.h"
+#include "diagnostics/StatusFile.h"
+#include "pathtracer/PathTracer.h"
+#include "cpu/TiledCpuPathTracer.h"
+#ifdef PT_ENABLE_VULKAN
+#include "gpu/VulkanGpuPathTracer.h"
+#endif
+#ifdef PT_ENABLE_D3D12
+#include "gpu/D3D12GpuPathTracer.h"
+#endif
+#if defined(PT_ENABLE_RAW_DESKTOP)
+#include "platform/DesktopPlatform.h"
+#endif
+#ifdef PT_ENABLE_QT
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QGuiApplication>
+#include <QString>
+#include <QtGlobal>
+#include "platform/qt/QtPlatform.h"
+#include "app/AppQtSceneDocumentActions.h"
+#include "app/QtDockPanels.h"
+#include "app/ViewportInteraction.h"
+#include "assets/SceneAssetLoader.h"
+#endif
+#include "platform/PlatformFactory.h"
+#include "physics/PhysicsWorld.h"
+#include "scene/Scene.h"
+#include "scripting/ScriptRuntime.h"
+#include "render/backends/BackendFactory.h"
+#include "render/backends/D3D12Backend.h"
+#include "render/backends/VulkanBackend.h"
+#include "render/RenderCoordinator.h"
+#include "render/interface/RenderContracts.h"
+#include "jobs/JobSystem.h"
+
+namespace {
+
+using vkpt::app::RunDoctor;
+using vkpt::app::RunUiModelSmokeTests;
+using vkpt::app::RunUiReleaseGateCheck;
+
+// ---- ptdoctor checks -------------------------------------------------------
+
+std::uint64_t NowMs() {
+  using namespace std::chrono;
+  return static_cast<std::uint64_t>(
+      duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+}
+
+std::string_view ToString(vkpt::platform::InputEventType type) {
+  switch (type) {
+    case vkpt::platform::InputEventType::MenuCommand: return "menu_command";
+    case vkpt::platform::InputEventType::KeyDown: return "key_down";
+    case vkpt::platform::InputEventType::KeyUp: return "key_up";
+    case vkpt::platform::InputEventType::MouseMove: return "mouse_move";
+    case vkpt::platform::InputEventType::MouseButtonDown: return "mouse_button_down";
+    case vkpt::platform::InputEventType::MouseButtonUp: return "mouse_button_up";
+    case vkpt::platform::InputEventType::MouseWheel: return "mouse_wheel";
+    case vkpt::platform::InputEventType::WindowResize: return "window_resize";
+    case vkpt::platform::InputEventType::FocusLost: return "focus_lost";
+    case vkpt::platform::InputEventType::FocusGained: return "focus_gained";
+    case vkpt::platform::InputEventType::CloseRequested: return "close_requested";
+    case vkpt::platform::InputEventType::None:
+    default: return "none";
+  }
+}
+
+void PushUiEvent(vkpt::editor::UiEventLog& log,
+                 std::string_view event_type,
+                 std::string_view panel_id,
+                 std::string_view widget_id,
+                 vkpt::core::FrameIndex frame_index,
+                 std::string_view old_value,
+                 std::string_view new_value,
+                 std::string_view command_result);
+
+void SyncRuntimePanelState(vkpt::editor::UiRuntimeState& runtime_state,
+                          const vkpt::editor::UiLayoutDocument& layout_state) {
+  runtime_state.active_layout_name = layout_state.active_layout_name;
+  runtime_state.dpi_scale = layout_state.dpi_scale;
+  runtime_state.ui_scale = layout_state.ui_scale;
+  runtime_state.visible_panels.clear();
+  runtime_state.collapsed_panels.clear();
+  for (const auto& panel : layout_state.panels) {
+    if (panel.visible) {
+      runtime_state.visible_panels.push_back(panel.id);
+    }
+    if (panel.collapsed) {
+      runtime_state.collapsed_panels.push_back(panel.id);
+    }
+  }
+}
+
+void ApplyWindowMetricsToLayout(vkpt::editor::UiLayoutDocument& layout_state,
+                               std::size_t width,
+                               std::size_t height) {
+  for (auto& panel : layout_state.panels) {
+    if (panel.id == vkpt::editor::ToString(vkpt::editor::UiPanelId::Viewport)) {
+      panel.width = static_cast<float>(width);
+      panel.height = static_cast<float>(height);
+      return;
+    }
+  }
+  if (!layout_state.panels.empty()) {
+    layout_state.panels.front().width = static_cast<float>(width);
+    layout_state.panels.front().height = static_cast<float>(height);
+  }
+}
+
+#ifndef PT_ENABLE_QT
+std::optional<vkpt::scene::SceneWorld> BuildSceneWorldSnapshot(
+    const vkpt::scene::SceneDocument& document) {
+  auto worldResult = document.to_world();
+  if (!worldResult) {
+    return std::nullopt;
+  }
+  auto world = std::move(worldResult.value());
+  world.recompute_world_transforms();
+  return world;
+}
+
+vkpt::scene::TransformComponent ResolveEntityWorldTransform(
+    const vkpt::scene::SceneEntityDefinition& entity,
+    const vkpt::scene::SceneWorld* world) {
+  if (world != nullptr) {
+    if (const auto* worldTransform = world->world_transform(entity.id)) {
+      vkpt::scene::TransformComponent transform = *worldTransform;
+      transform.dirty = entity.has_transform ? entity.transform.dirty : false;
+      return transform;
+    }
+  }
+  return entity.has_transform ? entity.transform : vkpt::scene::TransformComponent{};
+}
+
+int RunDynamicPhysicsPerformanceGate(std::string scenePath,
+                                     std::string backend,
+                                     uint32_t width,
+                                     uint32_t height,
+                                     uint32_t frames) {
+  (void)scenePath;
+  (void)backend;
+  (void)width;
+  (void)height;
+  (void)frames;
+  std::cerr << "dynamic physics gate requires a Qt/D3D12-enabled build\n";
+  return 2;
+}
+#endif
+#ifdef _WIN32
+bool IsVirtualKeyDown(int virtual_key) {
+  return (GetAsyncKeyState(virtual_key) & 0x8000) != 0;
+}
+
+[[maybe_unused]] bool IsCtrlDown() {
+  return IsVirtualKeyDown(VK_CONTROL) || IsVirtualKeyDown(VK_LCONTROL) || IsVirtualKeyDown(VK_RCONTROL);
+}
+
+[[maybe_unused]] bool IsShiftDown() {
+  return IsVirtualKeyDown(VK_SHIFT) || IsVirtualKeyDown(VK_LSHIFT) || IsVirtualKeyDown(VK_RSHIFT);
+}
+
+[[maybe_unused]] bool IsAltDown() {
+  return IsVirtualKeyDown(VK_MENU) || IsVirtualKeyDown(VK_LMENU) || IsVirtualKeyDown(VK_RMENU);
+}
+#else
+[[maybe_unused]] bool IsCtrlDown() { return false; }
+[[maybe_unused]] bool IsShiftDown() { return false; }
+[[maybe_unused]] bool IsAltDown() { return false; }
+#endif
+
+[[maybe_unused]] std::string ResolveShortcutAction(const std::vector<vkpt::editor::UiShortcut>& shortcuts,
+                                                   int key_code,
+                                                   bool ctrl,
+                                                   bool shift,
+                                                   bool alt) {
+  const int normalized_key = (key_code >= 'a' && key_code <= 'z')
+    ? static_cast<int>(std::toupper(static_cast<unsigned char>(key_code)))
+    : key_code;
+
+  for (const auto& shortcut : shortcuts) {
+    if (static_cast<int>(shortcut.key_code) == normalized_key &&
+        shortcut.ctrl == ctrl &&
+        shortcut.shift == shift &&
+        shortcut.alt == alt) {
+      return shortcut.action_id;
+    }
+  }
+
+#ifdef _WIN32
+  if (key_code == VK_DELETE) {
+    for (const auto& shortcut : shortcuts) {
+      if (shortcut.key_code == 127 && !shortcut.ctrl && !shortcut.shift && !shortcut.alt) {
+        return shortcut.action_id;
+      }
+    }
+  }
+#endif
+  return {};
+}
+
+void LogWindowInput(vkpt::editor::UiEventLog& event_log,
+                    vkpt::editor::UiRuntimeState& runtime_state,
+                    const vkpt::platform::InputEvent& event,
+                    vkpt::core::FrameIndex frame_index) {
+  std::string_view widget = ToString(event.type);
+  std::ostringstream oldValue;
+  std::ostringstream newValue;
+  if (event.raw_code != 0) {
+    oldValue << event.raw_code;
+  }
+  newValue << "x=" << event.x << ", y=" << event.y
+           << ", dx=" << event.delta_x << ", dy=" << event.delta_y
+           << ", dz=" << event.delta_z;
+  PushUiEvent(event_log,
+              "window_event",
+              "window",
+              widget,
+              frame_index,
+              oldValue.str(),
+              newValue.str(),
+              runtime_state.active_layout_name);
+  runtime_state.status_message = "window_event:" + std::string(widget);
+  runtime_state.focused_panel = "window";
+}
+
+void PushUiEvent(vkpt::editor::UiEventLog& log,
+                 std::string_view event_type,
+                 std::string_view panel_id,
+                 std::string_view widget_id,
+                 vkpt::core::FrameIndex frame_index = 0,
+                 std::string_view old_value = {},
+                 std::string_view new_value = {},
+                 std::string_view command_result = {});
+
+void PushUiEvent(vkpt::editor::UiEventLog& log,
+                 std::string_view event_type,
+                 std::string_view panel_id,
+                 std::string_view widget_id,
+                 vkpt::core::FrameIndex frame_index,
+                 std::string_view old_value,
+                 std::string_view new_value,
+                 std::string_view command_result) {
+  vkpt::editor::UiEvent event;
+  event.event_type = std::string(event_type);
+  event.panel_id = std::string(panel_id);
+  event.widget_id = std::string(widget_id);
+  event.frame_index = frame_index;
+  event.timestamp_ms = NowMs();
+  event.thread_id = "main";
+  event.old_value = std::string(old_value);
+  event.new_value = std::string(new_value);
+  event.command_result = std::string(command_result);
+  log.push(event);
+}
+
+vkpt::editor::EditorCommand MakeUnsupportedUiCommand(std::string_view action_id,
+                                                    std::string_view reason,
+                                                    std::string_view source_widget = "app_shell",
+                                                    vkpt::core::FrameIndex frame_index = 0) {
+  vkpt::editor::EditorCommand cmd;
+  cmd.command_id = std::string(action_id);
+  cmd.kind = vkpt::editor::EditorCommandKind::kUnsupportedUiAction;
+  cmd.source_widget = std::string(source_widget);
+  cmd.frame_index = frame_index;
+  cmd.undoable = false;
+  cmd.redoable = false;
+  cmd.validated = false;
+  cmd.payload = vkpt::editor::UnsupportedUiActionCommand{
+    std::string(action_id),
+    std::string(reason)
+  };
+  return cmd;
+}
+
+void UpdateCrashArtifactsFromUiState(
+    const vkpt::editor::UiRuntimeState& runtime_state,
+    const vkpt::editor::SelectionState& selection_state,
+    const vkpt::editor::UiLayoutDocument& layout_state,
+    const vkpt::editor::UiEventLog& event_log,
+    const vkpt::editor::EditorCommandHistory& command_history) {
+  auto& recorder = vkpt::diagnostics::CrashRecorder::instance();
+  recorder.update_ui_state_json(vkpt::editor::SerializeUiRuntimeState(runtime_state));
+  recorder.update_selection_state_json(vkpt::editor::SerializeSelectionState(selection_state));
+  recorder.update_layout_state_json(vkpt::editor::SerializeLayoutDocument(layout_state));
+  recorder.update_ui_events_jsonl(vkpt::editor::SerializeUiEventsJsonl(event_log.events(), 256));
+  recorder.update_editor_commands_jsonl(
+      vkpt::editor::SerializeEditorCommandsJsonl(command_history.history(), 256));
+}
+
+}  // namespace
+
+namespace vkpt::app {
+
+int RunApp(int argc, char** argv) {
+  // ---- Early init: logging + crash hooks ------------------------------------
+  EnableOptionalConsole(ShouldEnableOptionalConsole(argc, argv));
+  InitializeLogging();
+  InitializeCrashRecorder();
+  vkpt::diagnostics::install_crash_hooks("artifacts/crashes");
+  vkpt::diagnostics::CrashRecorder::instance().update_frame_stage("startup", 0);
+
+  auto& logger = vkpt::log::Logger::instance();
+
+  // ---- Parse CLI args -------------------------------------------------------
+  const auto parseResult = ParseAppOptions(argc, argv);
+  if (parseResult.exit_requested || !parseResult.ok) {
+    return parseResult.exit_code;
+  }
+  const AppOptions parsedOptions = parseResult.options;
+
+  const bool showVersion = parsedOptions.show_version;
+  const bool versionJson = parsedOptions.version_json;
+  const bool headless = parsedOptions.headless;
+  const bool crashTest = parsedOptions.crash_test;
+  const bool doctor = parsedOptions.doctor;
+  const bool checkBuild = parsedOptions.check_build;
+  const bool checkCpu = parsedOptions.check_cpu;
+  const bool checkBackends = parsedOptions.check_backends;
+  const bool checkAssets = parsedOptions.check_assets;
+  const bool checkShaders = parsedOptions.check_shaders;
+  const bool checkJobSystem = parsedOptions.check_job_system;
+  const bool checkSceneSchema = parsedOptions.check_scene_schema;
+  const bool checkBenchmarkArtifact = parsedOptions.check_benchmark_artifact;
+  const bool dumpConfig = parsedOptions.dump_config;
+  const bool listBackends = parsedOptions.list_backends;
+  const bool listAccelerators = parsedOptions.list_accelerators;
+  const bool doRender = parsedOptions.do_render;
+  const bool uiModelSmoke = parsedOptions.ui_model_smoke;
+  const bool uiReleaseGate = parsedOptions.ui_release_gate;
+  const bool dynamicPhysicsGate = parsedOptions.dynamic_physics_gate;
+  const bool openWindow = parsedOptions.open_window;
+  const bool listGpus = parsedOptions.list_gpus;
+  const bool autoExitWindow = parsedOptions.auto_exit_window;
+  const std::string configFilePath = parsedOptions.config_file_path;
+  const std::string envFilePath = parsedOptions.env_file_path;
+  const bool envFileExplicit = parsedOptions.env_file_explicit;
+  const bool envFileEnabled = parsedOptions.env_file_enabled;
+  const std::string scenePath = parsedOptions.scene_path;
+  const std::string backend = parsedOptions.backend;
+  const std::string platformName = parsedOptions.platform_name;
+  const std::string outputPath = parsedOptions.output_path;
+  const std::string exrOutputPath = parsedOptions.exr_output_path;
+  const std::string logLevel = parsedOptions.log_level;
+  const uint32_t width = parsedOptions.width;
+  const uint32_t height = parsedOptions.height;
+  uint32_t windowWidth = parsedOptions.window_width;
+  uint32_t windowHeight = parsedOptions.window_height;
+  const uint32_t windowFrameLimit = parsedOptions.window_frame_limit;
+  const uint32_t spp = parsedOptions.spp;
+  const uint32_t maxDepth = parsedOptions.max_depth;
+  const bool gpuDenoiser = parsedOptions.gpu_denoiser;
+  const bool temporalAa = parsedOptions.temporal_aa;
+  const std::optional<uint32_t> uiPresentHz = parsedOptions.ui_present_hz;
+  if (envFileEnabled) {
+    std::error_code envFileEc;
+    const bool envFileExists = std::filesystem::exists(envFilePath, envFileEc);
+    if (envFileExplicit || (envFileExists && !envFileEc)) {
+      std::string envFileError;
+      if (!vkpt::config::LoadDotEnvFile(envFilePath, false, &envFileError)) {
+        std::cerr << envFileError << "\n";
+        return 1;
+      }
+      BootStep("loaded dotenv file: " + envFilePath);
+    }
+  }
+
+  // ---- Build resolved config (A10) ------------------------------------------
+  vkpt::config::RuntimeConfig config = vkpt::config::BuildDefaultConfig(configFilePath);
+  // CLI flags override file/env values.
+  if (!backend.empty())   { config.backend    = {std::string(backend),    vkpt::config::ConfigSource::CliFlag}; }
+  if (!platformName.empty())  { config.platform   = {std::string(platformName),   vkpt::config::ConfigSource::CliFlag}; }
+  if (!scenePath.empty()) { config.scene_path = {std::string(scenePath),  vkpt::config::ConfigSource::CliFlag}; }
+  if (!logLevel.empty())  { config.log_level  = {std::string(logLevel),   vkpt::config::ConfigSource::CliFlag}; }
+  if (headless)           { config.headless   = {true,                    vkpt::config::ConfigSource::CliFlag}; }
+  if (width != 320)       { config.render_width  = {width,  vkpt::config::ConfigSource::CliFlag}; }
+  if (height != 240)      { config.render_height = {height, vkpt::config::ConfigSource::CliFlag}; }
+  if (spp != 16)          { config.spp           = {spp,    vkpt::config::ConfigSource::CliFlag}; }
+  if (maxDepth != 6)      { config.max_depth     = {maxDepth, vkpt::config::ConfigSource::CliFlag}; }
+  if (uiPresentHz)        { config.ui_present_hz = {*uiPresentHz, vkpt::config::ConfigSource::CliFlag}; }
+  if (!outputPath.empty()) { config.output_path  = {std::string(outputPath), vkpt::config::ConfigSource::CliFlag}; }
+  if (!exrOutputPath.empty()) {
+    config.exr_output_path = {std::string(exrOutputPath), vkpt::config::ConfigSource::CliFlag};
+  }
+
+  // Canonicalize backend aliases (e.g. "dxr" -> "d3d12-dxr").
+  config.backend.value = vkpt::render::NormalizeBackendName(config.backend.value);
+  const auto requestedPlatform = vkpt::platform::ParseRuntimePlatform(config.platform.value);
+  if (requestedPlatform == vkpt::platform::RuntimePlatformKind::Invalid) {
+    std::cerr << "invalid platform: " << config.platform.value
+              << " (expected auto|raw|qt|headless aliases: desktop|native|win32)\n";
+    return 1;
+  }
+  const auto selectedPlatform = vkpt::platform::ResolveRuntimePlatform(
+      requestedPlatform,
+      openWindow,
+      config.headless.value);
+  if (!vkpt::platform::IsPlatformBuilt(selectedPlatform)) {
+    std::cerr << "selected platform is not built: "
+              << vkpt::platform::RuntimePlatformKindName(selectedPlatform) << "\n";
+    return 1;
+  }
+  const bool doctorMode = doctor || checkBuild || checkCpu || checkBackends || checkAssets || checkShaders
+                         || checkJobSystem || checkSceneSchema || checkBenchmarkArtifact;
+  const bool nonGuiCommandMode = doctorMode || listBackends || listAccelerators || doRender || dynamicPhysicsGate;
+  auto effectivePlatform = selectedPlatform;
+  if (nonGuiCommandMode && selectedPlatform == vkpt::platform::RuntimePlatformKind::Qt) {
+    effectivePlatform = vkpt::platform::RuntimePlatformKind::Headless;
+    BootStep("qt platform requested for non-gui command; using headless shell");
+  }
+  config.platform.value = vkpt::platform::RuntimePlatformKindName(effectivePlatform);
+  if (effectivePlatform == vkpt::platform::RuntimePlatformKind::Headless) {
+    config.headless = {true, config.platform.source};
+  }
+  {
+    std::ostringstream resolved;
+    resolved << "runtime config resolved backend=" << config.backend.value
+             << " platform=" << config.platform.value
+             << " requested_platform=" << vkpt::platform::RuntimePlatformKindName(requestedPlatform)
+             << " selected_platform=" << vkpt::platform::RuntimePlatformKindName(selectedPlatform)
+             << " scene=" << (config.scene_path.value.empty() ? "none" : config.scene_path.value);
+    BootStep(resolved.str());
+  }
+
+  vkpt::editor::UiRuntimeState ui_runtime_state = vkpt::editor::CreateDefaultRuntimeState();
+  vkpt::editor::SelectionState ui_selection_state = vkpt::editor::CreateDefaultSelectionState();
+  vkpt::editor::UiLayoutDocument ui_layout_state = vkpt::editor::CreateDefaultLayout();
+  vkpt::editor::UiEventLog ui_event_log(256);
+  vkpt::editor::EditorCommandHistory ui_command_history(256);
+
+  ui_runtime_state.active_scene = config.scene_path.value.empty() ? "none" : config.scene_path.value;
+  ui_runtime_state.active_renderer_backend = config.backend.value;
+  PushUiEvent(ui_event_log, "app_start", "app_shell", "startup", 0, {}, {}, "bootstrap");
+  UpdateCrashArtifactsFromUiState(
+      ui_runtime_state, ui_selection_state, ui_layout_state,
+      ui_event_log, ui_command_history);
+
+  logger.log(vkpt::log::Severity::Info, "app", "arg parse complete");
+  LogRuntimeMetadata(logger, "post_config", requestedPlatform, selectedPlatform, effectivePlatform,
+                     openWindow, doRender, autoExitWindow, windowFrameLimit,
+                     config.ui_present_hz.value);
+  BootStep("command line parsed");
+
+  // ---- Status tracking (A13) ------------------------------------------------
+  vkpt::diagnostics::StatusFileData status;
+  status.build_status           = "ok";
+  status.enabled_backend        = config.backend.value;
+  status.selected_scene         = config.scene_path.value.empty() ? "none" : config.scene_path.value;
+  status.selected_renderer_path = "cpu_scalar";
+  const auto writeStatus = [&](const std::string& runStatus, const std::string& error = "") {
+    status.last_run_status = runStatus;
+    status.last_error      = error;
+    std::string writeErr;
+    if (!vkpt::diagnostics::WriteStatusFile(status, config.status_file_path.value, &writeErr)) {
+      logger.log(vkpt::log::Severity::Warning, "app", "status file write failed: " + writeErr);
+    }
+  };
+  const auto recordUiAction = [&](std::string_view action_id,
+                                 std::string_view event_widget,
+                                 const std::string& action_status,
+                                 const vkpt::editor::EditorCommand& command) {
+    auto logged_command = command;
+    logged_command.command_id = std::string(action_id);
+    if (logged_command.source_widget.empty()) {
+      logged_command.source_widget = "app_shell";
+    }
+    logged_command.frame_index = 0;
+    ui_command_history.push(logged_command);
+    ui_runtime_state.status_message = action_status;
+    ui_runtime_state.last_menu_action = std::string(action_id);
+    ui_runtime_state.focused_panel = logged_command.source_widget;
+    PushUiEvent(ui_event_log, "app_action", logged_command.source_widget, event_widget, 0, {}, {}, action_status);
+    UpdateCrashArtifactsFromUiState(ui_runtime_state, ui_selection_state, ui_layout_state,
+                                   ui_event_log, ui_command_history);
+  };
+
+  // ---- --version ------------------------------------------------------------
+  if (showVersion) {
+    if (versionJson) { PrintVersionJson(effectivePlatform); } else { PrintVersionText(effectivePlatform); }
+    recordUiAction("app.version", "version", "version output", MakeUnsupportedUiCommand("app.version", "handled on cli"));
+    writeStatus("version_query");
+    return 0;
+  }
+
+  // ---- --dump-config (A10) --------------------------------------------------
+  if (dumpConfig) {
+    std::cout << vkpt::config::SerializeRuntimeConfig(config) << "\n";
+    recordUiAction("app.dump_config", "dump_config", "config dump", MakeUnsupportedUiCommand("app.dump_config", "handled on cli"));
+    writeStatus("dump_config");
+    return 0;
+  }
+
+  if (uiModelSmoke) {
+    const bool ok = RunUiModelSmokeTests();
+    writeStatus(ok ? "ui_model_smoke" : "ui_model_smoke_failed");
+    return ok ? 0 : 1;
+  }
+
+  if (uiReleaseGate) {
+    const bool ok = RunUiReleaseGateCheck(versionJson);
+    writeStatus(ok ? "ui_release_gate" : "ui_release_gate_failed");
+    return ok ? 0 : 1;
+  }
+
+  // ---- --doctor / --check-* (A09) -------------------------------------------
+  if (doctorMode) {
+    PrintNonGuiPlatformShellNotice("doctor", selectedPlatform, effectivePlatform);
+    RunDoctor(checkBuild, checkCpu, checkBackends, checkAssets, checkShaders,
+              checkJobSystem, checkSceneSchema, checkBenchmarkArtifact);
+    recordUiAction("app.doctor", "doctor", "doctor complete", MakeUnsupportedUiCommand("app.doctor", "handled on cli"));
+    writeStatus("doctor_ok");
+    return 0;
+  }
+
+  if (listBackends) {
+    PrintNonGuiPlatformShellNotice("list-backends", selectedPlatform, effectivePlatform);
+    PrintBackendDiagnostics();
+    recordUiAction("app.list_backends", "list_backends", "backend list", MakeUnsupportedUiCommand("app.list_backends", "handled on cli"));
+    writeStatus("list_backends");
+    return 0;
+  }
+
+  if (listAccelerators) {
+    PrintNonGuiPlatformShellNotice("list-accelerators", selectedPlatform, effectivePlatform);
+    PrintAcceleratorDiagnostics(config.render_width.value, config.render_height.value);
+    recordUiAction("app.list_accelerators", "list_accelerators", "accelerator list",
+                   MakeUnsupportedUiCommand("app.list_accelerators", "handled on cli"));
+    writeStatus("list_accelerators");
+    return 0;
+  }
+
+#ifdef PT_ENABLE_VULKAN
+  if (listGpus) {
+    const std::string spvPath =
+#ifdef PT_SHADER_SPV_PATH
+        PT_SHADER_SPV_PATH;
+#else
+        "shaders/pathtrace.spv";
+#endif
+    // Init a temporary tracer just for device enumeration (it logs devices in init_device)
+    auto gpuTracer = std::make_unique<vkpt::gpu::VulkanGpuPathTracer>(spvPath);
+    if (gpuTracer->is_valid()) {
+      std::cout << "Selected GPU: " << gpuTracer->gpu_name() << "\n";
+      std::cout << "  Type  : " << gpuTracer->gpu_type() << "\n";
+      std::cout << "  VRAM  : " << gpuTracer->vram_mb() << " MB\n";
+      std::cout << "  Vulkan: "
+                << VK_VERSION_MAJOR(gpuTracer->vulkan_api()) << "."
+                << VK_VERSION_MINOR(gpuTracer->vulkan_api()) << "\n";
+    } else {
+      std::cerr << "Vulkan device init failed: " << gpuTracer->last_error() << "\n";
+    }
+    writeStatus("list_gpus");
+    return gpuTracer->is_valid() ? 0 : 1;
+  }
+#else
+  if (listGpus) {
+    std::cout << "PT_ENABLE_VULKAN not set in this build — no GPU info available.\n";
+    writeStatus("list_gpus_no_vulkan");
+    return 0;
+  }
+#endif
+
+  // ---- --window (interactive shell placeholder) ----------------------------
+  if (openWindow) {
+    BootStep("window mode requested");
+    if (headless) {
+      std::cerr << "--window and --headless are mutually exclusive\n";
+      return 1;
+    }
+    if (selectedPlatform == vkpt::platform::RuntimePlatformKind::Headless) {
+      std::cerr << "--window and --platform headless are mutually exclusive\n";
+      return 1;
+    }
+    if (selectedPlatform == vkpt::platform::RuntimePlatformKind::Qt) {
+      BootStep("creating qt platform");
+      const std::string qtTitleBase = BuildWindowTitleBase("qt");
+      auto platform = vkpt::platform::CreatePlatform(vkpt::platform::RuntimePlatformKind::Qt,
+                                                     qtTitleBase);
+      if (!platform) {
+        std::cerr << "qt platform factory creation failed\n";
+        writeStatus("error:qt_platform_create_failed", "qt_platform_create_failed");
+        return 1;
+      }
+      BootStep("initializing qt platform");
+      auto platformState = platform->initialize();
+      if (!platformState) {
+        std::cerr << "qt platform initialization failed\n";
+        writeStatus("error:qt_platform_init_failed", "qt_platform_init_failed");
+        return 1;
+      }
+
+      auto* window = platform->window();
+      BootStep("qt platform initialized; acquiring window");
+      if (!window) {
+        std::cerr << "qt platform returned invalid window\n";
+        platform->shutdown();
+        writeStatus("error:qt_window_missing", "qt_window_missing");
+        return 1;
+      }
+
+      std::function<void(std::string_view)> qtStartupStep = [&](std::string_view phase) {
+        BootStep(phase);
+      };
+
+#ifdef PT_ENABLE_QT
+      auto* qtWindow = dynamic_cast<vkpt::platform::QtWindow*>(window);
+      std::unordered_map<NativeMenuId, std::string> qtMenuCommandLookup;
+      auto rebuildQtMenuBar = [&]() {
+        if (qtWindow == nullptr) {
+          return;
+        }
+        const auto uiMenu = vkpt::editor::BuildDefaultMenuBar(ui_selection_state);
+        qtWindow->set_menu_bar(BuildQtMenuBarFromModel(uiMenu, qtMenuCommandLookup));
+      };
+      qtStartupStep = [&](std::string_view phase) {
+        BootStep(phase);
+        if (qtWindow == nullptr) {
+          return;
+        }
+        std::ostringstream overlay;
+        overlay << "vkPathTracer\n"
+                << "Starting: " << phase << "\n"
+                << "Scene: " << (config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value) << "\n"
+                << "Backend: " << config.backend.value << "\n"
+                << "Logs: artifacts/logs/ptapp.log";
+        qtWindow->set_title(BuildWindowRuntimeTitle(qtTitleBase, ui_runtime_state, ui_layout_state));
+        qtWindow->set_overlay_text(overlay.str());
+        qtWindow->set_startup_splash_text(phase);
+        vkpt::platform::QtStatusBarText status;
+        status.message = "Starting: " + std::string(phase);
+        status.fields.push_back(vkpt::platform::QtStatusBarField{
+            "startup.backend", "Backend: " + config.backend.value, 0});
+        status.fields.push_back(vkpt::platform::QtStatusBarField{
+            "startup.scene",
+            config.scene_path.value.empty() ? std::string("Scene: builtin") : "Scene: " + config.scene_path.value,
+            0});
+        qtWindow->set_status_bar_text(status);
+        DrainQtQueuedWork(4);
+      };
+      if (qtWindow) {
+        qtWindow->resize(std::max<uint32_t>(1u, windowWidth),
+                         std::max<uint32_t>(1u, windowHeight));
+        qtStartupStep("preparing Qt shell");
+        rebuildQtMenuBar();
+        logger.log(vkpt::log::Severity::Info,
+                   "app",
+                   std::string("Qt menu bar attached with ") +
+                       std::to_string(qtMenuCommandLookup.size()) + " command mappings");
+      }
+#endif
+      LogRuntimeMetadata(logger, "qt_platform_initialized", requestedPlatform,
+                         selectedPlatform, effectivePlatform, openWindow, doRender,
+                         autoExitWindow, windowFrameLimit, config.ui_present_hz.value);
+
+      std::cout << "qt window open (" << window->metrics().width << "x"
+                << window->metrics().height << ")\n";
+      std::cout << "qt platform shell: " << QtPlatformShellString() << "\n";
+      std::cout << "Close the Qt window to exit.\n";
+      if (windowFrameLimit != 0u) {
+        std::cout << "[ui] gui smoke frame limit: " << windowFrameLimit << "\n";
+      }
+      qtStartupStep("qt window opened");
+
+      // ---- Path tracer setup ----
+      std::unique_ptr<vkpt::pathtracer::IPathTracer> qtTracer;
+#ifdef PT_ENABLE_D3D12
+      if (config.backend.value == "d3d12" || config.backend.value == "d3d12-dxr") {
+        qtStartupStep("initializing d3d12 tracer");
+        const bool requestDxr = (config.backend.value == "d3d12-dxr");
+        const std::string hlslPath =
+#ifdef PT_SHADER_HLSL_PATH
+            PT_SHADER_HLSL_PATH;
+#else
+            "src/shaders/gpu/pathtrace_cs.hlsl";
+#endif
+        auto gpuTracer = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(hlslPath);
+        if (gpuTracer->is_valid()) {
+          gpuTracer->set_prefer_dxr(requestDxr);
+          std::cout << "[gpu] D3D12 " << gpuTracer->gpu_name()
+                    << "  " << gpuTracer->vram_mb() << " MB VRAM"
+                    << "  DXR=" << (gpuTracer->dxr_supported() ? "yes" : "no") << "\n";
+          qtTracer = std::move(gpuTracer);
+        } else {
+          std::cerr << "[gpu] D3D12 tracer init failed: " << gpuTracer->last_error() << "\n";
+          writeStatus("error:d3d12_init_failed", gpuTracer->last_error());
+          platform->shutdown();
+          return 1;
+        }
+      }
+#endif
+      if (!qtTracer) {
+        qtStartupStep("falling back to cpu tiled tracer");
+        vkpt::cpu::TiledRenderConfig tiledConfig{};
+        tiledConfig.worker_count = InteractiveCpuWorkerCount();
+        qtTracer = std::make_unique<vkpt::cpu::TiledCpuPathTracer>(tiledConfig);
+        std::cout << "[cpu] Using TiledCpuPathTracer workers="
+                  << tiledConfig.worker_count << " (interactive)\n";
+      }
+
+      // ---- Scene loading ----
+      vkpt::pathtracer::RTSceneData qtScene;
+      vkpt::scene::SceneDocument qtSceneDocument;
+      qtStartupStep("loading scene snapshot");
+      {
+        bool sceneOk = false;
+        if (!config.scene_path.value.empty()) {
+          auto parseResult = vkpt::scene::SceneDocument::load_from_file(config.scene_path.value);
+          if (parseResult) {
+            qtSceneDocument = parseResult.value();
+            auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(qtSceneDocument);
+            if (sceneResult) {
+              qtScene = std::move(sceneResult.value());
+              sceneOk = true;
+            }
+          }
+        } else {
+          qtSceneDocument.metadata.scene_name = "cornell";
+          auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(qtSceneDocument);
+          if (sceneResult) {
+            qtScene = std::move(sceneResult.value());
+            sceneOk = true;
+          }
+        }
+        if (!sceneOk) {
+          std::cerr << "qt window: scene load failed\n";
+          writeStatus("error:qt_scene_load_failed", "qt_scene_load_failed");
+          platform->shutdown();
+          return 1;
+        }
+        // Ensure scene has lighting
+        bool hasLight = !qtScene.lights.empty();
+        bool hasEmissive = false;
+        for (const auto& mat : qtScene.materials) {
+          if (mat.is_emissive()) { hasEmissive = true; break; }
+        }
+        if (!hasLight && !hasEmissive) {
+          qtScene.environment_color = {0.35f, 0.4f, 0.5f};
+        }
+      }
+      qtStartupStep("scene loaded");
+
+      // ---- Tracer configure ----
+      vkpt::pathtracer::RenderSettings qtSettings{};
+      qtSettings.width  = std::max<uint32_t>(1u, config.render_width.value);
+      qtSettings.height = std::max<uint32_t>(1u, config.render_height.value);
+      qtSettings.spp    = std::numeric_limits<uint32_t>::max();
+      qtSettings.max_depth = std::max<uint32_t>(1u, config.max_depth.value);
+      qtSettings.seed = 0xC001D00Dull;
+      qtSettings.enable_nee = true;
+      qtSettings.enable_mis = true;
+      qtSettings.enable_denoiser = true;
+      qtSettings.enable_temporal_aa = true;
+
+      qtStartupStep("configuring renderer and acceleration");
+      bool qtTracerReady = (qtTracer->configure(qtSettings) &&
+                            qtTracer->load_scene_snapshot(qtScene) &&
+                            qtTracer->build_or_update_acceleration() &&
+                            qtTracer->reset_accumulation());
+      if (!qtTracerReady) {
+        std::cerr << "qt window: tracer init failed\n";
+        qtStartupStep("tracer init failed");
+#ifdef PT_ENABLE_QT
+        if (qtWindow != nullptr) {
+          qtWindow->finish_startup_splash();
+        }
+#endif
+      } else {
+        qtStartupStep("tracer initialized");
+      }
+
+#ifdef PT_ENABLE_QT
+      std::vector<ViewportPickable> qtPickables =
+          BuildViewportPickables(qtSceneDocument, qtScene);
+      FpsCollisionWorker qtFpsCollisionWorker;
+      qtFpsCollisionWorker.set_pickables(qtPickables);
+#endif
+      auto qtBuildPhysicsBodies = [&](const vkpt::scene::SceneWorld* world) {
+        std::vector<vkpt::physics::PhysicsBodySync> bodies;
+        bodies.reserve(qtSceneDocument.entities.size());
+        for (const auto& entity : qtSceneDocument.entities) {
+          if (!entity.has_physics_body) {
+            continue;
+          }
+          vkpt::physics::PhysicsBodySync sync;
+          sync.entity = entity.id;
+          sync.body = entity.physics_body;
+          sync.transform = ResolveEntityWorldTransform(entity, world);
+          bodies.push_back(std::move(sync));
+        }
+        return bodies;
+      };
+      auto qtPhysics = vkpt::physics::CreatePhysicsWorld();
+      auto qtSyncPhysicsSceneDocumentNow = [&]() {
+        if (auto world = BuildSceneWorldSnapshot(qtSceneDocument)) {
+          return qtPhysics->sync_from_scene_world(*world);
+        }
+        return qtPhysics->sync_from_bodies(qtBuildPhysicsBodies(nullptr),
+                                           qtSceneDocument.entities.size());
+      };
+      auto qtPhysicsSummary = qtSyncPhysicsSceneDocumentNow();
+      const auto qtPhysicsInfo = qtPhysics->engine_info();
+      bool qtPhysicsRuntimeDirty = false;
+      auto qtSyncPhysicsFromSceneDocument = [&]() {
+        qtPhysicsSummary = qtSyncPhysicsSceneDocumentNow();
+        qtPhysicsRuntimeDirty = true;
+      };
+#ifndef PT_ENABLE_QT
+      (void)qtSyncPhysicsFromSceneDocument;
+#endif
+      const bool qtPhysicsRuntimeEnabled =
+          qtPhysicsSummary.enabled_bodies > 0u && qtPhysicsSummary.dynamic_bodies > 0u;
+      std::cout << "[physics] " << qtPhysicsInfo.engine_name
+                << " bodies=" << qtPhysicsSummary.backend_bodies
+                << " dynamic=" << qtPhysicsSummary.dynamic_bodies
+                << " static=" << qtPhysicsSummary.static_bodies
+                << " worker=" << (qtPhysicsInfo.runs_on_worker_thread ? "yes" : "no") << "\n";
+
+      // ---- Background render coordinator (TiledCpuPathTracer blocks; run off main thread) ----
+      // Qt posts coalesced commands and consumes latest-wins display frames.
+      const uint32_t qtPreviewPublishHz = std::max<uint32_t>(1u, config.ui_present_hz.value);
+      constexpr uint32_t kQtPreviewImmediatePublishes = 4u;
+      std::atomic<uint32_t> qtPublishedSample{0u};
+      std::atomic<uint32_t> qtPublishedWidth{qtSettings.width};
+      std::atomic<uint32_t> qtPublishedHeight{qtSettings.height};
+      std::atomic<std::uint64_t> qtPublishedRays{0u};
+      std::atomic<std::uint64_t> qtPublishedFrames{0u};
+      std::atomic<std::uint64_t> qtDroppedFrames{0u};
+      std::unique_ptr<vkpt::render::RenderCoordinator> qtRenderCoordinator;
+      const bool qtUseBg =
+          (dynamic_cast<vkpt::cpu::TiledCpuPathTracer*>(qtTracer.get()) != nullptr);
+#ifdef PT_ENABLE_QT
+      QtDockDeviceStats qtDeviceStats;
+      qtDeviceStats.selected_backend = config.backend.value.empty() ? "cpu" : config.backend.value;
+      qtDeviceStats.active_renderer_path = qtUseBg ? "cpu_tiled_background" : qtDeviceStats.selected_backend;
+      {
+        qtDeviceStats.backend_caps.backend_name = qtDeviceStats.selected_backend;
+        const auto normalizedBackend = vkpt::render::NormalizeBackendName(qtDeviceStats.selected_backend);
+        if (normalizedBackend.find("d3d12") != std::string::npos ||
+            normalizedBackend.find("dxr") != std::string::npos) {
+          qtDeviceStats.accelerators = vkpt::render::EnumerateD3D12Accelerators(true, true);
+        }
+        const auto selectedIt = std::find_if(qtDeviceStats.accelerators.begin(),
+                                             qtDeviceStats.accelerators.end(),
+                                             [](const vkpt::render::AcceleratorCapabilities& accelerator) {
+                                               return accelerator.selected_by_default;
+                                             });
+        if (selectedIt != qtDeviceStats.accelerators.end()) {
+          qtDeviceStats.has_selected_accelerator = true;
+          qtDeviceStats.selected_accelerator = *selectedIt;
+          qtDeviceStats.backend_caps = selectedIt->backend_caps;
+        } else if (!qtDeviceStats.accelerators.empty()) {
+          qtDeviceStats.has_selected_accelerator = true;
+          qtDeviceStats.selected_accelerator = qtDeviceStats.accelerators.front();
+          qtDeviceStats.backend_caps = qtDeviceStats.accelerators.front().backend_caps;
+        } else if (auto probeBackend = vkpt::render::CreateBackend(qtDeviceStats.selected_backend)) {
+          if (probeBackend->initialize()) {
+            qtDeviceStats.backend_caps = probeBackend->capabilities();
+            probeBackend->shutdown();
+          }
+        }
+      }
+#endif
+      if (qtTracerReady && qtUseBg) {
+        qtStartupStep("starting background cpu render coordinator");
+        vkpt::render::RenderCoordinatorConfig coordinatorConfig{};
+        coordinatorConfig.publish_hz = qtPreviewPublishHz;
+        coordinatorConfig.immediate_publish_count = kQtPreviewImmediatePublishes;
+        qtRenderCoordinator = std::make_unique<vkpt::render::RenderCoordinator>(
+            std::move(qtTracer),
+            qtSettings,
+            qtScene,
+            coordinatorConfig);
+        if (!qtRenderCoordinator->start()) {
+          qtTracerReady = false;
+          qtStartupStep("background cpu render coordinator start failed");
+        }
+      }
+
+      uint32_t qtSampleIndex = 0;
+      std::string qtPreviewStatus = (windowFrameLimit != 0u)
+          ? "smoke frame limit"
+          : (qtTracerReady ? "rendering" : "tracer init failed");
+
+      // ---- Orbit camera setup ----
+      // Auto-orbit is too expensive on the CPU tiled tracer because each
+      // camera step resets accumulation and may force a scene reload/rebuild.
+      // Keep orbit enabled for non-bg (GPU/synchronous) paths only.
+      const bool qtEnableAutoOrbit = (windowFrameLimit == 0u) && !qtUseBg && !qtPhysicsRuntimeEnabled;
+      const float kQtOrbitDegPerSec = 7.5f;
+      const float kQtOrbitMinStepDeg = 0.1f;
+      vkpt::pathtracer::Vec3 qtOrbitCenter{};
+      {
+        float bminX = FLT_MAX, bminZ = FLT_MAX;
+        float bmaxX = -FLT_MAX, bmaxZ = -FLT_MAX;
+        float bminY = FLT_MAX, bmaxY = -FLT_MAX;
+        for (const auto& v : qtScene.vertices) {
+          bminX = std::min(bminX, v.x); bmaxX = std::max(bmaxX, v.x);
+          bminY = std::min(bminY, v.y); bmaxY = std::max(bmaxY, v.y);
+          bminZ = std::min(bminZ, v.z); bmaxZ = std::max(bmaxZ, v.z);
+        }
+        if (bminX < bmaxX) {
+          qtOrbitCenter.x = (bminX + bmaxX) * 0.5f;
+          qtOrbitCenter.y = (bminY + bmaxY) * 0.5f;
+          qtOrbitCenter.z = (bminZ + bmaxZ) * 0.5f;
+        } else {
+          qtOrbitCenter = qtScene.camera_target;
+        }
+      }
+      const float qtOrbitDx = qtScene.camera_position.x - qtOrbitCenter.x;
+      const float qtOrbitDz = qtScene.camera_position.z - qtOrbitCenter.z;
+      const float kQtOrbitRadius = std::sqrt(qtOrbitDx * qtOrbitDx + qtOrbitDz * qtOrbitDz);
+      const float qtOrbitInitialAngleDeg = std::atan2(qtOrbitDx, qtOrbitDz) * (180.0f / 3.14159265f);
+      float qtOrbitLastAngleDeg = qtOrbitInitialAngleDeg;
+      const auto qtOrbitStartTime = std::chrono::steady_clock::now();
+      if (qtEnableAutoOrbit) {
+        std::cout << "[orbit] setup: center=(" << qtOrbitCenter.x << "," << qtOrbitCenter.y << "," << qtOrbitCenter.z
+                  << ") radius=" << kQtOrbitRadius << " initial_angle=" << qtOrbitInitialAngleDeg << "\n";
+      } else if (qtPhysicsRuntimeEnabled) {
+        std::cout << "[orbit] disabled for dynamic physics scene; using authored camera\n";
+      } else {
+        std::cout << "[orbit] disabled for CPU background tracer to preserve throughput\n";
+      }
+
+      // ---- Main Qt event loop with rendering ----
+      qtStartupStep("entering qt render loop");
+      uint32_t qtFrameCount = 0u;
+      bool qtUserCameraActive = false;
+      constexpr auto kQtInteractiveFrameTarget = std::chrono::milliseconds(16);
+      uint32_t qtLastGpuBatchesPerTick = 0u;
+      double qtSmoothedGpuBatchMs = 0.0;
+#ifdef PT_ENABLE_QT
+#include "AppRuntimeQtCameraAndScene.inc"
+#include "AppRuntimeQtReloadAndSceneGraph.inc"
+#include "AppRuntimeQtAssetsAndPlayback.inc"
+#include "AppRuntimeQtDockPropertyEdits.inc"
+#include "AppRuntimeQtViewportInteraction.inc"
+#include "AppRuntimeQtDockSyncAndPhysics.inc"
+#endif
+#include "AppRuntimeQtRenderLoop.inc"
+#if !defined(PT_ENABLE_RAW_DESKTOP)
+#include "AppRuntimeRawDesktopUnavailable.inc"
+#else
+#include "AppRuntimeRawDesktopSetup.inc"
+#include "AppRuntimeRawDesktopFrameLoop.inc"
+#endif
+#include "AppRuntimeRenderAndHeadless.inc"
+}
+}  // namespace vkpt::app
