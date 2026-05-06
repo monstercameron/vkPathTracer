@@ -668,6 +668,34 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
   if (!build_texture_buffers()) {
     return false;
   }
+  m_gpuEnv.clear();
+  m_gpuEnvMeta = {
+      m_sceneData.environment_map_width,
+      m_sceneData.environment_map_height,
+      0u,
+      0u};
+  const uint64_t environmentPixelCount =
+      static_cast<uint64_t>(m_sceneData.environment_map_width) *
+      static_cast<uint64_t>(m_sceneData.environment_map_height);
+  if (environmentPixelCount > 0u &&
+      m_sceneData.environment_map.size() >= environmentPixelCount) {
+    auto scale = m_sceneData.environment_map_scale;
+    if (std::max({scale.x, scale.y, scale.z}) <= 1.0e-6f) {
+      scale = {1.0f, 1.0f, 1.0f};
+    }
+    m_gpuEnv.reserve(static_cast<std::size_t>(environmentPixelCount) * 3u);
+    for (std::size_t i = 0u; i < static_cast<std::size_t>(environmentPixelCount); ++i) {
+      const auto& texel = m_sceneData.environment_map[i];
+      m_gpuEnv.push_back(texel.x * scale.x);
+      m_gpuEnv.push_back(texel.y * scale.y);
+      m_gpuEnv.push_back(texel.z * scale.z);
+    }
+    m_gpuEnvMeta[2] = 1u;
+  }
+  if (m_gpuEnv.empty()) {
+    m_gpuEnv.assign(3u, 0.0f);
+    m_gpuEnvMeta = {0u, 0u, 0u, 0u};
+  }
 
   std::ostringstream us;
   us << "packed scene verts=" << (m_gpuVerts.size() / 3u)
@@ -683,6 +711,7 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
      << " tess=" << m_sceneData.tessellation_requests.size()
      << " lights=" << (m_gpuLights.size() / 16u)
      << " textures=" << (m_gpuTextureMeta.size() / 4u)
+     << " env=" << m_gpuEnvMeta[0] << "x" << m_gpuEnvMeta[1]
      << " bytes="
      << (m_gpuVerts.size() * sizeof(float)) << ","
      << (m_gpuIdx.size() * sizeof(uint32_t)) << ","
@@ -692,7 +721,9 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
      << (m_gpuLights.size() * sizeof(float)) << ","
      << (m_gpuSdfs.size() * sizeof(float)) << ","
      << (m_gpuTexels.size() * sizeof(uint32_t)) << ","
-     << (m_gpuTextureMeta.size() * sizeof(uint32_t));
+     << (m_gpuTextureMeta.size() * sizeof(uint32_t)) << ","
+     << (m_gpuEnv.size() * sizeof(float)) << ","
+     << (m_gpuEnvMeta.size() * sizeof(uint32_t));
   LogDebug(us.str());
 
   if (!m_sceneData.tessellation_requests.empty()) {
@@ -997,22 +1028,24 @@ bool D3D12GpuPathTracer::upload_scene_buffers() {
   if (!stage("sdf", m_gpuSdfs.data(), m_gpuSdfs.size() * sizeof(float), &m_sdfBuf)) return false;
   if (!stage("texels", m_gpuTexels.data(), m_gpuTexels.size() * sizeof(uint32_t), &m_texelBuf)) return false;
   if (!stage("texmeta", m_gpuTextureMeta.data(), m_gpuTextureMeta.size() * sizeof(uint32_t), &m_texMetaBuf)) return false;
+  if (!stage("env", m_gpuEnv.data(), m_gpuEnv.size() * sizeof(float), &m_envBuf)) return false;
+  if (!stage("envmeta", m_gpuEnvMeta.data(), m_gpuEnvMeta.size() * sizeof(uint32_t), &m_envMetaBuf)) return false;
 
   // Transition once after all copies so the buffers can be read by compute and
   // DXR shaders until a later delta upload transitions selected buffers back.
-  D3D12_RESOURCE_BARRIER barriers[13]{};
+  D3D12_RESOURCE_BARRIER barriers[15]{};
   ID3D12Resource* bufs[] = {m_vertBuf.Get(), m_idxBuf.Get(), m_matBuf.Get(),
                             m_instBuf.Get(), m_ltBuf.Get(), m_bvhBuf.Get(), m_triMatBuf.Get(),
                             m_triDataBuf.Get(), m_dynamicBvhBuf.Get(), m_localBvhBuf.Get(), m_sdfBuf.Get(),
-                            m_texelBuf.Get(), m_texMetaBuf.Get()};
-  for (int i = 0; i < 13; ++i) {
+                            m_texelBuf.Get(), m_texMetaBuf.Get(), m_envBuf.Get(), m_envMetaBuf.Get()};
+  for (int i = 0; i < 15; ++i) {
     barriers[i].Type=D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barriers[i].Transition.pResource=bufs[i];
     barriers[i].Transition.StateBefore=D3D12_RESOURCE_STATE_COPY_DEST;
     barriers[i].Transition.StateAfter=D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     barriers[i].Transition.Subresource=D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
   }
-  m_cmdList->ResourceBarrier(13, barriers);
+  m_cmdList->ResourceBarrier(15, barriers);
   const auto closeRes = m_cmdList->Close();
   if (FAILED(closeRes)) {
     m_error = "cmd list close";
@@ -1216,6 +1249,8 @@ void D3D12GpuPathTracer::destroy_scene_buffers() {
   m_sdfBuf.Reset();
   m_texelBuf.Reset();
   m_texMetaBuf.Reset();
+  m_envBuf.Reset();
+  m_envMetaBuf.Reset();
   m_srvUavHeap.Reset();
   m_sceneUploaded = false;
 }

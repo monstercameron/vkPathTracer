@@ -18,12 +18,12 @@ bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
 
   // The heap layout is part of the shader ABI. New buffers must be appended
   // deliberately and mirrored in create_root_sig_and_pso() and HLSL bindings.
-  // Slots: t0-t10 (11 SRVs), u0 = FilmBuf, u1 = LdrBuf,
+  // Slots: t0-t12 (13 SRVs), u0 = FilmBuf, u1 = LdrBuf,
   // u2 = denoised HDR, u3 = current guide, u4 = temporal HDR,
   // u5 = temporal history, u6 = previous guide.
   D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
   heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  heapDesc.NumDescriptors = 18;
+  heapDesc.NumDescriptors = 20;
   heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   if (FAILED(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvUavHeap)))) {
     m_error = "srv heap";
@@ -61,12 +61,14 @@ bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
   makeSrv(8, m_localBvhBuf.Get(), m_gpuLocalBvh.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
   makeSrv(9, m_sdfBuf.Get(), m_gpuSdfs.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
   makeSrv(10, m_triDataBuf.Get(), m_gpuTriData.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+  makeSrv(11, m_envBuf.Get(), m_gpuEnv.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+  makeSrv(12, m_envMetaBuf.Get(), m_gpuEnvMeta.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
 
   {
     const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(filmSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(11) * inc;
+    h.ptr += static_cast<SIZE_T>(13) * inc;
     m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h);
   }
   {
@@ -75,42 +77,42 @@ bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
     uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
     uav.Buffer.NumElements = static_cast<UINT>(m_filmPixels);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(12) * inc;
+    h.ptr += static_cast<SIZE_T>(14) * inc;
     m_device->CreateUnorderedAccessView(m_ldrBuf.Get(), nullptr, &uav, h);
   }
   {
     const UINT64 denoiseSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(denoiseSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(13) * inc;
+    h.ptr += static_cast<SIZE_T>(15) * inc;
     m_device->CreateUnorderedAccessView(m_denoiseBuf.Get(), nullptr, &uav, h);
   }
   {
     const UINT64 guideSize = static_cast<UINT64>(m_filmPixels) * 8u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(guideSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(14) * inc;
+    h.ptr += static_cast<SIZE_T>(16) * inc;
     m_device->CreateUnorderedAccessView(m_guideBuf.Get(), nullptr, &uav, h);
   }
   {
     const UINT64 temporalSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(temporalSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(15) * inc;
+    h.ptr += static_cast<SIZE_T>(17) * inc;
     m_device->CreateUnorderedAccessView(m_temporalBuf.Get(), nullptr, &uav, h);
   }
   {
     const UINT64 temporalSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(temporalSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(16) * inc;
+    h.ptr += static_cast<SIZE_T>(18) * inc;
     m_device->CreateUnorderedAccessView(m_temporalHistoryBuf.Get(), nullptr, &uav, h);
   }
   {
     const UINT64 guideSize = static_cast<UINT64>(m_filmPixels) * 8u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(guideSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(17) * inc;
+    h.ptr += static_cast<SIZE_T>(19) * inc;
     m_device->CreateUnorderedAccessView(m_prevGuideBuf.Get(), nullptr, &uav, h);
   }
 
@@ -316,7 +318,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   m_cmdList->SetComputeRootSignature(m_rootSig.Get());
 
   // Create descriptor heap for SRVs/UAVs lazily and reuse across samples.
-  // Slots: t0-t10 SRVs, u0 film, u1 LDR, u2 denoised HDR, u3/u6 guides, u4/u5 temporal.
+  // Slots: t0-t12 SRVs, u0 film, u1 LDR, u2 denoised HDR, u3/u6 guides, u4/u5 temporal.
   if (!ensure_compute_srv_uav_heap()) return false;
   D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
   const auto resolveSettings =
@@ -621,10 +623,10 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
   params[0].Descriptor.ShaderRegister = 0;
   params[0].Descriptor.RegisterSpace  = 0;
   params[0].ShaderVisibility          = D3D12_SHADER_VISIBILITY_ALL;
-  // Descriptor table (t0-t10 SRV + u0-u6 UAV at slots 11-17)
+  // Descriptor table (t0-t12 SRV + u0-u6 UAV at slots 13-19)
   D3D12_DESCRIPTOR_RANGE ranges[2]{};
   ranges[0].RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-  ranges[0].NumDescriptors     = 11;
+  ranges[0].NumDescriptors     = 13;
   ranges[0].BaseShaderRegister = 0;
   ranges[0].RegisterSpace      = 0;
   ranges[0].OffsetInDescriptorsFromTableStart = 0;
@@ -632,7 +634,7 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
   ranges[1].NumDescriptors     = 7; // u0 film, u1 LDR, u2 denoise, u3/u6 guides, u4/u5 temporal
   ranges[1].BaseShaderRegister = 0;
   ranges[1].RegisterSpace      = 0;
-  ranges[1].OffsetInDescriptorsFromTableStart = 11;
+  ranges[1].OffsetInDescriptorsFromTableStart = 13;
   params[1].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
   params[1].DescriptorTable.NumDescriptorRanges = 2;
   params[1].DescriptorTable.pDescriptorRanges   = ranges;

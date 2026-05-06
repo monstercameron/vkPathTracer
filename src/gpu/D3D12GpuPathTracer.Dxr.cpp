@@ -16,7 +16,7 @@ bool D3D12GpuPathTracer::create_dxr_desc_heap() {
   // 7 descriptors: slots 0-5 → scene SRVs (t1-t6), slot 6 → film UAV (u0)
   D3D12_DESCRIPTOR_HEAP_DESC dh{};
   dh.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  dh.NumDescriptors = 10;
+  dh.NumDescriptors = 12;
   dh.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   const HRESULT hr = m_device->CreateDescriptorHeap(&dh, IID_PPV_ARGS(&m_dxrDescHeap));
   if (FAILED(hr)) {
@@ -47,12 +47,14 @@ bool D3D12GpuPathTracer::create_dxr_desc_heap() {
   makeSrv(6, m_triDataBuf.Get(), m_gpuTriData.size() * sizeof(float),   DXGI_FORMAT_R32_FLOAT);
   makeSrv(7, m_texelBuf.Get(), m_gpuTexels.size() * sizeof(uint32_t),   DXGI_FORMAT_R32_UINT);
   makeSrv(8, m_texMetaBuf.Get(), m_gpuTextureMeta.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+  makeSrv(9, m_envBuf.Get(), m_gpuEnv.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
+  makeSrv(10, m_envMetaBuf.Get(), m_gpuEnvMeta.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
 
   const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
   D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(filmSize);
-  D3D12_CPU_DESCRIPTOR_HANDLE h9 = cpu;
-  h9.ptr += 9 * inc;
-  m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h9);
+  D3D12_CPU_DESCRIPTOR_HANDLE h11 = cpu;
+  h11.ptr += 11 * inc;
+  m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h11);
   LogDebug("DXR descriptor heap created");
   return true;
 }
