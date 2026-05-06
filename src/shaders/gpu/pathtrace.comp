@@ -10,7 +10,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(push_constant) uniform PC {
     vec3  camera_pos;     float fov_tan_half;   // 16
     vec3  cam_forward;    float aspect;         // 32
-    vec3  cam_right;      float pad0;           // 48
+    vec3  cam_right;      uint  num_sdfs;       // 48
     vec3  cam_up;         uint  sample_index;   // 64
     uint  num_insts;      uint  num_mats;       // 72
     uint  num_lights;     uint  width;          // 80
@@ -35,11 +35,16 @@ layout(std430, set = 0, binding = 1) readonly buffer IBuf  { uint  tidx[];  };
 // metallic, ior, transmission, clearcoat, sheen, anisotropy, alpha, effect
 layout(std430, set = 0, binding = 2) readonly buffer MBuf  { float mats[];  };
 // Binding 3: instances — 4 uints each: first_triangle, triangle_count, material_index, pad
+// Instance records use the same 24-uint stride as D3D12 compute. The current
+// Vulkan shader reads the baked-geometry fields and ignores transform payload.
 layout(std430, set = 0, binding = 3) readonly buffer InstBuf { uint insts[]; };
 // Binding 4: lights — 8 floats each: pos.xyz, color.xyz, intensity, pad
 layout(std430, set = 0, binding = 4) readonly buffer LBuf  { float lights[]; };
 // Binding 5: film — 4 floats per pixel: r_sum, g_sum, b_sum, sample_count
 layout(std430, set = 0, binding = 5)          buffer FilmBuf { float film[]; };
+layout(std430, set = 0, binding = 6) readonly buffer SdfBuf { float sdfs[]; };
+layout(std430, set = 0, binding = 7) readonly buffer EnvBuf { float env_texels[]; };
+layout(std430, set = 0, binding = 8) readonly buffer EnvMetaBuf { uint env_meta[]; };
 
 // ---- PCG hash RNG -----------------------------------------------------------
 uint pcg(uint v) {
@@ -108,14 +113,101 @@ bool intersect_tri(vec3 ro, vec3 rd,
 }
 
 bool mat_double_sided(uint idx);
+const uint k_inst_stride = 24u;
+const uint k_sdf_stride = 16u;
+const uint k_sdf_shape_sphere = 0u;
+const uint k_sdf_shape_box = 1u;
+const uint k_sdf_shape_rounded_box = 2u;
 
 // ---- Scene intersection (brute-force) ---------------------------------------
 struct Hit { bool ok; float t; vec3 pos; vec3 n; uint mat; };
 
+bool intersect_sdf_sphere(uint sdf_index, vec3 ro, vec3 rd, inout Hit h) {
+    uint base = sdf_index * k_sdf_stride;
+    uint shape = uint(sdfs[base + 0u] + 0.5);
+    if (shape != k_sdf_shape_sphere) return false;
+
+    vec3 center = vec3(sdfs[base + 4u], sdfs[base + 5u], sdfs[base + 6u]);
+    vec3 scale = abs(vec3(sdfs[base + 8u], sdfs[base + 9u], sdfs[base + 10u]));
+    float scale_max = max(scale.x, max(scale.y, scale.z));
+    float radius = max(0.001, sdfs[base + 2u] * max(scale_max, 0.001));
+
+    vec3 oc = ro - center;
+    float half_b = dot(oc, rd);
+    float c = dot(oc, oc) - radius * radius;
+    float discriminant = half_b * half_b - c;
+    if (discriminant < 0.0) return false;
+
+    float root = sqrt(discriminant);
+    float t = -half_b - root;
+    if (t <= 1e-4) {
+        t = -half_b + root;
+    }
+    if (t <= 1e-4 || t >= h.t) return false;
+
+    h.ok = true;
+    h.t = t;
+    h.pos = ro + rd * t;
+    h.n = normalize(h.pos - center);
+    h.mat = uint(sdfs[base + 1u] + 0.5);
+    return true;
+}
+
+vec3 sdf_box_normal(vec3 local, vec3 half_extents) {
+    vec3 face_dist = abs(half_extents - abs(local));
+    if (face_dist.x <= face_dist.y && face_dist.x <= face_dist.z) {
+        return vec3(local.x >= 0.0 ? 1.0 : -1.0, 0.0, 0.0);
+    }
+    if (face_dist.y <= face_dist.z) {
+        return vec3(0.0, local.y >= 0.0 ? 1.0 : -1.0, 0.0);
+    }
+    return vec3(0.0, 0.0, local.z >= 0.0 ? 1.0 : -1.0);
+}
+
+bool intersect_sdf_box(uint sdf_index, vec3 ro, vec3 rd, inout Hit h) {
+    uint base = sdf_index * k_sdf_stride;
+    uint shape = uint(sdfs[base + 0u] + 0.5);
+    if (shape != k_sdf_shape_box && shape != k_sdf_shape_rounded_box) return false;
+
+    vec3 center = vec3(sdfs[base + 4u], sdfs[base + 5u], sdfs[base + 6u]);
+    vec3 half_extents = max(abs(vec3(sdfs[base + 8u], sdfs[base + 9u], sdfs[base + 10u])),
+                            vec3(0.001));
+    vec3 bmin = center - half_extents;
+    vec3 bmax = center + half_extents;
+    vec3 inv_rd = 1.0 / rd;
+    vec3 t0 = (bmin - ro) * inv_rd;
+    vec3 t1 = (bmax - ro) * inv_rd;
+    vec3 tsm = min(t0, t1);
+    vec3 tbg = max(t0, t1);
+    float t_near = max(tsm.x, max(tsm.y, tsm.z));
+    float t_far = min(tbg.x, min(tbg.y, tbg.z));
+    if (t_far <= 1.0e-4 || t_near > t_far) return false;
+
+    float t = (t_near > 1.0e-4) ? t_near : t_far;
+    if (t <= 1.0e-4 || t >= h.t) return false;
+
+    h.ok = true;
+    h.t = t;
+    h.pos = ro + rd * t;
+    h.n = sdf_box_normal(h.pos - center, half_extents);
+    h.mat = uint(sdfs[base + 1u] + 0.5);
+    return true;
+}
+
+bool intersect_sdf_primitive(uint sdf_index, vec3 ro, vec3 rd, inout Hit h) {
+    uint base = sdf_index * k_sdf_stride;
+    uint shape = uint(sdfs[base + 0u] + 0.5);
+    if (shape == k_sdf_shape_sphere) return intersect_sdf_sphere(sdf_index, ro, rd, h);
+    if (shape == k_sdf_shape_box || shape == k_sdf_shape_rounded_box) {
+        return intersect_sdf_box(sdf_index, ro, rd, h);
+    }
+    return false;
+}
+
 Hit intersect_scene(vec3 ro, vec3 rd) {
     Hit h; h.ok = false; h.t = 1e30;
     for (uint ii = 0u; ii < pc.num_insts; ++ii) {
-        uint ib    = ii * 4u;
+        uint ib    = ii * k_inst_stride;
         uint ftri  = insts[ib + 0u];
         uint ntri  = insts[ib + 1u];
         uint mat   = insts[ib + 2u];
@@ -137,6 +229,9 @@ Hit intersect_scene(vec3 ro, vec3 rd) {
                 h.mat = mat;
             }
         }
+    }
+    for (uint si = 0u; si < pc.num_sdfs; ++si) {
+        intersect_sdf_primitive(si, ro, rd, h);
     }
     return h;
 }
@@ -247,6 +342,36 @@ bool  mat_is_emissive(uint idx) {
     return e.r > 0.0 || e.g > 0.0 || e.b > 0.0;
 }
 
+vec3 load_env_texel(uint x, uint y, uint width) {
+    uint base = (y * width + x) * 3u;
+    return vec3(env_texels[base], env_texels[base + 1u], env_texels[base + 2u]);
+}
+
+vec3 sample_scene_environment(vec3 rd, vec3 fallback_env) {
+    uint width = env_meta[0u];
+    uint height = env_meta[1u];
+    uint enabled = env_meta[2u];
+    if (enabled == 0u || width == 0u || height == 0u) {
+        return fallback_env;
+    }
+
+    vec3 dir = normalize(rd);
+    float u = fract(0.5 + atan(dir.z, dir.x) * 0.15915494309189535);
+    float v = acos(clamp(dir.y, -1.0, 1.0)) * 0.3183098861837907;
+    float x = u * float(width);
+    float y = clamp(v, 0.0, 1.0) * float(max(1u, height) - 1u);
+    uint x0 = uint(floor(x)) % width;
+    uint x1 = (x0 + 1u) % width;
+    uint y0 = min(uint(floor(y)), height - 1u);
+    uint y1 = min(y0 + 1u, height - 1u);
+    float tx = x - floor(x);
+    float ty = y - floor(y);
+
+    vec3 top = mix(load_env_texel(x0, y0, width), load_env_texel(x1, y0, width), tx);
+    vec3 bottom = mix(load_env_texel(x0, y1, width), load_env_texel(x1, y1, width), tx);
+    return mix(top, bottom, ty);
+}
+
 vec3 preview_transmission(vec3 ro, vec3 rd, vec3 fallback_env) {
     vec3 origin = ro;
     for (uint skip = 0u; skip < 8u; ++skip) {
@@ -276,7 +401,7 @@ vec3 preview_transmission(vec3 ro, vec3 rd, vec3 fallback_env) {
         }
         return surface * (0.28 + 0.72 * ndotl) + emissive;
     }
-    return fallback_env;
+    return sample_scene_environment(rd, fallback_env);
 }
 
 // ---- Path trace one ray -----------------------------------------------------
@@ -288,7 +413,7 @@ vec3 trace(vec3 ro, vec3 rd, inout uint rng) {
     for (uint depth = 0u; depth < max_depth; ++depth) {
         Hit hit = intersect_scene(ro, rd);
         if (!hit.ok) {
-            vec3 env = vec3(pc.env_r, pc.env_g, pc.env_b);
+            vec3 env = sample_scene_environment(rd, vec3(pc.env_r, pc.env_g, pc.env_b));
             rad += thr * env;
             break;
         }
