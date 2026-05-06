@@ -6323,3 +6323,598 @@ Goal: make low-poly authored meshes, especially the showcase sphere mesh, render
 **Implementation hints:** Adaptive tessellation must still resolve to explicit output buffer sizes before dispatch. Budget logic should degrade factors before stealing time from ray generation.
 
 **Acceptance:** A high-performance preset produces smooth spheres while maintaining the configured polygon frame budget and rays-per-second target.
+
+---
+
+# 17. Lua ECS scripting backlog
+
+Goal: let scene entities carry Lua scripts as ECS components while preserving deterministic scheduling, command-buffer mutation, transform-authority diagnostics, benchmark reproducibility, and renderer/backend isolation. Scripts should make entity behavior easy to author, but they must not become a back door into mutable renderer state or unscheduled ECS writes.
+
+## [ ] LUA01 - Expand `ScriptComponent` into a runtime-ready ECS attachment
+
+**Deliverable:** `ScriptComponent` keeps the existing source/path string for compatibility and adds explicit metadata for enabled state, language, entry point/module id, reload-on-save policy, and parameter block ownership.
+
+**Implementation hints:** Treat missing metadata as `enabled=true`, `language=lua`, `reload_on_save=true`. Keep old scene files valid. Do not require Lua to be compiled in for scene parsing to preserve script metadata.
+
+**Acceptance:** Scene JSON with `script.source` round-trips unchanged; scene JSON with `script.enabled=false` still creates a script component but the runtime skips dispatch.
+
+## [ ] LUA02 - Add script schema validation and migration rules
+
+**Deliverable:** Scene validation reports script path/source issues, unsupported languages, invalid parameter shapes, missing files when path validation is enabled, and deprecated script fields.
+
+**Implementation hints:** Validation should distinguish hard schema errors from runtime warnings. Missing script files should be warnings for asset-library browsing and errors only when the scene is launched with scripts enabled.
+
+**Acceptance:** Invalid script metadata produces actionable diagnostics without breaking scenes that only store dormant script attachments.
+
+## [ ] LUA03 - Add engine-side scripting module boundary
+
+**Deliverable:** Create `src/scripting` with runtime-facing interfaces and data contracts: `IScriptRuntime`, `ScriptBinding`, `ScriptExecutionContext`, `ScriptDiagnostic`, `ScriptDispatchSummary`, and lifecycle hook IDs.
+
+**Implementation hints:** This module may depend on `core` and `scene`; `scene` must not depend on Lua headers or scripting implementation details. Keep the first runtime usable when `PT_ENABLE_LUA=OFF`.
+
+**Acceptance:** Default builds compile a no-Lua script runtime that can scan ECS script components and report that scripts are dormant.
+
+## [ ] LUA04 - Add stable ECS script binding discovery
+
+**Deliverable:** The script runtime scans `SceneWorld` for `ComponentKind::Script`, resolves stable entity IDs, filters disabled/empty scripts, and stores bindings in deterministic entity order.
+
+**Implementation hints:** Use `SceneWorld::all_entities()` order as the first stable order source. Record script source, language, entity id, and display name for diagnostics.
+
+**Acceptance:** Repeated scans of the same loaded scene produce byte-identical binding summaries.
+
+## [ ] LUA05 - Add lifecycle dispatch shell without Lua execution
+
+**Deliverable:** Implement lifecycle dispatch methods for `on_load`, `on_update`, `on_fixed_update`, `on_late_update`, `on_destroy`, and `on_unload` that produce summaries and diagnostics even before real Lua execution exists.
+
+**Implementation hints:** The no-Lua runtime should never emit ECS commands. It should report skipped runnable scripts when Lua is disabled, so UI panels and release gates have real status.
+
+**Acceptance:** A scene with two script components reports two bindings, zero commands, and a clear "Lua disabled" diagnostic when `PT_ENABLE_LUA=OFF`.
+
+## [ ] LUA06 - Add command-writer API for scripts
+
+**Deliverable:** Scripts emit `WorldCommandBuffer` commands through a narrow command writer: set transform, add/remove component, assign material, assign light/camera, create entity, destroy entity, reparent entity, and reorder siblings.
+
+**Implementation hints:** Do not expose `SceneWorld&` to Lua. Script command methods should validate entity existence and normalize writer names before enqueueing commands.
+
+**Acceptance:** Script-authored transform commands replay through `WorldCommandBuffer` and use `TransformAuthority::ScriptControlled`.
+
+## [ ] LUA07 - Add script execution phases to the frame lifecycle
+
+**Deliverable:** Add engine-owned calls for script phases that align with the planned schedule: `ScriptEarly`, `ScriptFixed`, and `ScriptLate` or a documented equivalent.
+
+**Implementation hints:** Existing `WorldSystemPhase` has `ScriptEarly` but not `ScriptFixed`; either extend the enum or map fixed scripts through the existing fixed-update frame stage with clear diagnostics.
+
+**Acceptance:** Frame timing records show script collection, command replay, transform assembly, and render extract as separate stages.
+
+## [ ] LUA08 - Add deterministic script command merge policy
+
+**Deliverable:** Script command buffers merge by frame, phase, stable entity id, script binding id, and command sequence number.
+
+**Implementation hints:** Avoid wall-clock ordering. If multiple scripts write the same transform, let existing transform authority and writer tie-breaks report the conflict.
+
+**Acceptance:** Running the same scripted scene twice in deterministic mode produces identical command order and scene hash after each scripted frame.
+
+## [ ] LUA09 - Add Lua 5.4 dependency wiring behind `PT_ENABLE_LUA`
+
+**Deliverable:** CMake discovers and links Lua only when `PT_ENABLE_LUA=ON`; default builds do not require Lua headers or libraries.
+
+**Implementation hints:** Use CMake `FindLua` first. Create an imported `Lua::Lua` target if the CMake version only exposes legacy variables. Keep Lua definitions private to the scripting implementation.
+
+**Acceptance:** `PT_ENABLE_LUA=OFF` builds with no Lua installation; `PT_ENABLE_LUA=ON` fails at configure time with a clear missing-Lua message if Lua is unavailable.
+
+## [ ] LUA10 - Add Lua state lifecycle and script cache
+
+**Deliverable:** Runtime owns Lua state creation/destruction, script load/compile results, binding cache, reload invalidation, and per-script error state.
+
+**Implementation hints:** Start with one state on the engine thread. Do not share one Lua state across render, physics, or UI threads. Cache compiled chunks by resolved script URI and content hash.
+
+**Acceptance:** Loading a script once and binding it to multiple entities does not re-read or recompile the same file per entity.
+
+## [ ] LUA11 - Add sandboxed standard library policy
+
+**Deliverable:** Lua runtime opens only approved libraries and registers only the host API needed for scripts.
+
+**Implementation hints:** Do not call `luaL_openlibs` for runtime scripts. Omit or block `io`, `os`, `package`, `debug`, `dofile`, `loadfile`, native module loading, and bytecode loading.
+
+**Acceptance:** A script attempting `io.open`, `os.execute`, `require`, or `debug.sethook` receives a structured script error and cannot affect the host process.
+
+## [ ] LUA12 - Add instruction and memory budgets
+
+**Deliverable:** Script execution enforces per-hook instruction limits and runtime memory limits.
+
+**Implementation hints:** Use a Lua debug hook or equivalent VM interrupt for instruction budgets and a custom allocator for memory caps. Budget failures should disable the offending binding until reload or manual reset.
+
+**Acceptance:** An infinite loop script is interrupted, logged, and prevented from stalling the UI/render loop.
+
+## [ ] LUA13 - Add typed script context bindings
+
+**Deliverable:** Scripts receive a context with entity id, frame index, dt, fixed dt, deterministic flag, command writer, read-only transform query, children query, component presence query, parameters, and diagnostics.
+
+**Implementation hints:** Keep all bindings value-oriented or handle-oriented. Do not expose raw pointers, renderer objects, platform window objects, or mutable component references.
+
+**Acceptance:** A Lua script can read its transform, enqueue a transform update, log a diagnostic, and inspect child entities without direct ECS mutation.
+
+## [ ] LUA14 - Add script parameter model
+
+**Deliverable:** Scene files can declare per-entity script params with typed values and optional editor metadata.
+
+**Implementation hints:** Start with bool, number, string, vec3, color, entity id, asset path, and enum-like string. Preserve unknown params for forward compatibility.
+
+**Acceptance:** Params round-trip through JSON, appear in the script panel/inspector, and are available to Lua through `ctx.params`.
+
+## [ ] LUA15 - Add script diagnostics and profiler data
+
+**Deliverable:** Every binding records last hook called, last fired frame, last error, skip reason, hook duration, command count, and memory estimate when available.
+
+**Implementation hints:** Diagnostics should be consumable by the existing script panel and JSONL logs. Use stable subsystem name `scripts`.
+
+**Acceptance:** Script errors appear in logs, the script panel model, and crash/status artifacts with entity id and script source.
+
+## [ ] LUA16 - Add hot reload pipeline
+
+**Deliverable:** Runtime can reload changed script files, reset binding error state, preserve compatible params, and fire unload/load hooks in deterministic order.
+
+**Implementation hints:** Start with explicit menu command reload. Add file watching later if the platform abstraction exposes it cleanly.
+
+**Acceptance:** Editing a script and invoking reload changes behavior without restarting the app and reports reload errors without losing the previous stable scene.
+
+## [ ] LUA17 - Add editor attach/detach command application
+
+**Deliverable:** `AttachScriptCommand` and `DetachScriptCommand` mutate ECS/scene state through the scheduled command path instead of remaining model-only UI payloads.
+
+**Implementation hints:** Convert editor commands to `WorldCommandBuffer` or a scene-document command adapter. Preserve undo data and update script bindings after replay.
+
+**Acceptance:** Attaching a `.lua` file to the selected entity adds a `ScriptComponent`, updates the script panel, and persists on scene save.
+
+## [ ] LUA18 - Add benchmark and strict-determinism policy
+
+**Deliverable:** Benchmark mode disables scripts by default unless a benchmark descriptor explicitly allows deterministic script events.
+
+**Implementation hints:** Record script policy in benchmark artifacts, scene hash inputs, and status output. Refuse nondeterministic APIs while strict determinism is active.
+
+**Acceptance:** A scripted scene run as a benchmark reports scripts disabled by default; explicitly enabled scripted benchmarks include script source hashes and phase order in artifacts.
+
+## [ ] LUA19 - Add renderer invalidation policy for script commands
+
+**Deliverable:** Script-driven scene changes reset or partially invalidate accumulation according to command type.
+
+**Implementation hints:** Transform-only updates should eventually use the same dynamic instance update path as physics. Material/light/camera changes can start with full accumulation reset.
+
+**Acceptance:** Scripted transform animation is visible in the preview and never keeps accumulating stale samples across motion.
+
+## [ ] LUA20 - Add first scripted demo scene
+
+**Deliverable:** Add a small scene with at least one scripted light, one scripted camera or object transform, and one disabled script binding used for UI diagnostics.
+
+**Implementation hints:** Keep geometry tiny and CPU-friendly. Scripts should demonstrate command emission, params, diagnostics, and deterministic ordering.
+
+**Progress:** Added `assets/scenes/ecs_lifecycle_scripting_demo.json` plus Lua lifecycle example scripts under `assets/scripts/`. The no-Lua smoke path now loads the scene, verifies script file references, and dispatches lifecycle hooks through the stub runtime.
+
+**Acceptance:** The scene opens in Qt, shows script bindings in the script panel, and produces visible scripted motion when scripts are enabled.
+
+## [ ] LUA21 - Add scripting smoke and release gates
+
+**Deliverable:** Add CLI/UI model checks for script component parsing, binding discovery, no-Lua skip behavior, Lua-enabled command emission, sandbox rejection, hot reload, and benchmark-disable policy.
+
+**Implementation hints:** The no-Lua tests should run in every build. Lua-enabled tests should be conditional on `PT_ENABLE_LUA`.
+
+**Acceptance:** The existing `lua.attach` release gate can move from deferred to passed with evidence and validation commands.
+
+## [ ] LUA22 - Add documentation for script authors
+
+**Deliverable:** Add script author docs covering lifecycle hooks, context API, command rules, sandbox limits, determinism rules, params, and examples.
+
+**Implementation hints:** Include one minimal script and one parameterized script. Document what is intentionally unavailable.
+
+**Acceptance:** A new user can write a script that moves an entity without reading C++ source.
+
+---
+
+# 18. Codebase decomposition backlog
+
+Goal: reduce the largest translation units into maintainable, domain-focused files without changing behavior, destabilizing build presets, or creating tiny-file churn. Decomposition work must be mostly mechanical: move code first, preserve public interfaces first, then clean up includes and ownership boundaries after builds are green.
+
+## Ground rules for every decomposition task
+
+```text
+No algorithm changes during a move-only task.
+No public API rename unless the task explicitly says so.
+No unrelated formatting churn.
+No broad include cleanup until after the moved code builds.
+Keep umbrella headers temporarily when that avoids large call-site churn.
+Build after each small extraction.
+Document any behavior change as a separate follow-up todo.
+```
+
+Required validation after each task that touches compiled code:
+
+```text
+cmake --build --preset desktop-clang-debug
+cmake --build --preset windows-clang-vulkan-debug
+ctest --test-dir build/presets/desktop-clang-debug --output-on-failure
+ctest --test-dir build/presets/windows-clang-vulkan-debug --output-on-failure
+```
+
+When D3D12 or Qt app code is touched, also validate the relevant Windows D3D12/Qt preset used by `run.ps1`.
+
+## [x] DECOMP01 - Add a source-size inventory script
+
+**Deliverable:** Add a small tool or script that lists the largest `.cpp`/`.h` files by line count and writes a machine-readable artifact.
+
+**Implementation hints:** Keep it simple and cross-platform enough for agents to run. Output at least path, line count, and file extension. Prefer `tools/source_size_report.ps1` or a small CMake-friendly script over adding a dependency.
+
+**Acceptance:** Running the script identifies `src/app/main.cpp`, `src/gpu/D3D12GpuPathTracer.cpp`, `src/scene/Scene.cpp`, `src/editor/UiModels.cpp`, `src/platform/qt/QtPlatform.cpp`, and `src/pathtracer/PathTracer.cpp` as current hotspots.
+
+**Evidence:** Added `tools/source_size_report.ps1`, which writes `artifacts/status/source_size_report.json` and reports the current largest `.cpp`/`.h` files including the listed hotspots.
+
+**Validation:** `powershell -NoProfile -File tools/source_size_report.ps1 -CheckGuardrails`
+
+## [x] DECOMP02 - Add decomposition build bookkeeping
+
+**Deliverable:** Update CMake source lists so adding new split files is low-risk and obvious.
+
+**Implementation hints:** Keep the existing target structure. Group source lists by module with comments, but do not introduce new libraries yet unless a file split requires it. Avoid changing target link behavior.
+
+**Acceptance:** CMake configure/build output is unchanged except for the additional source files, and both desktop/Vulkan presets still build.
+
+**Evidence:** Grouped `PT_CPU_SOURCES` in `CMakeLists.txt` by module and added the split pathtracer source files without changing target structure or link behavior.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`
+
+## [x] DECOMP03 - Split `FilmBuffer` from `PathTracer.cpp`
+
+**Deliverable:** Move `FilmBuffer`, film resolve helpers, tone mapping, output transform, exposure, gamma, white balance, and invalid-sample handling into `src/pathtracer/FilmBuffer.h` and `src/pathtracer/FilmBuffer.cpp`.
+
+**Implementation hints:** Keep `PathTracer.h` including `FilmBuffer.h` initially so call sites do not churn. Move only declarations and definitions that are film/resolve specific.
+
+**Acceptance:** `PathTracer.cpp` no longer owns film accumulation/resolve code, existing `IPathTracer::film()` users compile unchanged, and CPU/Vulkan/D3D12 builds pass.
+
+**Evidence:** Moved film accumulation, HDR/LDR resolve, camera exposure adjustment, tone mapping, gamma/output transform, white balance, and invalid-sample handling to `src/pathtracer/FilmBuffer.cpp`; added `src/pathtracer/FilmBuffer.h` as the focused transitional include.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`; `ctest --test-dir build/presets/desktop-clang-debug --output-on-failure`; `ctest --test-dir build/presets/windows-clang-vulkan-debug --output-on-failure`
+
+## [x] DECOMP04 - Split image writers from `PathTracer.cpp`
+
+**Deliverable:** Move `SavePngCompat`, `SaveExrCompat`, PNG chunk helpers, CRC/adler helpers, and binary writer helpers into `src/pathtracer/ImageIo.cpp` with a focused header if needed.
+
+**Implementation hints:** Keep function names stable. Keep compatibility wrappers in the `vkpt::pathtracer` namespace.
+
+**Acceptance:** Render output commands still write PNG/EXR through the same public calls, and `PathTracer.cpp` loses the low-level image encoding helpers.
+
+**Evidence:** Moved PNG chunk/CRC/adler helpers, stored deflate encoding, binary writer code, `SavePngCompat`, and `SaveExrCompat` to `src/pathtracer/ImageIo.cpp`; added `src/pathtracer/ImageIo.h` as the focused transitional include.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`
+
+## [x] DECOMP05 - Split CPU BVH accelerator from `PathTracer.cpp`
+
+**Deliverable:** Move `CpuBvhAccelerator`, `RayAabbQuery`, AABB intersection helpers, and `CreateCpuBvhAccelerator()` into `src/pathtracer/CpuBvhAccelerator.cpp`.
+
+**Implementation hints:** Keep `IRayAccelerator` and `RayAcceleratorBuildInfo` declarations in `PathTracer.h` for now. Do not change BVH build or traversal behavior.
+
+**Acceptance:** `ScalarCpuPathTracer`, `TiledCpuPathTracer`, and external accelerator users still link against `CreateCpuBvhAccelerator()`.
+
+**Evidence:** Moved `CpuBvhAccelerator`, `RayAabbQuery`, AABB traversal helpers, and `CreateCpuBvhAccelerator()` to `src/pathtracer/CpuBvhAccelerator.cpp`; added `src/pathtracer/RayAccelerator.h` as the focused transitional include.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`; `ctest --test-dir build/presets/desktop-clang-debug --output-on-failure`; `ctest --test-dir build/presets/windows-clang-vulkan-debug --output-on-failure`
+
+## [x] DECOMP06 - Split scene-to-RT conversion from `PathTracer.cpp`
+
+**Deliverable:** Move `BuildSceneDataFromDocument` and its private material, texture URI, light, SDF, tessellation, and camera conversion helpers into `src/pathtracer/SceneConversion.cpp`.
+
+**Implementation hints:** Keep the result type and function signature unchanged. Do not move scene schema definitions in this task.
+
+**Acceptance:** Loading the existing scene assets produces identical `RTSceneData` for representative CPU and D3D12/Vulkan runs.
+
+**Evidence:** Moved `BuildSceneDataFromDocument` and its texture URI, material family, light, SDF, tessellation cache-key, and camera conversion helpers to `src/pathtracer/SceneConversion.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`
+
+## [x] DECOMP07 - Split RT layout manifest helpers from `PathTracer.cpp`
+
+**Deliverable:** Move `BuildRTSceneDataLayoutManifest` and `SerializeRTSceneDataLayoutManifest` into `src/pathtracer/SceneLayoutManifest.cpp`.
+
+**Implementation hints:** Keep layout structs in the public header initially because GPU/backend validation may include them directly.
+
+**Acceptance:** Any manifest or layout diagnostic command emits byte-equivalent output before and after the move.
+
+**Evidence:** Moved layout field collection and JSON serialization helpers to `src/pathtracer/SceneLayoutManifest.cpp`; added `src/pathtracer/SceneLayoutManifest.h` as the focused transitional include.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`
+
+## [x] DECOMP08 - Review `PathTracer.h` after `.cpp` splits
+
+**Deliverable:** Decide which declarations should remain in `PathTracer.h` and which should move to focused headers such as `FilmBuffer.h`, `ImageIo.h`, `SceneConversion.h`, and `RayAccelerator.h`.
+
+**Implementation hints:** Prefer a compatibility umbrella period: keep `PathTracer.h` including the new focused headers, then migrate includes gradually.
+
+**Acceptance:** New code can include focused headers; old code still compiles with `PathTracer.h`.
+
+**Evidence:** Added focused transitional headers for `FilmBuffer`, `ImageIo`, `RayAccelerator`, `SceneConversion`, and `SceneLayoutManifest`. Declarations remain available through `PathTracer.h` while future passes can move public type declarations without broad call-site churn.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`
+
+## [x] DECOMP09 - Split JSON parser and JSON utilities from `Scene.cpp`
+
+**Deliverable:** Move `JsonParserImpl`, stringify helpers, and JSON read helper functions into `src/scene/Json.cpp` and `src/scene/Json.h`.
+
+**Implementation hints:** Preserve `JsonParser::parse` and `JsonParser::stringify` public behavior. Keep anonymous implementation details private to `Json.cpp`.
+
+**Acceptance:** Scene JSON load/serialize round trips are unchanged for existing assets.
+
+**Evidence:** Moved `JsonParserImpl`, `JsonParser::parse`, `JsonParser::stringify`, free JSON stringify, and generic JSON read helpers to `src/scene/Json.cpp` with declarations in `src/scene/Json.h`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`
+
+## [x] DECOMP10 - Split scene frame lifecycle and system scheduler
+
+**Deliverable:** Move `FrameLifecycleController`, frame timing helpers, `WorldSystemScheduler`, phase ordering, conflict detection, and related lifecycle string helpers into `src/scene/FrameLifecycle.cpp`.
+
+**Implementation hints:** Do not change enum values or phase order. Keep diagnostics text stable unless a test explicitly blesses a text change.
+
+**Acceptance:** Lifecycle timing records and scheduler validation produce the same stage order as before.
+
+**Evidence:** Moved `FrameLifecycleController`, `to_string(FrameStage)`, monotonic frame timing, default world-system phase order, scheduler validation, and conflict reporting to `src/scene/FrameLifecycle.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`
+
+## [x] DECOMP11 - Split `SceneWorld` entity and hierarchy logic
+
+**Deliverable:** Move entity create/destroy, component attach/remove, hierarchy parent/reparent/reorder, dirty propagation, ancestor checks, and sibling order normalization into `src/scene/SceneWorld.cpp`.
+
+**Implementation hints:** Keep `SceneWorld` declaration in `Scene.h` initially. Move helper functions used only by `SceneWorld` into the new `.cpp`.
+
+**Acceptance:** ECS scene tree, hierarchy operations, and transform dirty propagation smoke checks still pass.
+
+**Evidence:** Moved entity create/destroy, component attach/remove, hierarchy parent/reparent/reorder, subtree destroy, dirty propagation, ancestor checks, sibling order normalization, entity queries, and clear/reset into `src/scene/SceneWorld.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset desktop-clang-debug --target pt_scripting_smoke`; `build\presets\desktop-clang-debug\bin\pt_scripting_smoke.exe`
+
+## [x] DECOMP12 - Split `SceneWorld` transform and extraction logic
+
+**Deliverable:** Move world transform recomputation, transform authority conflict tracking, snapshot building, and render scene extraction into `src/scene/SceneWorldExtraction.cpp`.
+
+**Implementation hints:** This can remain a second implementation file for the same class. Avoid changing transform math or conflict tie-break ordering.
+
+**Acceptance:** `SceneWorld::build_snapshot()` and `SceneWorld::extract_render_scene()` produce equivalent data for representative static, hierarchical, physics, and scripted scenes.
+
+**Evidence:** Moved transform authority writes/conflict tracking, world transform recomputation, cached transform lookup, authority helpers, snapshot building, and render scene extraction into `src/scene/SceneWorldExtraction.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset desktop-clang-debug --target pt_scripting_smoke`; `build\presets\desktop-clang-debug\bin\pt_scripting_smoke.exe`
+
+## [x] DECOMP13 - Split `WorldCommandBuffer`
+
+**Deliverable:** Move command construction, replay, and clear/accessor methods into `src/scene/WorldCommandBuffer.cpp`.
+
+**Implementation hints:** Keep command replay order exactly as-is. Do not merge this with scripting command writer work.
+
+**Acceptance:** Existing ECS command-buffer tests and UI scene mutation paths behave unchanged.
+
+**Evidence:** Moved command construction, replay dispatch, clear, and accessor methods to `src/scene/WorldCommandBuffer.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset windows-clang-vulkan-debug`
+
+## [x] DECOMP14 - Split `SceneDocument` parsing and validation
+
+**Deliverable:** Move `SceneDocument::load_from_text`, file loading, schema migration defaults, validation, and section-presence helpers into `src/scene/SceneDocumentLoad.cpp`.
+
+**Implementation hints:** Keep JSON helpers behind `Json.h` from DECOMP09. Do not change accepted scene schema.
+
+**Acceptance:** All checked-in scene files load with the same validation diagnostics as before.
+
+**Evidence:** Moved `SceneDocument::load_from_text`, `load_from_file`, `validate`, and `has_section` into `src/scene/SceneDocumentLoad.cpp`; added `src/scene/SceneInternal.h` for shared scene/document helpers.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `ctest --test-dir build/presets/desktop-clang-debug --output-on-failure`
+
+## [x] DECOMP15 - Split `SceneDocument` serialization and export
+
+**Deliverable:** Move `SceneDocument::to_json`, export hash, snapshot conversion, and render scene extraction into `src/scene/SceneDocumentExport.cpp`.
+
+**Implementation hints:** Preserve key ordering and pretty formatting where existing output depends on it.
+
+**Acceptance:** Serializing representative scene documents produces byte-equivalent JSON where formatting was previously deterministic.
+
+**Evidence:** Moved `SceneDocument::to_json`, `export_hash_hex`, `snapshot`, and `extract_render_scene` into `src/scene/SceneDocumentExport.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `ctest --test-dir build/presets/desktop-clang-debug --output-on-failure`
+
+## [x] DECOMP16 - Add a private D3D12 implementation header
+
+**Deliverable:** Create `src/gpu/D3D12GpuPathTracerInternal.h` for private helpers and shared internal structs needed by split D3D12 implementation files.
+
+**Implementation hints:** Do not expose this header outside `src/gpu`. Keep the public `D3D12GpuPathTracer.h` stable. Move only helper declarations required across split `.cpp` files.
+
+**Acceptance:** No non-D3D12 module includes the internal header.
+
+**Evidence:** Added `src/gpu/D3D12GpuPathTracerInternal.h`; only the D3D12 implementation files include it.
+
+**Validation:** `rg -n "D3D12GpuPathTracerInternal.h" -g "*.*" .`; `cmake --build --preset windows-clangcl-d3d12-debug`
+
+## [x] DECOMP17 - Split D3D12 utility and environment helpers
+
+**Deliverable:** Move string conversion, HRESULT formatting, texture path resolution, environment variable reads, debug toggles, BVH mode selection, and small formatting helpers into `src/gpu/D3D12GpuPathTracer.Utils.cpp`.
+
+**Implementation hints:** Keep helpers in `vkpt::gpu` or a nested internal namespace. Do not change environment variable names or defaults.
+
+**Acceptance:** D3D12 startup logs and selected mode defaults match pre-split behavior.
+
+**Evidence:** Moved logging, string/HRESULT formatting, texture loading/path resolution, environment option parsing, command-list selection, readback/ray-count helpers, and shared D3D12 helper utilities into `src/gpu/D3D12GpuPathTracer.Utils.cpp`.
+
+**Validation:** `cmake --build --preset windows-clangcl-d3d12-debug`
+
+## [x] DECOMP18 - Split D3D12 device and synchronization code
+
+**Deliverable:** Move adapter/device creation, queue/fence setup, GPU waiting, shutdown device teardown, and device capability reporting into `src/gpu/D3D12GpuPathTracer.Device.cpp`.
+
+**Implementation hints:** Keep lifetime order unchanged. Do not change fallback adapter selection.
+
+**Acceptance:** `ptapp --list-gpus` and D3D12 backend initialization report the same adapter/capability data as before.
+
+**Evidence:** Moved device creation, adapter selection, DXR runtime command objects, shutdown resource teardown, and GPU/DXR fence waits into `src/gpu/D3D12GpuPathTracer.Device.cpp`.
+
+**Validation:** `cmake --build --preset windows-clangcl-d3d12-debug`
+
+## [x] DECOMP19 - Split D3D12 scene upload and texture code
+
+**Deliverable:** Move scene snapshot packing, texture loading/upload, material/instance buffer upload, and scene buffer destruction into `src/gpu/D3D12GpuPathTracer.Scene.cpp`.
+
+**Implementation hints:** Keep dynamic-instance transform update behavior and full-rebuild triggers unchanged.
+
+**Acceptance:** Static scenes and dynamic physics scenes render and update without introducing extra full rebuilds.
+
+**Evidence:** Moved scene snapshot packing, dynamic transform update packing, software BVH build helpers, texture buffer construction, upload buffers, instance-buffer updates, and scene buffer destruction into `src/gpu/D3D12GpuPathTracer.Scene.cpp`.
+
+**Validation:** `cmake --build --preset windows-clangcl-d3d12-debug`
+
+## [x] DECOMP20 - Split D3D12 film, readback, and resolve code
+
+**Deliverable:** Move film resource creation/destruction, accumulation reset, readback policy, CPU film rebuild, tonemap output, and `resolve_ldr`/`resolve_hdr` into `src/gpu/D3D12GpuPathTracer.Film.cpp`.
+
+**Implementation hints:** Preserve readback interval and accumulation invalidation behavior.
+
+**Acceptance:** Existing D3D12 compute and DXR paths produce the same sample counts and readback cadence.
+
+**Evidence:** Moved accumulation reset, readback policy, film/tonemap/guide/denoise/temporal buffer allocation, film destruction, and `resolve_ldr`/`resolve_hdr`/counter reads into `src/gpu/D3D12GpuPathTracer.Film.cpp`.
+
+**Validation:** `cmake --build --preset windows-clangcl-d3d12-debug`
+
+## [x] DECOMP21 - Split D3D12 compute pipeline and dispatch code
+
+**Deliverable:** Move compute root signatures, compute PSOs, descriptor heap creation, compute dispatch, tonemap/guide/denoise/temporal passes, and related resource barriers into `src/gpu/D3D12GpuPathTracer.Compute.cpp`.
+
+**Implementation hints:** Keep compute shader defines and descriptor layout stable. Do not mix DXR setup into this file.
+
+**Acceptance:** D3D12 compute backend renders existing scenes with no descriptor binding regressions.
+
+**Evidence:** Moved compute descriptor heap setup, compute root signature and PSOs, compute dispatch, tonemap/guide/denoise/temporal passes, and related barriers into `src/gpu/D3D12GpuPathTracer.Compute.cpp`.
+
+**Validation:** `cmake --build --preset windows-clangcl-d3d12-debug`
+
+## [x] DECOMP22 - Split D3D12 DXR pipeline and acceleration structures
+
+**Deliverable:** Move DXIL compilation, DXR root signatures, pipeline state, shader tables, BLAS/TLAS build/update, instance buffer update, and ray dispatch into `src/gpu/D3D12GpuPathTracer.Dxr.cpp`.
+
+**Implementation hints:** Keep DXR optional and capability-gated. Preserve BLAS reuse and TLAS transform-only update behavior.
+
+**Acceptance:** D3D12 DXR backend still passes the dynamic physics gate without full BLAS rebuilds during transform-only updates.
+
+**Evidence:** Moved DXIL compilation, DXR root signature/pipeline/shader-table creation, descriptor heap setup, BLAS/TLAS build/update, instance descriptor updates, DXR dispatch, and DXR resource destruction into `src/gpu/D3D12GpuPathTracer.Dxr.cpp`.
+
+**Validation:** `cmake --build --preset windows-clangcl-d3d12-debug`
+
+## [ ] DECOMP23 - Split app option parsing from `main.cpp`
+
+**Deliverable:** Move CLI usage text, option parsing, environment/config resolution, version printing, and runtime option structs into `src/app/AppOptions.h` and `src/app/AppOptions.cpp`.
+
+**Implementation hints:** Keep accepted flags and defaults identical. Keep `main.cpp` as the entry point that calls the parser.
+
+**Acceptance:** `ptapp --help`, `ptapp --version`, `ptapp --version --json`, and `ptapp --dump-config` output equivalent data.
+
+## [x] DECOMP24 - Split doctor checks from `main.cpp`
+
+**Deliverable:** Move `DoctorCheckResult`, build/CPU/backend/assets/shaders/job-system/scene-schema/benchmark-write checks, and `RunDoctor` into `src/app/DoctorChecks.cpp`.
+
+**Implementation hints:** Reuse the standalone `ptdoctor` entrypoint where possible, but avoid changing command output in this move.
+
+**Acceptance:** `ptapp --doctor` and `ptdoctor --check-build` still report the same pass/fail status and details.
+
+**Evidence:** Moved `DoctorCheckResult`, individual doctor checks, and `RunDoctor` into `src/app/DoctorChecks.cpp` with `src/app/DoctorChecks.h`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset desktop-clang-qt-debug`
+
+## [x] DECOMP25 - Split Qt dock panel model builders from `main.cpp`
+
+**Deliverable:** Move `QtDock*` structs, dock property helpers, dock content builders, dock area mapping, and conversion to platform dock panels into `src/app/QtDockPanels.h` and `src/app/QtDockPanels.cpp`.
+
+**Implementation hints:** Keep this independent of actual Qt headers where possible by depending on platform/editor model contracts.
+
+**Acceptance:** The Qt shell shows the same dock panels, rows, labels, buttons, sliders, and status text as before.
+
+**Evidence:** Moved Qt dock panel content structs, dock property/tree helpers, dock builders, dock conversion, status-bar text, property parsing helpers, and device metric helpers into `src/app/QtDockPanels.h` and `src/app/QtDockPanels.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset desktop-clang-qt-debug`
+
+## [x] DECOMP26 - Split viewport picking and gizmo interaction from `main.cpp`
+
+**Deliverable:** Move viewport camera pose, pickable construction, ray building, bounds/triangle intersection, object picking, overlay projection, selection boxes, gizmo handle picking, gizmo drawing, and FPS collision helpers into `src/app/ViewportInteraction.cpp`.
+
+**Implementation hints:** Keep math helpers local to the viewport module unless already available in scene/pathtracer math types. Do not change selection priority or hit tie-break behavior.
+
+**Acceptance:** Picking, selection overlays, gizmo hover/drag handles, and FPS navigation behave the same in Qt.
+
+**Evidence:** Moved viewport camera pose, pickable construction, ray/object picking, bounds/triangle intersection, selection overlay projection, gizmo hit/draw helpers, focus overlay helpers, transform math, animation sampling helpers, dynamic physics gate helpers, and FPS collision worker logic into `src/app/ViewportInteraction.h` and `src/app/ViewportInteraction.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset desktop-clang-qt-debug`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`
+
+## [x] DECOMP27 - Split UI smoke and release gate checks from `main.cpp`
+
+**Deliverable:** Move UI model smoke tests, release gate evidence builders, ECS scene tree contract checks, and related check helpers into `src/app/UiValidation.cpp`.
+
+**Implementation hints:** Keep validation invocable from the same CLI flags.
+
+**Acceptance:** `ptapp --ui-model-smoke` and `ptapp --ui-release-gate` produce equivalent pass/fail output and artifacts.
+
+**Evidence:** Moved UI model smoke checks, release gate evidence builders, ECS scene tree contract checks, UI validation event logging, and related helper checks into `src/app/UiValidation.h` and `src/app/UiValidation.cpp`.
+
+**Validation:** `cmake --build --preset desktop-clang-debug`; `cmake --build --preset desktop-clang-qt-debug`; `build\presets\desktop-clang-debug\bin\ptapp.exe --ui-model-smoke`; `build\presets\desktop-clang-debug\bin\ptapp.exe --ui-release-gate --json`; `build\presets\desktop-clang-qt-debug\bin\ptapp.exe --ui-model-smoke`
+
+## [ ] DECOMP28 - Split app runtime orchestration from `main.cpp`
+
+**Deliverable:** Move render loop helpers, backend startup/shutdown orchestration, runtime panel sync, benchmark launch helpers, status/crash artifact state updates, and scene-world snapshot helpers into `src/app/AppRuntime.cpp`.
+
+**Implementation hints:** Do this after DECOMP23-DECOMP27 so `main.cpp` can shrink to command routing and high-level mode selection.
+
+**Acceptance:** Headless render, windowed Qt launch, benchmark menu actions, crash artifact updates, and runtime status updates continue to work.
+
+## [ ] DECOMP29 - Reduce `main.cpp` to an entrypoint and command router
+
+**Deliverable:** `src/app/main.cpp` should own `main()`, top-level command selection, and minimal startup wiring only.
+
+**Implementation hints:** Target a file size below 1,000 lines. Do not force that line count by hiding unrelated code in anonymous namespaces; move real domains to named modules.
+
+**Acceptance:** The app still supports all existing CLI modes and launch paths, while `main.cpp` is readable as an application flow overview.
+
+## [ ] DECOMP30 - Split editor UI model files by panel/domain
+
+**Deliverable:** Review `src/editor/UiModels.cpp`, `src/editor/UiModels.h`, and `src/editor/QtPanelModels.cpp`; split large panel-specific builders, release-gate models, event logs, and state reducers into focused files.
+
+**Implementation hints:** Start with `.cpp` splits before header splits. Preserve model structs and command payloads until call sites are migrated.
+
+**Acceptance:** Editor model tests and Qt dock panel builders compile with no behavior change.
+
+## [ ] DECOMP31 - Split Qt platform implementation by responsibility
+
+**Deliverable:** Review `src/platform/qt/QtPlatform.cpp`; split window creation, dock rendering, input translation, viewport overlay rendering, menu/status-bar handling, and lifecycle pumping into focused Qt platform files.
+
+**Implementation hints:** Keep the public `QtPlatform.h` stable. Avoid leaking Qt types into non-Qt modules.
+
+**Acceptance:** Qt windowed mode launches, handles input, renders docks/overlays, and shuts down cleanly.
+
+## [x] DECOMP32 - Add decomposition regression checklist
+
+**Deliverable:** Add a short checklist in `docs/` describing how to validate move-only decompositions.
+
+**Implementation hints:** Include build presets, smoke commands, expected no-op behavior, and guidance for checking accidental public API churn.
+
+**Acceptance:** Future agents can follow the checklist without reading this whole backlog.
+
+**Evidence:** Added `docs/decomposition_checklist.md` with pre-edit checks, move-only rules, validation commands, and review steps.
+
+## [ ] DECOMP33 - Add include-boundary cleanup after move-only splits
+
+**Deliverable:** After major files are split and builds are green, replace unnecessary umbrella includes with focused headers in a separate cleanup pass.
+
+**Implementation hints:** Use compiler errors and `rg` to migrate one module at a time. Do not combine include cleanup with code moves.
+
+**Acceptance:** Incremental builds touch fewer files when editing film, scene JSON, app options, or backend-specific implementation files.
+
+## [x] DECOMP34 - Add file-size guardrails to CI or release gate
+
+**Deliverable:** Add a warning-only guard that reports newly oversized files and files that grow past agreed thresholds.
+
+**Implementation hints:** Start warning-only. Suggested thresholds: warn above 1,500 lines for `.cpp`, warn above 700 lines for headers, require explicit note above 3,000 lines.
+
+**Acceptance:** The guard reports current known exceptions and flags new growth without blocking unrelated work initially.
+
+**Evidence:** `tools/source_size_report.ps1 -CheckGuardrails` reports warning-only size findings, and `tools/smoke.ps1` now runs the source-size guardrail step while preserving non-blocking warning behavior.
+
+**Validation:** `powershell -NoProfile -File tools/source_size_report.ps1 -CheckGuardrails`

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-06 (session 28)
+
+### Performance fixes and decomposition checkpoint
+
+- Reduced scalar CPU path tracer overhead with worker-local sample counters, contiguous batch rendering helpers, shared tiled CPU BVH setup, and lazy Vulkan CPU film rebuilds.
+- Split path tracer film/image/scene conversion helpers, scene JSON/document/world modules, D3D12 path tracer responsibilities, doctor checks, Qt dock builders, viewport interaction, and UI validation out of the largest files.
+- Added decomposition guardrails and documentation: a validation checklist, source-size reporting, smoke-script integration, and detailed DECOMP TODO evidence.
+- Verified the desktop and Qt debug builds plus UI model smoke/release-gate commands for the current checkpoint.
+
 ## 2026-05-06 (session 27)
 
 ### FPS-safe animated scene floor and scripting runtime dock
