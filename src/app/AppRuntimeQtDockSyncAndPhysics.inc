@@ -397,7 +397,17 @@
           return false;
         }
         const auto updates = qtBuildPendingPhysicsInstanceUpdates();
-        if (updates.empty() || !qtPublishInstanceTransformUpdates(updates)) {
+        if (updates.empty() ||
+            !qtPublishInstanceTransformUpdates(
+                updates,
+                vkpt::pathtracer::InstanceTransformUpdateOptions{
+                    vkpt::pathtracer::RenderUpdateReason::PhysicsMotion,
+                    vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
+                    true,
+                    true,
+                    false,
+                    0u,
+                    "qt-physics"})) {
           qtPhysicsTransformUpdateSupported = false;
           return false;
         }

@@ -181,7 +181,7 @@ bool RunUiModelSmokeTests() {
     "scene.physics_settings", "scene.script_settings", "scene.animation_settings"
   });
   has_menu_items(menu, "render", {
-    "render.backend", "render.renderer_path", "render.quality_presets", "render.resolution",
+    "render.start_render", "render.backend", "render.renderer_path", "render.quality_presets", "render.resolution",
     "render.spp", "render.max_bounces", "render.denoiser", "render.tone_mapping",
     "render.exposure", "render.debug_channel", "render.shader_cache", "render.backend_capabilities"
   });
@@ -266,6 +266,8 @@ bool RunUiModelSmokeTests() {
   check_true("scene.scene_settings currently unsupported by model", scene_settings.kind == EditorCommandKind::kUnsupportedUiAction);
   const auto render_backend = MakeMenuCommand("render.backend", "menu");
   check_true("render.backend currently unsupported by model", render_backend.kind == EditorCommandKind::kUnsupportedUiAction);
+  const auto render_start = MakeMenuCommand("render.start_render", "menu");
+  check_true("render.start_render currently handled by Qt runtime", render_start.kind == EditorCommandKind::kUnsupportedUiAction);
   const auto render_quality_presets = MakeMenuCommand("render.quality_presets", "menu");
   check_true("render.quality_presets currently unsupported by model", render_quality_presets.kind == EditorCommandKind::kUnsupportedUiAction);
   const auto tools_doctor = MakeMenuCommand("tools.doctor", "menu");

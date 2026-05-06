@@ -532,7 +532,16 @@
           }
           if (!transformBuild.updates.empty() &&
               !(qtPublishInstanceTransformUpdates &&
-                qtPublishInstanceTransformUpdates(transformBuild.updates))) {
+                qtPublishInstanceTransformUpdates(
+                    transformBuild.updates,
+                    vkpt::pathtracer::InstanceTransformUpdateOptions{
+                        vkpt::pathtracer::RenderUpdateReason::EditorGizmoMotion,
+                        vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
+                        true,
+                        true,
+                        false,
+                        0u,
+                        "qt-viewport"}))) {
             qtGizmoDrag.scene_reload_pending = true;
           }
         }

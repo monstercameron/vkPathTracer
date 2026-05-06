@@ -108,15 +108,38 @@ void RenderCoordinator::post_camera_state(vkpt::pathtracer::RTCameraState camera
 
 void RenderCoordinator::post_instance_transforms(
     std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates) {
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Warning,
+      "render",
+      "legacy instance transform command posted without reason or fallback policy",
+      {{"updates", std::to_string(updates.size())}});
+  vkpt::pathtracer::InstanceTransformUpdateOptions options{};
+  options.reason = vkpt::pathtracer::RenderUpdateReason::LegacyUnknown;
+  options.fallback_policy = vkpt::pathtracer::TransformFallbackPolicy::NoFallback;
+  options.source_system = "legacy";
+  post_instance_transforms(std::move(updates), options);
+}
+
+void RenderCoordinator::post_instance_transforms(
+    std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+    vkpt::pathtracer::InstanceTransformUpdateOptions options) {
   if (updates.empty()) {
     return;
   }
   std::scoped_lock lock(m_commandMutex);
   if (!m_pending.instance_transforms) {
-    m_pending.instance_transforms = std::move(updates);
+    m_pending.instance_transforms = InstanceTransformCommand{std::move(updates), options};
     return;
   }
-  auto& pending = *m_pending.instance_transforms;
+  auto& pending_command = *m_pending.instance_transforms;
+  auto& pending = pending_command.updates;
+  if (pending_command.options.reason != options.reason ||
+      pending_command.options.fallback_policy != options.fallback_policy ||
+      pending_command.options.reset_accumulation != options.reset_accumulation ||
+      pending_command.options.source_system != options.source_system) {
+    pending_command = InstanceTransformCommand{std::move(updates), options};
+    return;
+  }
   pending.reserve(pending.size() + updates.size());
   const auto sameTarget =
       [](const vkpt::pathtracer::RTInstanceTransformUpdate& lhs,
@@ -341,28 +364,119 @@ void RenderCoordinator::run(std::stop_token stop,
       resetPublishClock = true;
     }
 
-    if (commands.instance_transforms && !commands.instance_transforms->empty()) {
-      vkpt::pathtracer::ApplyInstanceTransformUpdates(
-          scene,
-          *commands.instance_transforms,
-          vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly);
-      ++generation;
-      sample = 0u;
-      bool transformOk = tracer->update_instance_transforms(*commands.instance_transforms);
-      if (!transformOk) {
+    if (commands.instance_transforms && !commands.instance_transforms->updates.empty()) {
+      auto& command = *commands.instance_transforms;
+      auto& updates = command.updates;
+      auto& options = command.options;
+      {
+        std::scoped_lock lock(m_statsMutex);
+        ++m_stats.instance_transform_commands;
+        m_stats.instance_transform_updates_requested += updates.size();
+      }
+
+      const auto plan = tracer->plan_instance_transform_update(updates, options);
+      if (!vkpt::pathtracer::TransformUpdateStatusAllowedByPolicy(plan.status,
+                                                                  options.fallback_policy)) {
+        {
+          std::scoped_lock lock(m_statsMutex);
+          ++m_stats.instance_transform_policy_rejections;
+          if (plan.status == vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild) {
+            ++m_stats.instance_transform_full_accel_required;
+          } else if (plan.status == vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullSceneReload) {
+            ++m_stats.instance_transform_full_scene_required;
+          } else {
+            ++m_stats.instance_transform_failures;
+          }
+        }
         vkpt::log::Logger::instance().log(
             vkpt::log::Severity::Warning,
             "render",
-            "instance transform update fell back to scene rebuild",
-            {{"updates", std::to_string(commands.instance_transforms->size())}});
-        transformOk = tracer->load_scene_snapshot(scene) &&
-                      tracer->build_or_update_acceleration();
+            "rejected instance transform update by fallback policy",
+            {
+              {"updates", std::to_string(updates.size())},
+              {"status", std::to_string(static_cast<int>(plan.status))},
+              {"policy", std::to_string(static_cast<int>(options.fallback_policy))},
+              {"reason", std::to_string(static_cast<int>(options.reason))},
+              {"source", options.source_system ? options.source_system : ""}
+            });
+      } else if (plan.can_apply_without_full_fallback()) {
+        const auto result = tracer->apply_instance_transform_update(updates, options);
+        if (!result.applied()) {
+          {
+            std::scoped_lock lock(m_statsMutex);
+            ++m_stats.instance_transform_failures;
+          }
+          vkpt::log::Logger::instance().log(
+              vkpt::log::Severity::Warning,
+              "render",
+              "instance transform update failed without committing state",
+              {{"updates", std::to_string(updates.size())},
+               {"status", std::to_string(static_cast<int>(result.status))}});
+        } else {
+          if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(
+                  scene,
+                  updates,
+                  vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly)) {
+            mark_failed("render coordinator failed to commit instance transform metadata");
+            break;
+          }
+          ++generation;
+          sample = 0u;
+          if (options.reset_accumulation && !tracer->reset_accumulation()) {
+            mark_failed("render coordinator instance transform accumulation reset failed");
+            break;
+          }
+          {
+            std::scoped_lock lock(m_statsMutex);
+            m_stats.instance_transform_updates_applied += result.applied_count;
+            if (result.status == vkpt::pathtracer::InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate) {
+              ++m_stats.instance_transform_dynamic_accel_updates;
+            }
+          }
+          resetPublishClock = true;
+        }
+      } else if (plan.status == vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild &&
+                 options.fallback_policy >= vkpt::pathtracer::TransformFallbackPolicy::AllowFullStaticAccelerationBuild) {
+        auto nextScene = scene;
+        if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(nextScene, updates) ||
+            !tracer->load_scene_snapshot(nextScene) ||
+            !tracer->build_or_update_acceleration()) {
+          mark_failed("render coordinator instance transform full acceleration fallback failed");
+          break;
+        }
+        scene = std::move(nextScene);
+        ++generation;
+        sample = 0u;
+        if (options.reset_accumulation && !tracer->reset_accumulation()) {
+          mark_failed("render coordinator instance transform fallback accumulation reset failed");
+          break;
+        }
+        {
+          std::scoped_lock lock(m_statsMutex);
+          m_stats.instance_transform_updates_applied += updates.size();
+          ++m_stats.instance_transform_full_accel_required;
+        }
+        resetPublishClock = true;
+      } else if (plan.status == vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullSceneReload &&
+                 options.fallback_policy >= vkpt::pathtracer::TransformFallbackPolicy::AllowFullSceneReload) {
+        auto nextScene = scene;
+        if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(nextScene, updates) ||
+            !tracer->load_scene_snapshot(nextScene) ||
+            !tracer->build_or_update_acceleration() ||
+            (options.reset_accumulation && !tracer->reset_accumulation())) {
+          mark_failed("render coordinator instance transform full scene fallback failed");
+          break;
+        }
+        scene = std::move(nextScene);
+        ++generation;
+        sample = 0u;
+        {
+          std::scoped_lock lock(m_statsMutex);
+          m_stats.instance_transform_updates_applied += updates.size();
+          ++m_stats.instance_transform_full_scene_required;
+        }
+        resetPublishClock = true;
       }
-      if (!transformOk || !tracer->reset_accumulation()) {
-        mark_failed("render coordinator instance transform update failed");
-        break;
-      }
-      resetPublishClock = true;
     }
 
     if (resetPublishClock) {

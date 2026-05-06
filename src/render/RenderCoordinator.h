@@ -41,6 +41,19 @@ struct RenderCoordinatorStats {
   std::uint32_t height = 0u;
   vkpt::pathtracer::SampleCounters counters{};
   FrameHandoffStats handoff{};
+  std::uint64_t instance_transform_commands = 0u;
+  std::uint64_t instance_transform_updates_requested = 0u;
+  std::uint64_t instance_transform_updates_applied = 0u;
+  std::uint64_t instance_transform_dynamic_accel_updates = 0u;
+  std::uint64_t instance_transform_full_accel_required = 0u;
+  std::uint64_t instance_transform_full_scene_required = 0u;
+  std::uint64_t instance_transform_policy_rejections = 0u;
+  std::uint64_t instance_transform_failures = 0u;
+};
+
+struct InstanceTransformCommand {
+  std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates;
+  vkpt::pathtracer::InstanceTransformUpdateOptions options{};
 };
 
 /// Owns the background path-tracing loop and coalesces app-thread updates.
@@ -69,6 +82,9 @@ class RenderCoordinator {
   /// Queue transform updates, replacing older pending transform batches.
   void post_instance_transforms(
       std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates);
+  void post_instance_transforms(
+      std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+      vkpt::pathtracer::InstanceTransformUpdateOptions options);
   /// Queue a mergeable scene delta.
   void post_scene_delta(vkpt::pathtracer::RTSceneDeltaUpdate update);
   /// Queue a full scene replacement and discard partial scene updates.
@@ -89,7 +105,7 @@ class RenderCoordinator {
   struct PendingCommands {
     std::optional<RenderCameraCommand> camera;
     std::optional<vkpt::pathtracer::RTCameraState> camera_state;
-    std::optional<std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>> instance_transforms;
+    std::optional<InstanceTransformCommand> instance_transforms;
     std::optional<vkpt::pathtracer::RTSceneDeltaUpdate> scene_delta;
     std::optional<vkpt::pathtracer::RTSceneData> scene;
     struct SettingsCommand {

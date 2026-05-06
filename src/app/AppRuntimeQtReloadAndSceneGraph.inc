@@ -1,5 +1,6 @@
       std::function<bool(std::string_view)> qtReloadEditedScene;
-      std::function<bool(const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>&)>
+      std::function<bool(const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>&,
+                         vkpt::pathtracer::InstanceTransformUpdateOptions)>
           qtPublishInstanceTransformUpdates;
       uint32_t qtScriptTransformRevision = 1u;
       struct QtInstanceTransformBuildResult {
@@ -546,7 +547,16 @@
 
             if (incrementalOk && !transformBuild.updates.empty()) {
               incrementalOk = qtPublishInstanceTransformUpdates &&
-                              qtPublishInstanceTransformUpdates(transformBuild.updates);
+                              qtPublishInstanceTransformUpdates(
+                                  transformBuild.updates,
+                                  vkpt::pathtracer::InstanceTransformUpdateOptions{
+                                      vkpt::pathtracer::RenderUpdateReason::ScriptTransformMotion,
+                                      vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
+                                      true,
+                                      true,
+                                      false,
+                                      0u,
+                                      "qt-script"});
               postedTransforms = incrementalOk;
             }
           }
@@ -1020,27 +1030,37 @@
       uint32_t qtAnimationTransformRevision = 1u;
       const auto qtAnimationStartTime = std::chrono::steady_clock::now();
       qtPublishInstanceTransformUpdates =
-          [&](const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) {
+          [&](const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates,
+              vkpt::pathtracer::InstanceTransformUpdateOptions options) {
         if (updates.empty() || !qtTracerReady) {
-          return false;
-        }
-        if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(
-                qtScene,
-                updates,
-                vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly)) {
           return false;
         }
 
         bool posted = false;
         if (qtUseBg && qtRenderCoordinator) {
-          qtRenderCoordinator->post_instance_transforms(updates);
+          qtRenderCoordinator->post_instance_transforms(updates, options);
           posted = true;
         } else if (!qtUseBg && qtTracerReady) {
-          posted = qtTracer->update_instance_transforms(updates);
-          if (posted) {
+          const auto plan = qtTracer->plan_instance_transform_update(updates, options);
+          if (!vkpt::pathtracer::TransformUpdateStatusAllowedByPolicy(
+                  plan.status,
+                  options.fallback_policy) ||
+              !plan.can_apply_without_full_fallback()) {
+            posted = false;
+          } else {
+            const auto result = qtTracer->apply_instance_transform_update(updates, options);
+            posted = result.applied();
+          }
+          if (posted &&
+              vkpt::pathtracer::ApplyInstanceTransformUpdates(
+                  qtScene,
+                  updates,
+                  vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly)) {
             qtTracerReady = qtTracer->reset_accumulation();
             posted = qtTracerReady;
             qtSampleIndex = 0u;
+          } else {
+            posted = false;
           }
         }
 
@@ -1104,7 +1124,16 @@
           updates.push_back(update);
         }
 
-        if (qtPublishInstanceTransformUpdates(updates)) {
+        if (qtPublishInstanceTransformUpdates(
+                updates,
+                vkpt::pathtracer::InstanceTransformUpdateOptions{
+                    vkpt::pathtracer::RenderUpdateReason::AnimationMotion,
+                    vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
+                    true,
+                    true,
+                    false,
+                    0u,
+                    "qt-animation"})) {
           qtPreviewStatus = "animation playback";
           return qtTracerReady;
         }

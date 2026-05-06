@@ -5,6 +5,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -376,6 +377,124 @@ struct RTSceneDeltaUpdate {
   Vec3 environment_color{};
 };
 
+enum class RenderUpdateReason : std::uint8_t {
+  Unknown,
+  PhysicsMotion,
+  AnimationMotion,
+  EditorGizmoMotion,
+  ScriptTransformMotion,
+  CameraMotion,
+  MaterialEdit,
+  LightEdit,
+  StructuralSceneEdit,
+  SceneLoad,
+  ExplicitUserReload,
+  LegacyUnknown,
+};
+
+enum class TransformFallbackPolicy : std::uint8_t {
+  NoFallback,
+  AllowDynamicAcceleration,
+  AllowFullStaticAccelerationBuild,
+  AllowFullSceneReload,
+};
+
+struct InstanceTransformUpdateOptions {
+  RenderUpdateReason reason = RenderUpdateReason::Unknown;
+  TransformFallbackPolicy fallback_policy = TransformFallbackPolicy::NoFallback;
+  bool reset_accumulation = true;
+  bool coalesce = true;
+  bool allow_partial = false;
+  vkpt::core::FrameIndex source_frame = 0;
+  const char* source_system = nullptr;
+};
+
+enum class InstanceTransformUpdateStatus : std::uint8_t {
+  AppliedMetadataOnly,
+  AppliedInstanceBufferOnly,
+  AppliedDynamicAccelUpdate,
+  AppliedFullStaticAccelRebuild,
+  AppliedFullSceneReload,
+  BlockedNeedsFullStaticAccelRebuild,
+  BlockedNeedsFullSceneReload,
+  Unsupported,
+  Failed,
+};
+
+struct InstanceTransformUpdatePlan {
+  InstanceTransformUpdateStatus status = InstanceTransformUpdateStatus::Unsupported;
+  std::uint32_t requested_count = 0u;
+  std::uint32_t matched_count = 0u;
+  const char* message = nullptr;
+
+  bool can_apply_without_full_fallback() const {
+    return status == InstanceTransformUpdateStatus::AppliedMetadataOnly ||
+           status == InstanceTransformUpdateStatus::AppliedInstanceBufferOnly ||
+           status == InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate;
+  }
+};
+
+struct InstanceTransformUpdateResult {
+  InstanceTransformUpdateStatus status = InstanceTransformUpdateStatus::Unsupported;
+  std::uint32_t requested_count = 0u;
+  std::uint32_t applied_count = 0u;
+  double validate_ms = 0.0;
+  double upload_ms = 0.0;
+  double dynamic_accel_ms = 0.0;
+  double full_rebuild_ms = 0.0;
+  const char* message = nullptr;
+
+  bool applied() const {
+    return status == InstanceTransformUpdateStatus::AppliedMetadataOnly ||
+           status == InstanceTransformUpdateStatus::AppliedInstanceBufferOnly ||
+           status == InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate ||
+           status == InstanceTransformUpdateStatus::AppliedFullStaticAccelRebuild ||
+           status == InstanceTransformUpdateStatus::AppliedFullSceneReload;
+  }
+};
+
+inline TransformFallbackPolicy DefaultTransformFallbackPolicy(RenderUpdateReason reason) {
+  switch (reason) {
+    case RenderUpdateReason::PhysicsMotion:
+    case RenderUpdateReason::AnimationMotion:
+    case RenderUpdateReason::EditorGizmoMotion:
+    case RenderUpdateReason::ScriptTransformMotion:
+      return TransformFallbackPolicy::AllowDynamicAcceleration;
+    case RenderUpdateReason::StructuralSceneEdit:
+    case RenderUpdateReason::SceneLoad:
+    case RenderUpdateReason::ExplicitUserReload:
+      return TransformFallbackPolicy::AllowFullSceneReload;
+    case RenderUpdateReason::Unknown:
+    case RenderUpdateReason::CameraMotion:
+    case RenderUpdateReason::MaterialEdit:
+    case RenderUpdateReason::LightEdit:
+    case RenderUpdateReason::LegacyUnknown:
+      return TransformFallbackPolicy::NoFallback;
+  }
+  return TransformFallbackPolicy::NoFallback;
+}
+
+inline bool TransformUpdateStatusAllowedByPolicy(InstanceTransformUpdateStatus status,
+                                                 TransformFallbackPolicy policy) {
+  switch (status) {
+    case InstanceTransformUpdateStatus::AppliedMetadataOnly:
+    case InstanceTransformUpdateStatus::AppliedInstanceBufferOnly:
+      return true;
+    case InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate:
+      return policy >= TransformFallbackPolicy::AllowDynamicAcceleration;
+    case InstanceTransformUpdateStatus::AppliedFullStaticAccelRebuild:
+    case InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild:
+      return policy >= TransformFallbackPolicy::AllowFullStaticAccelerationBuild;
+    case InstanceTransformUpdateStatus::AppliedFullSceneReload:
+    case InstanceTransformUpdateStatus::BlockedNeedsFullSceneReload:
+      return policy >= TransformFallbackPolicy::AllowFullSceneReload;
+    case InstanceTransformUpdateStatus::Unsupported:
+    case InstanceTransformUpdateStatus::Failed:
+      return false;
+  }
+  return false;
+}
+
 enum class RTInstanceTransformApplyMode {
   MetadataOnly,
   RebakeCpuVertices,
@@ -492,6 +611,30 @@ class IRayAccelerator {
   virtual ~IRayAccelerator() = default;
 
   virtual bool build(const RTSceneData& scene, bool deterministic) = 0;
+  virtual InstanceTransformUpdatePlan plan_instance_transform_update(
+      const RTSceneData& /*scene*/,
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& /*options*/) const {
+    return {
+        InstanceTransformUpdateStatus::Unsupported,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "accelerator does not support instance transform updates"};
+  }
+  virtual InstanceTransformUpdateResult apply_instance_transform_update(
+      const RTSceneData& /*scene*/,
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& /*options*/) {
+    return {
+        InstanceTransformUpdateStatus::Unsupported,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        "accelerator does not support instance transform updates"};
+  }
   virtual bool intersect(const Ray& ray, RayQueryHit& out, RayQueryStats* stats = nullptr) const = 0;
   virtual RayAcceleratorBuildInfo build_info() const = 0;
   virtual void reset() = 0;
@@ -530,6 +673,29 @@ class IPathTracer {
   // needs a full scene snapshot/acceleration rebuild for moving objects.
   virtual bool update_instance_transforms(
       const std::vector<RTInstanceTransformUpdate>& /*updates*/) { return false; }
+  virtual InstanceTransformUpdatePlan plan_instance_transform_update(
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& /*options*/) const {
+    return {
+        InstanceTransformUpdateStatus::Unsupported,
+        static_cast<std::uint32_t>(updates.size()),
+        0u,
+        "backend does not support transactional instance transform updates"};
+  }
+  virtual InstanceTransformUpdateResult apply_instance_transform_update(
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& options) {
+    const auto plan = plan_instance_transform_update(updates, options);
+    return {
+        plan.status,
+        plan.requested_count,
+        0u,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        plan.message};
+  }
   // Update material/light/environment records without rebuilding geometry or
   // acceleration structures. Returns false when the backend requires a full
   // scene upload for this delta.
@@ -565,6 +731,12 @@ class NullPathTracer final : public IPathTracer {
   bool update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) override;
   bool update_camera_state(const RTCameraState& camera) override;
   bool update_instance_transforms(const std::vector<RTInstanceTransformUpdate>& updates) override;
+  InstanceTransformUpdatePlan plan_instance_transform_update(
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& options) const override;
+  InstanceTransformUpdateResult apply_instance_transform_update(
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& options) override;
   bool update_scene_delta(const RTSceneDeltaUpdate& update) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
   FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }
@@ -595,6 +767,12 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
   bool update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) override;
   bool update_camera_state(const RTCameraState& camera) override;
   bool update_instance_transforms(const std::vector<RTInstanceTransformUpdate>& updates) override;
+  InstanceTransformUpdatePlan plan_instance_transform_update(
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& options) const override;
+  InstanceTransformUpdateResult apply_instance_transform_update(
+      std::span<const RTInstanceTransformUpdate> updates,
+      const InstanceTransformUpdateOptions& options) override;
   bool update_scene_delta(const RTSceneDeltaUpdate& update) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
   std::string_view name() const override { return "scalar-cpu"; }
