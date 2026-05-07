@@ -122,6 +122,29 @@ vkpt::scene::Vec3 RotateByQuat(const vkpt::scene::Vec3& value, const vkpt::scene
 int RunScriptingRuntimeSmoke() {
   // This smoke test exercises the full scripting path at integration scale:
   // binding discovery, optional Lua execution, scene conversion, and emitted world commands.
+  std::vector<std::string> contract_diagnostics;
+  const auto standard_contract = vkpt::pathtracer::BuildStandardPathTracerContract();
+  if (!Check(vkpt::pathtracer::ValidateStandardPathTracerContract(
+                 standard_contract,
+                 &contract_diagnostics),
+             "standard path tracer contract should validate") ||
+      !Check(standard_contract.gpu_layout.material_stride_floats == 16u,
+             "standard path tracer contract should publish material stride") ||
+      !Check(vkpt::pathtracer::MakeStandardTransformUpdateOptions(
+                 vkpt::pathtracer::RenderUpdateReason::PhysicsMotion)
+                 .fallback_policy ==
+                 vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
+             "standard path tracer contract should publish transform fallback defaults") ||
+      !Check(std::string(vkpt::pathtracer::ToString(
+                 vkpt::pathtracer::InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate)) ==
+                 "applied_dynamic_accel_update",
+             "standard path tracer contract should publish stable status names")) {
+    for (const auto& diagnostic : contract_diagnostics) {
+      std::cerr << "contract diagnostic: " << diagnostic << "\n";
+    }
+    return 1;
+  }
+
   vkpt::scene::SceneWorld world;
 
   const auto moving = world.create_entity("scripted_mover", 101);

@@ -493,6 +493,80 @@ inline bool TransformUpdateStatusAllowedByPolicy(InstanceTransformUpdateStatus s
   return false;
 }
 
+inline const char* ToString(RenderUpdateReason reason) {
+  switch (reason) {
+    case RenderUpdateReason::Unknown:
+      return "unknown";
+    case RenderUpdateReason::PhysicsMotion:
+      return "physics_motion";
+    case RenderUpdateReason::EditorGizmoMotion:
+      return "editor_gizmo_motion";
+    case RenderUpdateReason::ScriptTransformMotion:
+      return "script_transform_motion";
+    case RenderUpdateReason::CameraMotion:
+      return "camera_motion";
+    case RenderUpdateReason::MaterialEdit:
+      return "material_edit";
+    case RenderUpdateReason::LightEdit:
+      return "light_edit";
+    case RenderUpdateReason::StructuralSceneEdit:
+      return "structural_scene_edit";
+    case RenderUpdateReason::SceneLoad:
+      return "scene_load";
+    case RenderUpdateReason::ExplicitUserReload:
+      return "explicit_user_reload";
+    case RenderUpdateReason::LegacyUnknown:
+      return "legacy_unknown";
+  }
+  return "unknown";
+}
+
+inline const char* ToString(TransformFallbackPolicy policy) {
+  switch (policy) {
+    case TransformFallbackPolicy::NoFallback:
+      return "no_fallback";
+    case TransformFallbackPolicy::AllowDynamicAcceleration:
+      return "allow_dynamic_acceleration";
+    case TransformFallbackPolicy::AllowFullStaticAccelerationBuild:
+      return "allow_full_static_acceleration_build";
+    case TransformFallbackPolicy::AllowFullSceneReload:
+      return "allow_full_scene_reload";
+  }
+  return "unknown";
+}
+
+inline const char* ToString(InstanceTransformUpdateStatus status) {
+  switch (status) {
+    case InstanceTransformUpdateStatus::AppliedMetadataOnly:
+      return "applied_metadata_only";
+    case InstanceTransformUpdateStatus::AppliedInstanceBufferOnly:
+      return "applied_instance_buffer_only";
+    case InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate:
+      return "applied_dynamic_accel_update";
+    case InstanceTransformUpdateStatus::AppliedFullStaticAccelRebuild:
+      return "applied_full_static_accel_rebuild";
+    case InstanceTransformUpdateStatus::AppliedFullSceneReload:
+      return "applied_full_scene_reload";
+    case InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild:
+      return "blocked_needs_full_static_accel_rebuild";
+    case InstanceTransformUpdateStatus::BlockedNeedsFullSceneReload:
+      return "blocked_needs_full_scene_reload";
+    case InstanceTransformUpdateStatus::Unsupported:
+      return "unsupported";
+    case InstanceTransformUpdateStatus::Failed:
+      return "failed";
+  }
+  return "unknown";
+}
+
+inline bool IsAppliedTransformUpdateStatus(InstanceTransformUpdateStatus status) {
+  return status == InstanceTransformUpdateStatus::AppliedMetadataOnly ||
+         status == InstanceTransformUpdateStatus::AppliedInstanceBufferOnly ||
+         status == InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate ||
+         status == InstanceTransformUpdateStatus::AppliedFullStaticAccelRebuild ||
+         status == InstanceTransformUpdateStatus::AppliedFullSceneReload;
+}
+
 enum class RTInstanceTransformApplyMode {
   MetadataOnly,
   RebakeCpuVertices,
@@ -525,6 +599,42 @@ struct RTSceneLayoutManifest {
   std::size_t total_cpu_bytes = 0u;
   std::size_t total_gpu_bytes = 0u;
   std::vector<GpuLayoutField> fields;
+};
+
+struct GpuSceneBufferLayoutContract {
+  std::uint32_t material_stride_floats = 16u;
+  std::uint32_t instance_stride_u32 = 24u;
+  std::uint32_t sdf_stride_floats = 16u;
+  std::uint32_t packed_triangle_stride_floats = 18u;
+  std::uint32_t bvh_node_stride_floats = 8u;
+  std::uint32_t light_stride_floats = 16u;
+  std::uint32_t film_pixel_stride_floats = 4u;
+};
+
+struct PathTracerLifecycleContract {
+  bool configure_before_scene_load = true;
+  bool load_scene_before_acceleration_build = true;
+  bool reset_clears_accumulation_and_counters = true;
+  bool camera_update_preserves_scene_buffers = true;
+  bool scene_delta_preserves_acceleration = true;
+  bool resolve_is_available_after_render = true;
+};
+
+struct PathTracerTransformUpdateContract {
+  TransformFallbackPolicy physics_default_fallback = TransformFallbackPolicy::AllowDynamicAcceleration;
+  TransformFallbackPolicy editor_default_fallback = TransformFallbackPolicy::AllowDynamicAcceleration;
+  TransformFallbackPolicy script_default_fallback = TransformFallbackPolicy::AllowDynamicAcceleration;
+  TransformFallbackPolicy structural_default_fallback = TransformFallbackPolicy::AllowFullSceneReload;
+  bool plan_before_apply = true;
+  bool failed_apply_must_not_commit = true;
+  bool applied_update_resets_accumulation_by_default = true;
+};
+
+struct PathTracerStandardContract {
+  std::string schema_version = "pathtracer.contract.v1";
+  PathTracerLifecycleContract lifecycle{};
+  PathTracerTransformUpdateContract transforms{};
+  GpuSceneBufferLayoutContract gpu_layout{};
 };
 
 struct FilmLdr {
@@ -913,5 +1023,87 @@ bool SavePngCompat(const std::string& path, const FilmLdr& image, std::string* e
 bool SaveExrCompat(const std::string& path, const FilmHdr& image, std::string* error = nullptr);
 vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(std::vector<std::string>* diagnostics = nullptr);
 std::string SerializeRTSceneDataLayoutManifest(const RTSceneLayoutManifest& manifest);
+inline PathTracerStandardContract BuildStandardPathTracerContract() {
+  return {};
+}
+
+inline bool ValidateStandardPathTracerContract(const PathTracerStandardContract& contract,
+                                               std::vector<std::string>* diagnostics = nullptr) {
+  if (diagnostics) {
+    diagnostics->clear();
+  }
+  bool ok = true;
+  auto require = [&](bool condition, const char* message) {
+    if (!condition) {
+      ok = false;
+      if (diagnostics) {
+        diagnostics->push_back(message);
+      }
+    }
+  };
+
+  require(contract.schema_version == "pathtracer.contract.v1",
+          "unexpected path tracer contract schema version");
+  require(contract.lifecycle.configure_before_scene_load,
+          "path tracers must be configured before scene snapshots are loaded");
+  require(contract.lifecycle.load_scene_before_acceleration_build,
+          "path tracers must load a scene snapshot before acceleration build/update");
+  require(contract.lifecycle.reset_clears_accumulation_and_counters,
+          "reset_accumulation must clear film accumulation and counters");
+  require(contract.lifecycle.resolve_is_available_after_render,
+          "resolve APIs must be available after render_sample_batch");
+  require(contract.transforms.plan_before_apply,
+          "transform updates must be planned before transactional apply");
+  require(contract.transforms.failed_apply_must_not_commit,
+          "failed transform applies must not commit partial backend state");
+  require(contract.transforms.applied_update_resets_accumulation_by_default,
+          "applied transform updates should reset accumulation by default");
+  require(contract.transforms.physics_default_fallback ==
+              DefaultTransformFallbackPolicy(RenderUpdateReason::PhysicsMotion),
+          "physics transform fallback policy differs from standard default");
+  require(contract.transforms.editor_default_fallback ==
+              DefaultTransformFallbackPolicy(RenderUpdateReason::EditorGizmoMotion),
+          "editor transform fallback policy differs from standard default");
+  require(contract.transforms.script_default_fallback ==
+              DefaultTransformFallbackPolicy(RenderUpdateReason::ScriptTransformMotion),
+          "script transform fallback policy differs from standard default");
+  require(contract.transforms.structural_default_fallback ==
+              DefaultTransformFallbackPolicy(RenderUpdateReason::StructuralSceneEdit),
+          "structural transform fallback policy differs from standard default");
+  require(contract.gpu_layout.material_stride_floats == 16u,
+          "material stride must remain 16 floats");
+  require(contract.gpu_layout.instance_stride_u32 == 24u,
+          "instance stride must remain 24 uint32 values");
+  require(contract.gpu_layout.sdf_stride_floats == 16u,
+          "SDF stride must remain 16 floats");
+  require(contract.gpu_layout.packed_triangle_stride_floats == 18u,
+          "packed triangle stride must remain 18 floats");
+  require(contract.gpu_layout.bvh_node_stride_floats == 8u,
+          "BVH node stride must remain 8 floats");
+  require(contract.gpu_layout.light_stride_floats == 16u,
+          "light stride must remain 16 floats");
+  require(contract.gpu_layout.film_pixel_stride_floats == 4u,
+          "film pixel stride must remain 4 floats");
+
+  if (ok && diagnostics) {
+    diagnostics->push_back("standard path tracer contract is valid");
+  }
+  return ok;
+}
+
+inline InstanceTransformUpdateOptions MakeStandardTransformUpdateOptions(
+    RenderUpdateReason reason,
+    vkpt::core::FrameIndex source_frame = 0,
+    const char* source_system = nullptr) {
+  InstanceTransformUpdateOptions options{};
+  options.reason = reason;
+  options.fallback_policy = DefaultTransformFallbackPolicy(reason);
+  options.reset_accumulation = true;
+  options.coalesce = true;
+  options.allow_partial = false;
+  options.source_frame = source_frame;
+  options.source_system = source_system;
+  return options;
+}
 
 }  // namespace vkpt::pathtracer
