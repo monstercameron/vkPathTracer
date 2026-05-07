@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-05-07 (session 37)
+
+### DXR shadow stability with temporal post-processing
+
+- Fixed DXR hardware shadow rays by raising raytracing pipeline recursion depth only when closest-hit shader shadow `TraceRay` calls are compiled in.
+- Kept DXR dynamic transform updates and compute-side guide traversal in sync by uploading instance and dynamic BVH buffers before TLAS refits.
+- Invalidated temporal history and cached LDR output when GPU accumulation resets so moved objects do not reuse stale temporal/denoiser state.
+- Verified D3D12 `ptbench`/`ptapp` builds and a DXR headless render with hardware shadow rays, temporal AA, and GPU denoising enabled.
+
 ## 2026-05-06 (session 36)
 
 ### Motion transaction hardening and DXR shadow traversal
