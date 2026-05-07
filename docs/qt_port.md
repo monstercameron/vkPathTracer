@@ -107,7 +107,7 @@ The CPU preview route is the first Qt viewport target because it does not requir
   --backend cpu \
   --scene assets/scenes/cornell_native.json \
   --window-width 1280 --window-height 720 \
-  --ui-present-hz 30
+  --ui-present-hz 60
 ```
 
 On Windows:
@@ -119,7 +119,7 @@ On Windows:
   --backend cpu `
   --scene assets\scenes\cornell_native.json `
   --window-width 1280 --window-height 720 `
-  --ui-present-hz 30
+  --ui-present-hz 60
 ```
 
 Expected shell behavior:
@@ -130,13 +130,14 @@ Expected shell behavior:
 - The Qt viewport copies or safely swaps the latest completed RGBA8 frame from a depth-1 latest-wins queue.
 - If the queue slot is full, the older display frame is dropped and the dropped frame counter increments.
 - Qt update callbacks are coalesced so one pending GUI-thread update can represent several produced frames.
-- `--ui-present-hz` controls the CPU preview display publish cap; it defaults to 30 Hz and is clamped by runtime config.
+- `--ui-present-hz` controls the UI/motion cadence and preview display publish cap; it defaults to 60 Hz and is clamped by runtime config.
 - `paintEvent` blits the latest completed image only; it does not run expensive render work.
 - The Qt event queue does not receive per-tile, per-pixel, per-sample, or per-ray progress events.
 - Resize of the physical framebuffer resets accumulation.
 - Left-click viewport picking emits editor selection commands and shows selected-object 3D bounding boxes.
 - Mesh picking uses bounds as a broad phase, then requires a front-facing triangle hit so backface-culled surfaces are click-through.
-- Selected objects draw translate, rotate, scale, and universal transform gizmo overlays; `T`, `R`, `S`, and `G` switch modes outside FPS camera mode.
+- Selected objects draw projected bounding boxes with translate, rotate, scale, and universal gizmo handles; `T`, `R`, `S`, and `G` switch modes outside FPS camera mode.
+- Freeform selected-bounds/model dragging is disabled; gizmo transform updates publish directly during drag instead of waiting for a gizmo batch flush.
 - Right or middle drag controls the orbit camera; `F` toggles FPS camera mode with keyboard movement.
 - Mouse input is grabbed for the duration of viewport drags and released on button-up, focus loss, or close.
 - The Qt shell uses a `QMainWindow` with the path-tracing viewport as the central native surface and a native menu bar generated from the editor menu model.

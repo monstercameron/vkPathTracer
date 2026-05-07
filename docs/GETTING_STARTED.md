@@ -18,7 +18,7 @@ cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp
   --backend d3d12 `
   --scene assets\scenes\cornell_native.json `
   --window-width 1280 --window-height 720 `
-  --ui-present-hz 30
+  --ui-present-hz 60
 ```
 
 Useful non-GUI verification commands:

@@ -1,11 +1,24 @@
 # Changelog
 
+## 2026-05-07 (session 39)
+
+### Audio, script UI, and runtime cleanup
+
+- Added optional audio build plumbing, audio ECS listener/emitter components, no-op/miniaudio-backed playback, Lua audio event posting, and file-backed footsteps/forest ambience for the Lua audio demo scene.
+- Added scriptable ECS UI panels with Lua spawn/update support and Qt canvas rendering for gameplay controls in the third-person and audio demo scenes.
+- Hardened Qt editor/playable boundaries so canvas drops and gizmo edits stay in C++ editor mode, playable Lua owns mouse-look input, selection overlays follow current transforms, and the provisional raster polygon preview path was removed.
+- Expanded transform-update diagnostics and frame-update handling across Qt, RenderCoordinator, D3D12/DXR/compute paths, and GPU buffer uploads.
+- Added meshoptimizer-backed game LOD tooling plus the relay-yard/lowest-LOD showcase assets and generation scripts.
+- Updated setup, Qt, audio-authoring, TODO, and motion/FPS notes for the current audio/UI/render work.
+
 ## 2026-05-07 (session 38)
 
 ### Static runtime cleanup and transform-update hardening
 
 - Added an additive standard path tracer contract descriptor covering lifecycle expectations, transform-update defaults, stable status names, and GPU buffer packing strides without changing the existing `IPathTracer` virtual interface.
 - Routed D3D12/Vulkan GPU packing stride constants and the render coordinator's legacy transform options through the shared path tracer contract helpers.
+- Adopted the standard transform-update option helper across Qt viewport, property-edit, physics, and script transform publishing paths, with structured logs for UI posting, coordinator planning, direct applies, policy rejections, and full fallback paths.
+- Kept transform-update debug logging cheap by exposing a logger severity gate and skipping structured field construction when debug logs are disabled.
 - Removed the provisional animation component/import path from asset classification, glTF import, scene schema load/export, ECS storage, scene conversion, UI menus, timeline rows, and scripting smoke expectations.
 - Reframed render-frame and timeline behavior around static frame metadata and particle frame state instead of automatic scene animation playback.
 - Disabled live script/FPS playback paths in static mode while keeping manual scene editing, backend switching, and crash/status reporting responsive.

@@ -3331,3 +3331,351 @@ Goal: make physics, animation, editor gizmos, and script transform motion use an
 **Implementation hints:** Add focused tests for CPU rejection atomicity, external accelerator fake success, coordinator rejection atomicity, D3D12 upload failure atomicity, D3D12 dynamic update classification, no CPU vertex rebake on fast paths, Qt physics no-auto-reload on blocked CPU motion, scene hash split, and dirty transform recompute.
 
 **Acceptance:** A single moving physics body produces zero full scene reloads and zero full/static acceleration rebuilds in the motion perf gate.
+
+---
+
+# 20. Audio system backlog
+
+Goal: add a small, native, engine-owned audio runtime that can support the third-person action prototype and Relay Yard vertical slice without forcing FMOD/Wwise-style middleware into the core engine. The first implementation should be deterministic where the engine needs determinism, async-safe in the audio callback, easy to disable in benchmarks/headless runs, and structured so a middleware backend can be added later behind the same interfaces.
+
+Current completed audio items are marked below with implementation evidence. The remaining open items are intentionally left unchecked where the current code is still an MVP or does not satisfy the full acceptance criteria.
+
+## [x] AUDIO01 - Add audio feature flags and build wiring
+
+**Deliverable:** Add `PT_ENABLE_AUDIO`, `PT_ENABLE_MINIAUDIO`, and `PT_AUDIO_BACKEND` build/configuration plumbing.
+
+**Implementation hints:** Follow the existing `PT_ENABLE_JOLT` and `PT_ENABLE_LUA` patterns. Default audio off for minimal/headless builds until the subsystem is stable. If miniaudio is used, keep it isolated under `src/audio/backends/miniaudio/` or `vendor/` and expose no miniaudio types outside the backend module.
+
+**Acceptance:** Configure output lists audio as enabled/disabled, `EngineFeatureFlags` exposes audio state, and `PT_ENABLE_AUDIO=OFF` builds without audio headers or libraries.
+
+**Completed:** CMake now exposes `PT_ENABLE_AUDIO`, `PT_ENABLE_MINIAUDIO`, and `PT_AUDIO_BACKEND`, reports enabled/disabled audio status during configure, defines miniaudio separately from the engine audio feature, and keeps miniaudio headers/libraries out of `PT_ENABLE_AUDIO=OFF` builds.
+
+## [ ] AUDIO02 - Define the audio module boundary
+
+**Deliverable:** Add `src/audio/` interfaces for `IAudioSystem`, `IAudioBackend`, `IAudioAssetStore`, `IAudioCommandQueue`, and `IAudioDiagnostics`.
+
+**Implementation hints:** Keep interfaces handle-based: `AudioClipId`, `AudioStreamId`, `AudioEventId`, `AudioVoiceHandle`, `AudioBusId`, and `AudioListenerId`. The rest of the engine should only talk to these handles and value structs.
+
+**Acceptance:** Application, scene, scripting, and editor code can compile against audio interfaces without including backend-specific headers.
+
+## [ ] AUDIO03 - Add audio runtime lifecycle logging
+
+**Deliverable:** Audio startup/shutdown logs match the project diagnostic standard.
+
+**Implementation hints:** Log backend name, device name, sample rate, channel count, buffer size, requested latency, format, feature flags, loaded clip count, active voice count, and last backend error.
+
+**Acceptance:** `ptapp --status` or the existing status artifact path can report whether audio is disabled, unavailable, initialized, or failed.
+
+## [x] AUDIO04 - Add a no-op audio backend
+
+**Deliverable:** Implement a backend that accepts all commands, records diagnostics, and produces no sound.
+
+**Implementation hints:** Use this in headless tests, CI, benchmarks, unsupported platforms, and builds where real devices are unavailable. It should exercise command validation and event resolution without opening an audio device.
+
+**Acceptance:** Audio-enabled tests can run on machines with no audio hardware and still verify event dispatch, asset lookup, and voice-handle lifecycle.
+
+**Completed:** `AudioSystemConfig.backend = "noop"` selects the no-output backend path, preserves event lookup and diagnostics, and `pt_scripting_smoke` initializes it for CI-style audio coverage without opening a device.
+
+## [ ] AUDIO05 - Add miniaudio backend MVP
+
+**Deliverable:** Implement device init, shutdown, callback wiring, basic clip playback, and backend diagnostics using miniaudio.
+
+**Implementation hints:** Keep all miniaudio ownership inside the backend. The audio callback must not allocate, read files, log synchronously, or wait on engine locks. Any callback-visible state must be preallocated or swapped atomically from the engine thread.
+
+**Acceptance:** A small smoke executable or app command plays one bundled WAV clip through the default output device and exits cleanly.
+
+## [ ] AUDIO06 - Add audio thread and command ownership rules
+
+**Deliverable:** Document and enforce the audio thread model.
+
+**Implementation hints:** Game/editor/script threads enqueue commands. The audio backend consumes commands at safe sync points. Do not let scene, renderer, Lua, physics, or UI objects be accessed from the audio callback.
+
+**Acceptance:** A thread sanitizer build can run the no-op backend smoke without data races in audio command submission and consumption.
+
+## [ ] AUDIO07 - Add lock-free or bounded audio command queue
+
+**Deliverable:** Add a bounded command queue for play, stop, pause, resume, parameter changes, listener updates, bus changes, and asset state changes.
+
+**Implementation hints:** Start with a single producer on the engine thread if needed, but keep the queue API compatible with future multi-producer use. Overflow must be explicit: reject newest, drop oldest by priority, or report a fatal diagnostic depending on command type.
+
+**Acceptance:** Queue overflow is testable, counted, and reported without corrupting active playback state.
+
+## [x] AUDIO08 - Add audio asset records to the scene/schema layer
+
+**Deliverable:** Extend scene documents so audio clips, streams, buses, and events can be declared as assets.
+
+**Implementation hints:** Use existing asset definition patterns. Record URI, asset type, load policy, default bus, default volume, loop flag, spatial flag, max voices, and optional tags.
+
+**Acceptance:** Audio asset records round-trip through JSON and appear in scene asset manifests without changing render-only scene hashes unexpectedly.
+
+**Completed:** Scene asset records with `audio/*` and `sound/*` types are loaded by `AudioSystem::load_scene_audio`, and `AudioListenerComponent`/`AudioEmitterComponent` round-trip through scene load/export and ECS extraction.
+
+## [ ] AUDIO09 - Add short-clip loading
+
+**Deliverable:** Load short sound effects into memory as `AudioClip` resources.
+
+**Implementation hints:** Start with WAV for deterministic test fixtures. Record decoded format, duration, sample rate, channels, memory bytes, and content hash. Reject clips above a configurable in-memory size threshold.
+
+**Acceptance:** A test loads a short clip, verifies metadata, plays it through the no-op backend, and releases it with no leaked handles.
+
+## [ ] AUDIO10 - Add streamed audio sources
+
+**Deliverable:** Add `AudioStream` for music, ambience, radio loops, and long dialogue.
+
+**Implementation hints:** Streaming can be backend-owned, but engine metadata must expose stream state, buffering diagnostics, underrun count, loop state, and seek support. Pick the first streaming format deliberately; do not assume every target supports every decoder.
+
+**Acceptance:** A long ambience/music file can loop for 60 seconds without loading the entire decoded stream into memory.
+
+## [ ] AUDIO11 - Add asset hot reload and missing-file behavior
+
+**Deliverable:** Audio assets can reload on explicit asset reload, and missing assets produce stable placeholder behavior.
+
+**Implementation hints:** Missing clips should not crash event playback. Report missing asset URI, referring event, scene path, and fallback action.
+
+**Acceptance:** Replacing a WAV file and invoking reload updates subsequent plays; deleting it produces a structured diagnostic and a silent placeholder.
+
+## [ ] AUDIO12 - Add playback voice handles
+
+**Deliverable:** `play_clip` and `post_event` return handles that can be queried and controlled.
+
+**Implementation hints:** Handles need generation counters so stale handles cannot stop unrelated future sounds. A voice should expose playing, paused, stopped, virtualized, stolen, and failed states.
+
+**Acceptance:** Tests prove that stopping an old handle after voice reuse does not stop the new voice.
+
+## [ ] AUDIO13 - Add voice stealing and priority policy
+
+**Deliverable:** Define max global voices, max voices per event, and priority-based stealing.
+
+**Implementation hints:** Weapon fire, enemy barks, UI, music, ambience, and footsteps need different priorities. Stolen voices must fade out if possible and report the event/voice that caused the steal.
+
+**Acceptance:** Spawning more voices than the configured limit keeps high-priority UI/music/weapon cues audible and records predictable stolen-voice diagnostics.
+
+## [ ] AUDIO14 - Add mixer buses
+
+**Deliverable:** Add `master`, `sfx`, `music`, `ui`, `voice`, `ambience`, and `debug` buses.
+
+**Implementation hints:** Buses should support volume, mute, solo for editor/debug, pause behavior, and parent routing. Keep bus names stable because scripts and scene files will reference them.
+
+**Acceptance:** Master mute silences all buses, music mute leaves SFX active, and bus state is visible in diagnostics.
+
+## [ ] AUDIO15 - Add fades and parameter ramps
+
+**Deliverable:** Add click-free volume, pitch, pan, and bus gain ramps.
+
+**Implementation hints:** Runtime commands should specify target value and ramp duration. Use sample-accurate or buffer-accurate ramps in the backend; do not step volume once per frame for long fades.
+
+**Acceptance:** Starting, stopping, pausing, and changing volume on looping ambience does not produce audible clicks in manual testing and produces ramp diagnostics in tests.
+
+## [ ] AUDIO16 - Add basic 3D spatial audio
+
+**Deliverable:** Add listener pose, emitter pose, distance attenuation, stereo panning, and per-event spatial enablement.
+
+**Implementation hints:** Use scene units as meters unless a scene config says otherwise. Start with one listener. Expose min/max distance, rolloff curve, spread, and doppler disabled by default.
+
+**Acceptance:** Moving an emitter left/right/front/back around the listener changes perceived pan and gain, and no-op backend tests can verify calculated spatial parameters.
+
+## [x] AUDIO17 - Add `AudioListenerComponent`
+
+**Deliverable:** Add an ECS component that marks the active audio listener.
+
+**Implementation hints:** The camera-follow listener should be the default for the third-person game. Support explicit entity binding so cutscenes or editor preview can choose a different listener.
+
+**Acceptance:** A scene with one listener component updates audio listener pose from `SceneWorld` every frame.
+
+**Completed:** `AudioListenerComponent` is part of the scene/ECS component set, JSON load/export supports `audio_listener`, and the Qt runtime updates the audio listener pose each frame from the active camera/listener path.
+
+## [x] AUDIO18 - Add `AudioEmitterComponent`
+
+**Deliverable:** Add an ECS component for positional looping and one-shot audio emitters.
+
+**Implementation hints:** Fields should include event id/path, bus, autoplay, loop, spatial, gain, pitch, radius/min/max distance, start delay, and enabled state.
+
+**Acceptance:** A scene entity with an autoplay looping generator hum starts when the scene opens and stops when the entity/component is disabled.
+
+**Completed:** `AudioEmitterComponent` is part of the scene/ECS component set, JSON load/export supports `audio_emitter`, and scene audio load posts enabled autoplay emitters with loop, spatial, volume, pitch, and distance settings.
+
+## [ ] AUDIO19 - Add audio event definitions
+
+**Deliverable:** Add an event layer above raw clips for random variants, volume/pitch ranges, bus routing, spatial defaults, cooldown, and max instances.
+
+**Implementation hints:** Use simple JSON first. Events should cover `weapon.rifle.fire`, `weapon.shotgun.fire`, `ui.radar.ping`, `objective.terminal.disabled`, and `enemy.heavy.warning` for the vertical slice.
+
+**Acceptance:** Posting the same event repeatedly can choose variants without the caller knowing file paths.
+
+## [ ] AUDIO20 - Add deterministic randomization policy for events
+
+**Deliverable:** Audio event variant selection can be deterministic when strict determinism or benchmark capture requests it.
+
+**Implementation hints:** Use frame index, stable entity id, event id, and event sequence where deterministic output matters. Normal gameplay can use runtime randomness if recorded diagnostics identify the seed.
+
+**Acceptance:** Running the same scripted event sequence twice in deterministic mode resolves the same clip variants and pitch/volume offsets.
+
+## [ ] AUDIO21 - Add scripting audio APIs
+
+**Deliverable:** Lua scripts can post audio events and control entity-bound emitters through a narrow API.
+
+**Implementation hints:** Expose `ctx.audio.post_event(event, options)`, `ctx.audio.stop(handle)`, and entity-relative helpers. Do not expose backend objects, raw buffers, or file paths beyond event/asset ids.
+
+**Acceptance:** A Lua script can play a footstep or weapon event on movement/fire without mutating audio internals directly.
+
+## [ ] AUDIO22 - Add input/gameplay trigger hooks for the action prototype
+
+**Deliverable:** Wire audio event posts for movement, aim/fire, reload, pickups, objective interaction, damage, death, and extraction state changes.
+
+**Implementation hints:** Keep game-specific triggers in scripts or gameplay layer code, not the renderer or low-level input code. Avoid playing weapon loops directly from input polling; route through gameplay state transitions.
+
+**Acceptance:** The third-person action demo can produce player rifle fire, reload, pickup, and objective sounds from gameplay events.
+
+## [ ] AUDIO23 - Add weapon audio event set for Relay Yard
+
+**Deliverable:** Define events for pistol, assault rifle, shotgun, LMG, dry fire, reloads, grenade throw, grenade explosion, bullet whiz, and bullet impacts.
+
+**Implementation hints:** Separate player and enemy weapon buses/priority if needed. Impacts should route by surface tag: dirt, concrete, metal, sandbag, flesh, and armor.
+
+**Acceptance:** A test scene or scripted combat fixture can fire each weapon event and resolve all referenced clips.
+
+## [ ] AUDIO24 - Add UI and objective audio event set
+
+**Deliverable:** Define events for radar ping, objective update, pickup collect, terminal interact loop, terminal disabled, alarm siren, extraction cue, and mission complete sting.
+
+**Implementation hints:** UI audio should be non-spatial by default and protected from low-priority voice stealing. Looping terminal/alarm cues need explicit stop or fade commands.
+
+**Acceptance:** Objective progression in a small fixture starts and stops looping UI/objective sounds correctly.
+
+## [ ] AUDIO25 - Add ambience and world-loop support
+
+**Deliverable:** Add looping ambience emitters for desert wind, generator hum, radio chatter, fire crackle, and extraction flare.
+
+**Implementation hints:** Use streaming for long ambience and clip loops for short mechanical hums. Support fade-in/out on scene load, pause, and objective state changes.
+
+**Acceptance:** Loading the Relay Yard prototype starts wind ambience and a positional generator loop with correct bus routing.
+
+## [ ] AUDIO26 - Add footstep and surface tagging support
+
+**Deliverable:** Add surface-aware footstep event selection for player and enemies.
+
+**Implementation hints:** Start with authored surface tags on terrain/props: dirt, metal, concrete, wood. Footstep timing can be script-driven until skeletal animation events exist.
+
+**Acceptance:** Moving the player over dirt versus metal posts different footstep events and respects per-entity cooldown.
+
+## [ ] AUDIO27 - Add impact audio from physics/collision events
+
+**Deliverable:** Physics or gameplay collision events can emit impact sounds with impulse-scaled volume.
+
+**Implementation hints:** Keep this generic: collision material pair, impact impulse, contact point, and source entity. Route bullets through gameplay hit events if physics does not own projectile collision.
+
+**Acceptance:** A grenade/barrel/crate fixture produces impact/explosion sounds once per relevant event without spamming every physics contact.
+
+## [ ] AUDIO28 - Add audio zones and simple reverb sends
+
+**Deliverable:** Add optional `AudioZoneComponent` with bus send amount, low-pass amount, and interior/exterior flag.
+
+**Implementation hints:** Keep this simple for now. Relay Yard mostly needs open-air audio, but tents/containers can use mild filtering later.
+
+**Acceptance:** Entering a zone changes an ambience or emitter send/filter parameter through a ramp and restores it on exit.
+
+## [ ] AUDIO29 - Add occlusion and obstruction MVP
+
+**Deliverable:** Add a cheap ray/visibility query from listener to emitter that can reduce volume and apply low-pass filtering.
+
+**Implementation hints:** Use scene collision or simplified cover geometry. Run at a throttled rate per emitter, not every audio sample and not every frame for every voice.
+
+**Acceptance:** A generator behind a concrete barrier is quieter/darker than the same generator with line of sight.
+
+## [ ] AUDIO30 - Add audio diagnostics panel data
+
+**Deliverable:** Editor model exposes device state, buses, loaded assets, active voices, event history, warnings, and underruns.
+
+**Implementation hints:** Start model-only like existing Qt panels. Include voice id, event id, clip uri, entity id, bus, gain, pitch, spatial state, age, and stop reason.
+
+**Acceptance:** Qt validation can build an audio diagnostics panel model with at least one active voice and one loaded clip.
+
+## [ ] AUDIO31 - Add asset browser audio support
+
+**Deliverable:** Audio files appear in the asset browser, can be filtered, previewed, and attached to scene audio assets/events.
+
+**Implementation hints:** Recognize `.wav` first; add other extensions only after backend decode support is confirmed. Preview should play through the `ui` or `debug` bus and auto-stop when preview selection changes.
+
+**Acceptance:** Dragging or selecting an audio asset can create/update an audio asset reference without manual JSON edits.
+
+## [ ] AUDIO32 - Add editor controls for emitters and listeners
+
+**Deliverable:** Inspector can edit `AudioEmitterComponent`, `AudioListenerComponent`, and event references.
+
+**Implementation hints:** Controls need event picker, bus picker, spatial toggle, loop toggle, volume, pitch, min/max distance, autoplay, and enabled state.
+
+**Acceptance:** Editing an emitter in the inspector updates the scene document, runtime component, and saved JSON.
+
+## [ ] AUDIO33 - Add command-line audio controls
+
+**Deliverable:** Add app options for audio backend, mute, device selection, sample rate, buffer size, and diagnostics dump.
+
+**Implementation hints:** Examples: `--audio-backend noop`, `--audio-backend miniaudio`, `--audio-mute`, `--audio-device default`, `--audio-dump-devices`.
+
+**Acceptance:** Running with `--audio-backend noop` prevents device initialization while preserving audio event diagnostics.
+
+## [ ] AUDIO34 - Add benchmark and capture policy
+
+**Deliverable:** Benchmarks default to no-op or muted audio unless explicitly requested.
+
+**Implementation hints:** Benchmark artifacts should record audio backend, mute state, event count, dropped command count, and whether audio timing was included or excluded.
+
+**Acceptance:** Existing render benchmarks do not vary because of audio device latency or missing hardware.
+
+## [ ] AUDIO35 - Add crash/status artifact integration
+
+**Deliverable:** Audio contributes state to crash recorder and status files.
+
+**Implementation hints:** Include backend state, last 128 audio commands/events, active voice summary, loaded asset summary, underrun count, dropped command count, and last device error.
+
+**Acceptance:** A forced crash while audio is active includes enough audio state to identify a bad event, missing asset, or backend failure.
+
+## [x] AUDIO36 - Add audio smoke tests
+
+**Deliverable:** Add no-op backend tests for asset load metadata, event resolution, command queue overflow, voice handle generation, bus routing, deterministic variant choice, and scene component extraction.
+
+**Implementation hints:** Keep tests independent from real audio devices. Use tiny checked-in WAV fixtures generated or committed under `tests/assets/audio/`.
+
+**Acceptance:** Audio smoke tests pass with `PT_ENABLE_AUDIO=ON` on CI without opening an output device.
+
+**Completed:** `pt_scripting_smoke` loads the audio Lua demo, validates file-backed audio assets, initializes the no-op backend, checks loaded clips/events/autoplay requests, verifies Lua-posted audio requests, and exercises the follow camera/mouse-look path in game mode.
+
+## [x] AUDIO37 - Add real-device manual test scene
+
+**Deliverable:** Add a small scene that plays looping ambience, a positional generator, UI ping, weapon one-shots, and an objective loop.
+
+**Implementation hints:** Keep geometry tiny and CPU-friendly. This scene is for human audio verification, not benchmark quality.
+
+**Acceptance:** Opening the scene in Qt lets a human verify clip playback, panning, distance falloff, bus mute, and event stopping in under two minutes.
+
+**Completed:** `assets/scenes/audio_lua_interaction_demo.json` provides a small Qt scene with recorded footstep variants, file-backed ambience, generated UI/weapon/objective cues, a listener camera, an autoplay emitter, and Lua controls for movement/fire/pickup/terminal playback.
+
+## [x] AUDIO38 - Add Relay Yard audio asset manifest
+
+**Deliverable:** Create a manifest listing required, placeholder, and missing audio assets for Level 01.
+
+**Implementation hints:** Use the `game/ASSETS.md` audio list as source material. Group by weapons, player/enemy, UI/objectives, ambience, impacts, and music/stingers.
+
+**Acceptance:** The manifest clearly shows which clips are available, which are placeholders, and which block a polished vertical slice.
+
+**Completed:** `game/AUDIO_ASSET_MANIFEST.md` lists Relay Yard audio by weapons, player/enemy, UI/objectives, ambience/world loops, and impacts with `available`, `placeholder`, and `missing` status.
+
+## [x] AUDIO39 - Add licensing and attribution tracking for audio assets
+
+**Deliverable:** Every audio asset has source, license, author, modification notes, and allowed usage recorded.
+
+**Implementation hints:** Mirror the existing asset source-note pattern used under `assets/`. Do not let generated or downloaded sounds enter the game folder without attribution metadata.
+
+**Acceptance:** A release gate can fail if an audio asset referenced by a scene/event lacks source/license metadata.
+
+**Completed:** `assets/audio/SOURCE.txt` records source, author, license, modification notes, and allowed usage for the file-backed audio assets currently referenced by the audio Lua demo.
+
+## [x] AUDIO40 - Add audio author documentation
+
+**Deliverable:** Add docs covering supported formats, event JSON, buses, emitter/listener components, Lua APIs, editor workflow, benchmark policy, and troubleshooting.
+
+**Implementation hints:** Include one minimal non-spatial UI event, one spatial generator event, one random-variant weapon event, and one looping ambience example.
+
+**Acceptance:** A new contributor can add a pickup sound and wire it to a scene without reading C++ source.
+
+**Completed:** `docs/audio_authoring.md` covers build/runtime controls, supported URI styles, event JSON, buses, listener/emitter components, Lua posting, benchmark policy, troubleshooting, and a pickup-sound workflow.

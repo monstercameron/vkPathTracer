@@ -44,7 +44,7 @@ The renderer speaks the usual language:
 - Lua scripting for anything that doesn't belong in C++
 - Animation timelines with transform, morph, material, light, and camera tracks
 - OBJ and glTF/GLB asset import/expansion with deterministic import hashes
-- Qt editor shell with native docks, menus, status bar, inspector, asset browser, transform gizmos, and persisted dock layout
+- Qt editor shell with native docks, menus, status bar, inspector, asset browser, transform gizmos, selection overlays, and persisted dock layout
 - Background render coordination for preview mode: camera/settings updates and dynamic instance transforms can be posted without rebuilding the whole scene
 
 ---
@@ -248,7 +248,7 @@ Qt CPU preview example:
   --backend cpu \
   --scene assets/scenes/cornell_native.json \
   --window-width 1280 --window-height 720 \
-  --ui-present-hz 30
+  --ui-present-hz 60
 ```
 
 Windows D3D12 Qt preview example:
@@ -260,10 +260,10 @@ Windows D3D12 Qt preview example:
   --backend d3d12 `
   --scene assets\scenes\cornell_native.json `
   --window-width 1280 --window-height 720 `
-  --ui-present-hz 30
+  --ui-present-hz 60
 ```
 
-The Qt path is a platform/editor shell. Renderer backends receive native handles and capability descriptors; they must not receive `QWidget*`, `QWindow*`, or other Qt objects. The CPU preview path publishes throttled RGBA8 display frames into a latest-wins viewport handoff; `--ui-present-hz` controls that publish cap and defaults to 30 Hz. Heavy CPU preview rendering runs behind a render coordinator so the Qt/Win32 event loop can keep processing input. Camera changes, render settings, and dynamic instance transform updates are coalesced and posted to the render side instead of forcing full scene reloads. The D3D12 path uses the Qt viewport only as a native presentation surface. The Qt shell wraps the viewport in a `QMainWindow` with a native menu bar, native status bar, and dock widgets generated from the editor models. In the Qt CPU preview, left-click selects a pickable object through front-facing mesh triangles and shows its projected 3D bounding box with transform gizmos, `T`/`R`/`S`/`G` switch translate/rotate/scale/universal gizmo modes, right or middle drag orbits the camera, the mouse wheel dollies, and `F` toggles FPS camera mode with `W`/`A`/`S`/`D` plus `Q`/`E` movement.
+The Qt path is a platform/editor shell. Renderer backends receive native handles and capability descriptors; they must not receive `QWidget*`, `QWindow*`, or other Qt objects. The preview path publishes throttled RGBA8 display frames into a latest-wins viewport handoff; `--ui-present-hz` controls the UI/motion cadence and preview publish cap and defaults to 60 Hz. Heavy preview rendering runs behind a render coordinator so the Qt/Win32 event loop can keep processing input. Camera changes, render settings, and dynamic instance transform updates are coalesced and posted to the render side instead of forcing full scene reloads. The D3D12 path uses the Qt viewport only as a native presentation surface. The Qt shell wraps the viewport in a `QMainWindow` with a native menu bar, native status bar, and dock widgets generated from the editor models. In the Qt preview, left-click selects a pickable object through front-facing mesh triangles and shows its projected 3D bounding box with translate, rotate, scale, and universal gizmo handles; `T`/`R`/`S`/`G` switch gizmo modes. Dragging the selected object or bounds directly across the scene is disabled; use gizmo handles for transforms. Right or middle drag orbits the camera, the mouse wheel dollies, and `F` toggles FPS camera mode with `W`/`A`/`S`/`D` plus `Q`/`E` movement.
 
 On Windows Qt builds, `ptapp.exe` uses the GUI subsystem and does not open a separate terminal by default. Pass `--console` or `--terminal` only when you want interactive stdout/stderr diagnostics.
 
@@ -344,7 +344,7 @@ ptapp [options]
   --platform <name>     Select platform: auto|raw|qt|headless
   --window-width <px>   Window width (default 1280)
   --window-height <px>  Window height (default 720)
-  --ui-present-hz <hz>  Preview present rate (1..120, default 30)
+  --ui-present-hz <hz>  UI/motion and preview publish rate (1..120, default 60)
   --frames <n>          Exit window mode after n frames (GUI smoke)
   --exit                Exit window mode after one frame unless --frames is set
   --console, --terminal Attach or create a console for GUI diagnostics
