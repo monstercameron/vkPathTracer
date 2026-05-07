@@ -367,13 +367,17 @@ function Build-Scene([string]$outputPath) {
   $materials = New-Object System.Collections.Generic.List[object]
   $geometry = New-Object System.Collections.Generic.List[object]
 
-  $materials.Add([ordered]@{ id = 9001; name = "sealed warehouse concrete"; family = "diffuse"; albedo = V3 0.26 0.27 0.25; roughness = 0.92; metallic = 0.0; double_sided = $true })
+  $materials.Add([ordered]@{ id = 9001; name = "clean light gray warehouse tile"; family = "ceramic_tile"; albedo = V3 0.62 0.63 0.60; roughness = 0.58; metallic = 0.0; double_sided = $true })
   $materials.Add([ordered]@{ id = 9002; name = "painted reinforced concrete wall"; family = "diffuse"; albedo = V3 0.43 0.45 0.43; roughness = 0.86; metallic = 0.0; double_sided = $true })
   $materials.Add([ordered]@{ id = 9003; name = "dark corrugated warehouse ceiling"; family = "diffuse"; albedo = V3 0.23 0.24 0.25; roughness = 0.82; metallic = 0.05; double_sided = $true })
   $materials.Add([ordered]@{ id = 9004; name = "dark parkerized steel fixtures"; family = "metallic"; albedo = V3 0.22 0.23 0.23; roughness = 0.55; metallic = 0.65; double_sided = $true })
   $materials.Add([ordered]@{ id = 9005; name = "rough military wood pallet"; family = "rough_wood"; albedo = V3 0.42 0.30 0.18; roughness = 0.82; metallic = 0.0; double_sided = $true })
   $materials.Add([ordered]@{ id = 9006; name = "worn safety yellow floor paint"; family = "diffuse"; albedo = V3 0.95 0.68 0.12; roughness = 0.72; metallic = 0.0; double_sided = $true })
   $materials.Add([ordered]@{ id = 9007; name = "cool white high bay diffuser"; family = "emissive"; albedo = V3 0.88 0.95 1.0; emission = V3 0.75 0.86 1.0; emission_intensity = 28.0; roughness = 0.25; double_sided = $true })
+  $materials.Add([ordered]@{ id = 9009; name = "clean dark gray tile grout"; family = "diffuse"; albedo = V3 0.18 0.19 0.18; roughness = 0.86; metallic = 0.0; double_sided = $true })
+  $materials.Add([ordered]@{ id = 9010; name = "large brushed steel lazy susan"; family = "metallic"; albedo = V3 0.28 0.29 0.28; roughness = 0.34; metallic = 0.8; double_sided = $true })
+  $materials.Add([ordered]@{ id = 9011; name = "small black display lazy susan"; family = "metallic"; albedo = V3 0.05 0.052 0.052; roughness = 0.42; metallic = 0.55; double_sided = $true })
+  $materials.Add([ordered]@{ id = 9012; name = "slightly blue warehouse window glass"; family = "glass"; albedo = V3 0.68 0.82 0.95; roughness = 0.04; metallic = 0.0; transmission = 0.82; alpha = 0.32; double_sided = $true })
 
   $geometry.Add([ordered]@{
     id = 9101
@@ -391,8 +395,10 @@ function Build-Scene([string]$outputPath) {
     )
     indices = @(0,1,2, 0,2,3, 4,6,5, 4,7,6, 0,4,5, 0,5,1, 3,2,6, 3,6,7, 1,5,6, 1,6,2, 0,3,7, 0,7,4)
   })
+  Add-CylinderGeometry $geometry 9102 9010 56
 
   Add-WarehouseShell $entities
+  Add-TileFloorGrid $entities
   Add-Table $entities 9220 "front weapons inspection bench" -11.0 6.9 11.8 1.35
   Add-Table $entities 9230 "ammo inventory bench" -11.9 4.9 4.8 1.35
   Add-Pallet $entities 9240 "ammo stack pallet" -17.0 1.6 2.4 1.6
@@ -400,6 +406,13 @@ function Build-Scene([string]$outputPath) {
   Add-Pallet $entities 9242 "sabotage terminal pallet" 11.3 2.1 1.8 1.5
   Add-Pallet $entities 9243 "generator pallet" 15.0 2.2 2.0 1.5
   Add-CeilingLights $entities
+
+  $assets.Add([ordered]@{
+    id = 8000
+    type = "environment/hdri"
+    uri = Make-RelativeUri $outputPath "assets/skies/kiara_1_dawn_1k.hdr"
+    name = "Kiara 1 Dawn HDRI warehouse sky"
+  })
 
   $modelBaseId = 10000
   $overheadLightBaseId = 9500
@@ -413,9 +426,17 @@ function Build-Scene([string]$outputPath) {
     $bounds = Get-ModelBounds $lod
     $placement = Model-Placement $model.source
     $scale = [double]$placement.target / [double]$bounds.max_dimension
-    $y = [double]$placement.surface - ([double]$bounds.min[1] * $scale)
+    $baseSurface = [double]$placement.surface
+    if ($baseSurface -le 0.001) {
+      $baseSurface = 0.025
+    }
+    $turntable = Turntable-Spec $placement
+    $displaySurface = $baseSurface + [double]$turntable.height
+    $y = $displaySurface - ([double]$bounds.min[1] * $scale)
     $scaledHeight = [double]$bounds.size[1] * $scale
     $prettyName = Display-Name $model.source
+
+    Add-CylinderEntity $entities (9600 + $i) "$prettyName lazy susan display turntable" ([double]$placement.x) $baseSurface ([double]$placement.z) ([double]$turntable.radius) ([double]$turntable.height) ([int]$turntable.material)
 
     $assets.Add([ordered]@{
       id = $modelBaseId + $i
@@ -425,7 +446,7 @@ function Build-Scene([string]$outputPath) {
       transform = Transform ([double]$placement.x) $y ([double]$placement.z) $scale ([double]$placement.yaw)
     })
 
-    $lightY = [math]::Min(6.45, [math]::Max(2.4, [double]$placement.surface + $scaledHeight + 1.45))
+    $lightY = [math]::Min(6.45, [math]::Max(2.4, $displaySurface + $scaledHeight + 1.45))
     $lightZ = [double]$placement.z + 0.45
     $lightIntensity = if ($placement.category -eq "vehicle" -or $placement.category -eq "tower") { 620.0 } elseif ($placement.category -eq "table") { 210.0 } else { 360.0 }
     $beam = if ($placement.category -eq "vehicle" -or $placement.category -eq "tower") { 64.0 } elseif ($placement.category -eq "table") { 40.0 } else { 52.0 }
@@ -439,12 +460,37 @@ function Build-Scene([string]$outputPath) {
 
   $entities.Add([ordered]@{
     id = 9800
-    name = "Warehouse ambient fill"
+    name = "Kiara dawn HDRI sky fill"
     light = [ordered]@{
-      type = "environment"
-      color = V3 0.09 0.10 0.105
-      intensity = 1.25
+      type = "environment hdri"
+      color = V3 1.0 0.97 0.90
+      intensity = 0.78
       radius = 0.0
+    }
+  })
+  $entities.Add([ordered]@{
+    id = 9801
+    name = "Lua time of day sun"
+    transform = [ordered]@{
+      translation = V3 -17.0 18.0 20.0
+      rotation = Q 0.0 0.0 0.0 1.0
+      scale = V3 1.0 1.0 1.0
+    }
+    light = [ordered]@{
+      type = "spot"
+      color = V3 1.0 0.86 0.62
+      intensity = 900.0
+      radius = 0.12
+      direction = V3 0.535 -0.566 -0.629
+      beam_angle_degrees = 72.0
+      blend = 0.48
+    }
+    script = [ordered]@{
+      source = "assets/scripts/warehouse_time_of_day_sun.lua"
+      language = "lua"
+      entry = "default"
+      enabled = $true
+      reload_on_save = $true
     }
   })
   $entities.Add([ordered]@{
@@ -467,7 +513,7 @@ function Build-Scene([string]$outputPath) {
       scene_name = "Lowest LOD Military Warehouse"
       author = "vkPathTracer"
       created = (Get-Date).ToString("yyyy-MM-dd")
-      notes = "Generated military warehouse layout for all lod3_very_far_r0p1 game model assets. Assets are semantically scaled to human-realistic size, with vehicles on the floor, weapons and grenades on benches, concrete walls, ceiling, high-bay lights, and per-model inspection spots."
+      notes = "Generated military warehouse layout for all lod3_very_far_r0p1 game model assets. Assets are semantically scaled to human-realistic size and staged on large or small lazy susan display turntables. The warehouse has clean tile flooring, window openings with glass panes for HDRI sky light, high-bay lights, per-model inspection spots, and a Lua-controlled sun with time_of_day_hour exposed in the scripting panel variables."
     }
     assets = $assets
     materials = $materials
