@@ -86,7 +86,7 @@ The runtime currently derives a default logical bus from the asset type:
 - `ambience`: asset type contains `stream`, `music`, or `ambience`.
 - `voice`: asset type contains `voice`.
 
-These buses currently apply default gain only. Full editor-visible mixer state, muting, soloing, and fades remain backlog work.
+The runtime exposes bus volume/mute controls through `IAudioSystem`, tracks per-bus play counts, and reports bus state through `AudioDiagnostics`. This is intentionally small, but it gives scripts/editor code a stable command surface for future panel controls.
 
 ## Components
 
@@ -132,7 +132,17 @@ ctx.audio:post_event("player.footstep.dirt", {
 })
 ```
 
-Scripts do not receive backend objects or file paths. Use event names and entity-relative positions.
+`post_event` returns a handle table with `slot` and `generation`. Stop that exact voice with:
+
+```lua
+ctx.audio:stop(handle)
+```
+
+Scripts do not receive backend objects or file paths. Use event names, handles, and entity-relative positions.
+
+## Diagnostics
+
+`AudioDiagnostics` reports backend/device state, loaded clip and stream counts, event counts, active or virtual no-op voices, bus state, event history, stolen/dropped voices, listener updates, underruns, and the last backend or asset error. The no-op backend preserves this diagnostic path so tests and benchmark runs can validate audio behavior without opening a hardware device.
 
 ## Adding A Pickup Sound
 

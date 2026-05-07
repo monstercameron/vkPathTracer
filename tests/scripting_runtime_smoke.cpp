@@ -4,6 +4,7 @@
 #include "pathtracer/SceneConversion.h"
 #include "physics/PhysicsWorld.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <exception>
@@ -1049,10 +1050,44 @@ int RunScriptingRuntimeSmoke() {
   auto audio_diag = audio_system->diagnostics();
   if (!Check(audio_diag.loaded_clips >= 6u,
              "audio demo should declare file-backed and generated clips") ||
+      !Check(audio_diag.loaded_streams >= 1u,
+             "audio demo should expose stream/loop diagnostics") ||
       !Check(audio_diag.events >= 6u,
              "audio demo should declare audio events") ||
+      !Check(!audio_diag.buses.empty(),
+             "audio diagnostics should expose mixer bus state") ||
+      !Check(audio_diag.event_history_size >= 1u,
+             "audio diagnostics should expose event history") ||
       !Check(audio_diag.play_requests >= 1u,
              "audio demo autoplay emitter should post an ambience event")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+  vkpt::audio::AudioPostEventDesc direct_audio_event;
+  direct_audio_event.event_name = "ui.radar.ping";
+  direct_audio_event.bus = "ui";
+  direct_audio_event.priority = 0.95f;
+  const auto direct_voice = audio_system->post_event(direct_audio_event);
+  audio_system->set_bus_muted("ui", true);
+  vkpt::audio::AudioPostEventDesc muted_audio_event = direct_audio_event;
+  muted_audio_event.event_name = "pickup.collect";
+  const auto muted_voice = audio_system->post_event(muted_audio_event);
+  audio_system->stop(direct_voice);
+  audio_system->stop(direct_voice);
+  audio_system->update();
+  audio_diag = audio_system->diagnostics();
+  if (!Check(static_cast<bool>(direct_voice),
+             "audio post_event should return a voice handle in no-op mode") ||
+      !Check(static_cast<bool>(muted_voice),
+             "muted bus audio should still resolve an event handle") ||
+      !Check(audio_diag.stop_requests >= 2u,
+             "audio diagnostics should count stop requests for handle lifecycle checks") ||
+      !Check(audio_diag.voices.size() >= 1u,
+             "audio diagnostics should expose active or virtual voices") ||
+      !Check(std::any_of(audio_diag.buses.begin(), audio_diag.buses.end(), [](const auto& bus) {
+                return bus.name == "ui" && bus.muted;
+              }),
+             "audio bus diagnostics should report muted UI bus state")) {
     vkpt::audio::SetGlobalAudioSystem(nullptr);
     return 1;
   }

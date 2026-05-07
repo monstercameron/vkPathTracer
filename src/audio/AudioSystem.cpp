@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <deque>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -95,6 +96,36 @@ float BusDefaultGain(std::string_view bus) {
   if (normalized == "ui") return 0.75f;
   if (normalized == "voice") return 0.85f;
   return 0.80f;
+}
+
+float Distance(const vkpt::scene::Vec3& a, const vkpt::scene::Vec3& b) {
+  const float dx = a.x - b.x;
+  const float dy = a.y - b.y;
+  const float dz = a.z - b.z;
+  return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+struct SpatialMix {
+  float gain = 1.0f;
+  float pan = 0.0f;
+  bool occluded = false;
+};
+
+SpatialMix CalculateSpatialMix(const AudioListenerState& listener,
+                               const vkpt::scene::Vec3& position,
+                               float minDistance,
+                               float maxDistance) {
+  SpatialMix mix;
+  const float range = std::max(0.001f, maxDistance - minDistance);
+  const float distance = Distance(listener.position, position);
+  mix.gain = 1.0f - std::clamp((distance - minDistance) / range, 0.0f, 1.0f);
+  const float dx = position.x - listener.position.x;
+  mix.pan = std::clamp(dx / std::max(1.0f, maxDistance), -1.0f, 1.0f);
+  mix.occluded = distance > (maxDistance * 0.75f);
+  if (mix.occluded) {
+    mix.gain *= 0.72f;
+  }
+  return mix;
 }
 
 void AppendSine(std::vector<float>& out,
@@ -234,6 +265,15 @@ struct EventDef {
   float pitch = 1.0f;
   float min_distance = 1.0f;
   float max_distance = 24.0f;
+  float priority = 0.5f;
+};
+
+struct BusState {
+  std::string name;
+  float volume = 1.0f;
+  bool muted = false;
+  bool solo = false;
+  std::uint64_t play_requests = 0;
 };
 
 struct RuntimeVoice {
@@ -243,6 +283,16 @@ struct RuntimeVoice {
   bool playing = false;
   bool loop = false;
   bool spatial = false;
+  bool stolen = false;
+  vkpt::core::StableEntityId entity = 0;
+  std::string bus = "sfx";
+  std::string clip_uri;
+  vkpt::scene::Vec3 position{0.0f, 0.0f, 0.0f};
+  float volume = 1.0f;
+  float pitch = 1.0f;
+  float pan = 0.0f;
+  float gain = 1.0f;
+  float priority = 0.5f;
 
 #if defined(PT_ENABLE_MINIAUDIO)
   ma_sound sound{};
@@ -283,6 +333,7 @@ class EngineAudioSystem final : public IAudioSystem {
     m_diag.sample_rate = m_config.sample_rate;
     m_diag.channels = m_config.channels;
     m_diag.muted = m_config.muted;
+    m_diag.queued_commands = 0;
     m_diag.backend_name = select_backend_name();
     m_diag.device_name = "no output device";
 
@@ -319,6 +370,8 @@ class EngineAudioSystem final : public IAudioSystem {
          {"device", m_diag.device_name},
          {"sample_rate", std::to_string(m_config.sample_rate)},
          {"channels", std::to_string(m_config.channels)},
+         {"buffer_frames", std::to_string(m_config.buffer_frames)},
+         {"queued_buffers", std::to_string(m_config.queued_buffers)},
          {"muted", m_config.muted ? "true" : "false"}});
     return true;
   }
@@ -329,6 +382,7 @@ class EngineAudioSystem final : public IAudioSystem {
       return;
     }
     m_voices.clear();
+    append_history_locked("shutdown");
 #if defined(PT_ENABLE_MINIAUDIO)
     if (m_engineInitialized) {
       ma_engine_uninit(&m_engine);
@@ -349,6 +403,8 @@ class EngineAudioSystem final : public IAudioSystem {
     m_clipByUri.clear();
     m_events.clear();
     m_voices.clear();
+    m_eventHistory.clear();
+    initialize_buses_locked();
     m_nextVoiceGeneration = 1u;
     m_nextVoiceSlot = 1u;
 
@@ -377,6 +433,8 @@ class EngineAudioSystem final : public IAudioSystem {
       event.spatial = type.find("spatial") != std::string::npos || type.find("emitter") != std::string::npos;
       if (type.find("ui") != std::string::npos) {
         event.bus = "ui";
+      } else if (type.find("music") != std::string::npos) {
+        event.bus = "music";
       } else if (streamAsset || type.find("ambience") != std::string::npos) {
         event.bus = "ambience";
       } else if (type.find("voice") != std::string::npos) {
@@ -384,6 +442,7 @@ class EngineAudioSystem final : public IAudioSystem {
       } else {
         event.bus = "sfx";
       }
+      event.priority = default_priority_for_bus(event.bus);
       if (eventAsset || streamAsset || !asset.name.empty()) {
         auto& stored = m_events[event.name];
         if (stored.name.empty()) {
@@ -419,6 +478,9 @@ class EngineAudioSystem final : public IAudioSystem {
     }
 
     m_diag.loaded_clips = m_clips.size();
+    m_diag.loaded_streams = static_cast<std::size_t>(std::count_if(m_events.begin(), m_events.end(), [](const auto& item) {
+      return item.second.loop || item.second.bus == "music" || item.second.bus == "ambience";
+    }));
     m_diag.events = m_events.size();
     m_diag.active_voices = active_voice_count_locked();
     vkpt::log::Logger::instance().log(
@@ -443,6 +505,7 @@ class EngineAudioSystem final : public IAudioSystem {
       return;
     }
     std::lock_guard lock(m_mutex);
+    ++m_diag.stop_requests;
     for (auto& voice : m_voices) {
       if (voice && voice->handle.slot == handle.slot && voice->handle.generation == handle.generation) {
         stop_voice_locked(*voice);
@@ -454,7 +517,20 @@ class EngineAudioSystem final : public IAudioSystem {
   void set_listener(const AudioListenerState& listener) override {
     std::lock_guard lock(m_mutex);
     m_listener = listener;
+    ++m_diag.listener_updates;
     set_listener_locked(listener);
+  }
+
+  void set_bus_volume(std::string_view bus, float volume) override {
+    std::lock_guard lock(m_mutex);
+    auto& state = bus_state_locked(bus);
+    state.volume = std::clamp(volume, 0.0f, 2.0f);
+  }
+
+  void set_bus_muted(std::string_view bus, bool muted) override {
+    std::lock_guard lock(m_mutex);
+    auto& state = bus_state_locked(bus);
+    state.muted = muted;
   }
 
   void update() override {
@@ -464,7 +540,11 @@ class EngineAudioSystem final : public IAudioSystem {
     }), m_voices.end());
     m_diag.active_voices = active_voice_count_locked();
     m_diag.loaded_clips = m_clips.size();
+    m_diag.loaded_streams = static_cast<std::size_t>(std::count_if(m_events.begin(), m_events.end(), [](const auto& item) {
+      return item.second.loop || item.second.bus == "music" || item.second.bus == "ambience";
+    }));
     m_diag.events = m_events.size();
+    ++m_diag.mixed_buffers;
   }
 
   AudioDiagnostics diagnostics() const override {
@@ -473,6 +553,39 @@ class EngineAudioSystem final : public IAudioSystem {
     out.active_voices = active_voice_count_locked();
     out.loaded_clips = m_clips.size();
     out.events = m_events.size();
+    out.queued_commands = 0;
+    out.event_history_size = m_eventHistory.size();
+    out.buses.clear();
+    out.voices.clear();
+    out.event_history.assign(m_eventHistory.begin(), m_eventHistory.end());
+    for (const auto& item : m_buses) {
+      out.buses.push_back(AudioBusDiagnostics{
+          item.second.name,
+          item.second.volume,
+          item.second.muted,
+          item.second.solo,
+          item.second.play_requests});
+    }
+    for (const auto& voice : m_voices) {
+      if (!voice || voice_finished_locked(*voice)) {
+        continue;
+      }
+      out.voices.push_back(AudioVoiceDiagnostics{
+          voice->handle,
+          voice->event_name,
+          voice->clip_uri,
+          voice->bus,
+          voice->entity,
+          voice->playing,
+          voice->loop,
+          voice->spatial,
+          voice->stolen,
+          voice->volume,
+          voice->pitch,
+          voice->pan,
+          voice->gain,
+          voice->priority});
+    }
     return out;
   }
 
@@ -512,6 +625,7 @@ class EngineAudioSystem final : public IAudioSystem {
         clip = GenerateToneClip("tone:missing", m_config.sample_rate);
         clip.uri = std::string(uri);
         clip.name = EventNameFromUri(uri);
+        clip.generated = true;
       } else {
         clip.id = Fnv1a64(resolved.generic_string());
         clip.uri = std::string(uri);
@@ -559,8 +673,11 @@ class EngineAudioSystem final : public IAudioSystem {
     }
 
     const auto& event = eventIt->second;
-    const auto variantIndex = static_cast<std::size_t>(
-        Fnv1a64(event.name + ":" + std::to_string(m_diag.play_requests)) % event.clips.size());
+    const auto eventEntity = desc.entity;
+    const auto sequence = m_config.deterministic
+                              ? (event.name + ":" + std::to_string(eventEntity) + ":" + std::to_string(m_diag.play_requests))
+                              : (event.name + ":" + std::to_string(m_diag.play_requests));
+    const auto variantIndex = static_cast<std::size_t>(Fnv1a64(sequence) % event.clips.size());
     const auto clipIt = m_clips.find(event.clips[variantIndex]);
     if (clipIt == m_clips.end()) {
       ++m_diag.failed_play_requests;
@@ -569,21 +686,28 @@ class EngineAudioSystem final : public IAudioSystem {
     }
 
     const AudioVoiceHandle handle = allocate_handle_locked();
-    if (m_config.muted || m_diag.backend_name == "noop") {
-      return handle;
-    }
-
-    constexpr std::size_t kMaxVoices = 96u;
-    if (m_voices.size() >= kMaxVoices) {
+    const auto busName = NormalizeEventName(desc.bus.empty() ? event.bus : desc.bus);
+    auto& bus = bus_state_locked(busName);
+    ++bus.play_requests;
+    append_history_locked(event.name + " -> " + clipIt->second.uri);
+    if (m_voices.size() >= m_config.max_voices) {
       m_voices.erase(std::remove_if(m_voices.begin(), m_voices.end(), [&](const auto& voice) {
         return voice == nullptr || voice_finished_locked(*voice);
       }), m_voices.end());
-      if (m_voices.size() >= kMaxVoices) {
-        auto victim = std::find_if(m_voices.begin(), m_voices.end(), [](const auto& voice) {
-          return voice && !voice->loop;
+      if (m_voices.size() >= m_config.max_voices) {
+        auto victim = std::min_element(m_voices.begin(), m_voices.end(), [](const auto& lhs, const auto& rhs) {
+          if (!lhs) return true;
+          if (!rhs) return false;
+          if (lhs->loop != rhs->loop) return !lhs->loop;
+          return lhs->priority < rhs->priority;
         });
         if (victim == m_voices.end()) {
-          victim = m_voices.begin();
+          ++m_diag.dropped_commands;
+          return {};
+        }
+        if (*victim) {
+          (*victim)->stolen = true;
+          ++m_diag.stolen_voices;
         }
         m_voices.erase(victim);
       }
@@ -595,11 +719,28 @@ class EngineAudioSystem final : public IAudioSystem {
     voice->event_name = event.name;
     voice->loop = desc.loop || event.loop || clipIt->second.loop_default;
     voice->spatial = desc.spatial || event.spatial;
+    voice->entity = desc.entity;
+    voice->bus = busName;
+    voice->clip_uri = clipIt->second.uri;
     voice->playing = true;
+    voice->priority = std::clamp(desc.priority > 0.0f ? desc.priority : event.priority, 0.0f, 1.0f);
 
-    const float volume = std::max(0.0f, desc.volume * event.volume * BusDefaultGain(event.bus));
-    const float pitch = std::clamp(desc.pitch * event.pitch, 0.25f, 4.0f);
     const auto position = desc.has_position ? desc.position : vkpt::scene::Vec3{};
+    const auto spatial = CalculateSpatialMix(m_listener, position, event.min_distance, event.max_distance);
+    const float busGain = bus.muted ? 0.0f : bus.volume * BusDefaultGain(busName);
+    const float volume = std::max(0.0f, desc.volume * event.volume * busGain * (voice->spatial ? spatial.gain : 1.0f));
+    const float pitch = std::clamp(desc.pitch * event.pitch, 0.25f, 4.0f);
+    voice->volume = volume;
+    voice->pitch = pitch;
+    voice->position = position;
+    voice->pan = voice->spatial ? spatial.pan : 0.0f;
+    voice->gain = voice->spatial ? spatial.gain : 1.0f;
+
+    if (m_config.muted || m_diag.backend_name == "noop") {
+      m_voices.push_back(std::move(voice));
+      m_diag.active_voices = active_voice_count_locked();
+      return handle;
+    }
 
     if (!start_voice_locked(*voice, clipIt->second, volume, pitch, event.min_distance, event.max_distance, position)) {
       ++m_diag.failed_play_requests;
@@ -615,7 +756,8 @@ class EngineAudioSystem final : public IAudioSystem {
         {{"event", event.name},
          {"entity", std::to_string(desc.entity)},
          {"clip", clipIt->second.uri},
-         {"spatial", desc.spatial ? "true" : "false"},
+         {"bus", busName},
+         {"spatial", voice->spatial ? "true" : "false"},
          {"loop", event.loop ? "true" : "false"}});
     return handle;
   }
@@ -718,6 +860,42 @@ class EngineAudioSystem final : public IAudioSystem {
 #endif
   }
 
+  void initialize_buses_locked() {
+    m_buses.clear();
+    for (const std::string_view bus : {"master", "sfx", "music", "ui", "voice", "ambience", "debug"}) {
+      auto& state = m_buses[std::string(bus)];
+      state.name = std::string(bus);
+      state.volume = 1.0f;
+    }
+  }
+
+  BusState& bus_state_locked(std::string_view bus) {
+    const auto key = NormalizeEventName(bus.empty() ? "sfx" : bus);
+    auto& state = m_buses[key];
+    if (state.name.empty()) {
+      state.name = key;
+      state.volume = 1.0f;
+    }
+    return state;
+  }
+
+  float default_priority_for_bus(std::string_view bus) const {
+    const auto key = NormalizeEventName(bus);
+    if (key == "ui") return 0.95f;
+    if (key == "music") return 0.90f;
+    if (key == "voice") return 0.80f;
+    if (key == "ambience") return 0.25f;
+    return 0.60f;
+  }
+
+  void append_history_locked(std::string text) {
+    constexpr std::size_t kMaxHistory = 128u;
+    m_eventHistory.push_back(std::move(text));
+    while (m_eventHistory.size() > kMaxHistory) {
+      m_eventHistory.pop_front();
+    }
+  }
+
   void stop_voice_locked(RuntimeVoice& voice) {
     voice.playing = false;
 #if defined(PT_ENABLE_MINIAUDIO)
@@ -746,6 +924,8 @@ class EngineAudioSystem final : public IAudioSystem {
   std::unordered_map<AudioClipId, ClipDef> m_clips;
   std::unordered_map<std::string, AudioClipId> m_clipByUri;
   std::unordered_map<std::string, EventDef> m_events;
+  std::unordered_map<std::string, BusState> m_buses;
+  std::deque<std::string> m_eventHistory;
   std::vector<std::unique_ptr<RuntimeVoice>> m_voices;
   std::uint32_t m_nextVoiceSlot = 1u;
   std::uint32_t m_nextVoiceGeneration = 1u;

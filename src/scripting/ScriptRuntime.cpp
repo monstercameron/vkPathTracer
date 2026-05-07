@@ -1280,10 +1280,38 @@ int LuaAudioPostEvent(lua_State* lua) {
   return 1;
 }
 
+int LuaAudioStop(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr) {
+    return 0;
+  }
+  auto* audio = vkpt::audio::GlobalAudioSystem();
+  if (audio == nullptr) {
+    AddLuaDiagnostic(*host, ScriptDiagnosticSeverity::Warning, "audio system is not available");
+    return 0;
+  }
+
+  vkpt::audio::AudioVoiceHandle handle;
+  const int handleIndex = lua_istable(lua, 2) ? 2 : (lua_istable(lua, 1) ? 1 : 0);
+  if (handleIndex != 0) {
+    const int table = lua_absindex(lua, handleIndex);
+    lua_getfield(lua, table, "slot");
+    handle.slot = static_cast<std::uint32_t>(std::max<lua_Integer>(0, lua_tointeger(lua, -1)));
+    lua_pop(lua, 1);
+    lua_getfield(lua, table, "generation");
+    handle.generation = static_cast<std::uint32_t>(std::max<lua_Integer>(0, lua_tointeger(lua, -1)));
+    lua_pop(lua, 1);
+  }
+  audio->stop(handle);
+  return 0;
+}
+
 void PushAudioTable(lua_State* lua, LuaHostContext& host) {
   lua_newtable(lua);
   PushHostClosure(lua, host, LuaAudioPostEvent);
   lua_setfield(lua, -2, "post_event");
+  PushHostClosure(lua, host, LuaAudioStop);
+  lua_setfield(lua, -2, "stop");
 }
 
 void PushContextTable(lua_State* lua, LuaHostContext& host) {
