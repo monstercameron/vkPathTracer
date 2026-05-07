@@ -184,7 +184,10 @@ bool D3D12GpuPathTracer::create_dxr_pipeline() {
   if (!create_dxr_global_root_sig()) return false;
 
   // The raygen shader owns the path loop, so TraceRay recursion depth stays at
-  // one even though the integrator can evaluate multiple path bounces.
+  // one unless hardware shadow rays are compiled in. In that mode the closest-hit
+  // shader traces a secondary visibility ray, which requires one nested level.
+  const bool dxrShadowRays = ParseEnvBool("PT_D3D12_DXR_SHADOW_RAYS", false);
+
   // Compile DXIL library
   std::vector<uint8_t> dxil;
   if (!compile_dxil(m_rtHlslPath, dxil)) return false;
@@ -221,9 +224,9 @@ bool D3D12GpuPathTracer::create_dxr_pipeline() {
   shaderCfg.MaxAttributeSizeInBytes = 8;  // float2 barycentrics
   subobjects[si++] = {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shaderCfg};
 
-  // 4. Pipeline config (max recursion = 1 since we loop in raygen)
+  // 4. Pipeline config (raygen primary trace, plus optional closest-hit shadow trace)
   D3D12_RAYTRACING_PIPELINE_CONFIG pipelineCfg{};
-  pipelineCfg.MaxTraceRecursionDepth = 1;
+  pipelineCfg.MaxTraceRecursionDepth = dxrShadowRays ? 2u : 1u;
   subobjects[si++] = {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &pipelineCfg};
 
   // 5. Global root signature
