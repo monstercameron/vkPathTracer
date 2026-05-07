@@ -187,12 +187,12 @@ bool D3D12GpuPathTracer::update_instance_transforms(
     return false;
   }
   const bool updateDxrTlas = (m_preferDxr || m_usingDxrDispatch);
-  const bool uploaded = updateDxrTlas
-      ? update_dxr_instance_buffer_and_tlas_from(stage.gpu_instances, stage.dxr_instance_descs)
-      : upload_instance_buffer_from(stage.gpu_instances,
-                                    stage.gpu_dynamic_bvh,
-                                    stage.first_changed_instance,
-                                    stage.changed_instance_count);
+  const bool uploaded = upload_instance_buffer_from(stage.gpu_instances,
+                                                    stage.gpu_dynamic_bvh,
+                                                    stage.first_changed_instance,
+                                                    stage.changed_instance_count) &&
+      (!updateDxrTlas ||
+       update_dxr_instance_buffer_and_tlas_from(stage.gpu_instances, stage.dxr_instance_descs));
   if (uploaded) {
     m_sceneData = std::move(stage.scene);
     m_gpuInsts = std::move(stage.gpu_instances);
@@ -397,12 +397,12 @@ vkpt::pathtracer::InstanceTransformUpdateResult D3D12GpuPathTracer::apply_instan
   }
 
   const bool updateDxrTlas = (m_preferDxr || m_usingDxrDispatch);
-  const bool uploaded = updateDxrTlas
-      ? update_dxr_instance_buffer_and_tlas_from(stage.gpu_instances, stage.dxr_instance_descs)
-      : upload_instance_buffer_from(stage.gpu_instances,
-                                    stage.gpu_dynamic_bvh,
-                                    stage.first_changed_instance,
-                                    stage.changed_instance_count);
+  const bool uploaded = upload_instance_buffer_from(stage.gpu_instances,
+                                                    stage.gpu_dynamic_bvh,
+                                                    stage.first_changed_instance,
+                                                    stage.changed_instance_count) &&
+      (!updateDxrTlas ||
+       update_dxr_instance_buffer_and_tlas_from(stage.gpu_instances, stage.dxr_instance_descs));
   if (!uploaded) {
     return {
         vkpt::pathtracer::InstanceTransformUpdateStatus::Failed,

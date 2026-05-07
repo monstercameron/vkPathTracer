@@ -76,6 +76,8 @@ bool D3D12GpuPathTracer::reset_accumulation() {
 
   m_film.clear();
   m_counters = {};
+  m_temporalHistoryValid = false;
+  m_ldrResolve = {};
   LogDebug("reset_accumulation complete");
   return true;
 }
