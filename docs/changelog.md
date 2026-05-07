@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-07 (session 38)
+
+### Static runtime cleanup and transform-update hardening
+
+- Removed the provisional animation component/import path from asset classification, glTF import, scene schema load/export, ECS storage, scene conversion, UI menus, timeline rows, and scripting smoke expectations.
+- Reframed render-frame and timeline behavior around static frame metadata and particle frame state instead of automatic scene animation playback.
+- Disabled live script/FPS playback paths in static mode while keeping manual scene editing, backend switching, and crash/status reporting responsive.
+- Improved Qt selection bounds for dynamic local-geometry instances and batched gizmo transform publishing so moved dynamic objects keep viewport overlays and renderer updates in sync.
+- Expanded transform-update fallback handling for physics/editor updates and added tiled CPU transform-update planning/results with full-BVH rebuild reporting.
+- Aligned D3D12 compute/DXR shader constants so temporal AA fields stay intact while BVH node counts are passed explicitly for shader traversal.
+
 ## 2026-05-07 (session 37)
 
 ### DXR shadow stability with temporal post-processing
