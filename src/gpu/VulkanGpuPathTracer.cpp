@@ -30,10 +30,14 @@ namespace vkpt::gpu {
 
 namespace {
 
-constexpr std::size_t kVulkanMaterialStrideFloats = 16u;
-constexpr std::size_t kVulkanInstanceStrideU32 = 24u;
-constexpr std::size_t kVulkanLightStrideFloats = 16u;
-constexpr std::size_t kVulkanSdfStrideFloats = 16u;
+constexpr std::size_t kVulkanMaterialStrideFloats =
+    vkpt::pathtracer::kStandardGpuSceneBufferLayout.material_stride_floats;
+constexpr std::size_t kVulkanInstanceStrideU32 =
+    vkpt::pathtracer::kStandardGpuSceneBufferLayout.instance_stride_u32;
+constexpr std::size_t kVulkanLightStrideFloats =
+    vkpt::pathtracer::kStandardGpuSceneBufferLayout.light_stride_floats;
+constexpr std::size_t kVulkanSdfStrideFloats =
+    vkpt::pathtracer::kStandardGpuSceneBufferLayout.sdf_stride_floats;
 
 uint32_t VkFloatBits(float value) {
   uint32_t bits = 0u;

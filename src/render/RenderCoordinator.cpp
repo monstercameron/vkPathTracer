@@ -113,10 +113,10 @@ void RenderCoordinator::post_instance_transforms(
       "render",
       "legacy instance transform command posted without reason or fallback policy",
       {{"updates", std::to_string(updates.size())}});
-  vkpt::pathtracer::InstanceTransformUpdateOptions options{};
-  options.reason = vkpt::pathtracer::RenderUpdateReason::LegacyUnknown;
-  options.fallback_policy = vkpt::pathtracer::TransformFallbackPolicy::NoFallback;
-  options.source_system = "legacy";
+  auto options = vkpt::pathtracer::MakeStandardTransformUpdateOptions(
+      vkpt::pathtracer::RenderUpdateReason::LegacyUnknown,
+      0u,
+      "legacy");
   post_instance_transforms(std::move(updates), options);
 }
 

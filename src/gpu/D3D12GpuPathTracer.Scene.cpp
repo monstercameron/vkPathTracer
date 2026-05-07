@@ -15,8 +15,10 @@ namespace vkpt::gpu {
 
 namespace {
 
-constexpr uint32_t kGpuMaterialStrideFloats = 16u;
-constexpr uint32_t kGpuLightStrideFloats = 16u;
+constexpr uint32_t kGpuMaterialStrideFloats =
+    vkpt::pathtracer::kStandardGpuSceneBufferLayout.material_stride_floats;
+constexpr uint32_t kGpuLightStrideFloats =
+    vkpt::pathtracer::kStandardGpuSceneBufferLayout.light_stride_floats;
 
 std::array<float, kGpuMaterialStrideFloats> PackedMaterialValues(
     const vkpt::pathtracer::RTMaterial& material) {

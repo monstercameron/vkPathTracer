@@ -46,7 +46,7 @@ uint32_t bvh_build(
   };
 
   const uint32_t ni   = node_count++;
-  const uint32_t base = ni * 8u;
+  const uint32_t base = ni * kGpuBvhNodeStrideFloats;
 
   // Compute node AABB
   float bmin[3] = {1e30f, 1e30f, 1e30f}, bmax[3] = {-1e30f, -1e30f, -1e30f};
@@ -356,10 +356,10 @@ uint32_t BuildDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>&
     StoreEmptyBvh(outBvh);
     return 0u;
   }
-  outBvh.assign(std::max<std::size_t>(1u, refs.size() * 2u) * 8u, 0.0f);
+  outBvh.assign(std::max<std::size_t>(1u, refs.size() * 2u) * kGpuBvhNodeStrideFloats, 0.0f);
   uint32_t nodeCount = 0u;
   dynamic_bvh_build(refs, 0u, static_cast<uint32_t>(refs.size()), outBvh, nodeCount);
-  outBvh.resize(static_cast<std::size_t>(nodeCount) * 8u);
+  outBvh.resize(static_cast<std::size_t>(nodeCount) * kGpuBvhNodeStrideFloats);
   return static_cast<uint32_t>(refs.size());
 }
 
@@ -371,7 +371,7 @@ uint32_t RefitDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>&
     std::memcpy(&u, &f, sizeof(u));
     return u;
   };
-  const uint32_t nodeCount = static_cast<uint32_t>(bvh.size() / 8u);
+  const uint32_t nodeCount = static_cast<uint32_t>(bvh.size() / kGpuBvhNodeStrideFloats);
   if (nodeCount == 0u || bvh.size() % 8u != 0u) {
     return 0u;
   }
@@ -381,7 +381,7 @@ uint32_t RefitDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>&
     if (nodeIndex >= nodeCount) {
       return false;
     }
-    const uint32_t base = nodeIndex * 8u;
+    const uint32_t base = nodeIndex * kGpuBvhNodeStrideFloats;
     const uint32_t leftOrLeaf = as_u32(bvh[base + 6u]);
     const uint32_t rightOrCount = as_u32(bvh[base + 7u]);
     if ((leftOrLeaf & 0x80000000u) != 0u) {
@@ -408,8 +408,8 @@ uint32_t RefitDynamicInstanceBvhFromPackedInstances(const std::vector<uint32_t>&
     if (!self(self, left) || !self(self, right)) {
       return false;
     }
-    const uint32_t leftBase = left * 8u;
-    const uint32_t rightBase = right * 8u;
+    const uint32_t leftBase = left * kGpuBvhNodeStrideFloats;
+    const uint32_t rightBase = right * kGpuBvhNodeStrideFloats;
     bvh[base + 0u] = std::min(bvh[leftBase + 0u], bvh[rightBase + 0u]);
     bvh[base + 1u] = std::min(bvh[leftBase + 1u], bvh[rightBase + 1u]);
     bvh[base + 2u] = std::min(bvh[leftBase + 2u], bvh[rightBase + 2u]);

@@ -611,6 +611,8 @@ struct GpuSceneBufferLayoutContract {
   std::uint32_t film_pixel_stride_floats = 4u;
 };
 
+inline constexpr GpuSceneBufferLayoutContract kStandardGpuSceneBufferLayout{};
+
 struct PathTracerLifecycleContract {
   bool configure_before_scene_load = true;
   bool load_scene_before_acceleration_build = true;

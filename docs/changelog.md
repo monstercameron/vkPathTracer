@@ -5,6 +5,7 @@
 ### Static runtime cleanup and transform-update hardening
 
 - Added an additive standard path tracer contract descriptor covering lifecycle expectations, transform-update defaults, stable status names, and GPU buffer packing strides without changing the existing `IPathTracer` virtual interface.
+- Routed D3D12/Vulkan GPU packing stride constants and the render coordinator's legacy transform options through the shared path tracer contract helpers.
 - Removed the provisional animation component/import path from asset classification, glTF import, scene schema load/export, ECS storage, scene conversion, UI menus, timeline rows, and scripting smoke expectations.
 - Reframed render-frame and timeline behavior around static frame metadata and particle frame state instead of automatic scene animation playback.
 - Disabled live script/FPS playback paths in static mode while keeping manual scene editing, backend switching, and crash/status reporting responsive.

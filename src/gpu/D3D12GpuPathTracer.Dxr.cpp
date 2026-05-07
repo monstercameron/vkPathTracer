@@ -550,10 +550,10 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   pc.temporal_normal_power = 28.0f;
   pc.temporal_color_margin = 0.12f;
   pc.static_bvh_node_count = (m_staticTriangleCount > 0u)
-      ? static_cast<uint32_t>(m_gpuBvh.size() / 8u)
+      ? static_cast<uint32_t>(m_gpuBvh.size() / kGpuBvhNodeStrideFloats)
       : 0u;
   pc.dynamic_bvh_node_count = (m_dynamicInstanceCount > 0u)
-      ? static_cast<uint32_t>(m_gpuDynamicBvh.size() / 8u)
+      ? static_cast<uint32_t>(m_gpuDynamicBvh.size() / kGpuBvhNodeStrideFloats)
       : 0u;
   FillPreviousCameraConstants(pc, m_temporalHistoryValid ? m_temporalPrevCamera : MakeTemporalCameraState(pc));
   if (doReadback && (!m_ldrBuf || !m_ldrReadbackBuf || !m_ldrReadbackPtr || !ensure_compute_srv_uav_heap())) {
