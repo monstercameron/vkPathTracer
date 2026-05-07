@@ -112,7 +112,7 @@ function Add-SpotLight($entities,
       intensity = $intensity
       radius = $radius
       direction = V3 $direction[0] $direction[1] $direction[2]
-      beam_angle_degrees = $beamDegrees
+      beam_angle = $beamDegrees
       blend = $blend
     }
   })
@@ -482,7 +482,7 @@ function Build-Scene([string]$outputPath) {
       intensity = 900.0
       radius = 0.12
       direction = V3 0.535 -0.566 -0.629
-      beam_angle_degrees = 72.0
+      beam_angle = 72.0
       blend = 0.48
     }
     script = [ordered]@{
