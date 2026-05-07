@@ -175,7 +175,6 @@ MenuBar BuildDefaultMenuBar() {
   top.back().children.push_back(MenuItemNode("scene.camera_settings", "Camera Settings"));
   top.back().children.push_back(MenuItemNode("scene.physics_settings", "Physics Settings"));
   top.back().children.push_back(MenuItemNode("scene.script_settings", "Script Settings"));
-  top.back().children.push_back(MenuItemNode("scene.animation_settings", "Animation Settings"));
 
   top.push_back(MenuItemNode("render", "Render"));
   top.back().children.push_back(MenuItemNode("render.start_render", "Start Render..."));

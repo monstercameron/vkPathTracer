@@ -27,6 +27,27 @@
                tracer.reset_accumulation();
       };
 
+      auto qtShowBackendSwitchLoading =
+          [&](std::string_view backend, std::string_view phase, uint32_t tick) {
+        static constexpr const char* kSpinnerFrames[] = {"[|]", "[/]", "[-]", "[\\]"};
+        const std::string spinner = kSpinnerFrames[tick % std::size(kSpinnerFrames)];
+        const std::string message =
+            spinner + " switching backend to " + std::string(backend) +
+            (phase.empty() ? std::string{} : " - " + std::string(phase));
+        qtPreviewStatus = message;
+        ui_runtime_state.status_message = message;
+        ui_runtime_state.last_warning_or_error.clear();
+        qtDockPanelsDirty = true;
+        if (qtWindow != nullptr) {
+          vkpt::platform::QtStatusBarText status;
+          status.message = message;
+          status.fields.push_back(vkpt::platform::QtStatusBarField{
+              "backend_switch", message, 1});
+          qtWindow->set_status_bar_text(status);
+          QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 8);
+        }
+      };
+
       std::function<bool(std::string_view, std::string_view)> qtSwitchRuntimeBackend;
       qtSwitchRuntimeBackend = [&](std::string_view requestedBackend,
                                    std::string_view reason) {
@@ -46,6 +67,7 @@
           return true;
         }
 
+        qtShowBackendSwitchLoading(normalized, "creating renderer", 0u);
         auto next = qtCreateRuntimeTracer(normalized);
         if (!next.tracer) {
           ui_runtime_state.status_message =
@@ -60,6 +82,7 @@
           return false;
         }
 
+        qtShowBackendSwitchLoading(normalized, "configuring scene buffers", 1u);
         if (!qtConfigureTracerForCurrentScene(*next.tracer)) {
           next.tracer->shutdown();
           ui_runtime_state.status_message = "backend switch failed: renderer initialization";
@@ -73,8 +96,10 @@
           return false;
         }
 
+        qtShowBackendSwitchLoading(normalized, "stopping active renderer", 2u);
         qtShutdownActiveRenderer();
 
+        qtShowBackendSwitchLoading(normalized, "starting renderer", 3u);
         config.backend = {next.requested_backend, vkpt::config::ConfigSource::CliFlag};
         qtRendererPath = next.renderer_path;
         qtUseBg = next.background;

@@ -526,6 +526,9 @@
               break;
           }
         }
+        if (qtGizmoDrag.active) {
+          qtFlushPendingGizmoTransformUpdates(false);
+        }
         std::vector<vkpt::platform::QtDockPropertyEdit> qtPropertyEdits;
         if (qtWindow != nullptr) {
           qtPropertyEdits = qtWindow->drain_dock_property_edits();
@@ -555,16 +558,14 @@
           qtPendingFpsLookDx = 0.0f;
           qtPendingFpsLookDy = 0.0f;
         }
-        qtApplyContinuousFpsMovement(qtInputDt);
-        qtApplyContinuousOrbitCameraMovement(qtInputDt);
         qtApplyPhysicsSimulation(qtFrameStart);
-        qtApplySceneAnimation(qtFrameStart);
         const bool qtScriptDispatched = qtApplyScriptPlayback(qtFrameStart, qtFrameCount, qtInputDt);
         if (qtScriptDispatched && qtScriptState.playing && !qtFpsMode) {
           qtPendingFpsLookDx = 0.0f;
           qtPendingFpsLookDy = 0.0f;
         }
         updateQtSelectionOverlay();
+        qtEnableAutoOrbit = false;
 
         // ---- Camera orbit update — post to bg thread, never join ----
         if (qtTracerReady && qtEnableAutoOrbit && !qtUserCameraActive && kQtOrbitRadius > 1e-4f) {

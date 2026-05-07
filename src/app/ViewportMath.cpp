@@ -180,65 +180,11 @@ float DegToRad(float degrees) {
   return degrees * (3.14159265358979323846f / 180.0f);
 }
 
-bool AnimationHasAuthoredMotion(
-    const vkpt::scene::AnimationComponent &animation) {
-  constexpr float kEpsilon = 1.0e-6f;
-  return std::fabs(animation.translation_amplitude.x) > kEpsilon ||
-         std::fabs(animation.translation_amplitude.y) > kEpsilon ||
-         std::fabs(animation.translation_amplitude.z) > kEpsilon ||
-         std::fabs(animation.rotation_degrees.x) > kEpsilon ||
-         std::fabs(animation.rotation_degrees.y) > kEpsilon ||
-         std::fabs(animation.rotation_degrees.z) > kEpsilon ||
-         std::fabs(animation.scale_amplitude.x) > kEpsilon ||
-         std::fabs(animation.scale_amplitude.y) > kEpsilon ||
-         std::fabs(animation.scale_amplitude.z) > kEpsilon;
-}
-
 vkpt::scene::Quat QuatFromEulerDegrees(const vkpt::scene::Vec3 &degrees) {
   const auto qx = QuatFromAxisAngle({1.0f, 0.0f, 0.0f}, DegToRad(degrees.x));
   const auto qy = QuatFromAxisAngle({0.0f, 1.0f, 0.0f}, DegToRad(degrees.y));
   const auto qz = QuatFromAxisAngle({0.0f, 0.0f, 1.0f}, DegToRad(degrees.z));
   return QuatMultiply(qz, QuatMultiply(qy, qx));
-}
-
-vkpt::scene::TransformComponent
-SampleAnimationTransform(const vkpt::scene::TransformComponent &base,
-                         const vkpt::scene::AnimationComponent &animation,
-                         float elapsed_seconds) {
-  vkpt::scene::TransformComponent out = base;
-  const float duration = std::max(1.0f / 60.0f, animation.duration_seconds);
-  float local_time = elapsed_seconds * animation.playback_speed;
-  if (animation.looping) {
-    local_time = std::fmod(local_time, duration);
-    if (local_time < 0.0f) {
-      local_time += duration;
-    }
-  } else {
-    local_time = ClampFloat(local_time, 0.0f, duration);
-  }
-  const float phase =
-      duration > 0.0f ? ClampFloat(local_time / duration, 0.0f, 1.0f) : 0.0f;
-  const float wave = std::sin(phase * 6.28318530717958647692f);
-
-  out.translation.x += animation.translation_amplitude.x * wave;
-  out.translation.y += animation.translation_amplitude.y * wave;
-  out.translation.z += animation.translation_amplitude.z * wave;
-
-  const vkpt::scene::Vec3 animated_degrees{animation.rotation_degrees.x * phase,
-                                           animation.rotation_degrees.y * phase,
-                                           animation.rotation_degrees.z *
-                                               phase};
-  out.rotation =
-      QuatMultiply(QuatFromEulerDegrees(animated_degrees), base.rotation);
-
-  out.scale.x = std::max(
-      1.0e-5f, base.scale.x * (1.0f + animation.scale_amplitude.x * wave));
-  out.scale.y = std::max(
-      1.0e-5f, base.scale.y * (1.0f + animation.scale_amplitude.y * wave));
-  out.scale.z = std::max(
-      1.0e-5f, base.scale.z * (1.0f + animation.scale_amplitude.z * wave));
-  out.dirty = true;
-  return out;
 }
 
 vkpt::pathtracer::Vec3 ToPtVec3(const vkpt::scene::Vec3 &v) {

@@ -53,10 +53,6 @@ void AddProperty(QtPanelModel& model, std::string id, std::string label, std::st
   model.properties.push_back(Property(std::move(id), std::move(label), std::move(value), std::move(group), kind, editable));
 }
 
-std::string Vec3Text(const vkpt::scene::Vec3& value) {
-  return FloatText(value.x) + ", " + FloatText(value.y) + ", " + FloatText(value.z);
-}
-
 bool IsSelected(const QtPanelBuildContext& context, vkpt::core::StableId id) {
   if (context.selection == nullptr) {
     return false;
@@ -283,26 +279,6 @@ QtPanelModel BuildTimelinePanelModel(const QtPanelBuildContext& context) {
               QtPanelPropertyKind::Number);
   AddProperty(model, "timeline.playing", "Playing", BoolText(context.timeline_playing), "Playback",
               QtPanelPropertyKind::Toggle, true);
-  if (context.document != nullptr) {
-    for (const auto& entity : context.document->entities) {
-      if (entity.animation.clip.empty()) {
-        continue;
-      }
-      auto row = Row("animation." + IdText(entity.id), EntityName(entity), entity.animation.clip, "animation");
-      row.selected = IsSelected(context, entity.id);
-      row.properties.push_back(Property("animation.clip", "Clip", entity.animation.clip, "Animation",
-                                        QtPanelPropertyKind::Asset, true));
-      row.properties.push_back(Property("animation.looping", "Looping", BoolText(entity.animation.looping), "Animation",
-                                        QtPanelPropertyKind::Toggle, true));
-      row.properties.push_back(Property("animation.duration_seconds", "Duration", FloatText(entity.animation.duration_seconds),
-                                        "Animation", QtPanelPropertyKind::Number, true));
-      row.properties.push_back(Property("animation.playback_speed", "Speed", FloatText(entity.animation.playback_speed),
-                                        "Animation", QtPanelPropertyKind::Number, true));
-      row.properties.push_back(Property("animation.rotation_degrees", "Rotation", Vec3Text(entity.animation.rotation_degrees),
-                                        "Animation", QtPanelPropertyKind::Vector3, true));
-      model.rows.push_back(std::move(row));
-    }
-  }
   if (context.benchmark != nullptr) {
     const auto& desc = context.benchmark->run_desc;
     auto row = Row("timeline.benchmark", "Benchmark Run", desc.scene_path, "benchmark");
@@ -312,7 +288,7 @@ QtPanelModel BuildTimelinePanelModel(const QtPanelBuildContext& context) {
                                       "Benchmark", QtPanelPropertyKind::Number));
     model.rows.push_back(std::move(row));
   }
-  model.summary = model.rows.empty() ? "No animation tracks" : std::to_string(model.rows.size()) + " timeline tracks";
+  model.summary = model.rows.empty() ? "Static scene timeline" : std::to_string(model.rows.size()) + " timeline rows";
   return model;
 }
 

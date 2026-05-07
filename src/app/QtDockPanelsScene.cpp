@@ -58,11 +58,6 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
                                  "Scripts",
                                  (typeMask & kQtSceneTreeFilterScript) != 0u);
   QtDockAddToggleGroupedProperty(panel,
-                                 "scene_tree.filter.animation",
-                                 "Type Filter",
-                                 "Animation",
-                                 (typeMask & kQtSceneTreeFilterAnimation) != 0u);
-  QtDockAddToggleGroupedProperty(panel,
                                  "scene_tree.filter.entity",
                                  "Type Filter",
                                  "Groups",
@@ -110,9 +105,6 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
     if (!entity.script.script.empty()) {
       return std::string("script");
     }
-    if (!entity.animation.clip.empty()) {
-      return std::string("animation");
-    }
     return std::string("entity");
   };
 
@@ -135,8 +127,7 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
            entity.has_physics_body ||
            entity.has_benchmark_tag ||
            entity.has_sdf_primitive ||
-           !entity.script.script.empty() ||
-           !entity.animation.clip.empty();
+           !entity.script.script.empty();
   };
   auto is_transparent_group = [&](const vkpt::scene::SceneEntityDefinition& entity) {
     if (has_authored_payload(entity)) {
@@ -177,9 +168,6 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
     }
     if (!entity.script.script.empty()) {
       bits |= kQtSceneTreeFilterScript;
-    }
-    if (!entity.animation.clip.empty()) {
-      bits |= kQtSceneTreeFilterAnimation;
     }
     if (bits == 0u) {
       bits |= kQtSceneTreeFilterEntity;

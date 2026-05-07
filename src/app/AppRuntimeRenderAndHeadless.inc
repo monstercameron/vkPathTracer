@@ -93,16 +93,15 @@
     settings.enable_denoiser = gpuDenoiser;
     settings.enable_temporal_aa = temporalAa;
 
-    const auto makeParticleAnimationState = [&](uint32_t frame) {
-      vkpt::pathtracer::SceneParticleAnimationState animation{};
-      animation.frame = frame;
-      animation.delta_seconds = 1.0f / static_cast<float>(std::max<uint32_t>(1u, renderFps));
-      animation.seconds = renderTimeSeconds.has_value()
+    const auto makeParticleFrameState = [&](uint32_t frame) {
+      vkpt::pathtracer::SceneParticleFrameState frameState{};
+      frameState.frame = frame;
+      frameState.delta_seconds = 1.0f / static_cast<float>(std::max<uint32_t>(1u, renderFps));
+      frameState.seconds = renderTimeSeconds.has_value()
                               ? *renderTimeSeconds
-                              : static_cast<float>(frame) * animation.delta_seconds;
-      animation.advance_emitters =
-          renderSequenceFrames > 1u || renderFrame != 0u || renderTimeSeconds.has_value();
-      return animation;
+                              : static_cast<float>(frame) * frameState.delta_seconds;
+      frameState.advance_emitters = false;
+      return frameState;
     };
     const auto numberedOutputPath = [](const std::string& path, uint32_t frame) {
       const std::filesystem::path input(path);
@@ -115,7 +114,7 @@
     };
 
     auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocumentAtFrame(
-        document, makeParticleAnimationState(renderFrame));
+        document, makeParticleFrameState(renderFrame));
     if (!sceneResult) {
       std::cerr << "scene conversion failed\n";
       recordUiAction("app.render", "render", "scene conversion failed",
@@ -356,9 +355,9 @@
     if (renderSequenceFrames > 1u) {
       for (uint32_t sequenceFrame = 0u; sequenceFrame < renderSequenceFrames; ++sequenceFrame) {
         auto frameSceneResult = vkpt::pathtracer::BuildSceneDataFromDocumentAtFrame(
-            document, makeParticleAnimationState(sequenceFrame));
+            document, makeParticleFrameState(sequenceFrame));
         if (!frameSceneResult) {
-          std::cerr << "scene conversion failed for animation frame " << sequenceFrame << "\n";
+          std::cerr << "scene conversion failed for render frame " << sequenceFrame << "\n";
           writeStatus("error:scene_conversion_failed", "scene_conversion_failed");
           return 2;
         }

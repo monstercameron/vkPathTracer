@@ -98,20 +98,8 @@ QtDockPanelContent BuildQtAssetBrowserDock(const vkpt::scene::SceneDocument& doc
 QtDockPanelContent BuildQtTimelineDock(const vkpt::scene::SceneDocument& document,
                                        const vkpt::editor::UiLayoutDocument& layout) {
   auto panel = MakeQtDockPanel(layout, "timeline", "Timeline", false, 560.0f, 220.0f);
-  std::size_t animated = 0u;
-  for (const auto& entity : document.entities) {
-    if (!entity.animation.clip.empty()) {
-      ++animated;
-      QtDockAddRow(panel, QtEntityDisplayName(entity) + " clip=" + entity.animation.clip +
-          " duration=" + QtDockNumber(entity.animation.duration_seconds, 2) + "s" +
-          " speed=" + QtDockNumber(entity.animation.playback_speed, 2) +
-          (entity.animation.looping ? " loop" : " once"));
-    }
-  }
-  QtDockAddProperty(panel, "animated entities", std::to_string(animated));
-  if (animated == 0u) {
-    QtDockAddRow(panel, "No animation clips in the loaded document");
-  }
+  QtDockAddProperty(panel, "entities", std::to_string(document.entities.size()));
+  QtDockAddRow(panel, "Timeline playback disabled; scene transforms remain static.");
   return panel;
 }
 
