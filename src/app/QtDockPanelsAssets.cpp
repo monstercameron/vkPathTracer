@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 namespace vkpt::app {
 
@@ -20,8 +21,22 @@ QtDockPanelContent BuildQtAssetBrowserDock(const vkpt::scene::SceneDocument& doc
   panel.tree_stretch = 1;
   panel.property_stretch = 0;
   panel.property_preferred_height = 104;
-  const auto sceneFiles = QtDockFindAssetFiles(QtDockFindRepoRelativePath("assets/scenes"), {".json"}, false);
-  const auto modelFiles = QtDockFindAssetFiles(QtDockFindRepoRelativePath("assets/models"), {".obj", ".gltf"}, true);
+  auto appendFiles = [](std::vector<std::filesystem::path>& target,
+                        const std::vector<std::filesystem::path>& source) {
+    target.insert(target.end(), source.begin(), source.end());
+    std::sort(target.begin(), target.end(), [](const auto& lhs, const auto& rhs) {
+      return QtDockPathString(lhs) < QtDockPathString(rhs);
+    });
+    target.erase(std::unique(target.begin(), target.end()), target.end());
+  };
+  std::vector<std::filesystem::path> sceneFiles =
+      QtDockFindAssetFiles(QtDockFindRepoRelativePath("assets/scenes"), {".json"}, false);
+  appendFiles(sceneFiles,
+              QtDockFindAssetFiles(QtDockFindRepoRelativePath("game/scenes"), {".json"}, false));
+  std::vector<std::filesystem::path> modelFiles =
+      QtDockFindAssetFiles(QtDockFindRepoRelativePath("assets/models"), {".obj", ".gltf"}, true);
+  appendFiles(modelFiles,
+              QtDockFindAssetFiles(QtDockFindRepoRelativePath("game/models/lods"), {".gltf"}, true));
 
   QtDockAddProperty(panel, "scene", runtime.active_scene.empty() ? "none" : runtime.active_scene);
   QtDockAddProperty(panel, "library", std::to_string(sceneFiles.size()) + " scenes, " +
@@ -90,7 +105,7 @@ QtDockPanelContent BuildQtAssetBrowserDock(const vkpt::scene::SceneDocument& doc
   }
 
   if (panel.tree_rows.empty()) {
-    QtDockAddRow(panel, "No scenes or models found under assets/");
+    QtDockAddRow(panel, "No scenes or models found under assets/ or game/");
   }
   return panel;
 }
@@ -116,15 +131,15 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
   QtDockAddToggleGroupedProperty(panel,
                                  "script.runtime.enabled",
                                  "Runtime",
-                                 "Scripts enabled",
+                                 "Script execution",
                                  runtime == nullptr || runtime->scripts_enabled);
   QtDockAddToggleGroupedProperty(panel,
                                  "script.runtime.playing",
                                  "Runtime",
-                                 "Playing",
+                                 "Game mode (F1)",
                                  runtime != nullptr && runtime->playing);
-  QtDockAddButtonGroupedProperty(panel, "script.runtime.play", "Controls", "Play", "Play");
-  QtDockAddButtonGroupedProperty(panel, "script.runtime.pause", "Controls", "Pause", "Pause");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.play", "Controls", "Enter game mode", "Enter");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.pause", "Controls", "Leave game mode", "Leave");
   QtDockAddButtonGroupedProperty(panel, "script.runtime.step", "Controls", "Step update", "Step");
   QtDockAddButtonGroupedProperty(panel, "script.runtime.reload", "Controls", "Reload bindings", "Reload");
   QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_on_load", "Hooks", "on_load", "Fire");
@@ -159,6 +174,18 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
                             binding.entity_name + " #" + std::to_string(binding.entity) +
                             " " + binding.language + ":" + binding.entry +
                             " " + binding.source);
+    }
+    const std::size_t variable_count = std::min<std::size_t>(runtime->variables.size(), 16u);
+    if (variable_count > 0u) {
+      QtDockAddProperty(panel, "variables", std::to_string(runtime->variables.size()) + " captured");
+    }
+    for (std::size_t i = 0; i < variable_count; ++i) {
+      const auto& variable = runtime->variables[i];
+      QtDockAddProperty(panel,
+                        "var " + std::to_string(i + 1u),
+                        "#" + std::to_string(variable.entity) +
+                            " " + variable.scope + "." + variable.name +
+                            " = " + variable.value);
     }
     const std::size_t diagnostic_count = std::min<std::size_t>(runtime->diagnostics.size(), 6u);
     for (std::size_t i = 0; i < diagnostic_count; ++i) {

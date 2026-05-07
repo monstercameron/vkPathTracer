@@ -162,11 +162,13 @@ void PrintUsage() {
   std::cout << "  --platform <name>     Select platform: auto|raw|qt|headless\n";
   std::cout << "  --window-width <px>   Window width (default 1280)\n";
   std::cout << "  --window-height <px>  Window height (default 720)\n";
-  std::cout << "  --ui-present-hz <hz>  Preview present rate (1..120, default 30)\n";
+  std::cout << "  --ui-present-hz <hz>  UI/motion and preview publish rate (1..120, default 60)\n";
   std::cout << "  --frames <n>          Exit window mode after n frames (GUI smoke)\n";
   std::cout << "  --exit                Exit window mode after one frame unless --frames is set\n";
   std::cout << "  --scene <path>        Set startup scene\n";
   std::cout << "  --backend <name>      Select backend\n";
+  std::cout << "  --audio-backend <name> Select audio backend: auto|miniaudio|noop\n";
+  std::cout << "  --audio-mute          Disable audible output while keeping audio events active\n";
   std::cout << "  --log-level <n>       Select log level\n";
   std::cout << "  --crash-test          Simulate a crash and write crash artifacts\n";
   std::cout << "  --ui-model-smoke      Run headless UI model smoke checks\n";
@@ -344,6 +346,8 @@ AppOptionsParseResult ParseAppOptions(int argc, char** argv) {
       options.gpu_denoiser = true;
     } else if (token == "--temporal-aa") {
       options.temporal_aa = true;
+    } else if (token == "--audio-mute") {
+      options.audio_mute = true;
     } else if (token == "--list-gpus") {
       options.list_gpus = true;
     } else if (token == "--crash-test") {
@@ -374,6 +378,9 @@ AppOptionsParseResult ParseAppOptions(int argc, char** argv) {
     } else if (token == "--backend") {
       if (!HasValue(args, i)) return ParseError("missing value for --backend");
       options.backend = std::string(args[++i]);
+    } else if (token == "--audio-backend") {
+      if (!HasValue(args, i)) return ParseError("missing value for --audio-backend");
+      options.audio_backend = std::string(args[++i]);
     } else if (token == "--platform") {
       if (!HasValue(args, i)) return ParseError("missing value for --platform");
       options.platform_name = std::string(args[++i]);

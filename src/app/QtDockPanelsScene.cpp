@@ -102,6 +102,12 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
     if (entity.has_physics_body) {
       return std::string("physics");
     }
+    if (entity.has_audio_listener || entity.has_audio_emitter) {
+      return std::string("audio");
+    }
+    if (entity.has_ui_panel) {
+      return std::string("ui");
+    }
     if (!entity.script.script.empty()) {
       return std::string("script");
     }
@@ -127,6 +133,9 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
            entity.has_physics_body ||
            entity.has_benchmark_tag ||
            entity.has_sdf_primitive ||
+           entity.has_audio_listener ||
+           entity.has_audio_emitter ||
+           entity.has_ui_panel ||
            !entity.script.script.empty();
   };
   auto is_transparent_group = [&](const vkpt::scene::SceneEntityDefinition& entity) {
@@ -751,6 +760,17 @@ QtDockPanelContent BuildQtInspectorDock(const vkpt::scene::SceneDocument& docume
   if (!entity->script.script.empty()) {
     QtDockAddProperty(panel, "Script", entity->script.script);
   }
+  if (entity->has_audio_listener) {
+    QtDockAddProperty(panel, "Audio Listener", entity->audio_listener.enabled ? "enabled" : "disabled");
+  }
+  if (entity->has_audio_emitter) {
+    QtDockAddProperty(panel, "Audio Event", entity->audio_emitter.event);
+    QtDockAddProperty(panel, "Audio Bus", entity->audio_emitter.bus);
+  }
+  if (entity->has_ui_panel) {
+    QtDockAddProperty(panel, "UI Panel", entity->ui_panel.title.empty() ? entity->ui_panel.panel_id : entity->ui_panel.title);
+    QtDockAddProperty(panel, "UI Anchor", entity->ui_panel.anchor);
+  }
   return panel;
 }
 
@@ -841,6 +861,18 @@ QtDockPanelContent BuildQtCameraDock(const vkpt::scene::SceneDocument& document,
                                  "",
                                  frame_stats.camera_mode == "fps" ? "Exit FPS" : "Enter FPS",
                                  frame_stats.camera_mode == "fps" ? "Exit FPS" : "Enter FPS");
+  const auto cameraPreviewHz =
+      frame_stats.preview_publish_hz == 0u ? 60u : frame_stats.preview_publish_hz;
+  QtDockAddSliderGroupedProperty(panel,
+                                 "camera.preview.fps",
+                                 "Motion preview",
+                                 "Target FPS",
+                                 std::max<std::uint32_t>(1u, cameraPreviewHz),
+                                 1.0,
+                                 120.0,
+                                 1.0,
+                                 60.0,
+                                 "fps");
   if (frame_stats.camera_mode == "fps") {
     QtDockAddProperty(panel,
                       "FPS body",

@@ -92,6 +92,33 @@ std::string SceneDocument::to_json(bool pretty) const {
     value.object["anamorphic_squeeze"] = number_value(camera.anamorphic_squeeze);
     return value;
   };
+  auto string_list_value = [&](const std::vector<std::string>& lines) {
+    JsonValue value = array_value();
+    value.array.reserve(lines.size());
+    for (const auto& line : lines) {
+      value.array.push_back(string_value(line));
+    }
+    return value;
+  };
+  auto ui_panel_value = [&](const UiPanelComponent& panel) {
+    JsonValue value = object_value();
+    value.object["id"] = string_value(panel.panel_id);
+    value.object["title"] = string_value(panel.title);
+    value.object["anchor"] = string_value(panel.anchor);
+    value.object["enabled"] = bool_value(panel.enabled);
+    value.object["visible"] = bool_value(panel.visible);
+    value.object["x"] = number_value(panel.x);
+    value.object["y"] = number_value(panel.y);
+    value.object["width"] = number_value(panel.width);
+    value.object["height"] = number_value(panel.height);
+    value.object["opacity"] = number_value(panel.opacity);
+    value.object["font_size"] = number_value(panel.font_size);
+    value.object["background"] = vec3_value(panel.background);
+    value.object["foreground"] = vec3_value(panel.foreground);
+    value.object["accent"] = vec3_value(panel.accent);
+    value.object["lines"] = string_list_value(panel.lines);
+    return value;
+  };
 
   JsonValue root;
   root.kind = JsonValue::Kind::Object;
@@ -333,6 +360,29 @@ std::string SceneDocument::to_json(bool pretty) const {
       scriptNode.object["reload_on_save"] = bool_value(entity.script.reload_on_save);
       item.object["script"] = std::move(scriptNode);
     }
+    if (entity.has_audio_listener) {
+      JsonValue listenerNode = object_value();
+      listenerNode.object["enabled"] = bool_value(entity.audio_listener.enabled);
+      listenerNode.object["primary"] = bool_value(entity.audio_listener.primary);
+      item.object["audio_listener"] = std::move(listenerNode);
+    }
+    if (entity.has_audio_emitter) {
+      JsonValue emitterNode = object_value();
+      emitterNode.object["event"] = string_value(entity.audio_emitter.event);
+      emitterNode.object["bus"] = string_value(entity.audio_emitter.bus);
+      emitterNode.object["enabled"] = bool_value(entity.audio_emitter.enabled);
+      emitterNode.object["autoplay"] = bool_value(entity.audio_emitter.autoplay);
+      emitterNode.object["loop"] = bool_value(entity.audio_emitter.loop);
+      emitterNode.object["spatial"] = bool_value(entity.audio_emitter.spatial);
+      emitterNode.object["volume"] = number_value(entity.audio_emitter.volume);
+      emitterNode.object["pitch"] = number_value(entity.audio_emitter.pitch);
+      emitterNode.object["min_distance"] = number_value(entity.audio_emitter.min_distance);
+      emitterNode.object["max_distance"] = number_value(entity.audio_emitter.max_distance);
+      item.object["audio_emitter"] = std::move(emitterNode);
+    }
+    if (entity.has_ui_panel) {
+      item.object["ui_panel"] = ui_panel_value(entity.ui_panel);
+    }
     if (entity.has_benchmark_tag) {
       JsonValue benchmarkTagNode = object_value();
       benchmarkTagNode.object["enabled"] = bool_value(entity.benchmark_tag.enabled);
@@ -484,6 +534,13 @@ SceneSnapshot SceneDocument::snapshot() const {
               (entity.physics_body.dynamic ? "dynamic" : "static") + ":" +
               entity.physics_body.shape + ":" +
               std::to_string(entity.physics_body.mass) + ";";
+    }
+    if (entity.has_ui_panel) {
+      blob += "ui" + std::to_string(entity.id) + ":" + entity.ui_panel.panel_id + ":" +
+              entity.ui_panel.title + ":" +
+              (entity.ui_panel.enabled ? "1" : "0") + ":" +
+              (entity.ui_panel.visible ? "1" : "0") + ":" +
+              std::to_string(entity.ui_panel.lines.size()) + ";";
     }
   }
   out.materials.clear();

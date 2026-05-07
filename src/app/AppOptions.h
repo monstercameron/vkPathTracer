@@ -41,6 +41,7 @@ struct AppOptions {
   bool env_file_enabled = true;
   std::string scene_path;
   std::string backend;
+  std::string audio_backend = "auto";
   std::string platform_name;
   std::string output_path = "artifacts/renders/cornell.png";
   std::string exr_output_path;
@@ -58,6 +59,7 @@ struct AppOptions {
   std::optional<float> render_time_seconds;
   bool gpu_denoiser = false;
   bool temporal_aa = false;
+  bool audio_mute = false;
   std::optional<std::uint32_t> ui_present_hz;
 };
 

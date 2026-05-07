@@ -1,5 +1,50 @@
+      double qtCanvasFps = 0.0;
+      double qtCanvasFrameMs = 0.0;
+      std::deque<std::pair<std::chrono::steady_clock::time_point, std::uint64_t>>
+          qtCanvasRateSamples;
+      auto qtLastStatusBarSync = std::chrono::steady_clock::time_point{};
+      constexpr auto kQtCanvasRateWindow = std::chrono::milliseconds(1500);
+      constexpr auto kQtCanvasRateMinWindow = std::chrono::milliseconds(750);
+      constexpr auto kQtStatusBarRefreshInterval = std::chrono::milliseconds(250);
+      constexpr auto kQtDockPanelDirtyRefreshInterval = std::chrono::milliseconds(500);
+      constexpr auto kQtDockPanelIdleRefreshInterval = std::chrono::milliseconds(5000);
+      auto qtUpdateCanvasFrameRate =
+          [&](const vkpt::platform::QtFramebufferStats& windowStats,
+              std::chrono::steady_clock::time_point now) {
+        if (qtCanvasRateSamples.empty() ||
+            qtCanvasRateSamples.back().second != windowStats.painted ||
+            now - qtCanvasRateSamples.back().first >= kQtStatusBarRefreshInterval) {
+          qtCanvasRateSamples.emplace_back(now, windowStats.painted);
+        }
+
+        while (qtCanvasRateSamples.size() > 2u &&
+               now - qtCanvasRateSamples.front().first > kQtCanvasRateWindow) {
+          qtCanvasRateSamples.pop_front();
+        }
+
+        if (qtCanvasRateSamples.size() < 2u) {
+          return;
+        }
+        const auto base = qtCanvasRateSamples.front();
+        const auto elapsed = now - base.first;
+        if (elapsed < kQtCanvasRateMinWindow) {
+          return;
+        }
+
+        const double elapsedSeconds = std::chrono::duration<double>(elapsed).count();
+        if (elapsedSeconds <= 0.0) {
+          return;
+        }
+        const std::uint64_t paintedDelta =
+            windowStats.painted >= base.second
+                ? windowStats.painted - base.second
+                : 0u;
+        qtCanvasFps = static_cast<double>(paintedDelta) / elapsedSeconds;
+        qtCanvasFrameMs = qtCanvasFps > 0.0 ? 1000.0 / qtCanvasFps : 0.0;
+      };
       auto qtBuildFrameStats = [&]() {
         QtDockFrameStats stats;
+        const auto now = std::chrono::steady_clock::now();
         stats.sample_count = qtUseBg
             ? qtPublishedSample.load(std::memory_order_relaxed)
             : qtSampleIndex;
@@ -19,8 +64,9 @@
         stats.gpu_batches_per_tick = qtLastGpuBatchesPerTick;
         stats.gpu_batch_ms = qtSmoothedGpuBatchMs;
         stats.ui_frame_ms = qtLastUiFrameMs;
+        stats.canvas_fps = qtCanvasFps;
+        stats.canvas_frame_ms = qtCanvasFrameMs;
         stats.total_rays = qtPublishedRays.load(std::memory_order_relaxed);
-        const auto now = std::chrono::steady_clock::now();
         const auto computerMetric = qtComputerRayMetrics.update(
             "computer",
             "Computer",
@@ -61,14 +107,18 @@
         stats.tracer_ready = qtTracerReady;
         stats.preview_status = qtPreviewStatus;
         stats.render_mode = qtTracerReady
-            ? (qtUseBg ? std::string("on (background thread)") : std::string("on (event loop)"))
+            ? (qtScriptState.playing
+                   ? (qtUseBg ? std::string("game (background thread)") : std::string("game (event loop)"))
+                   : (qtUseBg ? std::string("editor (background thread)") : std::string("editor (event loop)")))
             : std::string("off");
         stats.publish_cap = qtUseBg
             ? (std::to_string(qtPreviewPublishHz) + " fps")
             : std::string("event loop");
-        stats.camera_mode = qtFpsMode
+        stats.camera_mode = qtScriptState.playing
+            ? std::string("game")
+            : (qtFpsMode
             ? std::string("fps")
-            : (qtEnableAutoOrbit ? std::string("orbit") : std::string("authored"));
+            : (qtEnableAutoOrbit ? std::string("orbit") : std::string("authored")));
         stats.fps_player_grounded = qtFpsPlayer.grounded;
         stats.fps_player_crouching = qtFpsPlayer.crouching;
         stats.fps_player_running = qtFpsPlayer.running;
@@ -76,9 +126,13 @@
         stats.fps_player_eye_height = qtFpsPlayer.eye_height;
         if (qtWindow != nullptr) {
           const auto windowStats = qtWindow->framebuffer_stats();
+          qtUpdateCanvasFrameRate(windowStats, now);
           stats.window_received = windowStats.received;
           stats.window_presented = windowStats.presented;
+          stats.window_painted = windowStats.painted;
           stats.window_dropped = windowStats.dropped;
+          stats.canvas_fps = qtCanvasFps;
+          stats.canvas_frame_ms = qtCanvasFrameMs;
         }
         return stats;
       };
@@ -138,18 +192,7 @@
             frameStats.tracer_ready,
             frameStats.tracer_ready ? std::string_view{} : std::string_view{"tracer is not ready"});
       };
-      auto syncQtDockPanels = [&](bool force) {
-        if (qtWindow == nullptr) {
-          return;
-        }
-        const auto now = std::chrono::steady_clock::now();
-        if (!force &&
-            !qtDockPanelsDirty &&
-            qtLastDockPanelSync != std::chrono::steady_clock::time_point{} &&
-            now - qtLastDockPanelSync < std::chrono::milliseconds(5000)) {
-          return;
-        }
-        const auto frameStats = qtBuildFrameStats();
+      auto qtApplyRuntimeFrameStats = [&](const QtDockFrameStats& frameStats) {
         ui_runtime_state.active_scene =
             config.scene_path.value.empty() ? "builtin:preview" : config.scene_path.value;
         ui_runtime_state.active_camera = qtActiveCameraObjectName ? qtActiveCameraObjectName() : "runtime camera";
@@ -158,15 +201,51 @@
             ? (qtUseBg ? std::string("cpu_tiled_background") : config.backend.value)
             : qtRendererPath;
         ui_runtime_state.spp_accumulated = frameStats.sample_count;
-        ui_runtime_state.frame_ms = frameStats.ui_frame_ms;
-        ui_runtime_state.fps = frameStats.ui_frame_ms > 0.0 ? 1000.0 / frameStats.ui_frame_ms : 0.0;
+        ui_runtime_state.frame_ms = frameStats.canvas_frame_ms;
+        ui_runtime_state.fps = frameStats.canvas_fps;
         ui_runtime_state.background_job_count = qtUseBg ? 1u : 0u;
+      };
+      auto syncQtStatusBar = [&](bool force) {
+        if (qtWindow == nullptr) {
+          return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!force &&
+            qtLastStatusBarSync != std::chrono::steady_clock::time_point{} &&
+            now - qtLastStatusBarSync < kQtStatusBarRefreshInterval) {
+          return;
+        }
+        const auto frameStats = qtBuildFrameStats();
+        qtApplyRuntimeFrameStats(frameStats);
+        const auto statusBar = vkpt::editor::BuildStatusBarModel(
+            ui_runtime_state,
+            ui_selection_state,
+            nullptr);
+        ApplyQtStatusBarToWindow(qtWindow, BuildQtStatusBarText(statusBar));
+        qtLastStatusBarSync = now;
+      };
+      auto syncQtDockPanels = [&](bool force) {
+        if (qtWindow == nullptr) {
+          return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!force && qtLastDockPanelSync != std::chrono::steady_clock::time_point{}) {
+          const auto minInterval = qtDockPanelsDirty
+              ? kQtDockPanelDirtyRefreshInterval
+              : kQtDockPanelIdleRefreshInterval;
+          if (now - qtLastDockPanelSync < minInterval) {
+            return;
+          }
+        }
+        const auto frameStats = qtBuildFrameStats();
+        qtApplyRuntimeFrameStats(frameStats);
         const auto benchmarkPanel = qtBuildBenchmarkPanel(frameStats);
         const auto statusBar = vkpt::editor::BuildStatusBarModel(
             ui_runtime_state,
             ui_selection_state,
             &benchmarkPanel.score);
         ApplyQtStatusBarToWindow(qtWindow, BuildQtStatusBarText(statusBar));
+        qtLastStatusBarSync = now;
         qtLastDockPanels = BuildQtDockPanels(qtSceneDocument,
                                              qtScene,
                                              qtSettings,
@@ -235,6 +314,47 @@
         std::cout << message << "\n";
         logger.log(vkpt::log::Severity::Info, "app", message);
       };
+      auto qtColorByte = [](float value) -> std::uint8_t {
+        const float clamped = std::clamp(std::isfinite(value) ? value : 0.0f, 0.0f, 1.0f);
+        return static_cast<std::uint8_t>(std::round(clamped * 255.0f));
+      };
+      auto qtBuildScriptOverlayPanels = [&]() {
+        std::vector<vkpt::platform::QtScriptOverlayPanel> panels;
+        panels.reserve(qtSceneDocument.entities.size());
+        for (const auto& entity : qtSceneDocument.entities) {
+          if (!entity.has_ui_panel || !entity.ui_panel.enabled || !entity.ui_panel.visible) {
+            continue;
+          }
+          const auto& source = entity.ui_panel;
+          vkpt::platform::QtScriptOverlayPanel panel;
+          panel.id = source.panel_id.empty() ? std::to_string(entity.id) : source.panel_id;
+          panel.title = source.title;
+          panel.anchor = source.anchor;
+          panel.x = source.x;
+          panel.y = source.y;
+          panel.width = source.width;
+          panel.height = source.height;
+          panel.opacity = source.opacity;
+          panel.font_size = source.font_size;
+          panel.background_r = qtColorByte(source.background.x);
+          panel.background_g = qtColorByte(source.background.y);
+          panel.background_b = qtColorByte(source.background.z);
+          panel.foreground_r = qtColorByte(source.foreground.x);
+          panel.foreground_g = qtColorByte(source.foreground.y);
+          panel.foreground_b = qtColorByte(source.foreground.z);
+          panel.accent_r = qtColorByte(source.accent.x);
+          panel.accent_g = qtColorByte(source.accent.y);
+          panel.accent_b = qtColorByte(source.accent.z);
+          panel.lines = source.lines;
+          panels.push_back(std::move(panel));
+        }
+        return panels;
+      };
+      auto syncQtScriptOverlayPanels = [&]() {
+        if (qtWindow != nullptr) {
+          qtWindow->set_script_overlay_panels(qtBuildScriptOverlayPanels());
+        }
+      };
       auto updateQtPreviewOverlay = [&]() {
         if (qtWindow == nullptr) {
           return;
@@ -245,7 +365,9 @@
                 << " spp\nFrame: " << qtFrameCount
                 << "\nRays: " << qtPublishedRays.load(std::memory_order_relaxed);
         qtWindow->set_overlay_text(overlay.str());
+        syncQtScriptOverlayPanels();
         qtMaybeRefreshPendingViewportPickables(std::chrono::steady_clock::now());
+        syncQtStatusBar(false);
         syncQtDockPanels(false);
         updateQtWindowTitle();
       };
@@ -338,20 +460,23 @@
       auto qtPhysicsPublishInterval = [&](bool cameraRecentlyActive) {
         if (qtPhysicsTransformUpdateSupported) {
           (void)cameraRecentlyActive;
-          return std::chrono::milliseconds(16);
+          return std::chrono::duration_cast<std::chrono::microseconds>(
+              qtInteractiveFrameTarget());
         }
         if (cameraRecentlyActive) {
           const double targetMs = qtPhysicsSceneReloadMs > 0.0
               ? qtPhysicsSceneReloadMs * 1.25
               : 80.0;
-          return std::chrono::milliseconds(static_cast<int>(
-              std::round(std::clamp(targetMs, 50.0, 240.0))));
+          return std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::milliseconds(static_cast<int>(
+                  std::round(std::clamp(targetMs, 50.0, 240.0)))));
         }
         const double targetMs = qtPhysicsSceneReloadMs > 0.0
             ? qtPhysicsSceneReloadMs * 2.5
             : 250.0;
-        return std::chrono::milliseconds(static_cast<int>(
-            std::round(std::clamp(targetMs, 180.0, 1000.0))));
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::milliseconds(static_cast<int>(
+                std::round(std::clamp(targetMs, 180.0, 1000.0)))));
       };
       auto qtBuildPendingPhysicsInstanceUpdates = [&]() {
         std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates;
@@ -405,14 +530,10 @@
         if (updates.empty() ||
             !qtPublishInstanceTransformUpdates(
                 updates,
-                vkpt::pathtracer::InstanceTransformUpdateOptions{
+                vkpt::pathtracer::MakeStandardTransformUpdateOptions(
                     vkpt::pathtracer::RenderUpdateReason::PhysicsMotion,
-                    vkpt::pathtracer::TransformFallbackPolicy::AllowFullSceneReload,
-                    true,
-                    true,
-                    false,
                     0u,
-                    "qt-physics"})) {
+                    "qt-physics"))) {
           qtPhysicsTransformUpdateSupported = false;
           return false;
         }
@@ -584,17 +705,9 @@
             qtPhysicsSceneReloadMs = qtPhysicsSceneReloadMs <= 0.0
                 ? publishMs
                 : (qtPhysicsSceneReloadMs * 0.75 + publishMs * 0.25);
-            if (qtReloadEditedScene("physics simulation")) {
-              qtPhysicsScenePublishPending = false;
-              qtPendingPhysicsInstanceUpdates.clear();
-              qtPhysicsTransformUpdateSupported = false;
-              qtPreviewStatus = "physics simulation";
-              ui_runtime_state.status_message = "physics simulation";
-            } else {
-              qtPhysicsTransformUpdateSupported = false;
-              qtPreviewStatus = "physics transform update blocked";
-              ui_runtime_state.status_message = "physics transform update blocked";
-            }
+            qtPhysicsTransformUpdateSupported = false;
+            qtPreviewStatus = "physics transform update blocked";
+            ui_runtime_state.status_message = "physics transform update blocked";
           }
           const auto slowNow = std::chrono::steady_clock::now();
           if ((physicsStepMs > 4.0 || physicsExtractMs > 2.0 || physicsWrites.size() > 64u) &&

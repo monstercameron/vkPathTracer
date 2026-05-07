@@ -102,6 +102,7 @@
         qtShowBackendSwitchLoading(normalized, "starting renderer", 3u);
         config.backend = {next.requested_backend, vkpt::config::ConfigSource::CliFlag};
         qtRendererPath = next.renderer_path;
+        status.selected_renderer_path = qtRendererPath;
         qtUseBg = next.background;
         qtEnableAutoOrbit = (windowFrameLimit == 0u) && !qtUseBg && !qtPhysicsRuntimeEnabled;
         qtTracerReady = true;

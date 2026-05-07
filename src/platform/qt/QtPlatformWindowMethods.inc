@@ -51,6 +51,7 @@ void AppendQtMenuItems(QMenu* menu,
 
 void QtWindow::PendingFramebuffer::reset() {
   id = 0u;
+  generation = 0u;
   width = 0u;
   height = 0u;
   rgba.clear();
@@ -177,7 +178,7 @@ WindowMetrics QtWindow::metrics() const {
 
 bool QtWindow::poll_events() {
   if (QCoreApplication::instance() != nullptr) {
-    QCoreApplication::processEvents(QEventLoop::AllEvents, 16);
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
   }
 
   update_metrics_from_widget();
@@ -241,9 +242,21 @@ void QtWindow::set_selection_overlay_boxes(const std::vector<QtSelectionOverlayB
   }
 }
 
+void QtWindow::set_script_overlay_panels(const std::vector<QtScriptOverlayPanel>& panels) {
+  if (m_widget != nullptr) {
+    static_cast<QtViewportWindow*>(m_widget)->setScriptOverlayPanels(panels);
+  }
+}
+
 void QtWindow::set_viewport_cursor(QtViewportCursor cursor) {
   if (m_widget != nullptr) {
     static_cast<QtViewportWindow*>(m_widget)->setViewportCursor(cursor);
+  }
+}
+
+void QtWindow::set_viewport_asset_drops_enabled(bool enabled) {
+  if (m_widget != nullptr) {
+    static_cast<QtViewportWindow*>(m_widget)->setAssetModelDropsEnabled(enabled);
   }
 }
 
@@ -546,18 +559,36 @@ void QtWindow::set_status_bar_text(const QtStatusBarText& status) {
 void QtWindow::set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba,
                                     std::size_t width,
                                     std::size_t height) {
-  set_framebuffer_rgba_impl(std::vector<std::uint8_t>(rgba.begin(), rgba.end()), width, height);
+  set_framebuffer_rgba_impl(std::vector<std::uint8_t>(rgba.begin(), rgba.end()), width, height, 0u);
 }
 
 void QtWindow::set_framebuffer_rgba(std::vector<std::uint8_t>&& rgba,
                                     std::size_t width,
                                     std::size_t height) {
-  set_framebuffer_rgba_impl(std::move(rgba), width, height);
+  set_framebuffer_rgba_impl(std::move(rgba), width, height, 0u);
+}
+
+void QtWindow::set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba,
+                                    std::size_t width,
+                                    std::size_t height,
+                                    std::uint64_t generation) {
+  set_framebuffer_rgba_impl(std::vector<std::uint8_t>(rgba.begin(), rgba.end()),
+                            width,
+                            height,
+                            generation);
+}
+
+void QtWindow::set_framebuffer_rgba(std::vector<std::uint8_t>&& rgba,
+                                    std::size_t width,
+                                    std::size_t height,
+                                    std::uint64_t generation) {
+  set_framebuffer_rgba_impl(std::move(rgba), width, height, generation);
 }
 
 void QtWindow::set_framebuffer_rgba_impl(std::vector<std::uint8_t> frame,
                                          std::size_t width,
-                                         std::size_t height) {
+                                         std::size_t height,
+                                         std::uint64_t generation) {
   // Render thread rule: callers may publish RGBA8 display frames here, but this
   // path only updates the handoff slot and posts a coalesced Qt-thread drain.
   {
@@ -618,6 +649,7 @@ void QtWindow::set_framebuffer_rgba_impl(std::vector<std::uint8_t> frame,
 
     frameId = m_nextFramebufferId++;
     m_pendingFramebuffer.id = frameId;
+    m_pendingFramebuffer.generation = generation;
     m_pendingFramebuffer.width = width;
     m_pendingFramebuffer.height = height;
     m_pendingFramebuffer.rgba = std::move(frame);
@@ -625,6 +657,7 @@ void QtWindow::set_framebuffer_rgba_impl(std::vector<std::uint8_t> frame,
 
     ++m_framebufferStats.received;
     m_framebufferStats.latestPublishedId = frameId;
+    m_framebufferStats.latestPublishedGeneration = generation;
     m_framebufferStats.latestPublishedWidth = width;
     m_framebufferStats.latestPublishedHeight = height;
 
@@ -763,6 +796,7 @@ void QtWindow::deliver_pending_frame_to_widget(QWidget* widget) {
                                         frame.rgba.size(),
                                         frame.width,
                                         frame.height,
+                                        frame.generation,
                                         frame.id)) {
     record_frame_dropped(frame.id);
     vkpt::log::Logger::instance().log(
@@ -865,6 +899,7 @@ void QtWindow::close_startup_splash(bool animated) {
 }
 
 void QtWindow::record_frame_presented(std::uint64_t frameId,
+                                      std::uint64_t generation,
                                       std::size_t width,
                                       std::size_t height) {
   QtFramebufferStats stats{};
@@ -875,6 +910,7 @@ void QtWindow::record_frame_presented(std::uint64_t frameId,
     std::scoped_lock lock(m_frameMutex);
     ++m_framebufferStats.presented;
     m_framebufferStats.latestPresentedId = frameId;
+    m_framebufferStats.latestPresentedGeneration = generation;
     m_framebufferStats.latestPresentedWidth = width;
     m_framebufferStats.latestPresentedHeight = height;
     firstPresented = m_framebufferStats.presented == 1u;
@@ -892,6 +928,29 @@ void QtWindow::record_frame_presented(std::uint64_t frameId,
           {"width", std::to_string(width)},
           {"height", std::to_string(height)}
         });
+  }
+
+  if (periodicStats) {
+    LogQtFramebufferStats("Qt display frame handoff counters", stats);
+  }
+}
+
+void QtWindow::record_canvas_painted(std::uint64_t frameId,
+                                     std::uint64_t generation,
+                                     std::size_t width,
+                                     std::size_t height) {
+  QtFramebufferStats stats{};
+  bool periodicStats = false;
+
+  {
+    std::scoped_lock lock(m_frameMutex);
+    ++m_framebufferStats.painted;
+    m_framebufferStats.latestPaintedId = frameId;
+    m_framebufferStats.latestPaintedGeneration = generation;
+    m_framebufferStats.latestPaintedWidth = width;
+    m_framebufferStats.latestPaintedHeight = height;
+    periodicStats = ShouldLogQtFramebufferStats(m_framebufferStats.painted);
+    stats = m_framebufferStats;
   }
 
   if (periodicStats) {

@@ -39,24 +39,21 @@
               if (!QtParseBool(edit.value, value)) {
                 return failEdit("expected true or false");
               }
-              qtScriptState.playing = false;
-              qtScriptState.status = value ? "script playback disabled in static mode" : "script playback paused";
+              qtSetGameMode(value, frameIndex, "dock");
             } else if (parts[2] == "play") {
-              qtScriptState.playing = false;
-              qtScriptState.status = "script playback disabled in static mode";
+              qtSetGameMode(true, frameIndex, "dock");
             } else if (parts[2] == "pause") {
-              qtScriptState.playing = false;
-              qtScriptState.status = "script playback paused";
+              qtSetGameMode(false, frameIndex, "dock");
             } else if (parts[2] == "step") {
-              qtScriptState.status = "script dispatch disabled in static mode";
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUpdate, frameIndex, 1.0 / 60.0, "dock step");
             } else if (parts[2] == "reload") {
               qtReloadScriptsFromDocument("dock");
             } else if (parts[2] == "dispatch_on_load") {
-              qtScriptState.status = "script dispatch disabled in static mode";
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLoad, frameIndex, 0.0, "dock on_load");
             } else if (parts[2] == "dispatch_fixed_update") {
-              qtScriptState.status = "script dispatch disabled in static mode";
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnFixedUpdate, frameIndex, 1.0 / 60.0, "dock fixed_update");
             } else if (parts[2] == "dispatch_late_update") {
-              qtScriptState.status = "script dispatch disabled in static mode";
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLateUpdate, frameIndex, 1.0 / 60.0, "dock late_update");
             } else {
               return failEdit("unknown script runtime property");
             }
@@ -105,7 +102,21 @@
               qtSetFpsMode(!qtFpsMode, frameIndex, "dock");
             } else {
               qtFpsMode = !qtFpsMode;
+              qtSyncViewportAssetDropMode();
             }
+          } else if (parts.size() == 3u && parts[1] == "preview" && parts[2] == "fps") {
+            float value = 0.0f;
+            if (!QtParseFloat(edit.value, value)) {
+              return failEdit("expected numeric preview fps");
+            }
+            const auto hz = vkpt::config::ClampUiPresentHz(
+                static_cast<std::uint32_t>(ClampFloat(std::round(value), 1.0f, 120.0f)));
+            config.ui_present_hz = {hz, vkpt::config::ConfigSource::CliFlag};
+            qtRefreshPreviewCadence();
+            qtNextFramebufferSubmit = std::chrono::steady_clock::time_point{};
+            ui_runtime_state.status_message =
+                "motion preview target set to " + std::to_string(hz) + " fps";
+            qtDockPanelsDirty = true;
           } else if (parts.size() == 3u && parts[1] == "shot" && parts[2] == "slot") {
             float value = 0.0f;
             if (!QtParseFloat(edit.value, value)) {
@@ -891,14 +902,10 @@
               qtPublishInstanceTransformUpdates &&
               qtPublishInstanceTransformUpdates(
                   transformBuild.updates,
-                  vkpt::pathtracer::InstanceTransformUpdateOptions{
+                  vkpt::pathtracer::MakeStandardTransformUpdateOptions(
                       vkpt::pathtracer::RenderUpdateReason::EditorGizmoMotion,
-                      vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
-                      true,
-                      true,
-                      false,
-                      0u,
-                      "qt-property-edit"})) {
+                      frameIndex,
+                      "qt-property-edit"))) {
             reloadOk = true;
             qtPreviewStatus = "instance transform update";
           } else {

@@ -48,7 +48,6 @@ vkpt::platform::QtViewportCursor
 CursorForGizmoHit(const ViewportGizmoHit &hit) {
   switch (hit.kind) {
   case ViewportGizmoDragKind::Translate:
-  case ViewportGizmoDragKind::FreeformTranslate:
     return vkpt::platform::QtViewportCursor::Translate;
   case ViewportGizmoDragKind::Rotate:
     return vkpt::platform::QtViewportCursor::Rotate;
@@ -344,46 +343,6 @@ std::optional<ViewportGizmoHit> PickSelectionGizmoHandle(
   consider_arc(axes[2].axis, 2, axes[0].axis, axes[1].axis,
                std::min(xLength, yLength));
   return best;
-}
-
-std::optional<ViewportGizmoHit> PickSelectionBoundsFreeform(
-    const vkpt::editor::Bounds &bounds, const ViewportCameraPose &camera,
-    float width, float height, float renderAspect, vkpt::editor::GizmoMode mode,
-    float mouseX, float mouseY) {
-  if (!bounds.valid || mode == vkpt::editor::GizmoMode::None) {
-    return std::nullopt;
-  }
-  const auto corners = BoundsCorners(bounds);
-  std::array<std::optional<ProjectedViewportPoint>, 8> projected{};
-  for (std::size_t i = 0; i < corners.size(); ++i) {
-    projected[i] = ProjectWorldPointToOverlay(corners[i], camera, width, height,
-                                              renderAspect);
-  }
-
-  float bestDistance = 10.0f;
-  for (const auto [a, b] : kViewportBoundsEdges) {
-    const auto &pa = projected[static_cast<std::size_t>(a)];
-    const auto &pb = projected[static_cast<std::size_t>(b)];
-    if (!pa || !pb) {
-      continue;
-    }
-    const float distance = ScreenDistanceToSegment(mouseX, mouseY, *pa, *pb);
-    bestDistance = std::min(bestDistance, distance);
-  }
-  if (bestDistance > 9.5f) {
-    return std::nullopt;
-  }
-
-  const auto min = ToPtVec3(bounds.min);
-  const auto max = ToPtVec3(bounds.max);
-  return ViewportGizmoHit{ViewportGizmoDragKind::FreeformTranslate,
-                          {},
-                          PtMul(PtAdd(min, max), 0.5f),
-                          1.0f,
-                          0.0f,
-                          1.0f,
-                          1.0f,
-                          -1};
 }
 
 void AddSelectionGizmo(vkpt::platform::QtSelectionOverlayBox &box,

@@ -22,6 +22,8 @@ option(PT_ENABLE_SVE "Enable ARM SVE codepath" OFF)
 option(PT_ENABLE_JOLT "Enable Jolt integration" OFF)
 option(PT_ENABLE_LUA "Enable Lua integration" OFF)
 option(PT_ENABLE_LUA_VENDOR "Download and build Lua when system Lua 5.4 is unavailable" ON)
+option(PT_ENABLE_AUDIO "Enable engine-owned game audio support" OFF)
+option(PT_ENABLE_MINIAUDIO "Enable the miniaudio audio backend when PT_ENABLE_AUDIO=ON" ON)
 option(PT_ENABLE_EDITOR "Enable editor module" OFF)
 option(PT_ENABLE_BENCHMARK "Enable benchmark module" OFF)
 option(PT_ENABLE_PROFILING "Enable profiling hooks" OFF)
@@ -33,6 +35,9 @@ option(PT_ENABLE_QT_RHI "Enable experimental Qt QRhi viewport" OFF)
 option(PT_ENABLE_RAW_DESKTOP "Enable raw native desktop platform" ON)
 set(PT_WINDEPLOYQT_EXECUTABLE "" CACHE FILEPATH "Path to windeployqt for Windows Qt runtime deployment")
 set(PT_JOLT_GIT_TAG "v5.5.0" CACHE STRING "Jolt Physics git tag used when PT_ENABLE_JOLT=ON")
+set(PT_MINIAUDIO_GIT_TAG "0.11.25" CACHE STRING "miniaudio git tag used when PT_ENABLE_AUDIO=ON")
+set(PT_AUDIO_BACKEND "auto" CACHE STRING "Default audio backend: auto|miniaudio|noop")
+set_property(CACHE PT_AUDIO_BACKEND PROPERTY STRINGS auto miniaudio noop)
 set(PT_SANITIZER "disabled" CACHE STRING "Sanitizer flavor")
 set_property(CACHE PT_SANITIZER PROPERTY STRINGS disabled address thread)
 
@@ -46,6 +51,10 @@ endif()
 
 if(PT_ENABLE_QT_RHI AND NOT PT_ENABLE_QT)
   message(FATAL_ERROR "PT_ENABLE_QT_RHI=ON requires PT_ENABLE_QT=ON.")
+endif()
+
+if(NOT PT_ENABLE_AUDIO)
+  set(PT_ENABLE_MINIAUDIO OFF)
 endif()
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
@@ -73,6 +82,7 @@ set(_pt_all_features
   PT_ENABLE_SVE
   PT_ENABLE_JOLT
   PT_ENABLE_LUA
+  PT_ENABLE_AUDIO
   PT_ENABLE_EDITOR
   PT_ENABLE_BENCHMARK
   PT_ENABLE_PROFILING
@@ -352,6 +362,56 @@ if(PT_ENABLE_LUA)
   message(STATUS "Lua enabled: ${LUA_VERSION_STRING}")
 endif()
 
+# ---- Audio ------------------------------------------------------------------
+set(PT_MINIAUDIO_TARGET "")
+string(TOLOWER "${PT_AUDIO_BACKEND}" PT_AUDIO_BACKEND_NORMALIZED)
+if(NOT PT_AUDIO_BACKEND_NORMALIZED STREQUAL "auto" AND
+   NOT PT_AUDIO_BACKEND_NORMALIZED STREQUAL "miniaudio" AND
+   NOT PT_AUDIO_BACKEND_NORMALIZED STREQUAL "noop")
+  message(FATAL_ERROR "PT_AUDIO_BACKEND must be one of: auto, miniaudio, noop.")
+endif()
+
+if(PT_ENABLE_AUDIO)
+  if(PT_AUDIO_BACKEND_NORMALIZED STREQUAL "miniaudio" AND NOT PT_ENABLE_MINIAUDIO)
+    message(FATAL_ERROR "PT_AUDIO_BACKEND=miniaudio requires PT_ENABLE_MINIAUDIO=ON.")
+  endif()
+
+  if(PT_ENABLE_MINIAUDIO AND NOT PT_AUDIO_BACKEND_NORMALIZED STREQUAL "noop")
+    include(FetchContent)
+    FetchContent_Declare(miniaudio_vendor
+      GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+      GIT_TAG ${PT_MINIAUDIO_GIT_TAG}
+      SOURCE_SUBDIR cmake-unused
+    )
+    FetchContent_MakeAvailable(miniaudio_vendor)
+
+    add_library(pt_miniaudio STATIC
+      "${miniaudio_vendor_SOURCE_DIR}/miniaudio.c"
+    )
+    target_include_directories(pt_miniaudio PUBLIC
+      "${miniaudio_vendor_SOURCE_DIR}"
+    )
+    if(MSVC)
+      target_compile_options(pt_miniaudio PRIVATE /W0)
+    else()
+      target_compile_options(pt_miniaudio PRIVATE -w)
+    endif()
+    if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
+      target_link_libraries(pt_miniaudio PUBLIC dl pthread m)
+    endif()
+    set_target_properties(pt_miniaudio PROPERTIES
+      AUTOMOC OFF
+      AUTOUIC OFF
+      AUTORCC OFF
+    )
+    set(PT_MINIAUDIO_TARGET pt_miniaudio)
+  endif()
+
+  message(STATUS "Audio enabled: backend=${PT_AUDIO_BACKEND_NORMALIZED}, miniaudio=${PT_ENABLE_MINIAUDIO}, tag=${PT_MINIAUDIO_GIT_TAG}")
+else()
+  message(STATUS "Audio disabled")
+endif()
+
 # ---- Vulkan SDK --------------------------------------------------------------
 if(PT_ENABLE_VULKAN)
   # Allow the user to point at a specific SDK via VULKAN_SDK env variable.
@@ -433,6 +493,7 @@ set(PT_CPU_SOURCES
   src/assets/SceneAssetLoaderSupport.cpp
   src/assets/SceneAssetObjLoader.cpp
   src/assets/SceneAssetGltfLoader.cpp
+  src/audio/AudioSystem.cpp
   src/materials/MaterialDescriptors.cpp
   src/materials/MaterialInterface.cpp
   src/physics/PhysicsWorld.cpp
@@ -625,6 +686,15 @@ if(PT_ENABLE_LUA)
   target_link_libraries(ptapp PRIVATE ${PT_LUA_TARGET})
 endif()
 
+if(PT_ENABLE_AUDIO)
+  target_compile_definitions(ptapp PRIVATE
+    PT_AUDIO_BACKEND_STRING="${PT_AUDIO_BACKEND_NORMALIZED}")
+  if(PT_MINIAUDIO_TARGET)
+    target_link_libraries(ptapp PRIVATE ${PT_MINIAUDIO_TARGET})
+    target_compile_definitions(ptapp PRIVATE PT_ENABLE_MINIAUDIO)
+  endif()
+endif()
+
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(ptapp PRIVATE ${feature})
 endforeach()
@@ -701,6 +771,13 @@ if(PT_ENABLE_LUA)
   target_link_libraries(ptbench PRIVATE ${PT_LUA_TARGET})
 endif()
 
+if(PT_ENABLE_AUDIO)
+  if(PT_MINIAUDIO_TARGET)
+    target_link_libraries(ptbench PRIVATE ${PT_MINIAUDIO_TARGET})
+    target_compile_definitions(ptbench PRIVATE PT_ENABLE_MINIAUDIO)
+  endif()
+endif()
+
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(ptbench PRIVATE ${feature})
 endforeach()
@@ -728,6 +805,7 @@ add_executable(pt_scripting_smoke EXCLUDE_FROM_ALL
   src/assets/SceneAssetLoaderSupport.cpp
   src/assets/SceneAssetObjLoader.cpp
   src/assets/SceneAssetGltfLoader.cpp
+  src/audio/AudioSystem.cpp
   src/pathtracer/SceneConversion.cpp
   src/physics/PhysicsWorld.cpp
   src/scene/SceneDocumentLoad.cpp
@@ -754,6 +832,14 @@ if(PT_ENABLE_JOLT)
   target_compile_definitions(pt_scripting_smoke PRIVATE
     PT_ENABLE_JOLT
     PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
+endif()
+
+if(PT_ENABLE_AUDIO)
+  if(PT_MINIAUDIO_TARGET)
+    target_link_libraries(pt_scripting_smoke PRIVATE ${PT_MINIAUDIO_TARGET})
+    target_compile_definitions(pt_scripting_smoke PRIVATE PT_ENABLE_MINIAUDIO)
+  endif()
+  target_compile_definitions(pt_scripting_smoke PRIVATE PT_ENABLE_AUDIO)
 endif()
 
 add_custom_target(hello

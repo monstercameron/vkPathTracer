@@ -50,6 +50,8 @@ struct ScriptExecutionContext {
   bool deterministic = false;
   /// Global runtime gate. Disabled scripts are counted but hook bodies are not executed.
   bool scripts_enabled = true;
+  /// Game-mode gate. Hosts must opt into script execution for interactive/runtime play.
+  bool game_mode = false;
   /// Benchmark mode blocks script execution unless allow_benchmark_scripts is also true.
   bool benchmark_mode = false;
   bool allow_benchmark_scripts = false;
@@ -86,6 +88,17 @@ struct ScriptDiagnostic {
   std::string message;
 };
 
+struct ScriptVariableSnapshot {
+  vkpt::core::StableEntityId entity = 0;
+  vkpt::core::FrameIndex frame = 0;
+  ScriptLifecycleHook hook = ScriptLifecycleHook::OnLoad;
+  std::string source;
+  std::string scope;
+  std::string name;
+  std::string value;
+  bool editable = false;
+};
+
 struct ScriptDispatchSummary {
   ScriptLifecycleHook hook = ScriptLifecycleHook::OnLoad;
   vkpt::core::FrameIndex frame = 0;
@@ -98,6 +111,7 @@ struct ScriptDispatchSummary {
   bool lua_compiled_in = false;
   bool execution_available = false;
   bool scripts_disabled = false;
+  bool game_mode_blocked = false;
   bool benchmark_blocked = false;
   std::vector<ScriptDiagnostic> diagnostics;
 };
@@ -115,6 +129,7 @@ class IScriptRuntime {
                                              vkpt::scene::WorldCommandBuffer& commands) = 0;
   virtual const std::vector<ScriptBinding>& bindings() const = 0;
   virtual const std::vector<ScriptDiagnostic>& diagnostics() const = 0;
+  virtual const std::vector<ScriptVariableSnapshot>& variable_snapshots() const = 0;
   virtual bool lua_compiled_in() const = 0;
   virtual bool execution_available() const = 0;
 };
@@ -128,12 +143,14 @@ class EcsScriptRuntime final : public IScriptRuntime {
                                       vkpt::scene::WorldCommandBuffer& commands) override;
   const std::vector<ScriptBinding>& bindings() const override;
   const std::vector<ScriptDiagnostic>& diagnostics() const override;
+  const std::vector<ScriptVariableSnapshot>& variable_snapshots() const override;
   bool lua_compiled_in() const override;
   bool execution_available() const override;
 
  private:
   std::vector<ScriptBinding> m_bindings;
   std::vector<ScriptDiagnostic> m_diagnostics;
+  std::vector<ScriptVariableSnapshot> m_variable_snapshots;
   std::unordered_map<std::string, std::string> m_lua_bytecode_cache;
 };
 

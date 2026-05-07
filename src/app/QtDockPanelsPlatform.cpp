@@ -102,8 +102,8 @@ std::string BuildQtStatusBarText(const vkpt::editor::StatusBarModel& status) {
       << " | Backend: " << status.backend
       << " | Renderer: " << status.renderer_path
       << " | SPP: " << status.spp
-      << " | FPS: " << QtDockNumber(status.fps, 1)
-      << " | Frame: " << QtDockNumber(status.frame_ms, 2) << " ms"
+      << " | Canvas FPS: " << QtDockNumber(status.fps, 1)
+      << " | Canvas Frame: " << QtDockNumber(status.frame_ms, 2) << " ms"
       << " | Selected: " << status.selected_entity_count
       << " | Tool: " << status.active_tool;
   if (!status.last_warning_or_error.empty()) {

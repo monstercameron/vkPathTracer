@@ -43,8 +43,7 @@ void QtWindow::emit_key(std::int32_t key, std::int32_t raw_key, bool pressed) {
       {{"key", std::to_string(key)},
        {"raw_key", std::to_string(raw_key)},
        {"pressed", pressed ? "true" : "false"},
-       {"is_b_key", (key == static_cast<std::int32_t>('B') ||
-                     raw_key == static_cast<std::int32_t>('B')) ? "true" : "false"}});
+       {"is_f1_key", (key == 0x01000030 || raw_key == 0x01000030) ? "true" : "false"}});
   InputEvent event = InputEventNormalizer::key(key, pressed);
   event.raw_code = raw_key;
   queue_event(event);

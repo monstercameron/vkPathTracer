@@ -208,13 +208,15 @@ QtDockPanelContent BuildQtPerformanceDock(const vkpt::editor::UiRuntimeState& ru
                                           const vkpt::editor::UiLayoutDocument& layout,
                                           const QtDockFrameStats& frame_stats) {
   auto panel = MakeQtDockPanel(layout, "performance", "Performance", true, 360.0f, 320.0f);
-  QtDockAddProperty(panel, "ui fps", QtDockNumber(runtime.fps, 1));
-  QtDockAddProperty(panel, "ui frame ms", QtDockNumber(runtime.frame_ms, 2));
+  QtDockAddProperty(panel, "canvas fps", QtDockNumber(runtime.fps, 1));
+  QtDockAddProperty(panel, "canvas frame ms", QtDockNumber(runtime.frame_ms, 2));
+  QtDockAddProperty(panel, "ui loop frame ms", QtDockNumber(frame_stats.ui_frame_ms, 2));
   QtDockAddProperty(panel, "samples", std::to_string(frame_stats.sample_count));
   QtDockAddProperty(panel, "published", std::to_string(frame_stats.render_published));
   QtDockAddProperty(panel, "render dropped", std::to_string(frame_stats.render_dropped));
   QtDockAddProperty(panel, "window received", std::to_string(frame_stats.window_received));
   QtDockAddProperty(panel, "window presented", std::to_string(frame_stats.window_presented));
+  QtDockAddProperty(panel, "window painted", std::to_string(frame_stats.window_painted));
   QtDockAddProperty(panel, "window dropped", std::to_string(frame_stats.window_dropped));
   QtDockAddProperty(panel, "publish cap", frame_stats.publish_cap.empty()
       ? std::to_string(frame_stats.preview_publish_hz) + " fps"

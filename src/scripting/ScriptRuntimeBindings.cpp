@@ -122,6 +122,7 @@ ScriptBindingSummary EcsScriptRuntime::reload_bindings(const vkpt::scene::SceneW
   m_bindings = BuildScriptBindings(world);
   // Source paths can resolve differently after reload, so bytecode is rebuilt on demand.
   m_lua_bytecode_cache.clear();
+  m_variable_snapshots.clear();
   const auto summary = SummarizeScriptBindings(m_bindings, lua_compiled_in(), execution_available());
   vkpt::log::Logger::instance().log(
       vkpt::log::Severity::Info,
@@ -143,6 +144,10 @@ const std::vector<ScriptBinding>& EcsScriptRuntime::bindings() const {
 
 const std::vector<ScriptDiagnostic>& EcsScriptRuntime::diagnostics() const {
   return m_diagnostics;
+}
+
+const std::vector<ScriptVariableSnapshot>& EcsScriptRuntime::variable_snapshots() const {
+  return m_variable_snapshots;
 }
 
 bool EcsScriptRuntime::lua_compiled_in() const {

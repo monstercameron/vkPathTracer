@@ -10,6 +10,8 @@ local MODEL_YAW_SIGN = -1.0
 local CAMERA_TARGET_Y = 1.35
 local PLAYER_COLLISION_RADIUS = 0.42
 local CONTACT_SLOP = 0.015
+local CONTROLS_PANEL_ID = 9190
+local CONTROLS_PANEL_NAME = "Third Person Controls Panel"
 local CHARACTER_MODEL_NAMES = {
   "Hero Character Model",
 }
@@ -111,6 +113,39 @@ local function entity_physics(entity)
     return nil
   end
   return entity:get_physics()
+end
+
+local function ensure_controls_panel(ctx)
+  local panel = ctx.world:find_entity(CONTROLS_PANEL_NAME)
+  if panel ~= nil then
+    return
+  end
+
+  ctx.world:spawn_entity({
+    id = CONTROLS_PANEL_ID,
+    name = CONTROLS_PANEL_NAME,
+    parent = 9100,
+    ui_panel = {
+      id = "third_person.controls",
+      title = "Third Person Controls",
+      anchor = "top_left",
+      x = 16.0,
+      y = 16.0,
+      width = 304.0,
+      opacity = 0.86,
+      font_size = 13.0,
+      background = { x = 0.035, y = 0.045, z = 0.055 },
+      foreground = { x = 0.92, y = 0.96, z = 1.0 },
+      accent = { x = 0.12, y = 0.72, z = 0.95 },
+      lines = {
+        "WASD / Arrows   Move",
+        "Shift           Run",
+        "Mouse           Orbit camera",
+        "F1              Toggle game mode",
+        "Esc             Return to editor",
+      },
+    },
+  })
 end
 
 local function max3(a, b, c)
@@ -424,6 +459,8 @@ function script.on_load(self, ctx)
 end
 
 function script.on_update(self, ctx)
+  ensure_controls_panel(ctx)
+
   local input = ctx.input
   local mouse_dx = filtered_mouse_delta(input.mouse_delta_x or 0.0)
   local mouse_dy = filtered_mouse_delta(input.mouse_delta_y or 0.0)
@@ -480,16 +517,16 @@ function script.on_update(self, ctx)
     next_x, next_z = resolve_static_contacts(next_x, next_z, boxes)
     transform.translation.x = clamp(next_x, -4.8, 4.8)
     transform.translation.z = clamp(next_z, -4.8, 4.8)
-  elseif not mouse_look then
-    return
   end
 
   if moving or mouse_look then
     facing_yaw = model_yaw_from_camera_yaw(camera_yaw)
   end
 
-  transform.rotation = yaw_quat(facing_yaw)
-  self:set_transform(transform)
+  if moving or mouse_look then
+    transform.rotation = yaw_quat(facing_yaw)
+    self:set_transform(transform)
+  end
   if moving then
     update_walk_pose(ctx, moving, running, strafe_input)
   end

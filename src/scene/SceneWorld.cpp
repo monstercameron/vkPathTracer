@@ -328,6 +328,24 @@ bool SceneWorld::add_component(vkpt::core::StableId id, ComponentKind kind, cons
         return true;
       }
       return false;
+    case ComponentKind::AudioListener:
+      if (const auto* value = std::get_if<AudioListenerComponent>(&component)) {
+        record->audio_listener = *value;
+        return true;
+      }
+      return false;
+    case ComponentKind::AudioEmitter:
+      if (const auto* value = std::get_if<AudioEmitterComponent>(&component)) {
+        record->audio_emitter = *value;
+        return true;
+      }
+      return false;
+    case ComponentKind::UiPanel:
+      if (const auto* value = std::get_if<UiPanelComponent>(&component)) {
+        record->ui_panel = *value;
+        return true;
+      }
+      return false;
     case ComponentKind::BenchmarkTag:
       if (const auto* value = std::get_if<BenchmarkTagComponent>(&component)) {
         record->benchmark_tag = *value;
@@ -385,6 +403,15 @@ bool SceneWorld::remove_component(vkpt::core::StableId id, ComponentKind kind) {
       return true;
     case ComponentKind::Script:
       record->script.reset();
+      return true;
+    case ComponentKind::AudioListener:
+      record->audio_listener.reset();
+      return true;
+    case ComponentKind::AudioEmitter:
+      record->audio_emitter.reset();
+      return true;
+    case ComponentKind::UiPanel:
+      record->ui_panel.reset();
       return true;
     case ComponentKind::BenchmarkTag:
       record->benchmark_tag.reset();
@@ -494,6 +521,21 @@ std::vector<vkpt::core::StableId> SceneWorld::query(ComponentKind kind) const {
         break;
       case ComponentKind::Script:
         if (entity->script.has_value()) {
+          out.push_back(id);
+        }
+        break;
+      case ComponentKind::AudioListener:
+        if (entity->audio_listener.has_value()) {
+          out.push_back(id);
+        }
+        break;
+      case ComponentKind::AudioEmitter:
+        if (entity->audio_emitter.has_value()) {
+          out.push_back(id);
+        }
+        break;
+      case ComponentKind::UiPanel:
+        if (entity->ui_panel.has_value()) {
           out.push_back(id);
         }
         break;

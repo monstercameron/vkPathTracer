@@ -90,6 +90,8 @@ struct QtDockFrameStats {
   std::uint32_t gpu_batches_per_tick = 0u;
   double gpu_batch_ms = 0.0;
   double ui_frame_ms = 0.0;
+  double canvas_fps = 0.0;
+  double canvas_frame_ms = 0.0;
   std::uint64_t total_rays = 0u;
   double instant_rays_per_second = 0.0;
   double rolling_rays_per_second = 0.0;
@@ -98,6 +100,7 @@ struct QtDockFrameStats {
   std::uint64_t render_dropped = 0u;
   std::uint64_t window_received = 0u;
   std::uint64_t window_presented = 0u;
+  std::uint64_t window_painted = 0u;
   std::uint64_t window_dropped = 0u;
   bool background_thread = false;
   bool tracer_ready = false;
@@ -124,6 +127,7 @@ struct QtDockScriptRuntimeState {
   vkpt::scripting::ScriptDispatchSummary last_dispatch{};
   std::vector<vkpt::scripting::ScriptBinding> bindings;
   std::vector<vkpt::scripting::ScriptDiagnostic> diagnostics;
+  std::vector<vkpt::scripting::ScriptVariableSnapshot> variables;
 };
 
 struct QtDockRayDeviceMetric {

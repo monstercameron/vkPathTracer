@@ -132,6 +132,8 @@ vkpt::core::Result<void> QtPlatform::initialize() {
 
   auto& runtime = AppRuntime();
   if (QCoreApplication::instance() == nullptr) {
+    QCoreApplication::setAttribute(Qt::AA_CompressHighFrequencyEvents, false);
+    QCoreApplication::setAttribute(Qt::AA_CompressTabletEvents, false);
     runtime.app = std::make_unique<QApplication>(runtime.argc, runtime.argv);
   } else if (qobject_cast<QApplication*>(QCoreApplication::instance()) == nullptr) {
     vkpt::log::Logger::instance().log(

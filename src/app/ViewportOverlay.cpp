@@ -145,10 +145,6 @@ ProjectBoundsToOverlay(const vkpt::editor::Bounds &bounds,
   box.label = std::move(label);
   box.primary = primary;
   auto boxColor = primary ? kPrimaryBox : kSecondaryBox;
-  if (primary && hover &&
-      hover->kind == ViewportGizmoDragKind::FreeformTranslate) {
-    boxColor = {255u, 244u, 164u, 255u};
-  }
   for (const auto [a, b] : kBoundsEdges) {
     if (!projectedCorners[static_cast<std::size_t>(a)] ||
         !projectedCorners[static_cast<std::size_t>(b)]) {
@@ -157,11 +153,7 @@ ProjectBoundsToOverlay(const vkpt::editor::Bounds &bounds,
     AddProjectedOverlayLine(
         box, *projectedCorners[static_cast<std::size_t>(a)],
         *projectedCorners[static_cast<std::size_t>(b)], boxColor,
-        primary
-            ? (hover && hover->kind == ViewportGizmoDragKind::FreeformTranslate
-                   ? 2.8f
-                   : 2.0f)
-            : 1.5f);
+        primary ? 2.0f : 1.5f);
   }
   if (primary) {
     AddSelectionGizmo(box, bounds, camera, width, height, renderAspect,

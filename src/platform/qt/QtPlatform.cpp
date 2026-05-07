@@ -212,13 +212,20 @@ void LogQtFramebufferStats(std::string_view message, const QtFramebufferStats& s
       {
         {"received", std::to_string(stats.received)},
         {"presented", std::to_string(stats.presented)},
+        {"painted", std::to_string(stats.painted)},
         {"dropped", std::to_string(stats.dropped)},
         {"latest_published_id", std::to_string(stats.latestPublishedId)},
         {"latest_presented_id", std::to_string(stats.latestPresentedId)},
+        {"latest_painted_id", std::to_string(stats.latestPaintedId)},
+        {"latest_published_generation", std::to_string(stats.latestPublishedGeneration)},
+        {"latest_presented_generation", std::to_string(stats.latestPresentedGeneration)},
+        {"latest_painted_generation", std::to_string(stats.latestPaintedGeneration)},
         {"latest_published_width", std::to_string(stats.latestPublishedWidth)},
         {"latest_published_height", std::to_string(stats.latestPublishedHeight)},
         {"latest_presented_width", std::to_string(stats.latestPresentedWidth)},
-        {"latest_presented_height", std::to_string(stats.latestPresentedHeight)}
+        {"latest_presented_height", std::to_string(stats.latestPresentedHeight)},
+        {"latest_painted_width", std::to_string(stats.latestPaintedWidth)},
+        {"latest_painted_height", std::to_string(stats.latestPaintedHeight)}
       });
 }
 

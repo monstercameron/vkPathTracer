@@ -138,7 +138,6 @@ class FpsCollisionWorker final {
 enum class ViewportGizmoDragKind {
   None,
   Translate,
-  FreeformTranslate,
   Rotate,
   ScaleAxis,
 };
@@ -280,14 +279,6 @@ std::optional<ViewportGizmoHit> PickSelectionGizmoHandle(const vkpt::editor::Bou
                                                          vkpt::editor::GizmoMode mode,
                                                          float mouseX,
                                                          float mouseY);
-std::optional<ViewportGizmoHit> PickSelectionBoundsFreeform(const vkpt::editor::Bounds& bounds,
-                                                            const ViewportCameraPose& camera,
-                                                            float width,
-                                                            float height,
-                                                            float renderAspect,
-                                                            vkpt::editor::GizmoMode mode,
-                                                            float mouseX,
-                                                            float mouseY);
 void AddWorldOverlayLine(vkpt::platform::QtSelectionOverlayBox& box,
                          const ViewportCameraPose& camera,
                          float width,

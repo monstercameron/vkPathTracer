@@ -55,6 +55,7 @@
         "PT_ENABLE_QT": "ON",
         "PT_ENABLE_QT_EDITOR": "ON",
         "PT_ENABLE_LUA": "ON",
+        "PT_ENABLE_AUDIO": "ON",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64",
         "PT_ENABLE_SANITIZERS": "OFF",
         "PT_SANITIZER": "disabled"
@@ -76,6 +77,7 @@
         "PT_ENABLE_QT": "ON",
         "PT_ENABLE_QT_EDITOR": "ON",
         "PT_ENABLE_LUA": "ON",
+        "PT_ENABLE_AUDIO": "ON",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64",
         "PT_ENABLE_SANITIZERS": "OFF",
         "PT_SANITIZER": "disabled"
@@ -196,6 +198,7 @@
         "PT_ENABLE_QT": "ON",
         "PT_ENABLE_QT_EDITOR": "ON",
         "PT_ENABLE_LUA": "ON",
+        "PT_ENABLE_AUDIO": "ON",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64",
         "VULKAN_SDK": "C:/VulkanSDK/1.4.341.1"
       }
@@ -222,6 +225,7 @@
         "PT_ENABLE_QT": "ON",
         "PT_ENABLE_QT_EDITOR": "ON",
         "PT_ENABLE_LUA": "ON",
+        "PT_ENABLE_AUDIO": "ON",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64",
         "VULKAN_SDK": "C:/VulkanSDK/1.4.341.1"
       }

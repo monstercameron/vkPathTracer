@@ -18,13 +18,20 @@ class QtViewportWindow;
 struct QtFramebufferStats {
   std::uint64_t received = 0;
   std::uint64_t presented = 0;
+  std::uint64_t painted = 0;
   std::uint64_t dropped = 0;
   std::uint64_t latestPublishedId = 0;
   std::uint64_t latestPresentedId = 0;
+  std::uint64_t latestPaintedId = 0;
+  std::uint64_t latestPublishedGeneration = 0;
+  std::uint64_t latestPresentedGeneration = 0;
+  std::uint64_t latestPaintedGeneration = 0;
   std::size_t latestPublishedWidth = 0;
   std::size_t latestPublishedHeight = 0;
   std::size_t latestPresentedWidth = 0;
   std::size_t latestPresentedHeight = 0;
+  std::size_t latestPaintedWidth = 0;
+  std::size_t latestPaintedHeight = 0;
 };
 
 struct QtRenderDialogSettings {
@@ -69,6 +76,28 @@ struct QtSelectionOverlayBox {
   bool primary = false;
   std::vector<Line> lines;
   std::vector<Point> points;
+};
+
+struct QtScriptOverlayPanel {
+  std::string id;
+  std::string title;
+  std::string anchor = "top_left";
+  float x = 16.0f;
+  float y = 16.0f;
+  float width = 320.0f;
+  float height = 0.0f;
+  float opacity = 0.84f;
+  float font_size = 13.0f;
+  std::uint8_t background_r = 10u;
+  std::uint8_t background_g = 14u;
+  std::uint8_t background_b = 18u;
+  std::uint8_t foreground_r = 235u;
+  std::uint8_t foreground_g = 245u;
+  std::uint8_t foreground_b = 255u;
+  std::uint8_t accent_r = 41u;
+  std::uint8_t accent_g = 184u;
+  std::uint8_t accent_b = 242u;
+  std::vector<std::string> lines;
 };
 
 struct QtMenuItem {
@@ -200,7 +229,9 @@ class QtWindow final : public IWindow {
   void set_startup_splash_text(std::string_view text);
   void finish_startup_splash();
   void set_selection_overlay_boxes(const std::vector<QtSelectionOverlayBox>& boxes);
+  void set_script_overlay_panels(const std::vector<QtScriptOverlayPanel>& panels);
   void set_viewport_cursor(QtViewportCursor cursor);
+  void set_viewport_asset_drops_enabled(bool enabled);
   void set_menu_bar(const std::vector<QtMenuItem>& menus);
   void set_dock_panels(const std::vector<QtDockPanel>& panels);
   void set_status_bar_text(std::string_view text);
@@ -213,6 +244,14 @@ class QtWindow final : public IWindow {
                             std::size_t width, std::size_t height);
   void set_framebuffer_rgba(std::vector<std::uint8_t>&& rgba,
                             std::size_t width, std::size_t height);
+  void set_framebuffer_rgba(const std::vector<std::uint8_t>& rgba,
+                            std::size_t width,
+                            std::size_t height,
+                            std::uint64_t generation);
+  void set_framebuffer_rgba(std::vector<std::uint8_t>&& rgba,
+                            std::size_t width,
+                            std::size_t height,
+                            std::uint64_t generation);
   void clear_framebuffer();
   QtFramebufferStats framebuffer_stats() const;
   void* native_handle() const;
@@ -259,6 +298,7 @@ class QtWindow final : public IWindow {
 
   struct PendingFramebuffer {
     std::uint64_t id = 0;
+    std::uint64_t generation = 0;
     std::size_t width = 0;
     std::size_t height = 0;
     std::vector<std::uint8_t> rgba;
@@ -271,15 +311,21 @@ class QtWindow final : public IWindow {
   bool request_framebuffer_clear();
   void set_framebuffer_rgba_impl(std::vector<std::uint8_t> rgba,
                                  std::size_t width,
-                                 std::size_t height);
+                                 std::size_t height,
+                                 std::uint64_t generation);
   bool enqueue_frame_update_locked(QWidget* widget);
   void deliver_pending_frame_to_widget(QWidget* widget);
   void show_startup_splash();
   void reveal_main_window_from_splash();
   void close_startup_splash(bool animated);
   void record_frame_presented(std::uint64_t frameId,
+                              std::uint64_t generation,
                               std::size_t width,
                               std::size_t height);
+  void record_canvas_painted(std::uint64_t frameId,
+                             std::uint64_t generation,
+                             std::size_t width,
+                             std::size_t height);
   void record_frame_dropped(std::uint64_t frameId);
   void clear_frame_handoff_locked(bool accepting);
 

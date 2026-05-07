@@ -50,6 +50,15 @@ std::vector<vkpt::editor::SceneTreeEntityModel> BuildSceneTreeEntitiesFromWorld(
     if (entity->physics_body.has_value()) {
       model.component_badges.push_back("physics");
     }
+    if (entity->audio_listener.has_value()) {
+      model.component_badges.push_back("audio-listener");
+    }
+    if (entity->audio_emitter.has_value()) {
+      model.component_badges.push_back("audio-emitter");
+    }
+    if (entity->ui_panel.has_value()) {
+      model.component_badges.push_back("ui-panel");
+    }
     models.push_back(std::move(model));
   }
   return models;

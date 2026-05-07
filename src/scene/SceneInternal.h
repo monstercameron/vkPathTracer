@@ -52,6 +52,39 @@ inline void read_camera_component(const JsonValue& object, CameraComponent& came
   read_float(object, "anamorphic_squeeze", camera.anamorphic_squeeze);
 }
 
+inline void read_string_list(const JsonValue& object, std::string_view key, std::vector<std::string>& out) {
+  const auto it = object.object.find(key);
+  if (it == object.object.end() || it->second.kind != JsonValue::Kind::Array) {
+    return;
+  }
+  out.clear();
+  out.reserve(it->second.array.size());
+  for (const auto& item : it->second.array) {
+    if (item.kind == JsonValue::Kind::String) {
+      out.push_back(item.string);
+    }
+  }
+}
+
+inline void read_ui_panel_component(const JsonValue& object, UiPanelComponent& panel) {
+  read_string(object, "id", panel.panel_id);
+  read_string(object, "panel_id", panel.panel_id);
+  read_string(object, "title", panel.title);
+  read_string(object, "anchor", panel.anchor);
+  read_bool(object, "enabled", panel.enabled);
+  read_bool(object, "visible", panel.visible);
+  read_float(object, "x", panel.x);
+  read_float(object, "y", panel.y);
+  read_float(object, "width", panel.width);
+  read_float(object, "height", panel.height);
+  read_float(object, "opacity", panel.opacity);
+  read_float(object, "font_size", panel.font_size);
+  read_vec3(object, "background", panel.background);
+  read_vec3(object, "foreground", panel.foreground);
+  read_vec3(object, "accent", panel.accent);
+  read_string_list(object, "lines", panel.lines);
+}
+
 inline bool valid_camera_values(const CameraComponent& camera) {
   return std::isfinite(camera.fov) && camera.fov > 0.0f &&
          std::isfinite(camera.near_plane) && camera.near_plane > 0.0f &&
@@ -75,6 +108,27 @@ inline bool valid_camera_values(const CameraComponent& camera) {
          camera.iris_roundness <= 1.0f &&
          std::isfinite(camera.anamorphic_squeeze) &&
          camera.anamorphic_squeeze > 0.0f;
+}
+
+inline bool valid_ui_panel_values(const UiPanelComponent& panel) {
+  auto finite_panel_vec3 = [](const Vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+  };
+  return std::isfinite(panel.x) &&
+         std::isfinite(panel.y) &&
+         std::isfinite(panel.width) &&
+         std::isfinite(panel.height) &&
+         std::isfinite(panel.opacity) &&
+         std::isfinite(panel.font_size) &&
+         panel.width >= 0.0f &&
+         panel.height >= 0.0f &&
+         panel.opacity >= 0.0f &&
+         panel.opacity <= 1.0f &&
+         panel.font_size >= 8.0f &&
+         panel.font_size <= 32.0f &&
+         finite_panel_vec3(panel.background) &&
+         finite_panel_vec3(panel.foreground) &&
+         finite_panel_vec3(panel.accent);
 }
 
 inline std::string camera_hash_blob(const CameraComponent& camera) {

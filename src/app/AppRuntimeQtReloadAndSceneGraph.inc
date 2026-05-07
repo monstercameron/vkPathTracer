@@ -233,6 +233,9 @@
         qtViewportPickablesRefreshPending = true;
         qtRefreshSelectionBoundsFromRtScene();
         updateQtSelectionOverlay();
+        if (qtGizmoDrag.active) {
+          return;
+        }
       };
       auto qtMaybeRefreshPendingViewportPickables =
           [&](std::chrono::steady_clock::time_point now) {
@@ -258,6 +261,7 @@
         qtScriptState.binding_summary = qtScriptRuntime->reload_bindings(world);
         qtScriptState.bindings = qtScriptRuntime->bindings();
         qtScriptState.diagnostics = qtScriptRuntime->diagnostics();
+        qtScriptState.variables = qtScriptRuntime->variable_snapshots();
         qtScriptState.status = std::string("bindings reloaded") +
             (reason.empty() ? std::string{} : " (" + std::string(reason) + ")");
         qtScriptState.last_hook = "reload";
@@ -281,6 +285,7 @@
         bool fullSceneReloadNeeded = false;
         bool scriptBindingsDirty = false;
         bool physicsTransformTouched = false;
+        bool audioSceneDirty = false;
         bool touchesHeroRoot = false;
         bool touchesActionCamera = false;
         bool touchesActionLight = false;
@@ -314,6 +319,12 @@
               break;
             case vkpt::scene::ComponentKind::Script:
               scriptBindingsDirty = true;
+              break;
+            case vkpt::scene::ComponentKind::AudioListener:
+            case vkpt::scene::ComponentKind::AudioEmitter:
+              audioSceneDirty = true;
+              break;
+            case vkpt::scene::ComponentKind::UiPanel:
               break;
             case vkpt::scene::ComponentKind::Hierarchy:
             case vkpt::scene::ComponentKind::Light:
@@ -414,6 +425,7 @@
                     {"camera_state_touched", cameraStateTouched ? "true" : "false"},
                     {"camera_transform_touched", cameraTransformTouched ? "true" : "false"},
                     {"physics_transform_touched", physicsTransformTouched ? "true" : "false"},
+                    {"audio_scene_dirty", audioSceneDirty ? "true" : "false"},
                     {"full_scene_reload_needed", fullSceneReloadNeeded ? "true" : "false"},
                     {"script_bindings_dirty", scriptBindingsDirty ? "true" : "false"},
                     {"touches_hero_root_9110", touchesHeroRoot ? "true" : "false"},
@@ -482,6 +494,15 @@
               entity.physics_body = value;
             } else if constexpr (std::is_same_v<T, vkpt::scene::ScriptComponent>) {
               entity.script = value;
+            } else if constexpr (std::is_same_v<T, vkpt::scene::AudioListenerComponent>) {
+              entity.has_audio_listener = true;
+              entity.audio_listener = value;
+            } else if constexpr (std::is_same_v<T, vkpt::scene::AudioEmitterComponent>) {
+              entity.has_audio_emitter = true;
+              entity.audio_emitter = value;
+            } else if constexpr (std::is_same_v<T, vkpt::scene::UiPanelComponent>) {
+              entity.has_ui_panel = true;
+              entity.ui_panel = value;
             } else if constexpr (std::is_same_v<T, vkpt::scene::BenchmarkTagComponent>) {
               entity.has_benchmark_tag = true;
               entity.benchmark_tag = value;
@@ -523,6 +544,18 @@
               break;
             case vkpt::scene::ComponentKind::Script:
               entity.script = {};
+              break;
+            case vkpt::scene::ComponentKind::AudioListener:
+              entity.has_audio_listener = false;
+              entity.audio_listener = {};
+              break;
+            case vkpt::scene::ComponentKind::AudioEmitter:
+              entity.has_audio_emitter = false;
+              entity.audio_emitter = {};
+              break;
+            case vkpt::scene::ComponentKind::UiPanel:
+              entity.has_ui_panel = false;
+              entity.ui_panel = {};
               break;
             case vkpt::scene::ComponentKind::BenchmarkTag:
               entity.has_benchmark_tag = false;
@@ -629,14 +662,10 @@
               incrementalOk = qtPublishInstanceTransformUpdates &&
                               qtPublishInstanceTransformUpdates(
                                   transformBuild.updates,
-                                  vkpt::pathtracer::InstanceTransformUpdateOptions{
+                                  vkpt::pathtracer::MakeStandardTransformUpdateOptions(
                                       vkpt::pathtracer::RenderUpdateReason::ScriptTransformMotion,
-                                      vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
-                                      true,
-                                      true,
-                                      false,
-                                      0u,
-                                      "qt-script"});
+                                      qtFrameCount,
+                                      "qt-script"));
               postedTransforms = incrementalOk;
             }
           }
@@ -689,6 +718,7 @@
               qtPublishedRays.store(0u, std::memory_order_relaxed);
               const auto cameraState = vkpt::pathtracer::ExtractCameraState(qtScene);
               if (qtUseBg && qtRenderCoordinator) {
+                qtMarkOverlayRequiresRenderCatchup();
                 qtRenderCoordinator->post_camera_state(cameraState);
                 postedCamera = true;
               } else if (!qtUseBg && qtTracerReady) {
@@ -713,8 +743,11 @@
             if (physicsTransformTouched) {
               qtSyncPhysicsFromSceneDocument();
             }
+            if (audioSceneDirty && qtAudioSystem) {
+              qtAudioSystem->load_scene_audio(qtSceneDocument, RuntimeSceneDisplayName(config.scene_path.value));
+            }
             qtDockPanelsDirty = true;
-            qtPreviewStatus = "lua playable";
+            qtPreviewStatus = qtScriptState.playing ? "game mode" : "editor mode";
             logger.log(vkpt::log::Severity::Info,
                        "scripts",
                        "Lua script commands applied incrementally",
@@ -745,6 +778,19 @@
               vkpt::core::FrameIndex frameIndex,
               double dtSeconds,
               std::string_view source) {
+        if (!qtScriptState.playing) {
+          qtScriptState.status = "script dispatch blocked: enter game mode with F1";
+          ui_runtime_state.status_message = qtScriptState.status;
+          ui_runtime_state.last_warning_or_error = qtScriptState.status;
+          qtDockPanelsDirty = true;
+          logger.log(vkpt::log::Severity::Warning,
+                     "scripts",
+                     "script dispatch blocked outside game mode",
+                     {{"hook", std::string(vkpt::scripting::to_string(hook))},
+                      {"source", std::string(source)}},
+                     frameIndex);
+          return false;
+        }
         auto worldResult = qtSceneDocument.to_world();
         if (!worldResult) {
           qtScriptState.status = "dispatch failed: world build";
@@ -760,7 +806,8 @@
         context.delta_seconds = dtSeconds;
         context.elapsed_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - qtScriptRuntimeStartTime).count();
-        context.scripts_enabled = qtScriptState.scripts_enabled;
+        context.scripts_enabled = qtScriptState.playing && qtScriptState.scripts_enabled;
+        context.game_mode = qtScriptState.playing;
         context.benchmark_mode = qtSceneDocument.benchmark.enabled;
         context.allow_benchmark_scripts = qtScriptState.benchmark_scripts_allowed;
         context.input.active_keys.assign(qtKeysDown.begin(), qtKeysDown.end());
@@ -774,6 +821,7 @@
                     {"frame", std::to_string(frameIndex)},
                     {"dt", std::to_string(dtSeconds)},
                     {"scripts_enabled", context.scripts_enabled ? "true" : "false"},
+                    {"game_mode", context.game_mode ? "true" : "false"},
                     {"lua_compiled_in", qtScriptRuntime->lua_compiled_in() ? "true" : "false"},
                     {"execution_available", qtScriptRuntime->execution_available() ? "true" : "false"},
                     {"active_keys", std::to_string(context.input.active_keys.size())},
@@ -793,6 +841,7 @@
             qtScriptRuntime->execution_available());
         qtScriptState.bindings = qtScriptRuntime->bindings();
         qtScriptState.diagnostics = qtScriptRuntime->diagnostics();
+        qtScriptState.variables = qtScriptRuntime->variable_snapshots();
         qtScriptState.last_hook = std::string(vkpt::scripting::to_string(hook));
         qtScriptState.last_frame = frameIndex;
         ++qtScriptState.dispatch_count;
@@ -823,15 +872,18 @@
       };
       (void)qtDispatchScriptHook;
       qtReloadScriptsFromDocument("startup");
-      auto qtApplyScriptPlayback =
+      auto qtApplyGameModeScripts =
           [&](std::chrono::steady_clock::time_point now,
               vkpt::core::FrameIndex frameIndex,
               double dtSeconds) {
         (void)now;
-        (void)frameIndex;
-        (void)dtSeconds;
-        qtScriptState.playing = false;
-        return false;
+        if (!qtScriptState.playing) {
+          return false;
+        }
+        return qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+                                    frameIndex,
+                                    dtSeconds,
+                                    "game mode");
       };
       qtReloadEditedScene = [&](std::string_view reason) {
         const auto reloadStart = std::chrono::steady_clock::now();
@@ -854,6 +906,9 @@
              !sceneDelta->lights.empty() ||
              sceneDelta->environment_color_changed);
         qtScene = std::move(nextScene);
+        if (qtAudioSystem) {
+          qtAudioSystem->load_scene_audio(qtSceneDocument, RuntimeSceneDisplayName(config.scene_path.value));
+        }
         qtRebuildRtInstanceIndexCache();
         syncQtCameraPoseFromScene();
         syncQtFpsAnglesFromPose();
@@ -875,6 +930,7 @@
         const auto rendererStart = std::chrono::steady_clock::now();
         if (hasSceneDeltaWork) {
           if (qtUseBg && qtRenderCoordinator) {
+            qtMarkOverlayRequiresRenderCatchup();
             qtRenderCoordinator->post_scene_delta(*sceneDelta);
             rendererUpdatedIncrementally = true;
             accumulationReset = true;
@@ -893,6 +949,7 @@
 
         if (!rendererUpdatedIncrementally) {
           if (qtUseBg && qtRenderCoordinator) {
+            qtMarkOverlayRequiresRenderCatchup();
             qtRenderCoordinator->post_scene(qtScene);
             accumulationReset = true;
           } else if (!qtUseBg && qtTracerReady) {
@@ -1042,6 +1099,29 @@
                     {"reload", reloaded ? "true" : "false"}});
         return reloaded;
       };
+      auto qtLogInstanceTransformUpdate =
+          [&](vkpt::log::Severity severity,
+              std::string_view message,
+              std::size_t updateCount,
+              const vkpt::pathtracer::InstanceTransformUpdateOptions& options,
+              vkpt::pathtracer::InstanceTransformUpdateStatus status,
+              std::uint32_t matchedOrAppliedCount = 0u,
+              const char* detail = nullptr) {
+        if (!logger.enabled(severity)) {
+          return;
+        }
+        logger.log(severity,
+                   "app",
+                   message,
+                   {{"updates", std::to_string(updateCount)},
+                    {"matched_or_applied", std::to_string(matchedOrAppliedCount)},
+                    {"status", vkpt::pathtracer::ToString(status)},
+                    {"reason", vkpt::pathtracer::ToString(options.reason)},
+                    {"policy", vkpt::pathtracer::ToString(options.fallback_policy)},
+                    {"source", options.source_system ? options.source_system : ""},
+                    {"detail", detail ? detail : ""}},
+                   options.source_frame);
+      };
       qtPublishInstanceTransformUpdates =
           [&](const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates,
               vkpt::pathtracer::InstanceTransformUpdateOptions options) {
@@ -1051,8 +1131,23 @@
 
         bool posted = false;
         if (qtUseBg && qtRenderCoordinator) {
-          qtRenderCoordinator->post_instance_transforms(updates, options);
-          posted = true;
+          const bool mirrored = vkpt::pathtracer::ApplyInstanceTransformUpdates(
+              qtScene,
+              updates,
+              vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly);
+          if (mirrored) {
+            qtMarkOverlayRequiresRenderCatchup();
+            qtRenderCoordinator->post_instance_transforms(updates, options);
+            posted = true;
+          }
+          qtLogInstanceTransformUpdate(
+              mirrored ? vkpt::log::Severity::Debug : vkpt::log::Severity::Warning,
+              mirrored ? "posted Qt instance transform update to render coordinator"
+                       : "Qt instance transform update failed app metadata mirror",
+              updates.size(),
+              options,
+              mirrored ? vkpt::pathtracer::InstanceTransformUpdateStatus::Unsupported
+                       : vkpt::pathtracer::InstanceTransformUpdateStatus::Failed);
         } else if (!qtUseBg && qtTracerReady) {
           const auto plan = qtTracer->plan_instance_transform_update(updates, options);
           if (!vkpt::pathtracer::TransformUpdateStatusAllowedByPolicy(
@@ -1060,9 +1155,26 @@
                   options.fallback_policy) ||
               !plan.can_apply_without_full_fallback()) {
             posted = false;
+            qtLogInstanceTransformUpdate(
+                vkpt::log::Severity::Warning,
+                "Qt instance transform update rejected before direct apply",
+                updates.size(),
+                options,
+                plan.status,
+                plan.matched_count,
+                plan.message);
           } else {
             const auto result = qtTracer->apply_instance_transform_update(updates, options);
             posted = result.applied();
+            qtLogInstanceTransformUpdate(
+                posted ? vkpt::log::Severity::Debug : vkpt::log::Severity::Warning,
+                posted ? "applied Qt instance transform update directly"
+                       : "Qt direct instance transform update failed",
+                updates.size(),
+                options,
+                result.status,
+                result.applied_count,
+                result.message);
           }
           if (posted &&
               vkpt::pathtracer::ApplyInstanceTransformUpdates(
@@ -1078,6 +1190,12 @@
         }
 
         if (!posted) {
+          qtLogInstanceTransformUpdate(
+              vkpt::log::Severity::Warning,
+              "Qt instance transform update was not posted",
+              updates.size(),
+              options,
+              vkpt::pathtracer::InstanceTransformUpdateStatus::Failed);
           return false;
         }
         qtPublishedSample.store(0u, std::memory_order_relaxed);

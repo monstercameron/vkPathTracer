@@ -171,7 +171,16 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                              return property.id == "camera.mode.fps_toggle" &&
                                     property.editor == "button";
                            }));
-    check_true("scripting tab exposes runtime play pause",
+    check_true("camera dock has configurable motion preview fps",
+               cameraPanel != cameraDockPanels.end() &&
+               std::any_of(cameraPanel->properties.begin(),
+                           cameraPanel->properties.end(),
+                           [](const QtDockProperty& property) {
+                             return property.id == "camera.preview.fps" &&
+                                    property.editor == "slider" &&
+                                    property.maximum >= 120.0;
+                           }));
+    check_true("scripting tab exposes game mode controls",
                scriptPanel != cameraDockPanels.end() &&
                scriptPanel->visible &&
                scriptPanel->id == "script_panel" &&

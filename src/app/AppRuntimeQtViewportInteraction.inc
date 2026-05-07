@@ -344,6 +344,7 @@
           qtDiscardFpsMovementResults();
           qtSetViewportMouseLocked(false);
           qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
+          qtSyncViewportAssetDropMode();
           ui_runtime_state.active_viewport_tool = vkpt::editor::ViewportTool::Select;
           ui_runtime_state.status_message = "fps movement disabled in static mode";
           PushUiEvent(ui_event_log,
@@ -362,6 +363,7 @@
           return;
         }
         qtFpsMode = enabled;
+        qtSyncViewportAssetDropMode();
         qtDiscardFpsMovementResults();
         qtUserCameraActive = true;
         ui_runtime_state.active_viewport_tool = qtFpsMode
@@ -402,28 +404,17 @@
         qtDockPanelsDirty = true;
         updateQtSelectionOverlay();
       };
-      std::unordered_set<vkpt::core::StableId> qtPendingGizmoTransformTouchedIds;
-      auto qtDiscardPendingGizmoTransformUpdates = [&]() {
-        qtPendingGizmoTransformTouchedIds.clear();
-      };
-      auto qtQueueGizmoTransformTouchedIds =
-          [&](const std::unordered_set<vkpt::core::StableId>& touchedIds) {
-        qtPendingGizmoTransformTouchedIds.insert(touchedIds.begin(), touchedIds.end());
-      };
-      auto qtFlushPendingGizmoTransformUpdates = [&](bool force) {
-        if (qtPendingGizmoTransformTouchedIds.empty()) {
-          return true;
-        }
-        if (!qtGizmoDrag.active && !force) {
-          qtDiscardPendingGizmoTransformUpdates();
+      auto qtPublishGizmoTransformUpdates =
+          [&](const std::unordered_set<vkpt::core::StableId>& touchedIds,
+              vkpt::core::FrameIndex sourceFrame) {
+        if (touchedIds.empty()) {
           return true;
         }
 
         auto transformBuild = qtBuildInstanceTransformUpdatesForTouchedEntities(
-            qtPendingGizmoTransformTouchedIds,
+            touchedIds,
             0u,
             qtScriptTransformRevision);
-        qtDiscardPendingGizmoTransformUpdates();
         if (transformBuild.unsupported_instances || transformBuild.updates.empty()) {
           if (qtGizmoDrag.active) {
             qtGizmoDrag.scene_reload_pending = true;
@@ -433,14 +424,10 @@
         if (!(qtPublishInstanceTransformUpdates &&
               qtPublishInstanceTransformUpdates(
                   transformBuild.updates,
-                  vkpt::pathtracer::InstanceTransformUpdateOptions{
+                  vkpt::pathtracer::MakeStandardTransformUpdateOptions(
                       vkpt::pathtracer::RenderUpdateReason::EditorGizmoMotion,
-                      vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
-                      true,
-                      true,
-                      false,
-                      0u,
-                      "qt-viewport"}))) {
+                      sourceFrame,
+                      "qt-viewport")))) {
           if (qtGizmoDrag.active) {
             qtGizmoDrag.scene_reload_pending = true;
           }
@@ -449,7 +436,6 @@
         return true;
       };
       auto qtCaptureGizmoDrag = [&](const ViewportGizmoHit& hit, float x, float y) {
-        qtDiscardPendingGizmoTransformUpdates();
         qtGizmoDrag = {};
         qtGizmoDrag.active = true;
         qtGizmoDrag.hit = hit;
@@ -470,6 +456,7 @@
             if (entity->has_light || entity->has_camera || entity->has_sdf_primitive) {
               qtGizmoDrag.scene_reload_pending = true;
             }
+            qtGizmoDrag.publishable_entity_ids.insert(selectedId);
             continue;
           }
           if (auto* primitive = qtFindSdfPrimitive(selectedId)) {
@@ -504,37 +491,11 @@
         if (!qtGizmoDrag.active) {
           return;
         }
+        ++qtGizmoDragInputSamples;
         const float dx = x - qtGizmoDrag.start_x;
         const float dy = y - qtGizmoDrag.start_y;
         const float dragAlongAxis = dx * qtGizmoDrag.hit.screen_axis_x +
                                     dy * qtGizmoDrag.hit.screen_axis_y;
-        vkpt::pathtracer::Vec3 freeformDelta{};
-        bool hasFreeformDelta = false;
-        if (qtGizmoDrag.hit.kind == ViewportGizmoDragKind::FreeformTranslate) {
-          const auto frameRect = qtViewportImageRect();
-          const float viewportWidth = frameRect.width;
-          const float viewportHeight = frameRect.height;
-          const auto startWorld = ScreenPointOnCameraPlane(
-              qtCameraPose,
-              qtGizmoDrag.start_x - frameRect.x,
-              qtGizmoDrag.start_y - frameRect.y,
-              viewportWidth,
-              viewportHeight,
-              qtRenderAspect(),
-              qtGizmoDrag.hit.pivot);
-          const auto currentWorld = ScreenPointOnCameraPlane(
-              qtCameraPose,
-              x - frameRect.x,
-              y - frameRect.y,
-              viewportWidth,
-              viewportHeight,
-              qtRenderAspect(),
-              qtGizmoDrag.hit.pivot);
-          if (startWorld && currentWorld) {
-            freeformDelta = PtSub(*currentWorld, *startWorld);
-            hasFreeformDelta = true;
-          }
-        }
         for (const auto& start : qtGizmoDrag.entities) {
           auto transform = start.transform;
           if (qtGizmoDrag.hit.kind == ViewportGizmoDragKind::Translate) {
@@ -543,13 +504,6 @@
             transform.translation.x = start.transform.translation.x + delta.x;
             transform.translation.y = start.transform.translation.y + delta.y;
             transform.translation.z = start.transform.translation.z + delta.z;
-          } else if (qtGizmoDrag.hit.kind == ViewportGizmoDragKind::FreeformTranslate) {
-            if (!hasFreeformDelta) {
-              continue;
-            }
-            transform.translation.x = start.transform.translation.x + freeformDelta.x;
-            transform.translation.y = start.transform.translation.y + freeformDelta.y;
-            transform.translation.z = start.transform.translation.z + freeformDelta.z;
           } else if (qtGizmoDrag.hit.kind == ViewportGizmoDragKind::ScaleAxis) {
             const float units = dragAlongAxis / std::max(1.0f, qtGizmoDrag.hit.pixels_per_unit);
             const float factor = ClampFloat(
@@ -594,38 +548,41 @@
           }
           qtWriteGizmoTransform(start, transform);
         }
-        std::unordered_set<vkpt::core::StableId> transformTouchedIds;
-        transformTouchedIds.reserve(qtGizmoDrag.entities.size());
+        // Local entity transforms are now up to date. The render-thread publish
+        // is coalesced to a single end-of-frame flush in the render loop so we
+        // do at most one BuildSceneWorldSnapshot + transform-update post per
+        // frame regardless of how many mouse events fire.
         for (const auto& start : qtGizmoDrag.entities) {
           if (start.sdf_primitive) {
             qtGizmoDrag.scene_reload_pending = true;
-            continue;
           }
-          transformTouchedIds.insert(start.entity_id);
         }
-        if (!transformTouchedIds.empty()) {
-          qtQueueGizmoTransformTouchedIds(transformTouchedIds);
+        if (!qtGizmoDrag.publishable_entity_ids.empty()) {
+          qtGizmoDrag.pending_publish = true;
         }
-        PushUiEvent(ui_event_log,
-                    "viewport_gizmo_drag",
-                    "viewport",
-                    "mouse",
-                    frameIndex,
-                    {},
-                    vkpt::editor::ToString(ui_runtime_state.active_gizmo_mode),
-                    "gizmo manipulating selection");
+        (void)frameIndex;
       };
-      auto qtCommitGizmoDrag = [&]() {
+      auto qtCommitGizmoDrag = [&](vkpt::core::FrameIndex frameIndex) {
         if (!qtGizmoDrag.active) {
           return;
         }
-        qtFlushPendingGizmoTransformUpdates(true);
         if (qtGizmoDrag.scene_reload_pending) {
-          qtReloadEditedScene("drag commit");
-        } else {
-          qtRefreshViewportPickablesNow();
-          qtMarkTransformDockPanelsDirty(true);
+          qtReloadEditedScene("gizmo commit");
+          return;
         }
+        if (qtGizmoDrag.pending_publish &&
+            !qtGizmoDrag.publishable_entity_ids.empty()) {
+          qtGizmoDrag.pending_publish = false;
+          ++qtGizmoTransformImmediatePublishes;
+          qtGizmoTransformPublishedEntityCount +=
+              qtGizmoDrag.publishable_entity_ids.size();
+          if (!qtPublishGizmoTransformUpdates(qtGizmoDrag.publishable_entity_ids,
+                                              frameIndex)) {
+            ++qtGizmoTransformPublishFailures;
+          }
+        }
+        qtRefreshViewportPickablesNow();
+        qtMarkTransformDockPanelsDirty(true);
       };
       auto qtSetGizmoMode = [&](vkpt::editor::GizmoMode mode,
                                 std::string_view source,
@@ -803,6 +760,28 @@
         }
         constexpr std::string_view kScenePrefix = "asset.scene.";
         constexpr std::string_view kModelPrefix = "asset.model.";
+        if (activation.viewport_drop && (qtFpsMode || qtScriptState.playing)) {
+          ui_runtime_state.focused_panel = "asset_browser";
+          ui_runtime_state.status_message =
+              "viewport model drop ignored: gameplay mode owns the canvas";
+          ui_runtime_state.last_warning_or_error = ui_runtime_state.status_message;
+          qtDockPanelsDirty = true;
+          PushUiEvent(ui_event_log,
+                      "asset_browser_viewport_drop_ignored",
+                      "asset_browser",
+                      qtScriptState.playing ? "game_mode" : "fps",
+                      frameIndex,
+                      {},
+                      activation.row_id,
+                      ui_runtime_state.status_message);
+          logger.log(vkpt::log::Severity::Info,
+                     "app",
+                     "Qt viewport asset drop ignored outside editor mode",
+                     {{"row_id", activation.row_id},
+                      {"game_mode", qtScriptState.playing ? "true" : "false"},
+                      {"fps_mode", qtFpsMode ? "true" : "false"}});
+          return true;
+        }
         if (activation.row_id.starts_with(kScenePrefix)) {
           const std::string scenePath = activation.row_id.substr(kScenePrefix.size());
           return qtLoadSceneFromAssetBrowser(scenePath, frameIndex);

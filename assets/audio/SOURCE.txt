@@ -1,0 +1,44 @@
+Audio Lua Interaction Demo sources
+==================================
+
+All files in this folder are real recorded audio assets used by
+assets/scenes/audio_lua_interaction_demo.json.
+
+Modification notes: files are kept as downloaded MP3 source clips with no
+semantic edits. Engine playback may apply runtime gain, pitch, looping, and
+spatialization.
+
+Allowed usage: prototype/demo playback in this repository and derived builds,
+subject to the public-domain/CC0 source licenses listed below.
+
+Footsteps
+---------
+
+License: Creative Commons 0 / Public Domain
+Source: Freesound
+
+- footstep_dirt_gravel_01.mp3
+  "dirt/gravel footstep 1" by Yoyodaman234
+  https://freesound.org/people/Yoyodaman234/sounds/166511/
+
+- footstep_dirt_gravel_03.mp3
+  "dirt/gravel footstep 3" by Yoyodaman234
+  https://freesound.org/people/Yoyodaman234/sounds/223154/
+
+- footstep_dirt_gravel_04.mp3
+  "dirt/gravel footstep 4" by Yoyodaman234
+  https://freesound.org/people/Yoyodaman234/sounds/223153/
+
+- footstep_boots_dirt_01.mp3
+  "Boots Dirt Footstep 1_20" by Joao_Janz
+  https://freesound.org/people/Joao_Janz/sounds/504207/
+
+Ambience
+--------
+
+License: Creative Commons 0 / Public Domain
+Source: OpenGameArt
+
+- forest_ambience_loop.mp3
+  "Forest Ambience" by TinyWorlds
+  https://opengameart.org/content/forest-ambience

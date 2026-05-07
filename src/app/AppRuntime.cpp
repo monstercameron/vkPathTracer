@@ -46,6 +46,7 @@
 #include "app/AppRuntime.h"
 #include "app/AppOptions.h"
 #include "app/AppRuntimeSupport.h"
+#include "audio/AudioSystem.h"
 #include "app/DoctorChecks.h"
 #include "app/UiValidation.h"
 #include "editor/UiModels.h"
@@ -92,6 +93,71 @@ namespace {
 using vkpt::app::RunDoctor;
 using vkpt::app::RunUiModelSmokeTests;
 using vkpt::app::RunUiReleaseGateCheck;
+
+#ifdef _WIN32
+class ScopedWindowsTimerResolution {
+ public:
+  explicit ScopedWindowsTimerResolution(UINT period_ms) : m_periodMs(period_ms) {
+    m_winmm = LoadLibraryA("winmm.dll");
+    if (m_winmm == nullptr) {
+      return;
+    }
+    m_begin = reinterpret_cast<TimePeriodFn>(GetProcAddress(m_winmm, "timeBeginPeriod"));
+    m_end = reinterpret_cast<TimePeriodFn>(GetProcAddress(m_winmm, "timeEndPeriod"));
+    if (m_begin != nullptr && m_end != nullptr && m_begin(m_periodMs) == 0u) {
+      m_active = true;
+    }
+  }
+
+  ScopedWindowsTimerResolution(const ScopedWindowsTimerResolution&) = delete;
+  ScopedWindowsTimerResolution& operator=(const ScopedWindowsTimerResolution&) = delete;
+
+  ~ScopedWindowsTimerResolution() {
+    if (m_active && m_end != nullptr) {
+      (void)m_end(m_periodMs);
+    }
+    if (m_winmm != nullptr) {
+      FreeLibrary(m_winmm);
+    }
+  }
+
+  bool active() const {
+    return m_active;
+  }
+
+ private:
+  using TimePeriodFn = UINT(WINAPI*)(UINT);
+
+  UINT m_periodMs = 1u;
+  HMODULE m_winmm = nullptr;
+  TimePeriodFn m_begin = nullptr;
+  TimePeriodFn m_end = nullptr;
+  bool m_active = false;
+};
+#endif
+
+#ifdef PT_ENABLE_QT
+void SleepUntilFrameTarget(std::chrono::steady_clock::time_point target) {
+  while (std::chrono::steady_clock::now() < target) {
+    if (QCoreApplication::instance() != nullptr) {
+      QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= target) {
+      break;
+    }
+    const auto remaining = target - now;
+    if (remaining > std::chrono::milliseconds(2)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      continue;
+    }
+#ifdef _WIN32
+    YieldProcessor();
+#endif
+    std::this_thread::yield();
+  }
+}
+#endif
 
 // ---- ptdoctor checks -------------------------------------------------------
 
@@ -422,6 +488,7 @@ int RunApp(int argc, char** argv) {
   const bool envFileEnabled = parsedOptions.env_file_enabled;
   const std::string scenePath = parsedOptions.scene_path;
   const std::string backend = parsedOptions.backend;
+  const std::string audioBackend = parsedOptions.audio_backend;
   const std::string platformName = parsedOptions.platform_name;
   const std::string outputPath = parsedOptions.output_path;
   const std::string exrOutputPath = parsedOptions.exr_output_path;
@@ -439,6 +506,7 @@ int RunApp(int argc, char** argv) {
   const std::optional<float> renderTimeSeconds = parsedOptions.render_time_seconds;
   const bool gpuDenoiser = parsedOptions.gpu_denoiser;
   const bool temporalAa = parsedOptions.temporal_aa;
+  const bool audioMute = parsedOptions.audio_mute;
   const std::optional<uint32_t> uiPresentHz = parsedOptions.ui_present_hz;
   if (envFileEnabled) {
     std::error_code envFileEc;
@@ -676,6 +744,14 @@ int RunApp(int argc, char** argv) {
   // ---- --window (interactive shell placeholder) ----------------------------
   if (openWindow) {
     BootStep("window mode requested");
+#ifdef _WIN32
+    ScopedWindowsTimerResolution windowTimerResolution(1u);
+    logger.log(vkpt::log::Severity::Info,
+               "app",
+               windowTimerResolution.active()
+                   ? "Windows timer resolution set to 1 ms for window mode"
+                   : "Windows timer resolution request failed for window mode");
+#endif
     if (headless) {
       std::cerr << "--window and --headless are mutually exclusive\n";
       return 1;
@@ -902,6 +978,7 @@ int RunApp(int argc, char** argv) {
       }
       qtTracer = std::move(qtInitialTracer.tracer);
       qtRendererPath = qtInitialTracer.renderer_path;
+      status.selected_renderer_path = qtRendererPath;
       config.backend = {qtInitialTracer.requested_backend, config.backend.source};
       if (qtInitialTracer.background) {
         std::cout << "[cpu] Using TiledCpuPathTracer workers="
@@ -945,6 +1022,17 @@ int RunApp(int argc, char** argv) {
         }
       }
       qtStartupStep("scene loaded");
+      auto qtAudioSystem = vkpt::audio::CreateAudioSystem(vkpt::audio::AudioSystemConfig{
+          audioBackend,
+          audioMute,
+          44100u,
+          2u,
+          1024u,
+          3u});
+      if (qtAudioSystem && qtAudioSystem->initialize()) {
+        vkpt::audio::SetGlobalAudioSystem(qtAudioSystem.get());
+        qtAudioSystem->load_scene_audio(qtSceneDocument, RuntimeSceneDisplayName(config.scene_path.value));
+      }
       std::unordered_map<vkpt::core::StableId, uint32_t> qtRtInstanceIndexByEntity;
       auto qtRebuildRtInstanceIndexCache = [&]() {
         qtRtInstanceIndexByEntity.clear();
@@ -977,8 +1065,12 @@ int RunApp(int argc, char** argv) {
       qtSettings.seed = 0xC001D00Dull;
       qtSettings.enable_nee = true;
       qtSettings.enable_mis = true;
-      qtSettings.enable_denoiser = true;
-      qtSettings.enable_temporal_aa = true;
+      // Interactive preview follows the reference WebGL tracer loop: display the
+      // latest path-traced sample immediately and let accumulation catch up.
+      // Denoising/temporal AA are still exposed in Render Settings for explicit
+      // quality work, but defaulting them on adds latency and ghosting while dragging.
+      qtSettings.enable_denoiser = false;
+      qtSettings.enable_temporal_aa = false;
 
       qtStartupStep("configuring renderer and acceleration");
       bool qtTracerReady = (qtTracer->configure(qtSettings) &&
@@ -1050,9 +1142,12 @@ int RunApp(int argc, char** argv) {
                 << " static=" << qtPhysicsSummary.static_bodies
                 << " worker=" << (qtPhysicsInfo.runs_on_worker_thread ? "yes" : "no") << "\n";
 
-      // ---- Background render coordinator (TiledCpuPathTracer blocks; run off main thread) ----
-      // Qt posts coalesced commands and consumes latest-wins display frames.
-      const uint32_t qtPreviewPublishHz = std::max<uint32_t>(1u, config.ui_present_hz.value);
+      // ---- Background render coordinator ------------------------------------
+      // Qt posts motion updates independently and consumes latest-wins display frames.
+      uint32_t qtPreviewPublishHz = std::max<uint32_t>(1u, config.ui_present_hz.value);
+      uint32_t qtFramebufferDisplayHz = qtPreviewPublishHz;
+      auto qtFramebufferDisplayInterval =
+          std::chrono::microseconds(1000000u / qtFramebufferDisplayHz);
       constexpr uint32_t kQtPreviewImmediatePublishes = 4u;
       std::atomic<uint32_t> qtPublishedSample{0u};
       std::atomic<uint32_t> qtPublishedWidth{qtSettings.width};
@@ -1061,8 +1156,17 @@ int RunApp(int argc, char** argv) {
       std::atomic<std::uint64_t> qtPublishedFrames{0u};
       std::atomic<std::uint64_t> qtDroppedFrames{0u};
       std::unique_ptr<vkpt::render::RenderCoordinator> qtRenderCoordinator;
-      bool qtUseBg =
-          (dynamic_cast<vkpt::cpu::TiledCpuPathTracer*>(qtTracer.get()) != nullptr);
+      auto qtNextFramebufferSubmit = std::chrono::steady_clock::time_point{};
+      bool qtUseBg = qtInitialTracer.background;
+      auto qtRefreshPreviewCadence = [&]() {
+        qtPreviewPublishHz = std::max<uint32_t>(1u, config.ui_present_hz.value);
+        qtFramebufferDisplayHz = qtPreviewPublishHz;
+        qtFramebufferDisplayInterval =
+            std::chrono::microseconds(1000000u / qtFramebufferDisplayHz);
+        if (qtRenderCoordinator) {
+          qtRenderCoordinator->set_publish_hz(qtPreviewPublishHz);
+        }
+      };
 #ifdef PT_ENABLE_QT
       QtDockDeviceStats qtDeviceStats;
       auto qtRefreshDeviceStats = [&]() {
@@ -1101,7 +1205,7 @@ int RunApp(int argc, char** argv) {
       qtRefreshDeviceStats();
 #endif
       if (qtTracerReady && qtUseBg) {
-        qtStartupStep("starting background cpu render coordinator");
+        qtStartupStep("starting background render coordinator");
         vkpt::render::RenderCoordinatorConfig coordinatorConfig{};
         coordinatorConfig.publish_hz = qtPreviewPublishHz;
         coordinatorConfig.immediate_publish_count = kQtPreviewImmediatePublishes;
@@ -1122,9 +1226,6 @@ int RunApp(int argc, char** argv) {
           : (qtTracerReady ? "rendering" : "tracer init failed");
 
       // ---- Orbit camera setup ----
-      // Auto-orbit is too expensive on the CPU tiled tracer because each
-      // camera step resets accumulation and may force a scene reload/rebuild.
-      // Keep orbit enabled for non-bg (GPU/synchronous) paths only.
       bool qtEnableAutoOrbit = (windowFrameLimit == 0u) && !qtUseBg && !qtPhysicsRuntimeEnabled;
       const float kQtOrbitDegPerSec = 7.5f;
       const float kQtOrbitMinStepDeg = 0.1f;
@@ -1157,17 +1258,106 @@ int RunApp(int argc, char** argv) {
                   << ") radius=" << kQtOrbitRadius << " initial_angle=" << qtOrbitInitialAngleDeg << "\n";
       } else if (qtPhysicsRuntimeEnabled) {
         std::cout << "[orbit] disabled for dynamic physics scene; using authored camera\n";
+      } else if (qtUseBg) {
+        std::cout << "[orbit] disabled for background tracer to preserve throughput\n";
       } else {
-        std::cout << "[orbit] disabled for CPU background tracer to preserve throughput\n";
+        std::cout << "[orbit] disabled by window frame limit\n";
       }
 
       // ---- Main Qt event loop with rendering ----
       qtStartupStep("entering qt render loop");
       uint32_t qtFrameCount = 0u;
       bool qtUserCameraActive = false;
-      constexpr auto kQtInteractiveFrameTarget = std::chrono::milliseconds(16);
+      auto qtInteractiveFrameTarget = [&]() {
+        return std::chrono::microseconds(
+            1000000u / std::max<uint32_t>(1u, qtPreviewPublishHz));
+      };
+      double qtProfilePollMs = 0.0;
+      double qtProfileInputMs = 0.0;
+      double qtProfilePhysicsMs = 0.0;
+      double qtProfileSelectionMs = 0.0;
+      double qtProfileRenderMs = 0.0;
+      double qtProfileUiMs = 0.0;
+      double qtProfileFrameMs = 0.0;
+      double qtProfileMaxFrameMs = 0.0;
+      uint32_t qtProfileFrames = 0u;
+      double qtProfilePaceWaitMs = 0.0;
+      double qtProfileMaxLateMs = 0.0;
+      uint32_t qtProfileLateFrames = 0u;
       uint32_t qtLastGpuBatchesPerTick = 0u;
       double qtSmoothedGpuBatchMs = 0.0;
+      std::uint64_t qtGizmoDragInputSamples = 0u;
+      std::uint64_t qtGizmoTransformImmediatePublishes = 0u;
+      std::uint64_t qtGizmoTransformPublishedEntityCount = 0u;
+      std::uint64_t qtGizmoTransformPublishFailures = 0u;
+      std::uint64_t qtOverlayRequiredRenderGeneration = 0u;
+      std::uint64_t qtOverlayStaleSkips = 0u;
+      auto qtLatestPaintedRenderGeneration = [&]() -> std::uint64_t {
+        if (qtWindow == nullptr) {
+          return 0u;
+        }
+        return qtWindow->framebuffer_stats().latestPaintedGeneration;
+      };
+      auto qtMarkOverlayRequiresRenderCatchup = [&]() {
+        if (!qtUseBg || !qtRenderCoordinator) {
+          qtOverlayRequiredRenderGeneration = 0u;
+          return;
+        }
+        const auto renderStats = qtRenderCoordinator->stats();
+        qtOverlayRequiredRenderGeneration =
+            std::max<std::uint64_t>(qtOverlayRequiredRenderGeneration,
+                                    renderStats.generation + 1u);
+      };
+      auto qtRenderImageCaughtUpForOverlay = [&]() -> bool {
+        if (qtOverlayRequiredRenderGeneration == 0u) {
+          return true;
+        }
+        if (qtLatestPaintedRenderGeneration() >= qtOverlayRequiredRenderGeneration) {
+          qtOverlayRequiredRenderGeneration = 0u;
+          return true;
+        }
+        ++qtOverlayStaleSkips;
+        return false;
+      };
+#ifndef PT_ENABLE_QT
+      (void)qtFramebufferDisplayInterval;
+      (void)qtPublishedSample;
+      (void)qtPublishedRays;
+      (void)qtPublishedFrames;
+      (void)qtDroppedFrames;
+      (void)qtNextFramebufferSubmit;
+      (void)qtSampleIndex;
+      (void)kQtOrbitDegPerSec;
+      (void)kQtOrbitMinStepDeg;
+      (void)qtOrbitLastAngleDeg;
+      (void)qtOrbitStartTime;
+      (void)qtFrameCount;
+      (void)qtUserCameraActive;
+      (void)qtInteractiveFrameTarget;
+      (void)qtProfilePollMs;
+      (void)qtProfileInputMs;
+      (void)qtProfilePhysicsMs;
+      (void)qtProfileSelectionMs;
+      (void)qtProfileRenderMs;
+      (void)qtProfileUiMs;
+      (void)qtProfileFrameMs;
+      (void)qtProfileMaxFrameMs;
+      (void)qtProfileFrames;
+      (void)qtProfilePaceWaitMs;
+      (void)qtProfileMaxLateMs;
+      (void)qtProfileLateFrames;
+      (void)qtLastGpuBatchesPerTick;
+      (void)qtSmoothedGpuBatchMs;
+      (void)qtGizmoDragInputSamples;
+      (void)qtGizmoTransformImmediatePublishes;
+      (void)qtGizmoTransformPublishedEntityCount;
+      (void)qtGizmoTransformPublishFailures;
+      (void)qtOverlayRequiredRenderGeneration;
+      (void)qtOverlayStaleSkips;
+      (void)qtLatestPaintedRenderGeneration;
+      (void)qtMarkOverlayRequiresRenderCatchup;
+      (void)qtRenderImageCaughtUpForOverlay;
+#endif
 #ifdef PT_ENABLE_QT
 #include "AppRuntimeQtCameraAndScene.inc"
 #include "AppRuntimeQtBackendSwitch.inc"

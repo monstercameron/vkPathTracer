@@ -236,6 +236,12 @@ std::string_view to_string(ComponentKind kind) {
       return "PhysicsBody";
     case ComponentKind::Script:
       return "Script";
+    case ComponentKind::AudioListener:
+      return "AudioListener";
+    case ComponentKind::AudioEmitter:
+      return "AudioEmitter";
+    case ComponentKind::UiPanel:
+      return "UiPanel";
     case ComponentKind::BenchmarkTag:
       return "BenchmarkTag";
     default:
@@ -295,6 +301,15 @@ vkpt::core::Result<SceneWorld> SceneDocument::to_world() const {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
     if (!entity.script.script.empty() && !world.set_component(id, ComponentKind::Script, entity.script)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
+    }
+    if (entity.has_audio_listener && !world.set_component(id, ComponentKind::AudioListener, entity.audio_listener)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
+    }
+    if (entity.has_audio_emitter && !world.set_component(id, ComponentKind::AudioEmitter, entity.audio_emitter)) {
+      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
+    }
+    if (entity.has_ui_panel && !world.set_component(id, ComponentKind::UiPanel, entity.ui_panel)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
     if (entity.has_benchmark_tag && !world.set_component(id, ComponentKind::BenchmarkTag, entity.benchmark_tag)) {

@@ -41,6 +41,7 @@
         qtPublishedSample.store(0u, std::memory_order_relaxed);
         qtPublishedRays.store(0u, std::memory_order_relaxed);
         if (qtUseBg && qtRenderCoordinator) {
+          qtMarkOverlayRequiresRenderCatchup();
           qtRenderCoordinator->post_camera(vkpt::render::RenderCameraCommand{
               qtScene.camera_position,
               qtScene.camera_target,
@@ -136,6 +137,9 @@
         if (qtWindow == nullptr) {
           return;
         }
+        // Selection and gizmo overlays follow the latest editor/Lua scene state.
+        // Background render catch-up must not freeze bounds during continuous motion.
+        (void)qtRenderImageCaughtUpForOverlay();
         const auto frameRect = qtViewportImageRect();
         auto boxes = BuildSelectionOverlayBoxes(
             ui_selection_state,
@@ -203,6 +207,10 @@
       float qtPendingFpsLookDx = 0.0f;
       float qtPendingFpsLookDy = 0.0f;
       float qtPendingFpsMoveDt = 0.0f;
+      float qtPendingOrbitDx = 0.0f;
+      float qtPendingOrbitDy = 0.0f;
+      float qtPendingPanDx = 0.0f;
+      float qtPendingPanDy = 0.0f;
       std::uint64_t qtFpsMoveSequence = 0u;
       std::uint64_t qtFpsAppliedMoveSequence = 0u;
       bool qtDockPanelsDirty = true;
@@ -246,7 +254,9 @@
         float start_x = 0.0f;
         float start_y = 0.0f;
         std::vector<QtGizmoDragEntityStart> entities;
+        std::unordered_set<vkpt::core::StableId> publishable_entity_ids;
         bool scene_reload_pending = false;
+        bool pending_publish = false;
       } qtGizmoDrag;
       std::unordered_set<int> qtKeysDown;
       auto qtNormalizeKey = [](int key) {
@@ -263,6 +273,7 @@
       constexpr int kQtKeyUp = 0x01000013;
       constexpr int kQtKeyRight = 0x01000014;
       constexpr int kQtKeyDown = 0x01000015;
+      constexpr int kQtKeyF1 = 0x01000030;
       constexpr int kQtKeySpace = 0x20;
       constexpr int kQtKeyBackspace = 0x01000003;
       constexpr int kQtKeyDelete = 0x01000007;
@@ -331,17 +342,6 @@
             ui_runtime_state.active_gizmo_mode,
             localPoint->first,
             localPoint->second);
-        if (!hit) {
-          hit = PickSelectionBoundsFreeform(
-              *activeBounds,
-              qtCameraPose,
-              frameRect.width,
-              frameRect.height,
-              qtRenderAspect(),
-              ui_runtime_state.active_gizmo_mode,
-              localPoint->first,
-              localPoint->second);
-        }
         qtSetViewportCursor(hit ? CursorForGizmoHit(*hit)
                                 : vkpt::platform::QtViewportCursor::Default);
         if (!SameGizmoHandle(qtHoveredGizmoHit, hit)) {
@@ -509,4 +509,10 @@
       qtSyncActiveCameraObjectFromPose();
       auto qtScriptRuntime = vkpt::scripting::CreateScriptRuntime();
       QtDockScriptRuntimeState qtScriptState;
+      auto qtSyncViewportAssetDropMode = [&]() {
+        if (qtWindow != nullptr) {
+          qtWindow->set_viewport_asset_drops_enabled(!qtFpsMode && !qtScriptState.playing);
+        }
+      };
+      qtSyncViewportAssetDropMode();
       const auto qtScriptRuntimeStartTime = std::chrono::steady_clock::now();

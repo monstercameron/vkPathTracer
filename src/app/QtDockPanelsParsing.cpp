@@ -693,6 +693,9 @@ std::string QtEntityComponentSummary(const vkpt::scene::SceneEntityDefinition& e
   if (entity.has_camera) components.push_back("Camera");
   if (!entity.script.script.empty()) components.push_back("Script");
   if (entity.has_physics_body) components.push_back(entity.physics_body.enabled ? "Physics" : "Physics Off");
+  if (entity.has_audio_listener) components.push_back("Audio Listener");
+  if (entity.has_audio_emitter) components.push_back("Audio Emitter");
+  if (entity.has_ui_panel) components.push_back("UI Panel");
   return components.empty() ? "Entity" : QtDockJoin(components, ", ");
 }
 

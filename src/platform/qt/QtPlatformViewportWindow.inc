@@ -16,7 +16,7 @@ class QtViewportWindow final : public QWidget {
         update();
       }
     });
-    timer->start(16);
+    timer->start(8);
   }
 
   void setOwner(QtWindow* owner) {
@@ -38,12 +38,26 @@ class QtViewportWindow final : public QWidget {
     update();
   }
 
+  void setScriptOverlayPanels(std::vector<QtScriptOverlayPanel> panels) {
+    m_scriptOverlayPanels = std::move(panels);
+    m_dirty = true;
+    update();
+  }
+
   void setViewportCursor(QtViewportCursor cursor) {
     if (m_viewportCursor == cursor) {
       return;
     }
     m_viewportCursor = cursor;
     applyViewportCursor();
+  }
+
+  void setAssetModelDropsEnabled(bool enabled) {
+    if (m_assetModelDropsEnabled == enabled) {
+      return;
+    }
+    m_assetModelDropsEnabled = enabled;
+    setAcceptDrops(enabled);
   }
 
   void setMouseLocked(bool locked) {
@@ -71,6 +85,7 @@ class QtViewportWindow final : public QWidget {
     dropUnpresentedFrame();
     m_frame = QImage();
     m_frameId = 0u;
+    m_frameGeneration = 0u;
     m_frameWidth = 0u;
     m_frameHeight = 0u;
     m_framePresented = true;
@@ -82,6 +97,7 @@ class QtViewportWindow final : public QWidget {
                               std::size_t srcBytes,
                               std::size_t width,
                               std::size_t height,
+                              std::uint64_t generation,
                               std::uint64_t frameId) {
     if (src == nullptr || !FitsQtImageDimensions(width, height)) {
       clearFrameOnUiThread();
@@ -120,6 +136,7 @@ class QtViewportWindow final : public QWidget {
     }
 
     m_frameId = frameId;
+    m_frameGeneration = generation;
     m_frameWidth = width;
     m_frameHeight = height;
     m_framePresented = false;
@@ -136,7 +153,6 @@ class QtViewportWindow final : public QWidget {
     // UI thread rule: painting only draws the most recent immutable display image
     // and overlay. Rendering, resolving, and handoff publication happen elsewhere.
     if (!m_frame.isNull()) {
-      painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
       painter.drawImage(frameDisplayRect(), m_frame);
     }
 
@@ -245,11 +261,20 @@ class QtViewportWindow final : public QWidget {
       painter.drawText(textRect, flags, text);
     }
 
+    if (!m_scriptOverlayPanels.empty()) {
+      painter.setRenderHint(QPainter::Antialiasing, true);
+      painter.setRenderHint(QPainter::TextAntialiasing, true);
+      drawScriptOverlayPanels(painter);
+    }
+
     if (!m_frame.isNull() && !m_framePresented) {
       m_framePresented = true;
       if (m_owner != nullptr) {
-        m_owner->record_frame_presented(m_frameId, m_frameWidth, m_frameHeight);
+        m_owner->record_frame_presented(m_frameId, m_frameGeneration, m_frameWidth, m_frameHeight);
       }
+    }
+    if (m_owner != nullptr) {
+      m_owner->record_canvas_painted(m_frameId, m_frameGeneration, m_frameWidth, m_frameHeight);
     }
 
     m_dirty = false;
@@ -377,7 +402,8 @@ class QtViewportWindow final : public QWidget {
   }
 
   void dragEnterEvent(QDragEnterEvent* event) override {
-    if (event != nullptr && acceptsAssetModelDrop(event->mimeData())) {
+    if (m_assetModelDropsEnabled && event != nullptr &&
+        acceptsAssetModelDrop(event->mimeData())) {
       event->acceptProposedAction();
       return;
     }
@@ -385,7 +411,8 @@ class QtViewportWindow final : public QWidget {
   }
 
   void dragMoveEvent(QDragMoveEvent* event) override {
-    if (event != nullptr && acceptsAssetModelDrop(event->mimeData())) {
+    if (m_assetModelDropsEnabled && event != nullptr &&
+        acceptsAssetModelDrop(event->mimeData())) {
       event->acceptProposedAction();
       return;
     }
@@ -393,7 +420,8 @@ class QtViewportWindow final : public QWidget {
   }
 
   void dropEvent(QDropEvent* event) override {
-    if (event == nullptr || m_owner == nullptr || !acceptsAssetModelDrop(event->mimeData())) {
+    if (!m_assetModelDropsEnabled || event == nullptr || m_owner == nullptr ||
+        !acceptsAssetModelDrop(event->mimeData())) {
       QWidget::dropEvent(event);
       return;
     }
@@ -491,6 +519,126 @@ class QtViewportWindow final : public QWidget {
     m_framePresented = true;
   }
 
+  QRectF scriptPanelRect(const QtScriptOverlayPanel& panel, double panelHeight) const {
+    const QRectF viewportRect = frameDisplayRect();
+    const double margin = 8.0;
+    const double width = std::clamp<double>(
+        std::isfinite(panel.width) && panel.width > 0.0f ? panel.width : 320.0f,
+        160.0,
+        std::max(160.0, viewportRect.width() - margin * 2.0));
+    const double height = std::clamp<double>(
+        panelHeight,
+        44.0,
+        std::max(44.0, viewportRect.height() - margin * 2.0));
+    const double offsetX = std::isfinite(panel.x) ? std::max(0.0f, panel.x) : 16.0f;
+    const double offsetY = std::isfinite(panel.y) ? std::max(0.0f, panel.y) : 16.0f;
+    double x = viewportRect.left() + offsetX;
+    double y = viewportRect.top() + offsetY;
+    const std::string anchor = panel.anchor.empty() ? std::string("top_left") : panel.anchor;
+    if (anchor == "top_right") {
+      x = viewportRect.right() - width - offsetX;
+    } else if (anchor == "bottom_left") {
+      y = viewportRect.bottom() - height - offsetY;
+    } else if (anchor == "bottom_right") {
+      x = viewportRect.right() - width - offsetX;
+      y = viewportRect.bottom() - height - offsetY;
+    } else if (anchor == "center") {
+      const double centerOffsetX = std::isfinite(panel.x) ? panel.x : 0.0f;
+      const double centerOffsetY = std::isfinite(panel.y) ? panel.y : 0.0f;
+      x = viewportRect.left() + (viewportRect.width() - width) * 0.5 + centerOffsetX;
+      y = viewportRect.top() + (viewportRect.height() - height) * 0.5 + centerOffsetY;
+    }
+    const double minX = viewportRect.left() + margin;
+    const double minY = viewportRect.top() + margin;
+    const double maxX = std::max(minX, viewportRect.right() - width - margin);
+    const double maxY = std::max(minY, viewportRect.bottom() - height - margin);
+    x = std::clamp<double>(x, minX, maxX);
+    y = std::clamp<double>(y, minY, maxY);
+    return QRectF(x, y, width, height);
+  }
+
+  void drawScriptOverlayPanels(QPainter& painter) {
+    for (const auto& panel : m_scriptOverlayPanels) {
+      const double fontSize = std::clamp<double>(
+          std::isfinite(panel.font_size) ? panel.font_size : 13.0f,
+          8.0,
+          32.0);
+      QFont titleFont = painter.font();
+      titleFont.setPointSizeF(fontSize + 1.0);
+      titleFont.setBold(true);
+      QFont bodyFont = painter.font();
+      bodyFont.setPointSizeF(fontSize);
+
+      QFontMetricsF titleMetrics(titleFont);
+      QFontMetricsF bodyMetrics(bodyFont);
+      const double padding = 12.0;
+      const double titleHeight = panel.title.empty() ? 0.0 : titleMetrics.height();
+      const double titleGap = panel.title.empty() || panel.lines.empty() ? 0.0 : 7.0;
+      const double lineHeight = std::max(15.0, bodyMetrics.lineSpacing());
+      const double autoHeight = padding * 2.0 + titleHeight + titleGap +
+                                static_cast<double>(panel.lines.size()) * lineHeight;
+      const double requestedHeight =
+          std::isfinite(panel.height) && panel.height > 0.0f ? panel.height : autoHeight;
+      const QRectF panelRect = scriptPanelRect(panel, requestedHeight);
+      if (!panelRect.isValid() || panelRect.width() < 24.0 || panelRect.height() < 24.0) {
+        continue;
+      }
+
+      const float opacity = std::isfinite(panel.opacity) ? panel.opacity : 0.84f;
+      const int alpha = std::clamp<int>(
+          static_cast<int>(std::round(std::clamp<float>(opacity, 0.0f, 1.0f) * 255.0f)),
+          0,
+          255);
+      QPainterPath shadowPath;
+      shadowPath.addRoundedRect(panelRect.translated(0.0, 2.0), 8.0, 8.0);
+      painter.fillPath(shadowPath, QColor(0, 0, 0, std::min(90, alpha)));
+
+      QPainterPath panelPath;
+      panelPath.addRoundedRect(panelRect, 8.0, 8.0);
+      painter.fillPath(panelPath,
+                       QColor(panel.background_r,
+                              panel.background_g,
+                              panel.background_b,
+                              alpha));
+      painter.setPen(QPen(QColor(panel.accent_r,
+                                 panel.accent_g,
+                                 panel.accent_b,
+                                 std::min(220, alpha + 35)),
+                          1.2));
+      painter.drawPath(panelPath);
+      painter.fillRect(QRectF(panelRect.left(),
+                              panelRect.top() + 8.0,
+                              3.0,
+                              std::max(0.0, panelRect.height() - 16.0)),
+                       QColor(panel.accent_r, panel.accent_g, panel.accent_b, std::min(230, alpha + 45)));
+
+      const QRectF inner = panelRect.adjusted(padding, padding, -padding, -padding);
+      double cursorY = inner.top();
+      if (!panel.title.empty()) {
+        painter.setFont(titleFont);
+        painter.setPen(QColor(panel.foreground_r, panel.foreground_g, panel.foreground_b, 245));
+        const auto title = titleMetrics.elidedText(ToQString(panel.title), Qt::ElideRight, inner.width());
+        painter.drawText(QRectF(inner.left(), cursorY, inner.width(), titleHeight + 2.0),
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         title);
+        cursorY += titleHeight + titleGap;
+      }
+
+      painter.setFont(bodyFont);
+      painter.setPen(QColor(panel.foreground_r, panel.foreground_g, panel.foreground_b, 226));
+      for (const auto& line : panel.lines) {
+        if (cursorY + lineHeight > inner.bottom() + 1.0) {
+          break;
+        }
+        const auto text = bodyMetrics.elidedText(ToQString(line), Qt::ElideRight, inner.width());
+        painter.drawText(QRectF(inner.left(), cursorY, inner.width(), lineHeight + 2.0),
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         text);
+        cursorY += lineHeight;
+      }
+    }
+  }
+
   QRectF frameDisplayRect() const {
     const QRectF viewportRect(rect());
     if (m_frame.isNull() || m_frame.width() <= 0 || m_frame.height() <= 0 ||
@@ -515,13 +663,16 @@ class QtViewportWindow final : public QWidget {
   QtWindow* m_owner = nullptr;
   QImage m_frame;
   std::uint64_t m_frameId = 0u;
+  std::uint64_t m_frameGeneration = 0u;
   std::size_t m_frameWidth = 0u;
   std::size_t m_frameHeight = 0u;
   bool m_framePresented = true;
   QString m_overlayText;
   std::vector<QtSelectionOverlayBox> m_overlayBoxes;
+  std::vector<QtScriptOverlayPanel> m_scriptOverlayPanels;
   QtViewportCursor m_viewportCursor = QtViewportCursor::Default;
   bool m_dirty = false;
+  bool m_assetModelDropsEnabled = true;
   bool m_mouseGrabbed = false;
   bool m_mouseLocked = false;
   bool m_ignoreNextLockedMouseMove = false;

@@ -1,0 +1,328 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Audio Lua Interaction Demo",
+    "author": "vkPathTracer",
+    "created": "2026-05-07"
+  },
+  "assets": [
+    {
+      "id": 9701,
+      "type": "audio/event/spatial",
+      "uri": "../audio/footstep_dirt_gravel_01.mp3",
+      "name": "player.footstep.dirt"
+    },
+    {
+      "id": 9707,
+      "type": "audio/event/spatial",
+      "uri": "../audio/footstep_dirt_gravel_03.mp3",
+      "name": "player.footstep.dirt"
+    },
+    {
+      "id": 9708,
+      "type": "audio/event/spatial",
+      "uri": "../audio/footstep_dirt_gravel_04.mp3",
+      "name": "player.footstep.dirt"
+    },
+    {
+      "id": 9709,
+      "type": "audio/event/spatial",
+      "uri": "../audio/footstep_boots_dirt_01.mp3",
+      "name": "player.footstep.dirt"
+    },
+    {
+      "id": 9702,
+      "type": "audio/event/spatial",
+      "uri": "tone:rifle.fire",
+      "name": "weapon.rifle.fire"
+    },
+    {
+      "id": 9703,
+      "type": "audio/event/spatial",
+      "uri": "tone:pickup",
+      "name": "pickup.collect"
+    },
+    {
+      "id": 9704,
+      "type": "audio/event/spatial",
+      "uri": "tone:terminal",
+      "name": "objective.terminal.disabled"
+    },
+    {
+      "id": 9705,
+      "type": "audio/event/ui",
+      "uri": "tone:radar.ping",
+      "name": "ui.radar.ping"
+    },
+    {
+      "id": 9706,
+      "type": "audio/stream/ambience",
+      "uri": "../audio/forest_ambience_loop.mp3",
+      "name": "ambience.forest"
+    }
+  ],
+  "materials": [
+    {
+      "id": 9711,
+      "name": "Audio demo floor",
+      "family": "diffuse",
+      "albedo": [0.28, 0.31, 0.30],
+      "roughness": 0.86,
+      "double_sided": true
+    },
+    {
+      "id": 9712,
+      "name": "Audio player marker",
+      "family": "diffuse",
+      "albedo": [0.05, 0.55, 0.62],
+      "roughness": 0.52,
+      "double_sided": true
+    },
+    {
+      "id": 9713,
+      "name": "Audio interactables",
+      "family": "diffuse",
+      "albedo": [0.82, 0.55, 0.20],
+      "roughness": 0.58,
+      "double_sided": true
+    },
+    {
+      "id": 9714,
+      "name": "Audio softbox",
+      "family": "emissive",
+      "albedo": [1.0, 0.95, 0.86],
+      "emission": [1.0, 0.95, 0.86],
+      "emission_intensity": 3.5,
+      "roughness": 1.0,
+      "double_sided": true
+    }
+  ],
+  "geometry": [
+    {
+      "id": 9721,
+      "name": "unit_cube",
+      "primitive": "triangle",
+      "material_id": 9711,
+      "vertices": [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5]
+      ],
+      "indices": [
+        0, 1, 2, 0, 2, 3,
+        4, 6, 5, 4, 7, 6,
+        0, 4, 5, 0, 5, 1,
+        3, 2, 6, 3, 6, 7,
+        1, 5, 6, 1, 6, 2,
+        0, 3, 7, 0, 7, 4
+      ]
+    },
+    {
+      "id": 9722,
+      "name": "player_cube",
+      "primitive": "triangle",
+      "material_id": 9712,
+      "vertices": [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5]
+      ],
+      "indices": [
+        0, 1, 2, 0, 2, 3,
+        4, 6, 5, 4, 7, 6,
+        0, 4, 5, 0, 5, 1,
+        3, 2, 6, 3, 6, 7,
+        1, 5, 6, 1, 6, 2,
+        0, 3, 7, 0, 7, 4
+      ]
+    },
+    {
+      "id": 9723,
+      "name": "interactable_cube",
+      "primitive": "triangle",
+      "material_id": 9713,
+      "vertices": [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5]
+      ],
+      "indices": [
+        0, 1, 2, 0, 2, 3,
+        4, 6, 5, 4, 7, 6,
+        0, 4, 5, 0, 5, 1,
+        3, 2, 6, 3, 6, 7,
+        1, 5, 6, 1, 6, 2,
+        0, 3, 7, 0, 7, 4
+      ]
+    }
+  ],
+  "entities": [
+    {
+      "id": 9730,
+      "name": "Audio Demo Root"
+    },
+    {
+      "id": 9731,
+      "name": "Audio Demo Camera Listener",
+      "transform": {
+        "translation": [0.0, 2.2, 5.8],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "camera": {
+        "fov": 48.0,
+        "near_plane": 0.05,
+        "far_plane": 120.0,
+        "focus_distance": 5.8,
+        "shutter_seconds": 0.0166667,
+        "iso": 100.0
+      },
+      "audio_listener": {
+        "enabled": true,
+        "primary": true
+      }
+    },
+    {
+      "id": 9732,
+      "name": "Audio Demo Key Light",
+      "transform": {
+        "translation": [0.0, 4.0, 1.8],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "light": {
+        "type": "point",
+        "color": [1.0, 0.94, 0.82],
+        "intensity": 4.0,
+        "radius": 1.0
+      }
+    },
+    {
+      "id": 9740,
+      "name": "Audio Demo Floor",
+      "transform": {
+        "translation": [0.0, -0.08, -0.7],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [8.0, 0.12, 6.5]
+      },
+      "mesh": {
+        "mesh_id": 9721,
+        "material_id": 9711
+      }
+    },
+    {
+      "id": 9741,
+      "name": "Lua Audio Player",
+      "transform": {
+        "translation": [0.0, 0.45, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.55, 0.9, 0.55]
+      },
+      "mesh": {
+        "mesh_id": 9722,
+        "material_id": 9712
+      },
+      "script": {
+        "source": "assets/scripts/audio_interaction_demo.lua",
+        "language": "lua",
+        "entry": "default",
+        "enabled": true,
+        "reload_on_save": true
+      }
+    },
+    {
+      "id": 9790,
+      "name": "Audio Controls Panel",
+      "ui_panel": {
+        "id": "audio_demo.controls",
+        "title": "Audio Demo Controls",
+        "anchor": "top_left",
+        "enabled": true,
+        "visible": true,
+        "x": 16.0,
+        "y": 16.0,
+        "width": 304.0,
+        "height": 0.0,
+        "opacity": 0.88,
+        "font_size": 13.0,
+        "background": [0.035, 0.045, 0.055],
+        "foreground": [0.92, 0.96, 1.0],
+        "accent": [0.12, 0.72, 0.95],
+        "lines": [
+          "WASD / Arrows   Move player",
+          "Shift           Run footsteps",
+          "Space           Fire",
+          "E               Pickup sound",
+          "G               Terminal sound",
+          "F1              Toggle game mode"
+        ]
+      },
+      "hierarchy": {
+        "parent": 9730,
+        "sibling_order": 99
+      }
+    },
+    {
+      "id": 9742,
+      "name": "Pickup Audio Marker",
+      "transform": {
+        "translation": [-2.0, 0.25, -1.2],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.35, 0.35, 0.35]
+      },
+      "mesh": {
+        "mesh_id": 9723,
+        "material_id": 9713
+      }
+    },
+    {
+      "id": 9743,
+      "name": "Terminal Audio Marker",
+      "transform": {
+        "translation": [2.0, 0.55, -1.3],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.45, 1.1, 0.45]
+      },
+      "mesh": {
+        "mesh_id": 9723,
+        "material_id": 9713
+      }
+    },
+    {
+      "id": 9744,
+      "name": "Ambient Forest Emitter",
+      "transform": {
+        "translation": [0.0, 1.0, -1.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "audio_emitter": {
+        "event": "ambience.forest",
+        "bus": "ambience",
+        "enabled": true,
+        "autoplay": true,
+        "loop": true,
+        "spatial": false,
+        "volume": 0.32,
+        "pitch": 1.0,
+        "min_distance": 1.0,
+        "max_distance": 20.0
+      }
+    }
+  ]
+}

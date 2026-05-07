@@ -8,6 +8,7 @@
 #include <sstream>
 #include <unordered_set>
 #include <utility>
+#include "audio/AudioSystem.h"
 #include "core/Logging.h"
 #ifdef PT_ENABLE_LUA
 extern "C" {
@@ -146,6 +147,161 @@ void AddLuaDiagnostic(LuaHostContext& host,
 std::string LuaErrorText(lua_State* lua) {
   const char* message = lua_tostring(lua, -1);
   return message == nullptr ? "unknown Lua error" : std::string(message);
+}
+
+std::string LuaScalarValueText(lua_State* lua, int index) {
+  if (lua_isboolean(lua, index)) {
+    return lua_toboolean(lua, index) ? "true" : "false";
+  }
+  if (lua_isinteger(lua, index)) {
+    return std::to_string(static_cast<long long>(lua_tointeger(lua, index)));
+  }
+  if (lua_isnumber(lua, index)) {
+    std::ostringstream out;
+    out << lua_tonumber(lua, index);
+    return out.str();
+  }
+  if (lua_isstring(lua, index)) {
+    return std::string("\"") + lua_tostring(lua, index) + "\"";
+  }
+  if (lua_isnil(lua, index)) {
+    return "nil";
+  }
+  return {};
+}
+
+bool LuaInspectableValue(lua_State* lua, int index) {
+  return lua_isboolean(lua, index) || lua_isinteger(lua, index) || lua_isnumber(lua, index) ||
+         lua_isstring(lua, index) || lua_isnil(lua, index) || lua_istable(lua, index);
+}
+
+std::string LuaTableValueText(lua_State* lua, int table_index, std::size_t max_fields = 6u) {
+  if (!lua_istable(lua, table_index)) {
+    return {};
+  }
+  const int table = lua_absindex(lua, table_index);
+  std::vector<std::string> fields;
+  fields.reserve(max_fields);
+  lua_pushnil(lua);
+  while (lua_next(lua, table) != 0) {
+    const int value_index = lua_gettop(lua);
+    const int key_index = value_index - 1;
+    const auto value = LuaScalarValueText(lua, value_index);
+    if (!value.empty()) {
+      std::string key;
+      if (lua_type(lua, key_index) == LUA_TSTRING) {
+        key = lua_tostring(lua, key_index);
+      } else if (lua_isinteger(lua, key_index)) {
+        key = std::to_string(static_cast<long long>(lua_tointeger(lua, key_index)));
+      }
+      if (!key.empty()) {
+        fields.push_back(key + "=" + value);
+      }
+    }
+    lua_pop(lua, 1);
+    if (fields.size() >= max_fields) {
+      break;
+    }
+  }
+  if (fields.empty()) {
+    return "{}";
+  }
+  std::ostringstream out;
+  out << "{";
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    if (i != 0u) {
+      out << ", ";
+    }
+    out << fields[i];
+  }
+  out << "}";
+  return out.str();
+}
+
+std::string LuaValueText(lua_State* lua, int index) {
+  if (lua_istable(lua, index)) {
+    return LuaTableValueText(lua, index);
+  }
+  return LuaScalarValueText(lua, index);
+}
+
+void AddLuaVariableSnapshot(std::vector<ScriptVariableSnapshot>& snapshots,
+                            const ScriptBinding& binding,
+                            ScriptLifecycleHook hook,
+                            const ScriptExecutionContext& context,
+                            std::string scope,
+                            std::string name,
+                            std::string value,
+                            bool editable) {
+  if (name.empty() || value.empty()) {
+    return;
+  }
+  ScriptVariableSnapshot snapshot;
+  snapshot.entity = binding.entity;
+  snapshot.frame = context.frame;
+  snapshot.hook = hook;
+  snapshot.source = binding.source;
+  snapshot.scope = std::move(scope);
+  snapshot.name = std::move(name);
+  snapshot.value = std::move(value);
+  snapshot.editable = editable;
+  snapshots.push_back(std::move(snapshot));
+}
+
+void CaptureLuaScriptVariables(lua_State* lua,
+                               int script_table_index,
+                               int hook_function_index,
+                               const ScriptBinding& binding,
+                               ScriptLifecycleHook hook,
+                               const ScriptExecutionContext& context,
+                               std::vector<ScriptVariableSnapshot>& snapshots) {
+  constexpr std::size_t kMaxSnapshotsPerHook = 48u;
+  const auto before_count = snapshots.size();
+  const int script_table = lua_absindex(lua, script_table_index);
+  if (lua_istable(lua, script_table)) {
+    lua_pushnil(lua);
+    while (lua_next(lua, script_table) != 0) {
+      const int value_index = lua_gettop(lua);
+      const int key_index = value_index - 1;
+      if (lua_type(lua, key_index) == LUA_TSTRING && LuaInspectableValue(lua, value_index) &&
+          !lua_isfunction(lua, value_index)) {
+        AddLuaVariableSnapshot(snapshots,
+                               binding,
+                               hook,
+                               context,
+                               "script",
+                               lua_tostring(lua, key_index),
+                               LuaValueText(lua, value_index),
+                               true);
+      }
+      lua_pop(lua, 1);
+      if (snapshots.size() - before_count >= kMaxSnapshotsPerHook) {
+        break;
+      }
+    }
+  }
+
+  if (!lua_isfunction(lua, hook_function_index)) {
+    return;
+  }
+  const int hook_function = lua_absindex(lua, hook_function_index);
+  for (int i = 1; snapshots.size() - before_count < kMaxSnapshotsPerHook; ++i) {
+    const char* name = lua_getupvalue(lua, hook_function, i);
+    if (name == nullptr) {
+      break;
+    }
+    if (std::string_view{name} != "_ENV" && LuaInspectableValue(lua, -1)) {
+      AddLuaVariableSnapshot(snapshots,
+                             binding,
+                             hook,
+                             context,
+                             "upvalue",
+                             name,
+                             LuaValueText(lua, -1),
+                             true);
+    }
+    lua_pop(lua, 1);
+  }
 }
 
 void OpenSafeLuaLibraries(lua_State* lua) {
@@ -416,6 +572,106 @@ void PushPhysicsBody(lua_State* lua, const vkpt::scene::PhysicsBodyComponent& bo
   lua_setfield(lua, -2, "continuous_collision");
 }
 
+std::vector<std::string> LuaStringList(lua_State* lua, int table_index) {
+  std::vector<std::string> out;
+  if (!lua_istable(lua, table_index)) {
+    return out;
+  }
+  const int absolute = lua_absindex(lua, table_index);
+  const auto len = lua_rawlen(lua, absolute);
+  out.reserve(static_cast<std::size_t>(len));
+  for (lua_Integer i = 1; i <= static_cast<lua_Integer>(len); ++i) {
+    lua_geti(lua, absolute, i);
+    if (lua_isstring(lua, -1)) {
+      out.emplace_back(lua_tostring(lua, -1));
+    }
+    lua_pop(lua, 1);
+  }
+  return out;
+}
+
+vkpt::scene::UiPanelComponent LuaUiPanel(lua_State* lua,
+                                         int table_index,
+                                         vkpt::scene::UiPanelComponent fallback = {}) {
+  if (!lua_istable(lua, table_index)) {
+    return fallback;
+  }
+  const int absolute = lua_absindex(lua, table_index);
+  auto panel = fallback;
+  panel.panel_id = LuaStringField(lua, absolute, "id", panel.panel_id);
+  panel.panel_id = LuaStringField(lua, absolute, "panel_id", panel.panel_id);
+  panel.title = LuaStringField(lua, absolute, "title", panel.title);
+  panel.anchor = LuaStringField(lua, absolute, "anchor", panel.anchor);
+  panel.enabled = LuaBoolField(lua, absolute, "enabled", panel.enabled);
+  panel.visible = LuaBoolField(lua, absolute, "visible", panel.visible);
+  panel.x = LuaNumberField(lua, absolute, "x", 0, panel.x);
+  panel.y = LuaNumberField(lua, absolute, "y", 0, panel.y);
+  panel.width = LuaNumberField(lua, absolute, "width", 0, panel.width);
+  panel.height = LuaNumberField(lua, absolute, "height", 0, panel.height);
+  panel.opacity = LuaNumberField(lua, absolute, "opacity", 0, panel.opacity);
+  panel.font_size = LuaNumberField(lua, absolute, "font_size", 0, panel.font_size);
+  lua_getfield(lua, absolute, "background");
+  panel.background = LuaVec3(lua, -1, panel.background);
+  lua_pop(lua, 1);
+  lua_getfield(lua, absolute, "foreground");
+  panel.foreground = LuaVec3(lua, -1, panel.foreground);
+  lua_pop(lua, 1);
+  lua_getfield(lua, absolute, "accent");
+  panel.accent = LuaVec3(lua, -1, panel.accent);
+  lua_pop(lua, 1);
+  lua_getfield(lua, absolute, "lines");
+  if (lua_istable(lua, -1)) {
+    panel.lines = LuaStringList(lua, -1);
+  }
+  lua_pop(lua, 1);
+  return panel;
+}
+
+void PushStringList(lua_State* lua, const std::vector<std::string>& lines) {
+  lua_newtable(lua);
+  lua_Integer index = 1;
+  for (const auto& line : lines) {
+    lua_pushstring(lua, line.c_str());
+    lua_seti(lua, -2, index++);
+  }
+}
+
+void PushUiPanel(lua_State* lua, const vkpt::scene::UiPanelComponent& panel) {
+  lua_newtable(lua);
+  lua_pushstring(lua, panel.panel_id.c_str());
+  lua_setfield(lua, -2, "id");
+  lua_pushstring(lua, panel.panel_id.c_str());
+  lua_setfield(lua, -2, "panel_id");
+  lua_pushstring(lua, panel.title.c_str());
+  lua_setfield(lua, -2, "title");
+  lua_pushstring(lua, panel.anchor.c_str());
+  lua_setfield(lua, -2, "anchor");
+  lua_pushboolean(lua, panel.enabled ? 1 : 0);
+  lua_setfield(lua, -2, "enabled");
+  lua_pushboolean(lua, panel.visible ? 1 : 0);
+  lua_setfield(lua, -2, "visible");
+  lua_pushnumber(lua, panel.x);
+  lua_setfield(lua, -2, "x");
+  lua_pushnumber(lua, panel.y);
+  lua_setfield(lua, -2, "y");
+  lua_pushnumber(lua, panel.width);
+  lua_setfield(lua, -2, "width");
+  lua_pushnumber(lua, panel.height);
+  lua_setfield(lua, -2, "height");
+  lua_pushnumber(lua, panel.opacity);
+  lua_setfield(lua, -2, "opacity");
+  lua_pushnumber(lua, panel.font_size);
+  lua_setfield(lua, -2, "font_size");
+  PushVec3(lua, panel.background);
+  lua_setfield(lua, -2, "background");
+  PushVec3(lua, panel.foreground);
+  lua_setfield(lua, -2, "foreground");
+  PushVec3(lua, panel.accent);
+  lua_setfield(lua, -2, "accent");
+  PushStringList(lua, panel.lines);
+  lua_setfield(lua, -2, "lines");
+}
+
 vkpt::core::StableEntityId LuaSelfEntity(lua_State* lua, int self_index) {
   if (!lua_istable(lua, self_index)) {
     return 0;
@@ -605,6 +861,38 @@ int LuaEntityGetPhysics(lua_State* lua) {
   return 1;
 }
 
+int LuaEntityGetUiPanel(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->world == nullptr) {
+    lua_pushnil(lua);
+    return 1;
+  }
+  const auto* entity = host->world->get_entity(entity_id);
+  if (entity == nullptr || !entity->ui_panel.has_value()) {
+    lua_pushnil(lua);
+    return 1;
+  }
+  PushUiPanel(lua, *entity->ui_panel);
+  return 1;
+}
+
+int LuaEntitySetUiPanel(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->commands == nullptr || entity_id == 0 || !lua_istable(lua, 2)) {
+    return 0;
+  }
+  vkpt::scene::UiPanelComponent fallback;
+  if (host->world != nullptr) {
+    if (const auto* entity = host->world->get_entity(entity_id); entity != nullptr && entity->ui_panel.has_value()) {
+      fallback = *entity->ui_panel;
+    }
+  }
+  host->commands->add_set_component(entity_id, vkpt::scene::ComponentKind::UiPanel, LuaUiPanel(lua, 2, fallback));
+  return 0;
+}
+
 void PushHostClosure(lua_State* lua, LuaHostContext& host, lua_CFunction function) {
   lua_pushlightuserdata(lua, &host);
   lua_pushcclosure(lua, function, 1);
@@ -639,6 +927,10 @@ void PushEntityObject(lua_State* lua, LuaHostContext& host, vkpt::core::StableEn
   lua_setfield(lua, -2, "set_camera");
   PushHostClosure(lua, host, LuaEntityGetPhysics);
   lua_setfield(lua, -2, "get_physics");
+  PushHostClosure(lua, host, LuaEntityGetUiPanel);
+  lua_setfield(lua, -2, "get_ui_panel");
+  PushHostClosure(lua, host, LuaEntitySetUiPanel);
+  lua_setfield(lua, -2, "set_ui_panel");
 }
 
 vkpt::core::StableEntityId AllocateScriptEntityId(LuaHostContext& host) {
@@ -801,6 +1093,14 @@ int LuaWorldSpawnEntity(lua_State* lua) {
   }
   lua_pop(lua, 1);
 
+  lua_getfield(lua, def, "ui_panel");
+  if (lua_istable(lua, -1)) {
+    host->commands->add_set_component(entity_id,
+                                      vkpt::scene::ComponentKind::UiPanel,
+                                      LuaUiPanel(lua, -1));
+  }
+  lua_pop(lua, 1);
+
   lua_getfield(lua, def, "light");
   if (lua_istable(lua, -1)) {
     host->commands->add_assign_light(entity_id, LuaLight(lua, -1));
@@ -916,6 +1216,76 @@ void PushInputTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "viewport_focused");
 }
 
+int LuaAudioPostEvent(lua_State* lua) {
+  auto* host = Host(lua);
+  const int eventIndex = lua_isstring(lua, 2) ? 2 : (lua_isstring(lua, 1) ? 1 : 0);
+  if (host == nullptr || eventIndex == 0) {
+    lua_pushnil(lua);
+    return 1;
+  }
+
+  auto* audio = vkpt::audio::GlobalAudioSystem();
+  if (audio == nullptr) {
+    AddLuaDiagnostic(*host, ScriptDiagnosticSeverity::Warning, "audio system is not available");
+    lua_pushnil(lua);
+    return 1;
+  }
+
+  vkpt::audio::AudioPostEventDesc desc;
+  desc.event_name = lua_tostring(lua, eventIndex);
+  desc.entity = host->binding == nullptr ? 0u : host->binding->entity;
+  if (host->world != nullptr && desc.entity != 0u) {
+    if (const auto* entity = host->world->get_entity(desc.entity);
+        entity != nullptr && entity->transform.has_value()) {
+      desc.position = entity->transform->translation;
+      desc.has_position = true;
+    }
+  }
+
+  const int optionsIndex = eventIndex + 1;
+  if (lua_istable(lua, optionsIndex)) {
+    const int options = lua_absindex(lua, optionsIndex);
+    desc.entity = LuaStableIdField(lua, options, "entity", desc.entity);
+    desc.volume = LuaNumberField(lua, options, "volume", 0, desc.volume);
+    desc.pitch = LuaNumberField(lua, options, "pitch", 0, desc.pitch);
+    desc.spatial = LuaBoolField(lua, options, "spatial", desc.spatial);
+    desc.loop = LuaBoolField(lua, options, "loop", desc.loop);
+
+    lua_getfield(lua, options, "position");
+    if (lua_istable(lua, -1)) {
+      desc.position = LuaVec3(lua, -1, desc.position);
+      desc.has_position = true;
+    }
+    lua_pop(lua, 1);
+
+    if (!desc.has_position && host->world != nullptr && desc.entity != 0u) {
+      if (const auto* entity = host->world->get_entity(desc.entity);
+          entity != nullptr && entity->transform.has_value()) {
+        desc.position = entity->transform->translation;
+        desc.has_position = true;
+      }
+    }
+  }
+
+  const auto handle = audio->post_event(desc);
+  if (!handle) {
+    lua_pushnil(lua);
+    return 1;
+  }
+  lua_newtable(lua);
+  lua_pushinteger(lua, static_cast<lua_Integer>(handle.slot));
+  lua_setfield(lua, -2, "slot");
+  lua_pushinteger(lua, static_cast<lua_Integer>(handle.generation));
+  lua_setfield(lua, -2, "generation");
+  return 1;
+}
+
+void PushAudioTable(lua_State* lua, LuaHostContext& host) {
+  lua_newtable(lua);
+  PushHostClosure(lua, host, LuaAudioPostEvent);
+  lua_setfield(lua, -2, "post_event");
+}
+
 void PushContextTable(lua_State* lua, LuaHostContext& host) {
   lua_newtable(lua);
   const auto& context = *host.context;
@@ -935,6 +1305,8 @@ void PushContextTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "world");
   PushInputTable(lua, host);
   lua_setfield(lua, -2, "input");
+  PushAudioTable(lua, host);
+  lua_setfield(lua, -2, "audio");
 }
 
 vkpt::core::StableEntityId NextEntityId(const vkpt::scene::SceneWorld& world) {
@@ -952,6 +1324,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
                     vkpt::scene::WorldCommandBuffer& commands,
                     std::vector<ScriptDiagnostic>& dispatch_diagnostics,
                     std::vector<ScriptDiagnostic>& runtime_diagnostics,
+                    std::vector<ScriptVariableSnapshot>& variable_snapshots,
                     std::unordered_map<std::string, std::string>& bytecode_cache) {
   auto lua = luaL_newstate();
   if (lua == nullptr) {
@@ -1033,13 +1406,20 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
     lua_close(lua);
     return false;
   }
+  lua_pushvalue(lua, -1);
+  const int hook_function_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
   PushEntityObject(lua, host, binding.entity);
   PushContextTable(lua, host);
   if (lua_pcall(lua, 2, 0, 0) != LUA_OK) {
     AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "script hook failed: " + LuaErrorText(lua));
+    luaL_unref(lua, LUA_REGISTRYINDEX, hook_function_ref);
     lua_close(lua);
     return false;
   }
+  lua_rawgeti(lua, LUA_REGISTRYINDEX, hook_function_ref);
+  CaptureLuaScriptVariables(lua, -2, -1, binding, hook, context, variable_snapshots);
+  lua_pop(lua, 1);
+  luaL_unref(lua, LUA_REGISTRYINDEX, hook_function_ref);
   vkpt::log::Logger::instance().log(
       vkpt::log::Severity::Debug,
       "scripts",
@@ -1078,7 +1458,9 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
   summary.lua_compiled_in = lua_compiled_in();
   summary.execution_available = execution_available();
   summary.scripts_disabled = !context.scripts_enabled;
+  summary.game_mode_blocked = !context.game_mode;
   summary.benchmark_blocked = context.benchmark_mode && !context.allow_benchmark_scripts;
+  m_variable_snapshots.clear();
 
   for (const auto& binding : m_bindings) {
     if (!binding.enabled || !IsSupportedLanguage(binding.language)) {
@@ -1089,6 +1471,10 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
     ++summary.runnable_count;
 
     if (summary.scripts_disabled) {
+      ++summary.skipped_count;
+      continue;
+    }
+    if (summary.game_mode_blocked) {
       ++summary.skipped_count;
       continue;
     }
@@ -1117,6 +1503,7 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
                        commands,
                        summary.diagnostics,
                        m_diagnostics,
+                       m_variable_snapshots,
                        m_lua_bytecode_cache)) {
       ++summary.hook_call_count;
     }

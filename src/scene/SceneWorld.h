@@ -128,6 +128,9 @@ class SceneWorld : public IEcsWorld {
     std::optional<MaterialOverrideComponent> material_override;
     std::optional<PhysicsBodyComponent> physics_body;
     std::optional<ScriptComponent> script;
+    std::optional<AudioListenerComponent> audio_listener;
+    std::optional<AudioEmitterComponent> audio_emitter;
+    std::optional<UiPanelComponent> ui_panel;
     std::optional<BenchmarkTagComponent> benchmark_tag;
   };
 

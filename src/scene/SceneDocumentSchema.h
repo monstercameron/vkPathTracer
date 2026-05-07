@@ -44,6 +44,9 @@ struct SceneEntityDefinition {
   bool has_benchmark_tag = false;
   bool has_sdf_primitive = false;
   bool has_physics_body = false;
+  bool has_audio_listener = false;
+  bool has_audio_emitter = false;
+  bool has_ui_panel = false;
   TransformComponent transform;
   CameraComponent camera;
   LightComponent light;
@@ -53,6 +56,9 @@ struct SceneEntityDefinition {
   HierarchyComponent hierarchy;
   PhysicsBodyComponent physics_body;
   ScriptComponent script;
+  AudioListenerComponent audio_listener;
+  AudioEmitterComponent audio_emitter;
+  UiPanelComponent ui_panel;
   BenchmarkTagComponent benchmark_tag;
 };
 

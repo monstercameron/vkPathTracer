@@ -312,6 +312,7 @@ void EnsureQtFallbackLightingEntities(vkpt::scene::SceneDocument& document) {
   const auto rootId = FindQtSceneRootEntityId(document);
   EnsureQtSceneEntityParent(document, group, rootId);
   RemoveQtLegacyTransformEntry(document, group.id);
+  const auto groupId = group.id;
 
   bool keyCreated = false;
   auto& key = EnsureQtNamedSceneEntity(document, kQtFallbackKeyLightName, {}, keyCreated);
@@ -333,7 +334,7 @@ void EnsureQtFallbackLightingEntities(vkpt::scene::SceneDocument& document) {
   if (key.light.radius <= 0.0f) {
     key.light.radius = 0.2f;
   }
-  EnsureQtSceneEntityParent(document, key, group.id);
+  EnsureQtSceneEntityParent(document, key, groupId);
   RemoveQtLegacyTransformEntry(document, key.id);
 
   bool environmentCreated = false;
@@ -348,7 +349,7 @@ void EnsureQtFallbackLightingEntities(vkpt::scene::SceneDocument& document) {
   if (environment.light.intensity <= 0.0f) {
     environment.light.intensity = 1.0f;
   }
-  EnsureQtSceneEntityParent(document, environment, group.id);
+  EnsureQtSceneEntityParent(document, environment, groupId);
   RemoveQtLegacyTransformEntry(document, environment.id);
 }
 

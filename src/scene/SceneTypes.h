@@ -5,6 +5,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 #include "core/Types.h"
 
@@ -21,6 +22,9 @@ enum class ComponentKind : std::uint8_t {
   MaterialOverride,
   PhysicsBody,
   Script,
+  AudioListener,
+  AudioEmitter,
+  UiPanel,
   BenchmarkTag,
   Count
 };
@@ -145,6 +149,42 @@ struct ScriptComponent {
   bool reload_on_save = true;
 };
 
+struct AudioListenerComponent {
+  bool enabled = true;
+  bool primary = true;
+};
+
+struct AudioEmitterComponent {
+  std::string event;
+  std::string bus = "sfx";
+  bool enabled = true;
+  bool autoplay = false;
+  bool loop = false;
+  bool spatial = true;
+  float volume = 1.0f;
+  float pitch = 1.0f;
+  float min_distance = 1.0f;
+  float max_distance = 24.0f;
+};
+
+struct UiPanelComponent {
+  std::string panel_id = "script.panel";
+  std::string title;
+  std::string anchor = "top_left";
+  bool enabled = true;
+  bool visible = true;
+  float x = 16.0f;
+  float y = 16.0f;
+  float width = 320.0f;
+  float height = 0.0f;
+  float opacity = 0.84f;
+  float font_size = 13.0f;
+  Vec3 background{0.04f, 0.055f, 0.07f};
+  Vec3 foreground{0.92f, 0.96f, 1.0f};
+  Vec3 accent{0.16f, 0.72f, 0.95f};
+  std::vector<std::string> lines;
+};
+
 struct BenchmarkTagComponent {
   bool enabled = true;
 };
@@ -160,6 +200,9 @@ using ComponentVariant = std::variant<
     MaterialOverrideComponent,
     PhysicsBodyComponent,
     ScriptComponent,
+    AudioListenerComponent,
+    AudioEmitterComponent,
+    UiPanelComponent,
     BenchmarkTagComponent>;
 
 std::string_view to_string(ComponentKind kind);

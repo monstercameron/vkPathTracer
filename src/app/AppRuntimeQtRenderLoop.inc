@@ -7,7 +7,7 @@
       enum class QtInputMode {
         Editor,
         FpsCamera,
-        ScriptPlayback,
+        GameMode,
       };
 
       auto qtCurrentInputMode = [&]() -> QtInputMode {
@@ -15,7 +15,7 @@
           return QtInputMode::FpsCamera;
         }
         if (qtScriptState.playing) {
-          return QtInputMode::ScriptPlayback;
+          return QtInputMode::GameMode;
         }
         return QtInputMode::Editor;
       };
@@ -27,7 +27,7 @@
           return QtInputRouteResult::Pass;
         }
 
-        const bool wasLuaPlayable = qtScriptState.playing;
+        const bool wasGameMode = qtScriptState.playing;
         const bool hadSelection =
             !ui_selection_state.selected_entity_ids.empty() ||
             ui_selection_state.active_primary_entity != 0u ||
@@ -40,8 +40,8 @@
         ui_runtime_state.active_viewport_tool = vkpt::editor::ViewportTool::Select;
         ui_runtime_state.active_gizmo_mode = vkpt::editor::GizmoMode::None;
         qtHoveredGizmoHit = std::nullopt;
-        if (wasLuaPlayable) {
-          qtSetLuaPlayableMode(false, qtFrameCount, "keyboard");
+        if (wasGameMode) {
+          qtSetGameMode(false, qtFrameCount, "keyboard");
         } else if (hadSelection) {
           vkpt::editor::EditorCommand clearCommand;
           clearCommand.command_id = "keyboard.escape.clear_selection";
@@ -89,9 +89,9 @@
         return QtInputRouteResult::Pass;
       };
 
-      auto qtHandleScriptKeyLayer = [&](int key, int rawKey) -> QtInputRouteResult {
-        if (key == 'B' || rawKey == 'B') {
-          qtSetLuaPlayableMode(!qtScriptState.playing, qtFrameCount, "keyboard");
+      auto qtHandleGameModeKeyLayer = [&](int key, int rawKey) -> QtInputRouteResult {
+        if (key == kQtKeyF1 || rawKey == kQtKeyF1) {
+          qtSetGameMode(!qtScriptState.playing, qtFrameCount, "keyboard");
           return QtInputRouteResult::Handled;
         }
         return QtInputRouteResult::Pass;
@@ -167,7 +167,7 @@
         if (result != QtInputRouteResult::Pass) {
           return result;
         }
-        result = qtHandleScriptKeyLayer(key, rawKey);
+        result = qtHandleGameModeKeyLayer(key, rawKey);
         if (result != QtInputRouteResult::Pass) {
           return result;
         }
@@ -182,7 +182,8 @@
         return qtHandleViewportToolKeyLayer(key, rawKey);
       };
 
-      constexpr uint32_t kQtMaxGpuBatchesPerTick = 64u;
+      constexpr uint32_t kQtMaxGpuBatchesPerTick = 1u;
+      const auto qtMeasuredLoopStart = std::chrono::steady_clock::now();
       while (window->is_open()) {
         const auto qtFrameStart = std::chrono::steady_clock::now();
 
@@ -201,6 +202,7 @@
         if (!window->is_open()) {
           break;
         }
+        const auto qtAfterPoll = std::chrono::steady_clock::now();
 
         for (const auto& event : qtInputEvents) {
           LogWindowInput(ui_event_log, ui_runtime_state, event, qtFrameCount);
@@ -311,13 +313,13 @@
                          "Qt key down consumed by app runtime",
                          {{"key", std::to_string(key)},
                           {"raw_key", std::to_string(rawKey)},
-                          {"is_b_key", (key == 'B' || rawKey == 'B') ? "true" : "false"},
+                          {"is_f1_key", (key == kQtKeyF1 || rawKey == kQtKeyF1) ? "true" : "false"},
                           {"is_w_key", (key == 'W' || rawKey == 'W') ? "true" : "false"},
                           {"is_a_key", (key == 'A' || rawKey == 'A') ? "true" : "false"},
                           {"is_s_key", (key == 'S' || rawKey == 'S') ? "true" : "false"},
                           {"is_d_key", (key == 'D' || rawKey == 'D') ? "true" : "false"},
                           {"keys_down", std::to_string(qtKeysDown.size())},
-                          {"lua_playing", qtScriptState.playing ? "true" : "false"},
+                          {"game_mode", qtScriptState.playing ? "true" : "false"},
                           {"lua_compiled_in", qtScriptRuntime->lua_compiled_in() ? "true" : "false"},
                           {"execution_available", qtScriptRuntime->execution_available() ? "true" : "false"}},
                          qtFrameCount);
@@ -334,13 +336,13 @@
                          "Qt key up consumed by app runtime",
                          {{"key", std::to_string(key)},
                           {"raw_key", std::to_string(rawKey)},
-                          {"is_b_key", (key == 'B' || rawKey == 'B') ? "true" : "false"},
+                          {"is_f1_key", (key == kQtKeyF1 || rawKey == kQtKeyF1) ? "true" : "false"},
                           {"is_w_key", (key == 'W' || rawKey == 'W') ? "true" : "false"},
                           {"is_a_key", (key == 'A' || rawKey == 'A') ? "true" : "false"},
                           {"is_s_key", (key == 'S' || rawKey == 'S') ? "true" : "false"},
                           {"is_d_key", (key == 'D' || rawKey == 'D') ? "true" : "false"},
                           {"keys_down", std::to_string(qtKeysDown.size())},
-                          {"lua_playing", qtScriptState.playing ? "true" : "false"}},
+                          {"game_mode", qtScriptState.playing ? "true" : "false"}},
                          qtFrameCount);
               break;
             }
@@ -380,17 +382,6 @@
                           ui_runtime_state.active_gizmo_mode,
                           localPoint->first,
                           localPoint->second);
-                      if (!hit) {
-                        hit = PickSelectionBoundsFreeform(
-                            *activeBounds,
-                            qtCameraPose,
-                            frameRect.width,
-                            frameRect.height,
-                            qtRenderAspect(),
-                            ui_runtime_state.active_gizmo_mode,
-                            localPoint->first,
-                            localPoint->second);
-                      }
                       if (hit) {
                         qtCaptureGizmoDrag(*hit, event.x, event.y);
                         if (qtGizmoDrag.active) {
@@ -421,7 +412,7 @@
                 qtLeftMouseDown = false;
                 if (qtGizmoDrag.active) {
                   qtApplyGizmoDrag(event.x, event.y, qtFrameCount);
-                  qtCommitGizmoDrag();
+                  qtCommitGizmoDrag(qtFrameCount);
                   qtGizmoDrag = {};
                   ui_runtime_state.status_message = "gizmo drag committed";
                   qtDockPanelsDirty = true;
@@ -448,7 +439,7 @@
                 qtPendingFpsLookDy += event.delta_y;
                 break;
               }
-              if (inputMode == QtInputMode::ScriptPlayback) {
+              if (inputMode == QtInputMode::GameMode) {
                 qtUserCameraActive = true;
                 qtPendingFpsLookDx += event.delta_x;
                 qtPendingFpsLookDy += event.delta_y;
@@ -468,11 +459,13 @@
                 if (inputMode == QtInputMode::FpsCamera) {
                   qtApplyFpsLookDelta(event.delta_x, event.delta_y);
                 } else {
-                  qtApplyOrbitDrag(event.delta_x, event.delta_y);
+                  qtPendingOrbitDx += event.delta_x;
+                  qtPendingOrbitDy += event.delta_y;
                 }
               } else if (qtMiddleMouseDown && !qtGizmoDrag.active) {
                 qtUserCameraActive = true;
-                qtApplyPanDrag(event.delta_x, event.delta_y);
+                qtPendingPanDx += event.delta_x;
+                qtPendingPanDy += event.delta_y;
               }
               if (!qtGizmoDrag.active && !qtRightMouseDown && !qtMiddleMouseDown) {
                 qtUpdateGizmoHoverCursor(event.x, event.y);
@@ -509,7 +502,7 @@
               qtMiddleMouseDown = false;
               qtPotentialClick = false;
               if (qtGizmoDrag.active) {
-                qtCommitGizmoDrag();
+                qtCommitGizmoDrag(qtFrameCount);
               }
               qtGizmoDrag = {};
               qtHoveredGizmoHit = std::nullopt;
@@ -525,9 +518,6 @@
             default:
               break;
           }
-        }
-        if (qtGizmoDrag.active) {
-          qtFlushPendingGizmoTransformUpdates(false);
         }
         std::vector<vkpt::platform::QtDockPropertyEdit> qtPropertyEdits;
         if (qtWindow != nullptr) {
@@ -552,19 +542,56 @@
                                          ui_event_log,
                                          ui_command_history);
         }
+        const auto qtAfterInputHandling = std::chrono::steady_clock::now();
+        // Coalesce all per-event drag transforms into a single render-thread
+        // post per frame: BuildSceneWorldSnapshot + transform-update post is
+        // O(scene size), so we only want to pay it once per frame regardless
+        // of how many MouseMove events arrived.
+        if (qtGizmoDrag.active && qtGizmoDrag.pending_publish &&
+            !qtGizmoDrag.publishable_entity_ids.empty()) {
+          qtGizmoDrag.pending_publish = false;
+          ++qtGizmoTransformImmediatePublishes;
+          qtGizmoTransformPublishedEntityCount +=
+              qtGizmoDrag.publishable_entity_ids.size();
+          if (!qtPublishGizmoTransformUpdates(qtGizmoDrag.publishable_entity_ids,
+                                              qtFrameCount)) {
+            ++qtGizmoTransformPublishFailures;
+          }
+        }
         if (qtFpsMode &&
             (std::fabs(qtPendingFpsLookDx) > 0.0f || std::fabs(qtPendingFpsLookDy) > 0.0f)) {
           qtApplyFpsLookDelta(qtPendingFpsLookDx, qtPendingFpsLookDy);
           qtPendingFpsLookDx = 0.0f;
           qtPendingFpsLookDy = 0.0f;
         }
+        if (std::fabs(qtPendingOrbitDx) > 0.0f || std::fabs(qtPendingOrbitDy) > 0.0f) {
+          qtApplyOrbitDrag(qtPendingOrbitDx, qtPendingOrbitDy);
+          qtPendingOrbitDx = 0.0f;
+          qtPendingOrbitDy = 0.0f;
+        }
+        if (std::fabs(qtPendingPanDx) > 0.0f || std::fabs(qtPendingPanDy) > 0.0f) {
+          qtApplyPanDrag(qtPendingPanDx, qtPendingPanDy);
+          qtPendingPanDx = 0.0f;
+          qtPendingPanDy = 0.0f;
+        }
         qtApplyPhysicsSimulation(qtFrameStart);
-        const bool qtScriptDispatched = qtApplyScriptPlayback(qtFrameStart, qtFrameCount, qtInputDt);
+        const auto qtAfterPhysics = std::chrono::steady_clock::now();
+        const bool qtScriptDispatched = qtApplyGameModeScripts(qtFrameStart, qtFrameCount, qtInputDt);
         if (qtScriptDispatched && qtScriptState.playing && !qtFpsMode) {
           qtPendingFpsLookDx = 0.0f;
           qtPendingFpsLookDy = 0.0f;
         }
+        if (qtAudioSystem) {
+          const auto audioForward = qtCameraForward();
+          vkpt::audio::AudioListenerState listener;
+          listener.position = {qtCameraPose.position.x, qtCameraPose.position.y, qtCameraPose.position.z};
+          listener.forward = {audioForward.x, audioForward.y, audioForward.z};
+          listener.up = {qtCameraPose.up.x, qtCameraPose.up.y, qtCameraPose.up.z};
+          qtAudioSystem->set_listener(listener);
+          qtAudioSystem->update();
+        }
         updateQtSelectionOverlay();
+        const auto qtAfterSelectionOverlay = std::chrono::steady_clock::now();
         qtEnableAutoOrbit = false;
 
         // ---- Camera orbit update — post to bg thread, never join ----
@@ -587,6 +614,7 @@
             qtOrbitLastAngleDeg = angleDeg;
             if (qtUseBg && qtRenderCoordinator) {
               // Post camera update; coordinator will apply it between samples.
+              qtMarkOverlayRequiresRenderCatchup();
               qtRenderCoordinator->post_camera(vkpt::render::RenderCameraCommand{
                   qtScene.camera_position,
                   qtScene.camera_target,
@@ -621,31 +649,50 @@
               {"effective_preview_present_hz", std::to_string(qtPreviewPublishHz)}
             });
           }
-          if (auto frame = qtRenderCoordinator->acquire_latest_frame()) {
-            qtPublishedSample.store(frame->sample_count, std::memory_order_relaxed);
-            qtPublishedWidth.store(frame->width, std::memory_order_relaxed);
-            qtPublishedHeight.store(frame->height, std::memory_order_relaxed);
-            qtPublishedRays.store(frame->counters.rays, std::memory_order_relaxed);
-#ifdef PT_ENABLE_QT
-            if (qtWindow != nullptr) {
-              qtWindow->set_framebuffer_rgba(std::move(frame->rgba8), frame->width, frame->height);
-            }
-#endif
+          const auto qtNow = std::chrono::steady_clock::now();
+          if (qtNextFramebufferSubmit == std::chrono::steady_clock::time_point{}) {
+            qtNextFramebufferSubmit = qtNow;
           }
-        } else if (!qtUseBg && windowFrameLimit == 0u && qtTracerReady) {
+          const bool qtCanSubmitFramebuffer = qtNow >= qtNextFramebufferSubmit;
+          if (qtCanSubmitFramebuffer) {
+            do {
+              qtNextFramebufferSubmit += qtFramebufferDisplayInterval;
+            } while (qtNextFramebufferSubmit <= qtNow);
+            if (auto frame = qtRenderCoordinator->acquire_latest_frame()) {
+              qtPublishedSample.store(frame->sample_count, std::memory_order_relaxed);
+              qtPublishedWidth.store(frame->width, std::memory_order_relaxed);
+              qtPublishedHeight.store(frame->height, std::memory_order_relaxed);
+              qtPublishedRays.store(frame->counters.rays, std::memory_order_relaxed);
+#ifdef PT_ENABLE_QT
+              if (qtWindow != nullptr) {
+                const auto frameGeneration = frame->generation;
+                qtWindow->set_framebuffer_rgba(std::move(frame->rgba8),
+                                                frame->width,
+                                                frame->height,
+                                                frameGeneration);
+                if (qtOverlayRequiredRenderGeneration != 0u &&
+                    frameGeneration >= qtOverlayRequiredRenderGeneration) {
+                  updateQtSelectionOverlay();
+                }
+              }
+#endif
+            }
+          }
+        } else if (!qtUseBg && qtTracerReady) {
           bool renderedThisTick = false;
           qtLastGpuBatchesPerTick = 0u;
           while (qtTracerReady && qtLastGpuBatchesPerTick < kQtMaxGpuBatchesPerTick) {
             const auto now = std::chrono::steady_clock::now();
+            const auto frameTarget = qtInteractiveFrameTarget();
             if (qtLastGpuBatchesPerTick > 0u) {
-              if (now >= qtFrameStart + kQtInteractiveFrameTarget) {
+              if (now >= qtFrameStart + frameTarget) {
                 break;
               }
               if (qtSmoothedGpuBatchMs > 0.0) {
                 const auto estimatedNextBatch =
                     std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         std::chrono::duration<double, std::milli>(qtSmoothedGpuBatchMs));
-                if (now + estimatedNextBatch > qtFrameStart + kQtInteractiveFrameTarget) {
+                if (now + estimatedNextBatch > qtFrameStart + frameTarget) {
                   break;
                 }
               }
@@ -694,11 +741,27 @@
 #endif
           }
         }
+        const auto qtAfterRender = std::chrono::steady_clock::now();
 
 #ifdef PT_ENABLE_QT
-        qtLastUiFrameMs =
+        const double qtFrameWorkMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - qtFrameStart).count();
+        qtLastUiFrameMs = qtInputDt > 0.0f
+            ? static_cast<double>(qtInputDt) * 1000.0
+            : qtFrameWorkMs;
         updateQtPreviewOverlay();
+        const auto qtAfterUi = std::chrono::steady_clock::now();
+        const double qtProfileCurrentFrameMs =
+            std::chrono::duration<double, std::milli>(qtAfterUi - qtFrameStart).count();
+        qtProfilePollMs += std::chrono::duration<double, std::milli>(qtAfterPoll - qtFrameStart).count();
+        qtProfileInputMs += std::chrono::duration<double, std::milli>(qtAfterInputHandling - qtAfterPoll).count();
+        qtProfilePhysicsMs += std::chrono::duration<double, std::milli>(qtAfterPhysics - qtAfterInputHandling).count();
+        qtProfileSelectionMs += std::chrono::duration<double, std::milli>(qtAfterSelectionOverlay - qtAfterPhysics).count();
+        qtProfileRenderMs += std::chrono::duration<double, std::milli>(qtAfterRender - qtAfterSelectionOverlay).count();
+        qtProfileUiMs += std::chrono::duration<double, std::milli>(qtAfterUi - qtAfterRender).count();
+        qtProfileFrameMs += qtProfileCurrentFrameMs;
+        qtProfileMaxFrameMs = std::max(qtProfileMaxFrameMs, qtProfileCurrentFrameMs);
+        ++qtProfileFrames;
 #endif
         if (!window->is_open()) break;
         ++qtFrameCount;
@@ -709,12 +772,52 @@
         }
         const auto qtFrameEnd = std::chrono::steady_clock::now();
         const auto qtFrameDuration = qtFrameEnd - qtFrameStart;
-        if (qtFrameDuration < kQtInteractiveFrameTarget) {
-          std::this_thread::sleep_for(kQtInteractiveFrameTarget - qtFrameDuration);
+        const auto frameTarget = qtInteractiveFrameTarget();
+        if (qtFrameDuration < frameTarget) {
+          const auto paceStart = std::chrono::steady_clock::now();
+          SleepUntilFrameTarget(qtFrameStart + frameTarget);
+          qtProfilePaceWaitMs +=
+              std::chrono::duration<double, std::milli>(
+                  std::chrono::steady_clock::now() - paceStart).count();
+        } else {
+          ++qtProfileLateFrames;
+          qtProfileMaxLateMs = std::max(
+              qtProfileMaxLateMs,
+              std::chrono::duration<double, std::milli>(qtFrameDuration - frameTarget).count());
         }
         // Pace the UI/event loop so input and overlay updates do not busy-spin.
       }
 
+      if (qtProfileFrames > 0u) {
+        const double invFrames = 1.0 / static_cast<double>(qtProfileFrames);
+        const double elapsedLoopMs =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - qtMeasuredLoopStart).count();
+        logger.log(vkpt::log::Severity::Info, "app", "Qt render loop frame profile", {
+          {"frames", std::to_string(qtProfileFrames)},
+          {"elapsed_loop_ms", std::to_string(elapsedLoopMs)},
+          {"avg_total_frame_ms", std::to_string(elapsedLoopMs * invFrames)},
+          {"avg_frame_ms", std::to_string(qtProfileFrameMs * invFrames)},
+          {"max_frame_ms", std::to_string(qtProfileMaxFrameMs)},
+          {"avg_poll_ms", std::to_string(qtProfilePollMs * invFrames)},
+          {"avg_input_ms", std::to_string(qtProfileInputMs * invFrames)},
+          {"avg_physics_ms", std::to_string(qtProfilePhysicsMs * invFrames)},
+          {"avg_selection_ms", std::to_string(qtProfileSelectionMs * invFrames)},
+          {"avg_render_ms", std::to_string(qtProfileRenderMs * invFrames)},
+          {"avg_ui_ms", std::to_string(qtProfileUiMs * invFrames)},
+          {"avg_pace_wait_ms", std::to_string(qtProfilePaceWaitMs * invFrames)},
+          {"late_frames", std::to_string(qtProfileLateFrames)},
+          {"max_late_ms", std::to_string(qtProfileMaxLateMs)},
+          {"canvas_fps", std::to_string(qtCanvasFps)},
+          {"canvas_frame_ms", std::to_string(qtCanvasFrameMs)},
+          {"gizmo_drag_input_samples", std::to_string(qtGizmoDragInputSamples)},
+          {"gizmo_transform_immediate_publishes", std::to_string(qtGizmoTransformImmediatePublishes)},
+          {"gizmo_transform_published_entities", std::to_string(qtGizmoTransformPublishedEntityCount)},
+          {"gizmo_transform_publish_failures", std::to_string(qtGizmoTransformPublishFailures)},
+          {"overlay_required_generation", std::to_string(qtOverlayRequiredRenderGeneration)},
+          {"overlay_stale_skips", std::to_string(qtOverlayStaleSkips)}
+        });
+      }
       logger.log(vkpt::log::Severity::Info, "app", "Qt render loop closing", {
         {"effective_preview_present_hz", std::to_string(qtPreviewPublishHz)},
         {"frames", std::to_string(qtFrameCount)},
@@ -735,6 +838,14 @@
                       << " render_dropped=" << qtDroppedFrames.load(std::memory_order_relaxed)
                       << " window_received=" << qtStats.received
                       << " window_presented=" << qtStats.presented
+                      << " window_painted=" << qtStats.painted
+                      << " canvas_fps=" << qtCanvasFps
+                      << " canvas_frame_ms=" << qtCanvasFrameMs
+                      << " gizmo_drag_input_samples=" << qtGizmoDragInputSamples
+                      << " gizmo_transform_immediate_publishes=" << qtGizmoTransformImmediatePublishes
+                      << " gizmo_transform_publish_failures=" << qtGizmoTransformPublishFailures
+                      << " latest_presented_generation=" << qtStats.latestPresentedGeneration
+                      << " latest_published_generation=" << qtStats.latestPublishedGeneration
                       << " window_dropped=" << qtStats.dropped;
         status.performance_summary = qtPerfSummary.str();
         logger.log(vkpt::log::Severity::Info, "app", "Qt preview shutdown metadata", {
@@ -743,7 +854,18 @@
           {"render_dropped", std::to_string(qtDroppedFrames.load(std::memory_order_relaxed))},
           {"window_received", std::to_string(qtStats.received)},
           {"window_presented", std::to_string(qtStats.presented)},
+          {"window_painted", std::to_string(qtStats.painted)},
           {"window_dropped", std::to_string(qtStats.dropped)},
+          {"latest_published_generation", std::to_string(qtStats.latestPublishedGeneration)},
+          {"latest_presented_generation", std::to_string(qtStats.latestPresentedGeneration)},
+          {"canvas_fps", std::to_string(qtCanvasFps)},
+          {"canvas_frame_ms", std::to_string(qtCanvasFrameMs)},
+          {"gizmo_drag_input_samples", std::to_string(qtGizmoDragInputSamples)},
+          {"gizmo_transform_immediate_publishes", std::to_string(qtGizmoTransformImmediatePublishes)},
+          {"gizmo_transform_published_entities", std::to_string(qtGizmoTransformPublishedEntityCount)},
+          {"gizmo_transform_publish_failures", std::to_string(qtGizmoTransformPublishFailures)},
+          {"overlay_required_generation", std::to_string(qtOverlayRequiredRenderGeneration)},
+          {"overlay_stale_skips", std::to_string(qtOverlayStaleSkips)},
           {"latest_published_id", std::to_string(qtStats.latestPublishedId)},
           {"latest_presented_id", std::to_string(qtStats.latestPresentedId)}
         });
@@ -751,6 +873,10 @@
       DrainQtQueuedWork();
 #endif
       BootStep("qt render loop exited; shutting down platform");
+      vkpt::audio::SetGlobalAudioSystem(nullptr);
+      if (qtAudioSystem) {
+        qtAudioSystem->shutdown();
+      }
 
       platform->shutdown();
       recordUiAction("app.window.qt", "window", "qt window closed",

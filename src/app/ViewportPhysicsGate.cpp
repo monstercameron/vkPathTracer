@@ -548,6 +548,7 @@ int RunThirdPersonScriptPerformanceGate(std::string scenePath,
   for (uint32_t frame = 0u; frame < frames; ++frame) {
     vkpt::scene::WorldCommandBuffer commands;
     vkpt::scripting::ScriptExecutionContext context;
+    context.game_mode = true;
     context.frame = frame;
     context.delta_seconds = 1.0 / 60.0;
     context.input.active_keys = {'W'};

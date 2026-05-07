@@ -39,12 +39,16 @@
 
         qtFpsMode = false;
         qtSetViewportMouseLocked(false);
+        qtSyncViewportAssetDropMode();
         qtDiscardFpsMovementResults();
         qtGizmoDrag = {};
         qtHoveredGizmoHit = std::nullopt;
         qtSceneDocument = std::move(parseResult.value());
         qtPromoteSceneObjectCamerasAndLights();
         EnsureQtFallbackLightingEntities(qtSceneDocument);
+        if (qtAudioSystem) {
+          qtAudioSystem->load_scene_audio(qtSceneDocument, displayPath);
+        }
         ui_selection_state = vkpt::editor::CreateDefaultSelectionState();
         config.scene_path.value = displayPath;
         config.scene_path.source = vkpt::config::ConfigSource::CliFlag;
@@ -435,6 +439,7 @@
         qtPublishedWidth.store(qtSettings.width, std::memory_order_relaxed);
         qtPublishedHeight.store(qtSettings.height, std::memory_order_relaxed);
         if (qtUseBg && qtRenderCoordinator) {
+          qtMarkOverlayRequiresRenderCatchup();
           qtRenderCoordinator->post_settings(qtSettings);
         } else if (!qtUseBg && qtTracerReady) {
           qtTracerReady = qtTracer->configure(qtSettings) &&
@@ -639,6 +644,7 @@
 
         const auto cameraState = vkpt::pathtracer::ExtractCameraState(qtScene);
         if (qtUseBg && qtRenderCoordinator) {
+          qtMarkOverlayRequiresRenderCatchup();
           qtRenderCoordinator->post_camera_state(cameraState);
         } else if (!qtUseBg && qtTracerReady) {
           bool cameraOk = qtTracer->update_camera_state(cameraState);
@@ -674,6 +680,7 @@
         qtPublishedSample.store(0u, std::memory_order_relaxed);
         qtPublishedRays.store(0u, std::memory_order_relaxed);
         if (qtUseBg && qtRenderCoordinator) {
+          qtMarkOverlayRequiresRenderCatchup();
           qtRenderCoordinator->post_scene(qtScene);
         } else if (!qtUseBg && qtTracerReady) {
           qtTracerReady = qtTracer->load_scene_snapshot(qtScene) &&
@@ -714,15 +721,15 @@
       std::function<bool(vkpt::core::FrameIndex)> qtDockAutoFocus;
       std::function<bool(vkpt::core::FrameIndex)> qtDockFocusSelected;
       std::function<void(bool, vkpt::core::FrameIndex, std::string_view)> qtSetFpsMode;
-      auto qtSetLuaPlayableMode = [&](bool enabled,
-                                      vkpt::core::FrameIndex frameIndex,
-                                      std::string_view source) {
+      auto qtSetGameMode = [&](bool enabled,
+                               vkpt::core::FrameIndex frameIndex,
+                               std::string_view source) {
         logger.log(vkpt::log::Severity::Info,
                    "scripts",
-                   "Lua playable mode toggle requested",
+                   "game mode toggle requested",
                    {{"requested", enabled ? "on" : "off"},
                     {"source", std::string(source)},
-                    {"playing_before", qtScriptState.playing ? "true" : "false"},
+                    {"game_mode_before", qtScriptState.playing ? "true" : "false"},
                     {"scripts_enabled_before", qtScriptState.scripts_enabled ? "true" : "false"},
                     {"fps_mode_before", qtFpsMode ? "true" : "false"},
                     {"lua_compiled_in", qtScriptRuntime ? (qtScriptRuntime->lua_compiled_in() ? "true" : "false") : "missing_runtime"},
@@ -730,31 +737,17 @@
                     {"bindings", std::to_string(qtScriptState.binding_summary.binding_count)},
                     {"runnable", std::to_string(qtScriptState.binding_summary.runnable_count)}},
                    frameIndex);
-        if (enabled) {
-          qtScriptState.playing = false;
-          qtScriptState.status = "script playback disabled in static mode";
-          ui_runtime_state.status_message = qtScriptState.status;
-          qtDockPanelsDirty = true;
-          PushUiEvent(ui_event_log,
-                      "lua_playable_mode_toggle",
-                      "viewport",
-                      source,
-                      frameIndex,
-                      {},
-                      "disabled",
-                      qtScriptState.status);
-          return;
-        }
         if (enabled && qtScriptRuntime && !qtScriptRuntime->execution_available()) {
           qtScriptState.scripts_enabled = true;
           qtScriptState.playing = false;
-          qtScriptState.status = "lua playable mode unavailable: Lua execution is not compiled in";
+          qtScriptState.status = "game mode unavailable: Lua execution is not compiled in";
           ui_runtime_state.status_message = qtScriptState.status;
           ui_runtime_state.last_warning_or_error = qtScriptState.status;
+          qtSyncViewportAssetDropMode();
           qtDockPanelsDirty = true;
           logger.log(vkpt::log::Severity::Error,
                      "scripts",
-                     "Lua playable mode unavailable in this executable",
+                     "game mode unavailable in this executable",
                      {{"requested", "on"},
                       {"lua_compiled_in", qtScriptRuntime->lua_compiled_in() ? "true" : "false"},
                       {"execution_available", qtScriptRuntime->execution_available() ? "true" : "false"},
@@ -762,7 +755,7 @@
                       {"status", qtScriptState.status}},
                      frameIndex);
           PushUiEvent(ui_event_log,
-                      "lua_playable_mode_toggle",
+                      "game_mode_toggle",
                       "viewport",
                       source,
                       frameIndex,
@@ -791,22 +784,24 @@
         qtGizmoDrag = {};
         qtHoveredGizmoHit = std::nullopt;
         qtSetViewportMouseLocked(enabled);
+        qtSyncViewportAssetDropMode();
         if (!enabled) {
           qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
         }
-        qtScriptState.status = enabled ? "lua playable mode running" : "lua playable mode paused";
+        qtPreviewStatus = enabled ? "game mode" : "editor mode";
+        qtScriptState.status = enabled ? "game mode running" : "game mode stopped";
         ui_runtime_state.status_message = qtScriptState.status;
         qtDockPanelsDirty = true;
         logger.log(vkpt::log::Severity::Info,
                    "scripts",
-                   "Lua playable mode toggle applied",
-                   {{"playing", qtScriptState.playing ? "true" : "false"},
+                   "game mode toggle applied",
+                   {{"game_mode", qtScriptState.playing ? "true" : "false"},
                     {"scripts_enabled", qtScriptState.scripts_enabled ? "true" : "false"},
                     {"fps_mode", qtFpsMode ? "true" : "false"},
                     {"status", qtScriptState.status}},
                    frameIndex);
         PushUiEvent(ui_event_log,
-                    "lua_playable_mode_toggle",
+                    "game_mode_toggle",
                     "viewport",
                     source,
                     frameIndex,

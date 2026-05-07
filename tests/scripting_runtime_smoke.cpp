@@ -1,5 +1,6 @@
 #include "scene/Scene.h"
 #include "scripting/ScriptRuntime.h"
+#include "audio/AudioSystem.h"
 #include "pathtracer/SceneConversion.h"
 #include "physics/PhysicsWorld.h"
 
@@ -77,14 +78,14 @@ vkpt::scene::Vec3 RotateByQuat(const vkpt::scene::Vec3& value, const vkpt::scene
   };
 }
 
-[[maybe_unused]] bool CameraLooksAtHeroCenter(const vkpt::scene::TransformComponent& camera,
-                                              const vkpt::scene::TransformComponent& hero) {
-  constexpr float kTargetY = 1.35f;
+[[maybe_unused]] bool CameraLooksAtTargetY(const vkpt::scene::TransformComponent& camera,
+                                           const vkpt::scene::TransformComponent& target,
+                                           float target_y_offset) {
   const auto forward = RotateByQuat({0.0f, 0.0f, -1.0f}, camera.rotation);
   const vkpt::scene::Vec3 to_target{
-      hero.translation.x - camera.translation.x,
-      hero.translation.y + kTargetY - camera.translation.y,
-      hero.translation.z - camera.translation.z,
+      target.translation.x - camera.translation.x,
+      target.translation.y + target_y_offset - camera.translation.y,
+      target.translation.z - camera.translation.z,
   };
   const float forward_len =
       std::sqrt(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z);
@@ -95,6 +96,11 @@ vkpt::scene::Vec3 RotateByQuat(const vkpt::scene::Vec3& value, const vkpt::scene
   }
   const float dot = forward.x * to_target.x + forward.y * to_target.y + forward.z * to_target.z;
   return dot / (forward_len * target_len) > 0.995f;
+}
+
+[[maybe_unused]] bool CameraLooksAtHeroCenter(const vkpt::scene::TransformComponent& camera,
+                                              const vkpt::scene::TransformComponent& hero) {
+  return CameraLooksAtTargetY(camera, hero, 1.35f);
 }
 
 [[maybe_unused]] float DistanceXZ(const vkpt::scene::TransformComponent& lhs,
@@ -184,8 +190,24 @@ int RunScriptingRuntimeSmoke() {
   }
 #endif
 
+  vkpt::scene::WorldCommandBuffer blocked_commands;
+  vkpt::scripting::ScriptExecutionContext blocked_context;
+  blocked_context.frame = 6;
+  blocked_context.delta_seconds = 1.0 / 60.0;
+  const auto blocked_summary = runtime->dispatch_hook(
+      world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, blocked_context, blocked_commands);
+  if (!Check(blocked_summary.game_mode_blocked,
+             "dispatch should report game-mode blocking when context is not in game mode") ||
+      !Check(blocked_summary.hook_call_count == 0u,
+             "scripts should not execute outside game mode") ||
+      !Check(blocked_summary.command_count_after == 0u,
+             "scripts outside game mode should emit no commands")) {
+    return 1;
+  }
+
   vkpt::scene::WorldCommandBuffer commands;
   vkpt::scripting::ScriptExecutionContext context;
+  context.game_mode = true;
   context.frame = 7;
   context.delta_seconds = 1.0 / 60.0;
   const auto dispatch_summary = runtime->dispatch_hook(
@@ -259,6 +281,7 @@ int RunScriptingRuntimeSmoke() {
   for (const auto hook : hooks) {
     vkpt::scene::WorldCommandBuffer lifecycle_commands;
     vkpt::scripting::ScriptExecutionContext lifecycle_context;
+    lifecycle_context.game_mode = true;
     lifecycle_context.frame = 17;
     lifecycle_context.elapsed_seconds = 0.25;
     lifecycle_context.delta_seconds = 1.0 / 60.0;
@@ -327,6 +350,7 @@ int RunScriptingRuntimeSmoke() {
   }
 
   vkpt::scripting::ScriptExecutionContext particle_context;
+  particle_context.game_mode = true;
   particle_context.frame = 0;
   particle_context.delta_seconds = 1.0 / 24.0;
   particle_context.elapsed_seconds = 0.0;
@@ -360,8 +384,10 @@ int RunScriptingRuntimeSmoke() {
       particle_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, particle_context, despawn_commands);
   if (!Check(despawn_summary.hook_call_count == 1u,
              "particle spawner frame 48 update should run once") ||
-      !Check(despawn_summary.diagnostics.empty(),
-             "particle spawner frame 48 update should not emit diagnostics") ||
+      !Check(despawn_summary.diagnostics.size() == 1u &&
+                 despawn_summary.diagnostics.front().severity ==
+                     vkpt::scripting::ScriptDiagnosticSeverity::Info,
+             "particle spawner frame 48 update should emit one info diagnostic") ||
       !Check(despawn_commands.commands().size() == 18u,
              "particle spawner frame 48 should emit one destroy command per droplet")) {
     return 1;
@@ -399,6 +425,8 @@ int RunScriptingRuntimeSmoke() {
   std::size_t third_person_ball_geometry_vertices = 0u;
   bool has_hero_root_physics = false;
   bool has_hero_physics_capsule = false;
+  bool has_authored_controls_panel = false;
+  bool action_camera_parented_to_scene_root = false;
   for (const auto& geometry : third_person_document_result.value().geometry) {
     if (geometry.id == 9302u) {
       third_person_ball_geometry_vertices = geometry.vertices.size();
@@ -446,6 +474,20 @@ int RunScriptingRuntimeSmoke() {
         entity.physics_body.shape == "sphere") {
       ++third_person_ball_meshes;
     }
+    if (entity.id == 9190u &&
+        entity.name == "Third Person Controls Panel" &&
+        entity.has_ui_panel &&
+        entity.ui_panel.title == "Third Person Controls" &&
+        entity.ui_panel.lines.size() >= 5u) {
+      has_authored_controls_panel = true;
+    }
+    if (entity.id == 9101u &&
+        entity.name == "Action Camera" &&
+        entity.has_camera &&
+        entity.has_hierarchy &&
+        entity.hierarchy.parent == 9100u) {
+      action_camera_parented_to_scene_root = true;
+    }
   }
   for (const auto& entity : third_person_document_result.value().entities) {
     if (entity.has_hierarchy && entity.hierarchy.parent == imported_hero_model_id && entity.has_mesh) {
@@ -467,7 +509,11 @@ int RunScriptingRuntimeSmoke() {
       !Check(third_person_ball_meshes >= 4u,
              "third-person physics balls should be visible sphere mesh entities") ||
       !Check(third_person_ball_geometry_vertices >= 40u,
-             "third-person physics balls should use a rounded lightweight sphere mesh")) {
+             "third-person physics balls should use a rounded lightweight sphere mesh") ||
+      !Check(has_authored_controls_panel,
+             "third-person scene should author an ECS controls UI panel") ||
+      !Check(action_camera_parented_to_scene_root,
+             "third-person action camera should stay in scene hierarchy and be driven by Lua")) {
     return 1;
   }
   auto third_person_rt_scene_result =
@@ -493,7 +539,15 @@ int RunScriptingRuntimeSmoke() {
              "third-person RT scene should include every imported hero mesh as a dynamic instance")) {
     return 1;
   }
-  auto third_person_world_result = third_person_document_result.value().to_world();
+  auto third_person_script_document = third_person_document_result.value();
+  third_person_script_document.entities.erase(
+      std::remove_if(third_person_script_document.entities.begin(),
+                     third_person_script_document.entities.end(),
+                     [](const vkpt::scene::SceneEntityDefinition& entity) {
+                       return entity.id == 9190u;
+                     }),
+      third_person_script_document.entities.end());
+  auto third_person_world_result = third_person_script_document.to_world();
   if (!Check(static_cast<bool>(third_person_world_result), "third-person scripted scene should convert to world")) {
     return 1;
   }
@@ -513,6 +567,7 @@ int RunScriptingRuntimeSmoke() {
 
   vkpt::scene::WorldCommandBuffer third_person_commands;
   vkpt::scripting::ScriptExecutionContext third_person_context;
+  third_person_context.game_mode = true;
   third_person_context.frame = 3;
   third_person_context.delta_seconds = 1.0 / 60.0;
   third_person_context.input.active_keys = {'W'};
@@ -525,9 +580,25 @@ int RunScriptingRuntimeSmoke() {
     return 1;
   }
 #ifdef PT_ENABLE_LUA
+  bool captured_script_variable = false;
+  for (const auto& variable : third_person_runtime->variable_snapshots()) {
+    captured_script_variable = captured_script_variable ||
+        (variable.entity == 9110u &&
+         variable.scope == "upvalue" &&
+         variable.name == "DEFAULT_CAMERA_PITCH" &&
+         !variable.value.empty());
+  }
+  if (!Check(captured_script_variable,
+             "Lua third-person dispatch should expose hook variable snapshots")) {
+    return 1;
+  }
+
   bool moved_hero_root = false;
   bool moved_camera = false;
   bool posed_hero_model = false;
+  bool created_controls_panel = false;
+  bool set_controls_panel_component = false;
+  vkpt::scene::UiPanelComponent controls_panel;
   for (const auto& command : third_person_commands.commands()) {
     if (const auto* set_transform =
             std::get_if<vkpt::scene::WorldCommandBuffer::SetTransformCommand>(&command.payload)) {
@@ -541,6 +612,42 @@ int RunScriptingRuntimeSmoke() {
         posed_hero_model = true;
       }
     }
+    if (const auto* create_entity =
+            std::get_if<vkpt::scene::WorldCommandBuffer::CreateEntityCommand>(&command.payload);
+        create_entity != nullptr &&
+        create_entity->requested_id == 9190u &&
+        create_entity->requested_parent == 9100u &&
+        create_entity->name == "Third Person Controls Panel") {
+      created_controls_panel = true;
+    }
+    if (const auto* set_component =
+            std::get_if<vkpt::scene::WorldCommandBuffer::SetComponentCommand>(&command.payload);
+        set_component != nullptr &&
+        set_component->id == 9190u &&
+        set_component->kind == vkpt::scene::ComponentKind::UiPanel) {
+      if (const auto* panel = std::get_if<vkpt::scene::UiPanelComponent>(&set_component->component)) {
+        controls_panel = *panel;
+        set_controls_panel_component = true;
+      }
+    }
+  }
+  auto third_person_panel_world = third_person_world_result.value();
+  if (!Check(static_cast<bool>(third_person_commands.replay(third_person_panel_world)),
+             "third-person controls panel commands should replay into ECS world")) {
+    return 1;
+  }
+  const auto* controls_panel_entity = third_person_panel_world.get_entity(9190u);
+  if (!Check(created_controls_panel,
+             "Lua third-person script should spawn the controls panel entity") ||
+      !Check(set_controls_panel_component,
+             "Lua third-person script should attach a UI panel component") ||
+      !Check(controls_panel_entity != nullptr && controls_panel_entity->ui_panel.has_value(),
+             "replayed controls panel should exist in ECS") ||
+      !Check(controls_panel.title == "Third Person Controls" &&
+                 controls_panel.lines.size() >= 5u &&
+                 controls_panel.anchor == "top_left",
+             "third-person controls panel should describe playable-mode controls")) {
+    return 1;
   }
   if (!Check(third_person_dispatch.hook_call_count == 1u, "Lua third-person dispatch should call the player update hook") ||
       !Check(third_person_dispatch.command_count_after >= 3u,
@@ -657,6 +764,7 @@ int RunScriptingRuntimeSmoke() {
 
   vkpt::scene::WorldCommandBuffer third_person_idle_mouse_commands;
   vkpt::scripting::ScriptExecutionContext third_person_idle_mouse_context;
+  third_person_idle_mouse_context.game_mode = true;
   third_person_idle_mouse_context.frame = 4;
   third_person_idle_mouse_context.delta_seconds = 1.0 / 60.0;
   third_person_idle_mouse_context.input.mouse_delta_x = 100.0f;
@@ -687,6 +795,25 @@ int RunScriptingRuntimeSmoke() {
     return 1;
   }
 
+  vkpt::scene::WorldCommandBuffer third_person_idle_follow_commands;
+  vkpt::scripting::ScriptExecutionContext third_person_idle_follow_context;
+  third_person_idle_follow_context.game_mode = true;
+  third_person_idle_follow_context.frame = 5;
+  third_person_idle_follow_context.delta_seconds = 1.0 / 60.0;
+  const auto third_person_idle_follow_dispatch = third_person_runtime->dispatch_hook(
+      third_person_world_result.value(),
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      third_person_idle_follow_context,
+      third_person_idle_follow_commands);
+  const auto* idle_follow_camera =
+      FindSetTransform(third_person_idle_follow_commands, 9101u);
+  if (!Check(third_person_idle_follow_dispatch.hook_call_count == 1u,
+             "idle camera-follow dispatch should call the player update hook") ||
+      !Check(idle_follow_camera != nullptr,
+             "Lua should update the action camera every frame so it follows the hero")) {
+    return 1;
+  }
+
   auto static_collision_world_result = third_person_document_result.value().to_world();
   // Seed overlap scenarios directly in scene space so Lua collision response can
   // be validated without relying on frame timing or interactive input.
@@ -712,6 +839,7 @@ int RunScriptingRuntimeSmoke() {
   static_collision_world.recompute_world_transforms();
   vkpt::scene::WorldCommandBuffer static_collision_commands;
   vkpt::scripting::ScriptExecutionContext static_collision_context;
+  static_collision_context.game_mode = true;
   static_collision_context.frame = 23u;
   static_collision_context.delta_seconds = 0.05;
   static_collision_context.elapsed_seconds = 0.38;
@@ -755,6 +883,7 @@ int RunScriptingRuntimeSmoke() {
   ball_collision_world.recompute_world_transforms();
   vkpt::scene::WorldCommandBuffer ball_collision_commands;
   vkpt::scripting::ScriptExecutionContext ball_collision_context;
+  ball_collision_context.game_mode = true;
   ball_collision_context.frame = 24u;
   ball_collision_context.delta_seconds = 0.05;
   ball_collision_context.elapsed_seconds = 0.40;
@@ -844,6 +973,179 @@ int RunScriptingRuntimeSmoke() {
     return 1;
   }
 #endif
+
+  const auto audio_scene_path = FindRepoFile("assets/scenes/audio_lua_interaction_demo.json");
+  auto audio_document_result = vkpt::scene::SceneDocument::load_from_file(audio_scene_path.generic_string());
+  if (!Check(static_cast<bool>(audio_document_result),
+             "audio Lua interaction demo should load")) {
+    return 1;
+  }
+  bool has_audio_controls_panel = false;
+  for (const auto& entity : audio_document_result.value().entities) {
+    if (entity.id == 9790u &&
+        entity.name == "Audio Controls Panel" &&
+        entity.has_ui_panel &&
+        entity.ui_panel.title == "Audio Demo Controls" &&
+        entity.ui_panel.lines.size() >= 6u) {
+      has_audio_controls_panel = true;
+      break;
+    }
+  }
+  if (!Check(has_audio_controls_panel,
+             "audio Lua demo should author an ECS controls UI panel")) {
+    return 1;
+  }
+  std::size_t footstep_assets = 0u;
+  bool ambient_uses_file = false;
+  bool audio_uses_tone_placeholder = false;
+  const auto audio_scene_dir = audio_scene_path.parent_path();
+  for (const auto& asset : audio_document_result.value().assets) {
+    if (asset.name == "player.footstep.dirt") {
+      ++footstep_assets;
+      const auto resolved = (audio_scene_dir / std::filesystem::path(asset.uri)).lexically_normal();
+      if (!Check(!asset.uri.starts_with("tone:"),
+                 "audio demo footsteps should use recorded files, not tone placeholders") ||
+          !Check(PathExists(resolved),
+                 "audio demo footstep file should exist: " + resolved.generic_string())) {
+        return 1;
+      }
+    }
+    if (asset.name == "ambience.forest") {
+      ambient_uses_file = !asset.uri.starts_with("tone:");
+      const auto resolved = (audio_scene_dir / std::filesystem::path(asset.uri)).lexically_normal();
+      if (!Check(ambient_uses_file,
+                 "audio demo ambience should use a recorded file, not a tone placeholder") ||
+          !Check(PathExists(resolved),
+                 "audio demo ambience file should exist: " + resolved.generic_string())) {
+        return 1;
+      }
+    }
+    if (asset.uri.starts_with("tone:") &&
+        (asset.name == "player.footstep.dirt" || asset.name == "ambience.forest")) {
+      audio_uses_tone_placeholder = true;
+    }
+  }
+  if (!Check(footstep_assets >= 3u,
+             "audio demo should declare multiple recorded footstep variants") ||
+      !Check(ambient_uses_file,
+             "audio demo should declare file-backed ambience") ||
+      !Check(!audio_uses_tone_placeholder,
+             "audio demo footstep and ambience events should be file-backed")) {
+    return 1;
+  }
+
+  vkpt::audio::AudioSystemConfig audio_config;
+  audio_config.backend = "noop";
+  audio_config.muted = true;
+  auto audio_system = vkpt::audio::CreateAudioSystem(audio_config);
+  vkpt::audio::SetGlobalAudioSystem(audio_system.get());
+  if (!Check(audio_system->initialize(),
+             "audio system should initialize in no-op smoke mode") ||
+      !Check(audio_system->load_scene_audio(audio_document_result.value(), audio_scene_path.generic_string()),
+             "audio system should load scene audio events")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+  auto audio_diag = audio_system->diagnostics();
+  if (!Check(audio_diag.loaded_clips >= 6u,
+             "audio demo should declare file-backed and generated clips") ||
+      !Check(audio_diag.events >= 6u,
+             "audio demo should declare audio events") ||
+      !Check(audio_diag.play_requests >= 1u,
+             "audio demo autoplay emitter should post an ambience event")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+
+  auto audio_world_result = audio_document_result.value().to_world();
+  if (!Check(static_cast<bool>(audio_world_result),
+             "audio Lua interaction demo should convert to ECS world")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+  auto& audio_world = audio_world_result.value();
+  audio_world.recompute_world_transforms();
+  auto audio_runtime = vkpt::scripting::CreateScriptRuntime();
+  audio_runtime->reload_bindings(audio_world);
+  vkpt::scene::WorldCommandBuffer audio_commands;
+  vkpt::scripting::ScriptExecutionContext audio_context;
+  audio_context.game_mode = true;
+  audio_context.frame = 180u;
+  audio_context.delta_seconds = 1.0 / 60.0;
+  audio_context.elapsed_seconds = 3.0;
+  audio_context.input.active_keys = {'W', ' '};
+  const auto requests_before_lua = audio_system->diagnostics().play_requests;
+  const auto audio_dispatch = audio_runtime->dispatch_hook(audio_world,
+                                                          vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+                                                          audio_context,
+                                                          audio_commands);
+#ifdef PT_ENABLE_LUA
+  const auto* audio_player_move = FindSetTransform(audio_commands, 9741u);
+  const auto* audio_camera_follow = FindSetTransform(audio_commands, 9731u);
+  if (!Check(audio_dispatch.hook_call_count == 1u,
+             "audio Lua demo should dispatch one update hook") ||
+      !Check(audio_system->diagnostics().play_requests > requests_before_lua,
+             "audio Lua demo should post sound events from script update") ||
+      !Check(audio_player_move != nullptr,
+             "audio Lua demo should move the player from input") ||
+      !Check(audio_camera_follow != nullptr,
+             "audio Lua demo should update the listener camera from script") ||
+      !Check(CameraLooksAtTargetY(audio_camera_follow->transform, audio_player_move->transform, 0.65f),
+             "audio Lua demo camera should look at the moving player")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+
+  vkpt::scene::WorldCommandBuffer audio_idle_commands;
+  vkpt::scripting::ScriptExecutionContext audio_idle_context;
+  audio_idle_context.game_mode = true;
+  audio_idle_context.frame = 181u;
+  audio_idle_context.delta_seconds = 1.0 / 60.0;
+  const auto audio_idle_dispatch = audio_runtime->dispatch_hook(audio_world,
+                                                               vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+                                                               audio_idle_context,
+                                                               audio_idle_commands);
+  const auto* audio_idle_camera = FindSetTransform(audio_idle_commands, 9731u);
+  if (!Check(audio_idle_dispatch.hook_call_count == 1u,
+             "audio Lua idle dispatch should call one update hook") ||
+      !Check(audio_idle_camera != nullptr,
+             "audio Lua idle dispatch should still update the follow camera")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+
+  vkpt::scene::WorldCommandBuffer audio_mouse_commands;
+  vkpt::scripting::ScriptExecutionContext audio_mouse_context;
+  audio_mouse_context.game_mode = true;
+  audio_mouse_context.frame = 182u;
+  audio_mouse_context.delta_seconds = 1.0 / 60.0;
+  audio_mouse_context.input.mouse_delta_x = 100.0f;
+  const auto audio_mouse_dispatch = audio_runtime->dispatch_hook(audio_world,
+                                                                vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+                                                                audio_mouse_context,
+                                                                audio_mouse_commands);
+  const auto* audio_mouse_player = FindSetTransform(audio_mouse_commands, 9741u);
+  const auto* audio_mouse_camera = FindSetTransform(audio_mouse_commands, 9731u);
+  if (!Check(audio_mouse_dispatch.hook_call_count == 1u,
+             "audio Lua mouse dispatch should call one update hook") ||
+      !Check(audio_mouse_player != nullptr,
+             "audio Lua mouse look should rotate the player marker") ||
+      !Check(audio_mouse_camera != nullptr && audio_mouse_camera->transform.translation.x < -0.1f,
+             "audio Lua mouse look should orbit the listener camera") ||
+      !Check(CameraLooksAtTargetY(audio_mouse_camera->transform, audio_mouse_player->transform, 0.65f),
+             "audio Lua mouse-look camera should remain centered on the player")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+#else
+  if (!Check(audio_dispatch.command_count_after == 0u,
+             "no-Lua audio dispatch should emit no commands")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+#endif
+  vkpt::audio::SetGlobalAudioSystem(nullptr);
+  audio_system->shutdown();
 
   std::cout << "scripting runtime smoke: ok\n";
   return 0;

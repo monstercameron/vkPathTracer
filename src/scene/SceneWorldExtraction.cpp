@@ -191,6 +191,27 @@ SceneSnapshot SceneWorld::build_snapshot() const {
       out.materials.push_back(material);
       blob += "mat" + std::to_string(material.id) + ";";
     }
+    if (entity->audio_listener.has_value()) {
+      blob += "al" + std::to_string(id) + ":" +
+              (entity->audio_listener->enabled ? "1" : "0") + ":" +
+              (entity->audio_listener->primary ? "1" : "0") + ";";
+    }
+    if (entity->audio_emitter.has_value()) {
+      blob += "ae" + std::to_string(id) + ":" + entity->audio_emitter->event + ":" +
+              std::to_string(entity->audio_emitter->volume) + ":" +
+              std::to_string(entity->audio_emitter->pitch) + ":" +
+              (entity->audio_emitter->enabled ? "1" : "0") + ":" +
+              (entity->audio_emitter->autoplay ? "1" : "0") + ":" +
+              (entity->audio_emitter->loop ? "1" : "0") + ":" +
+              (entity->audio_emitter->spatial ? "1" : "0") + ";";
+    }
+    if (entity->ui_panel.has_value()) {
+      blob += "ui" + std::to_string(id) + ":" + entity->ui_panel->panel_id + ":" +
+              entity->ui_panel->title + ":" +
+              (entity->ui_panel->enabled ? "1" : "0") + ":" +
+              (entity->ui_panel->visible ? "1" : "0") + ":" +
+              std::to_string(entity->ui_panel->lines.size()) + ";";
+    }
   }
   for (const auto id : m_entities_order) {
     const auto* cameraEnt = get_entity(id);

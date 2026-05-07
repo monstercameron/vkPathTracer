@@ -845,8 +845,9 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
     const bool physics_dynamic =
         entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
     const bool scripted_dynamic = entity_has_scripted_transform_path(entity);
+    const bool editor_transformable = entity.has_transform;
     const bool dynamic_transform =
-        physics_dynamic || scripted_dynamic;
+        physics_dynamic || scripted_dynamic || editor_transformable;
     // Dynamic instances keep local geometry alongside world-space triangles for later refits.
     if (scene.vertices.size() >
         static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) -

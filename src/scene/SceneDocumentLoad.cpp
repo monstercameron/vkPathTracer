@@ -370,6 +370,28 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         read_bool(scriptNode->second, "enabled", entity.script.enabled);
         read_bool(scriptNode->second, "reload_on_save", entity.script.reload_on_save);
       }
+      if (const auto listenerNode = item.object.find("audio_listener"); listenerNode != item.object.end()) {
+        entity.has_audio_listener = true;
+        read_bool(listenerNode->second, "enabled", entity.audio_listener.enabled);
+        read_bool(listenerNode->second, "primary", entity.audio_listener.primary);
+      }
+      if (const auto emitterNode = item.object.find("audio_emitter"); emitterNode != item.object.end()) {
+        entity.has_audio_emitter = true;
+        read_string(emitterNode->second, "event", entity.audio_emitter.event);
+        read_string(emitterNode->second, "bus", entity.audio_emitter.bus);
+        read_bool(emitterNode->second, "enabled", entity.audio_emitter.enabled);
+        read_bool(emitterNode->second, "autoplay", entity.audio_emitter.autoplay);
+        read_bool(emitterNode->second, "loop", entity.audio_emitter.loop);
+        read_bool(emitterNode->second, "spatial", entity.audio_emitter.spatial);
+        read_float(emitterNode->second, "volume", entity.audio_emitter.volume);
+        read_float(emitterNode->second, "pitch", entity.audio_emitter.pitch);
+        read_float(emitterNode->second, "min_distance", entity.audio_emitter.min_distance);
+        read_float(emitterNode->second, "max_distance", entity.audio_emitter.max_distance);
+      }
+      if (const auto panelNode = item.object.find("ui_panel"); panelNode != item.object.end()) {
+        entity.has_ui_panel = true;
+        read_ui_panel_component(panelNode->second, entity.ui_panel);
+      }
       if (const auto benchmarkNode = item.object.find("benchmark"); benchmarkNode != item.object.end()) {
         entity.has_benchmark_tag = true;
         read_bool(benchmarkNode->second, "enabled", entity.benchmark_tag.enabled);
@@ -730,6 +752,30 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
     }
     if (entity.has_camera && !valid_camera_values(entity.camera)) {
       report("entity camera has invalid clip/fov " + std::to_string(entity.id));
+    }
+    if (entity.has_audio_emitter) {
+      if (entity.audio_emitter.event.empty()) {
+        report("entity audio emitter event is empty " + std::to_string(entity.id));
+      }
+      if (!std::isfinite(entity.audio_emitter.volume) || entity.audio_emitter.volume < 0.0f) {
+        report("entity audio emitter volume is invalid " + std::to_string(entity.id));
+      }
+      if (!std::isfinite(entity.audio_emitter.pitch) ||
+          entity.audio_emitter.pitch <= 0.0f ||
+          entity.audio_emitter.pitch > 4.0f) {
+        report("entity audio emitter pitch is invalid " + std::to_string(entity.id));
+      }
+      if (!std::isfinite(entity.audio_emitter.min_distance) ||
+          !std::isfinite(entity.audio_emitter.max_distance) ||
+          entity.audio_emitter.min_distance < 0.0f ||
+          entity.audio_emitter.max_distance <= entity.audio_emitter.min_distance) {
+        report("entity audio emitter distance range is invalid " + std::to_string(entity.id));
+      }
+    }
+    if (entity.has_ui_panel) {
+      if (!valid_ui_panel_values(entity.ui_panel)) {
+        report("entity ui panel has invalid values " + std::to_string(entity.id));
+      }
     }
     if (entity.has_light &&
         (!finite_vec3(entity.light.color) || !std::isfinite(entity.light.intensity) || entity.light.intensity < 0.0f ||
