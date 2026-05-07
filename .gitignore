@@ -26,6 +26,7 @@ build.ninja
 /artifacts/
 /logs/
 /crashes/
+/game/models/lods/
 *.log
 *.jsonl
 *.dmp
