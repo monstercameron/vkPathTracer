@@ -26,7 +26,7 @@ struct RenderCameraCommand {
 
 /// Runtime knobs for how aggressively the worker publishes display frames.
 struct RenderCoordinatorConfig {
-  std::uint32_t publish_hz = 30u;
+  std::uint32_t publish_hz = 60u;
   std::uint32_t immediate_publish_count = 4u;
 };
 
@@ -56,7 +56,7 @@ struct InstanceTransformCommand {
   vkpt::pathtracer::InstanceTransformUpdateOptions options{};
 };
 
-/// Owns the background path-tracing loop and coalesces app-thread updates.
+/// Owns the background path-tracing loop and consumes app-thread updates.
 ///
 /// The coordinator applies pending scene/settings/camera changes between sample
 /// batches, resets accumulation when the scene generation changes, and publishes
@@ -79,7 +79,7 @@ class RenderCoordinator {
   void post_camera(RenderCameraCommand camera);
   /// Queue full camera-state replacement; supersedes any older queued camera state.
   void post_camera_state(vkpt::pathtracer::RTCameraState camera);
-  /// Queue transform updates, replacing older pending transform batches.
+  /// Queue transform updates. Continuous motion uses latest-wins semantics.
   void post_instance_transforms(
       std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates);
   void post_instance_transforms(
@@ -94,6 +94,8 @@ class RenderCoordinator {
   /// Queue settings plus scene replacement as one generation change.
   void post_settings(vkpt::pathtracer::RenderSettings settings,
                      vkpt::pathtracer::RTSceneData scene);
+  /// Update display-frame publication cadence without restarting the worker.
+  void set_publish_hz(std::uint32_t publish_hz);
 
   /// Acquire the newest resolved display frame, if the worker has published one.
   std::optional<DisplayFrame> acquire_latest_frame();
@@ -127,6 +129,7 @@ class RenderCoordinator {
   vkpt::pathtracer::RTSceneData m_initialScene{};
   RenderCoordinatorConfig m_config{};
   std::unique_ptr<vkpt::pathtracer::IPathTracer> m_initialTracer;
+  std::atomic<std::uint32_t> m_publishHz{60u};
 
   mutable std::mutex m_commandMutex;
   PendingCommands m_pending;

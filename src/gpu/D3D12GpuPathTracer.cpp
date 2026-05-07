@@ -132,7 +132,9 @@ bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   m_sceneUploaded     = false;
   m_raysPerPixelPerDispatch = SelectRaysPerPixelPerDispatch(s);
   m_readbackInterval = SelectReadbackInterval(s);
-  m_forceReadbackEverySample = ParseEnvBool("PT_D3D12_FORCE_READBACK_EVERY_SAMPLE", false);
+  const bool interactivePreview = s.spp == std::numeric_limits<uint32_t>::max();
+  m_forceReadbackEverySample =
+      interactivePreview || ParseEnvBool("PT_D3D12_FORCE_READBACK_EVERY_SAMPLE", false);
   m_dynamicInstanceTransformsAllowed = ParseEnvBool("PT_D3D12_DYNAMIC_INSTANCE_TRANSFORMS", true);
   m_temporalHistoryValid = false;
   m_dxrBuildMode = SelectDxrBuildMode();

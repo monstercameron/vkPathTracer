@@ -402,7 +402,7 @@ struct InstanceTransformUpdateOptions {
   RenderUpdateReason reason = RenderUpdateReason::Unknown;
   TransformFallbackPolicy fallback_policy = TransformFallbackPolicy::NoFallback;
   bool reset_accumulation = true;
-  bool coalesce = true;
+  bool coalesce = false;
   bool allow_partial = false;
   vkpt::core::FrameIndex source_frame = 0;
   const char* source_system = nullptr;
@@ -470,6 +470,12 @@ inline TransformFallbackPolicy DefaultTransformFallbackPolicy(RenderUpdateReason
       return TransformFallbackPolicy::NoFallback;
   }
   return TransformFallbackPolicy::NoFallback;
+}
+
+inline bool IsContinuousTransformMotion(RenderUpdateReason reason) {
+  return reason == RenderUpdateReason::PhysicsMotion ||
+         reason == RenderUpdateReason::EditorGizmoMotion ||
+         reason == RenderUpdateReason::ScriptTransformMotion;
 }
 
 inline bool TransformUpdateStatusAllowedByPolicy(InstanceTransformUpdateStatus status,
@@ -1101,7 +1107,7 @@ inline InstanceTransformUpdateOptions MakeStandardTransformUpdateOptions(
   options.reason = reason;
   options.fallback_policy = DefaultTransformFallbackPolicy(reason);
   options.reset_accumulation = true;
-  options.coalesce = true;
+  options.coalesce = !IsContinuousTransformMotion(reason);
   options.allow_partial = false;
   options.source_frame = source_frame;
   options.source_system = source_system;

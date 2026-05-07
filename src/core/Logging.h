@@ -201,6 +201,7 @@ class Logger final {
   }
 
   void set_min_severity(Severity severity) { m_minSeverity = severity; }
+  bool enabled(Severity severity) const { return severity >= m_minSeverity; }
   void add_sink(std::unique_ptr<ILogSink> sink) {
     std::scoped_lock lock(m_mutex);
     m_sinks.push_back(std::move(sink));
@@ -211,7 +212,7 @@ class Logger final {
            std::string_view message,
            std::initializer_list<LogField> fields = {},
            vkpt::core::FrameIndex frameIndex = 0) {
-    if (severity < m_minSeverity) {
+    if (!enabled(severity)) {
       return;
     }
     LogEvent event;

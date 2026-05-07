@@ -32,6 +32,59 @@ void LogCoordinatorException(std::string_view error) noexcept {
   }
 }
 
+void LogTransformCommand(vkpt::log::Severity severity,
+                         std::string_view message,
+                         std::size_t updateCount,
+                         const vkpt::pathtracer::InstanceTransformUpdateOptions& options,
+                         vkpt::pathtracer::InstanceTransformUpdateStatus status,
+                         std::uint32_t matchedOrAppliedCount = 0u,
+                         const char* detail = nullptr) {
+  auto& logger = vkpt::log::Logger::instance();
+  if (!logger.enabled(severity)) {
+    return;
+  }
+  logger.log(
+      severity,
+      "render",
+      message,
+      {{"updates", std::to_string(updateCount)},
+       {"matched_or_applied", std::to_string(matchedOrAppliedCount)},
+       {"reason", vkpt::pathtracer::ToString(options.reason)},
+       {"policy", vkpt::pathtracer::ToString(options.fallback_policy)},
+       {"status", vkpt::pathtracer::ToString(status)},
+       {"source", options.source_system ? options.source_system : ""},
+       {"detail", detail ? detail : ""}},
+      options.source_frame);
+}
+
+std::string_view SourceSystemView(const vkpt::pathtracer::InstanceTransformUpdateOptions& options) {
+  return options.source_system ? std::string_view(options.source_system) : std::string_view();
+}
+
+void SleepRenderWorkerUntil(std::stop_token stop,
+                            std::chrono::steady_clock::time_point target) {
+  while (!stop.stop_requested() && std::chrono::steady_clock::now() < target) {
+    const auto remaining = target - std::chrono::steady_clock::now();
+    if (remaining > std::chrono::milliseconds(2)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } else {
+      std::this_thread::yield();
+    }
+  }
+}
+
+bool CanCoalesceTransformOptions(
+    const vkpt::pathtracer::InstanceTransformUpdateOptions& lhs,
+    const vkpt::pathtracer::InstanceTransformUpdateOptions& rhs) {
+  return lhs.coalesce &&
+         rhs.coalesce &&
+         lhs.reason == rhs.reason &&
+         lhs.fallback_policy == rhs.fallback_policy &&
+         lhs.reset_accumulation == rhs.reset_accumulation &&
+         lhs.allow_partial == rhs.allow_partial &&
+         SourceSystemView(lhs) == SourceSystemView(rhs);
+}
+
 }  // namespace
 
 RenderCoordinator::RenderCoordinator(std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer,
@@ -43,6 +96,7 @@ RenderCoordinator::RenderCoordinator(std::unique_ptr<vkpt::pathtracer::IPathTrac
       m_config(config),
       m_initialTracer(std::move(tracer)) {
   m_config.publish_hz = std::max<std::uint32_t>(1u, m_config.publish_hz);
+  m_publishHz.store(m_config.publish_hz, std::memory_order_relaxed);
 }
 
 RenderCoordinator::~RenderCoordinator() {
@@ -126,6 +180,11 @@ void RenderCoordinator::post_instance_transforms(
   if (updates.empty()) {
     return;
   }
+  LogTransformCommand(vkpt::log::Severity::Debug,
+                      "queued instance transform command",
+                      updates.size(),
+                      options,
+                      vkpt::pathtracer::InstanceTransformUpdateStatus::Unsupported);
   std::scoped_lock lock(m_commandMutex);
   if (!m_pending.instance_transforms) {
     m_pending.instance_transforms = InstanceTransformCommand{std::move(updates), options};
@@ -133,10 +192,12 @@ void RenderCoordinator::post_instance_transforms(
   }
   auto& pending_command = *m_pending.instance_transforms;
   auto& pending = pending_command.updates;
-  if (pending_command.options.reason != options.reason ||
-      pending_command.options.fallback_policy != options.fallback_policy ||
-      pending_command.options.reset_accumulation != options.reset_accumulation ||
-      pending_command.options.source_system != options.source_system) {
+  if (!CanCoalesceTransformOptions(pending_command.options, options)) {
+    LogTransformCommand(vkpt::log::Severity::Debug,
+                        "replaced pending instance transform command",
+                        updates.size(),
+                        options,
+                        vkpt::pathtracer::InstanceTransformUpdateStatus::Unsupported);
     pending_command = InstanceTransformCommand{std::move(updates), options};
     return;
   }
@@ -198,6 +259,11 @@ void RenderCoordinator::post_settings(vkpt::pathtracer::RenderSettings settings,
   m_pending.instance_transforms.reset();
 }
 
+void RenderCoordinator::set_publish_hz(std::uint32_t publish_hz) {
+  m_publishHz.store(std::max<std::uint32_t>(1u, publish_hz),
+                    std::memory_order_relaxed);
+}
+
 std::optional<DisplayFrame> RenderCoordinator::acquire_latest_frame() {
   return m_handoff.acquire_latest();
 }
@@ -211,7 +277,6 @@ RenderCoordinatorStats RenderCoordinator::stats() const {
 
 RenderCoordinator::PendingCommands RenderCoordinator::drain_commands() {
   std::scoped_lock lock(m_commandMutex);
-  // Drain by move so bursts of UI changes collapse into one worker-side update.
   PendingCommands out = std::move(m_pending);
   m_pending = {};
   return out;
@@ -243,9 +308,8 @@ void RenderCoordinator::run(std::stop_token stop,
   std::uint32_t sample = 0u;
   auto settings = m_initialSettings;
   auto scene = m_initialScene;
-  const auto publishInterval = std::chrono::microseconds(
-      std::max<std::uint32_t>(1u, 1000000u / std::max<std::uint32_t>(1u, m_config.publish_hz)));
   auto lastPublish = std::chrono::steady_clock::time_point{};
+  auto nextSampleStart = std::chrono::steady_clock::time_point{};
 
   {
     std::scoped_lock lock(m_statsMutex);
@@ -388,30 +452,34 @@ void RenderCoordinator::run(std::stop_token stop,
             ++m_stats.instance_transform_failures;
           }
         }
-        vkpt::log::Logger::instance().log(
-            vkpt::log::Severity::Warning,
-            "render",
-            "rejected instance transform update by fallback policy",
-            {
-              {"updates", std::to_string(updates.size())},
-              {"status", std::to_string(static_cast<int>(plan.status))},
-              {"policy", std::to_string(static_cast<int>(options.fallback_policy))},
-              {"reason", std::to_string(static_cast<int>(options.reason))},
-              {"source", options.source_system ? options.source_system : ""}
-            });
+        LogTransformCommand(vkpt::log::Severity::Warning,
+                            "rejected instance transform update by fallback policy",
+                            updates.size(),
+                            options,
+                            plan.status,
+                            plan.matched_count,
+                            plan.message);
       } else if (plan.can_apply_without_full_fallback()) {
+        LogTransformCommand(vkpt::log::Severity::Debug,
+                            "planned direct instance transform update",
+                            updates.size(),
+                            options,
+                            plan.status,
+                            plan.matched_count,
+                            plan.message);
         const auto result = tracer->apply_instance_transform_update(updates, options);
         if (!result.applied()) {
           {
             std::scoped_lock lock(m_statsMutex);
             ++m_stats.instance_transform_failures;
           }
-          vkpt::log::Logger::instance().log(
-              vkpt::log::Severity::Warning,
-              "render",
-              "instance transform update failed without committing state",
-              {{"updates", std::to_string(updates.size())},
-               {"status", std::to_string(static_cast<int>(result.status))}});
+          LogTransformCommand(vkpt::log::Severity::Warning,
+                              "instance transform update failed without committing state",
+                              updates.size(),
+                              options,
+                              result.status,
+                              result.applied_count,
+                              result.message);
         } else {
           if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(
                   scene,
@@ -433,10 +501,24 @@ void RenderCoordinator::run(std::stop_token stop,
               ++m_stats.instance_transform_dynamic_accel_updates;
             }
           }
+          LogTransformCommand(vkpt::log::Severity::Debug,
+                              "applied direct instance transform update",
+                              updates.size(),
+                              options,
+                              result.status,
+                              result.applied_count,
+                              result.message);
           resetPublishClock = true;
         }
       } else if (plan.status == vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild &&
                  options.fallback_policy >= vkpt::pathtracer::TransformFallbackPolicy::AllowFullStaticAccelerationBuild) {
+        LogTransformCommand(vkpt::log::Severity::Info,
+                            "using full acceleration rebuild for instance transform update",
+                            updates.size(),
+                            options,
+                            plan.status,
+                            plan.matched_count,
+                            plan.message);
         auto nextScene = scene;
         if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(nextScene, updates) ||
             !tracer->load_scene_snapshot(nextScene) ||
@@ -459,10 +541,23 @@ void RenderCoordinator::run(std::stop_token stop,
           m_stats.instance_transform_updates_applied += updates.size();
           ++m_stats.instance_transform_full_accel_required;
         }
+        LogTransformCommand(vkpt::log::Severity::Debug,
+                            "applied full acceleration rebuild for instance transform update",
+                            updates.size(),
+                            options,
+                            vkpt::pathtracer::InstanceTransformUpdateStatus::AppliedFullStaticAccelRebuild,
+                            static_cast<std::uint32_t>(updates.size()));
         resetPublishClock = true;
       } else if ((plan.status == vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullSceneReload ||
                   plan.status == vkpt::pathtracer::InstanceTransformUpdateStatus::Unsupported) &&
                  options.fallback_policy >= vkpt::pathtracer::TransformFallbackPolicy::AllowFullSceneReload) {
+        LogTransformCommand(vkpt::log::Severity::Info,
+                            "using full scene reload for instance transform update",
+                            updates.size(),
+                            options,
+                            plan.status,
+                            plan.matched_count,
+                            plan.message);
         auto nextScene = scene;
         if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(nextScene, updates) ||
             !tracer->load_scene_snapshot(nextScene) ||
@@ -482,12 +577,19 @@ void RenderCoordinator::run(std::stop_token stop,
           m_stats.instance_transform_updates_applied += updates.size();
           ++m_stats.instance_transform_full_scene_required;
         }
+        LogTransformCommand(vkpt::log::Severity::Debug,
+                            "applied full scene reload for instance transform update",
+                            updates.size(),
+                            options,
+                            vkpt::pathtracer::InstanceTransformUpdateStatus::AppliedFullSceneReload,
+                            static_cast<std::uint32_t>(updates.size()));
         resetPublishClock = true;
       }
     }
 
     if (resetPublishClock) {
       lastPublish = std::chrono::steady_clock::time_point{};
+      nextSampleStart = std::chrono::steady_clock::time_point{};
       m_handoff.clear();
     }
 
@@ -496,6 +598,18 @@ void RenderCoordinator::run(std::stop_token stop,
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
+
+    const auto publishHz =
+        std::max<std::uint32_t>(1u, m_publishHz.load(std::memory_order_relaxed));
+    const auto publishInterval = std::chrono::microseconds(
+        std::max<std::uint32_t>(1u, 1000000u / publishHz));
+    if (nextSampleStart != std::chrono::steady_clock::time_point{}) {
+      SleepRenderWorkerUntil(stop, nextSampleStart);
+      if (stop.stop_requested()) {
+        break;
+      }
+    }
+    const auto sampleStart = std::chrono::steady_clock::now();
 
     if (!tracer->render_sample_batch_cancellable(0u, settings.height, sample, 0u, stop)) {
       if (!stop.stop_requested()) {
@@ -509,6 +623,7 @@ void RenderCoordinator::run(std::stop_token stop,
     update_stats(generation, sample, settings, counters);
 
     const auto now = std::chrono::steady_clock::now();
+    nextSampleStart = sampleStart + publishInterval;
     // Publish the first few samples immediately for responsiveness, then throttle
     // steady-state updates to the configured display cadence.
     const bool publishNow =

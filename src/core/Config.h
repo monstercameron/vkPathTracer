@@ -9,7 +9,7 @@
 namespace vkpt::config {
 
 inline constexpr uint32_t kMinUiPresentHz = 1;
-inline constexpr uint32_t kDefaultUiPresentHz = 30;
+inline constexpr uint32_t kDefaultUiPresentHz = 60;
 inline constexpr uint32_t kMaxUiPresentHz = 120;
 
 inline uint32_t ClampUiPresentHz(uint32_t value) {

@@ -44,6 +44,8 @@ Buffer<float>    SdfBuf : register(t9);
 Buffer<float>    TriDataBuf : register(t10);
 Buffer<float>    EnvBuf : register(t11);
 Buffer<uint>     EnvMetaBuf : register(t12);
+Buffer<uint>     TexelBuf : register(t13);
+Buffer<uint>     TexMetaBuf : register(t14);
 RWByteAddressBuffer FilmBuf : register(u0);
 RWBuffer<uint>   LdrBuf   : register(u1); // tonemapped RGBA8 output (R|G<<8|B<<16|0xFF<<24)
 RWByteAddressBuffer DenoiseBuf : register(u2); // denoised HDR mean, RGBA32F
@@ -59,16 +61,18 @@ static const uint kSdfStride = 16u;
 static const uint kSdfShapeSphere = 0u;
 static const uint kSdfShapeBox = 1u;
 static const uint kSdfShapeRoundedBox = 2u;
+static const uint kInvalidTextureIndex = 0xFFFFFFFFu;
 
 // ---- Forward declarations (fxc requires them) -------------------------------
 float Halton2(uint idx);
 float Halton3(uint idx);
-struct Hit { bool ok; float t; float3 pos; float3 n; uint mat; };
+struct Hit { bool ok; float t; float3 pos; float3 n; uint mat; float2 uv; };
 uint  Pcg(uint v);
 float RandF(inout uint rng);
 bool  IntersectTri(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool double_sided, inout float best_t);
 bool  IntersectTriAny(float3 ro, float3 rd, uint i0, uint i1, uint i2, bool double_sided, float max_t);
-bool  IntersectPackedTri(float3 ro, float3 rd, uint tri, inout float best_t, out uint mat_index, out float3 normal);
+bool  IntersectPackedTri(float3 ro, float3 rd, uint tri, inout float best_t,
+                         out uint mat_index, out float3 normal, out float2 uv);
 bool  IntersectPackedTriAny(float3 ro, float3 rd, uint tri, float max_t);
 bool  MatDoubleSided(uint idx);
 bool  IntersectSdfPrimitive(uint sdf_index, float3 ro, float3 rd, inout Hit h);
@@ -175,9 +179,13 @@ void main(uint3 gid : SV_DispatchThreadID) {
         total_color += Trace(origin, dir, rng, env_col);
     }
 
-    float4 prev = LoadFilm(pixel);
-    StoreFilm(pixel, float4(prev.x + total_color.x, prev.y + total_color.y,
-                            prev.z + total_color.z, prev.w + float(rpp)));
+    if (sample_index == 0u) {
+        StoreFilm(pixel, float4(total_color.x, total_color.y, total_color.z, float(rpp)));
+    } else {
+        float4 prev = LoadFilm(pixel);
+        StoreFilm(pixel, float4(prev.x + total_color.x, prev.y + total_color.y,
+                                prev.z + total_color.z, prev.w + float(rpp)));
+    }
 }
 
 // ============================================================================
@@ -376,7 +384,7 @@ void LoadPackedTriGeometry(uint b, out float3 v0, out float3 e1, out float3 e2,
 }
 
 bool IntersectPackedTri(float3 ro, float3 rd, uint tri, inout float best_t,
-                        out uint mat_index, out float3 normal) {
+                        out uint mat_index, out float3 normal, out float2 uv) {
     uint b = tri * kPackedTriStride;
     float3 v0;
     float3 e1;
@@ -408,6 +416,11 @@ bool IntersectPackedTri(float3 ro, float3 rd, uint tri, inout float best_t,
     if (double_sided && dot(normal, rd) > 0.0f) {
         normal = -normal;
     }
+    float2 uv0 = float2(TriDataBuf[b + 12u], TriDataBuf[b + 13u]);
+    float2 uv1 = float2(TriDataBuf[b + 14u], TriDataBuf[b + 15u]);
+    float2 uv2 = float2(TriDataBuf[b + 16u], TriDataBuf[b + 17u]);
+    float baryZ = 1.0f - u - v;
+    uv = uv0 * baryZ + uv1 * u + uv2 * v;
     return true;
 }
 
@@ -538,7 +551,7 @@ bool IntersectDynamicTri(uint ib, float3 ro_world, float3 rd_world,
 bool IntersectDynamicPackedTri(uint ib, float3 ro_world, float3 rd_world,
                                float3 ro_local, float3 rd_local,
                                uint tri, bool double_sided,
-                               inout float best_t, out float3 out_pos, out float3 out_n) {
+                               inout float best_t, out float3 out_pos, out float3 out_n, out float2 out_uv) {
     uint b = tri * kPackedTriStride;
     float3 v0;
     float3 e1;
@@ -575,6 +588,11 @@ bool IntersectDynamicPackedTri(uint ib, float3 ro_world, float3 rd_world,
     best_t = world_t;
     out_pos = world_pos;
     out_n = world_n;
+    float2 uv0 = float2(TriDataBuf[b + 12u], TriDataBuf[b + 13u]);
+    float2 uv1 = float2(TriDataBuf[b + 14u], TriDataBuf[b + 15u]);
+    float2 uv2 = float2(TriDataBuf[b + 16u], TriDataBuf[b + 17u]);
+    float baryZ = 1.0f - u - v;
+    out_uv = uv0 * baryZ + uv1 * u + uv2 * v;
     return true;
 }
 
@@ -670,9 +688,10 @@ void IntersectDynamicInstance(uint instance_index, float3 ro, float3 rd, inout H
                 for (uint ti = 0u; ti < rc; ++ti) {
                     float3 pos;
                     float3 normal;
+                    float2 uv = float2(0.0f, 0.0f);
 #if PT_D3D12_PACKED_TRIANGLES
                     if (IntersectDynamicPackedTri(ib, ro, rd, ro_local, rd_local,
-                                                  first_tri + ti, double_sided, h.t, pos, normal)) {
+                                                  first_tri + ti, double_sided, h.t, pos, normal, uv)) {
 #else
                     uint tb = (first_tri + ti) * 3u;
                     if (IntersectDynamicTri(ib, ro, rd, ro_local, rd_local,
@@ -683,6 +702,7 @@ void IntersectDynamicInstance(uint instance_index, float3 ro, float3 rd, inout H
                         h.pos = pos;
                         h.n = normal;
                         h.mat = mat_index;
+                        h.uv = uv;
                     }
                 }
             } else if (sp + 2u <= 64u) {
@@ -695,9 +715,10 @@ void IntersectDynamicInstance(uint instance_index, float3 ro, float3 rd, inout H
     for (uint ti = 0u; ti < ntri; ++ti) {
         float3 pos;
         float3 normal;
+        float2 uv = float2(0.0f, 0.0f);
 #if PT_D3D12_PACKED_TRIANGLES
         if (IntersectDynamicPackedTri(ib, ro, rd, ro_local, rd_local,
-                                      ftri + ti, double_sided, h.t, pos, normal)) {
+                                      ftri + ti, double_sided, h.t, pos, normal, uv)) {
 #else
         uint tb = (ftri + ti) * 3u;
         if (IntersectDynamicTri(ib, ro, rd, ro_local, rd_local,
@@ -708,6 +729,7 @@ void IntersectDynamicInstance(uint instance_index, float3 ro, float3 rd, inout H
             h.pos = pos;
             h.n = normal;
             h.mat = mat_index;
+            h.uv = uv;
         }
     }
 }
@@ -937,6 +959,7 @@ Hit IntersectScene(float3 ro, float3 rd) {
     h.pos = float3(0.0f, 0.0f, 0.0f);
     h.n   = float3(0.0f, 1.0f, 0.0f);
     h.mat = 0u;
+    h.uv  = float2(0.0f, 0.0f);
 
     float3 inv_rd = float3(1.0f / rd.x, 1.0f / rd.y, 1.0f / rd.z);
 
@@ -974,13 +997,15 @@ Hit IntersectScene(float3 ro, float3 rd) {
 #if PT_D3D12_PACKED_TRIANGLES
                 uint mat_index;
                 float3 normal;
+                float2 uv;
                 float t_best = h.t;
-                if (IntersectPackedTri(ro, rd, first_tri + ti, t_best, mat_index, normal)) {
+                if (IntersectPackedTri(ro, rd, first_tri + ti, t_best, mat_index, normal, uv)) {
                     h.ok = true;
                     h.t = t_best;
                     h.pos = ro + rd * h.t;
                     h.n = normal;
                     h.mat = mat_index;
+                    h.uv = uv;
                 }
 #else
                 uint tb = (first_tri + ti) * 3u;
@@ -1002,6 +1027,7 @@ Hit IntersectScene(float3 ro, float3 rd) {
                         h.n = -h.n;
                     }
                     h.mat = mat_index;
+                    h.uv = float2(0.0f, 0.0f);
                 }
 #endif
             }
@@ -1250,10 +1276,57 @@ float  MatAlpha(uint idx)    { return MatBuf[idx*kMatStride + 14u]; }
 uint   MatEffectRaw(uint idx){ return uint(MatBuf[idx*kMatStride + 15u] + 0.5); }
 uint   MatEffect(uint idx)   { return MatEffectRaw(idx) & 1023u; }
 bool   MatDoubleSided(uint idx) { return (MatEffectRaw(idx) & 1024u) != 0u; }
+uint   MatBaseColorTextureIndex(uint idx) {
+    uint encoded = MatEffectRaw(idx) >> 11u;
+    return encoded == 0u ? kInvalidTextureIndex : encoded - 1u;
+}
 bool   IsMaterialTransmissive(uint mat_index) {
     if (num_mats == 0u) return false;
     uint idx = min(mat_index, num_mats - 1u);
     return MatModel(idx) == 5u || MatTransmission(idx) > 0.05;
+}
+
+uint WrapTexelCoord(int value, uint size) {
+    int wrapped = value % int(size);
+    if (wrapped < 0) wrapped += int(size);
+    return uint(wrapped);
+}
+
+float3 DecodeRgba8(uint packed) {
+    float3 srgb = float3(float(packed & 255u),
+                         float((packed >> 8u) & 255u),
+                         float((packed >> 16u) & 255u)) * (1.0 / 255.0);
+    float3 lo = srgb / 12.92;
+    float3 hi = pow(max((srgb + 0.055) / 1.055, 0.0), 2.4);
+    return lerp(lo, hi, step(0.04045, srgb));
+}
+
+float3 LoadTextureTexel(uint textureIndex, int x, int y) {
+    uint mb = textureIndex * 4u;
+    uint offset = TexMetaBuf[mb + 0u];
+    uint width = max(1u, TexMetaBuf[mb + 1u]);
+    uint height = max(1u, TexMetaBuf[mb + 2u]);
+    uint ix = WrapTexelCoord(x, width);
+    uint iy = WrapTexelCoord(y, height);
+    return DecodeRgba8(TexelBuf[offset + iy * width + ix]);
+}
+
+float3 SampleBaseColorTexture(uint textureIndex, float2 uv) {
+    uint mb = textureIndex * 4u;
+    uint width = max(1u, TexMetaBuf[mb + 1u]);
+    uint height = max(1u, TexMetaBuf[mb + 2u]);
+    float2 wrapped = frac(uv);
+    float x = wrapped.x * float(width) - 0.5;
+    float y = (1.0 - wrapped.y) * float(height) - 0.5;
+    int x0 = int(floor(x));
+    int y0 = int(floor(y));
+    float tx = frac(x);
+    float ty = frac(y);
+    float3 c00 = LoadTextureTexel(textureIndex, x0, y0);
+    float3 c10 = LoadTextureTexel(textureIndex, x0 + 1, y0);
+    float3 c01 = LoadTextureTexel(textureIndex, x0, y0 + 1);
+    float3 c11 = LoadTextureTexel(textureIndex, x0 + 1, y0 + 1);
+    return lerp(lerp(c00, c10, tx), lerp(c01, c11, tx), ty);
 }
 
 float Hash01(float3 p, float seed) {
@@ -1310,8 +1383,12 @@ float3 ProceduralWoodAlbedo(float3 base, float3 p, float roughness, float clearc
     return base * (1.0 - woodMix) + wood * woodMix;
 }
 
-float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd) {
+float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd, float2 uv) {
     float3 color = MatAlbedo(idx);
+    uint baseTexture = MatBaseColorTextureIndex(idx);
+    if (baseTexture != kInvalidTextureIndex) {
+        color *= SampleBaseColorTexture(baseTexture, uv);
+    }
     uint effect = MatEffect(idx);
     float h = Hash01(p, float(effect));
     if (effect == 1u) {
@@ -1383,7 +1460,7 @@ float3 PreviewTransmission(float3 ro, float3 rd, float3 fallback_env) {
         if (dot(preview_n, -rd) < 0.0f) {
             preview_n = -preview_n;
         }
-        float3 surface = MatSurfaceAlbedo(preview_mat, preview_hit.pos, preview_n, rd);
+        float3 surface = MatSurfaceAlbedo(preview_mat, preview_hit.pos, preview_n, rd, preview_hit.uv);
         float3 emissive = MatEmissive(preview_mat);
         float ndotl = 0.45f;
         if (num_lights > 0u) {
@@ -1446,7 +1523,7 @@ float3 Trace(float3 ro, float3 rd, inout uint rng, float3 env) {
         float3 n = entering_surface ? geom_n : -geom_n;
 
         uint mi = (num_mats > 0u) ? min(hit.mat, num_mats - 1u) : 0u;
-        float3 albedo   = MatSurfaceAlbedo(mi, hit.pos, n, rd);
+        float3 albedo   = MatSurfaceAlbedo(mi, hit.pos, n, rd, hit.uv);
         float3 emissive = MatEmissive(mi);
 
         if (depth == 0u || num_lights == 0u) {
@@ -1636,7 +1713,7 @@ void guide_main(uint3 gid : SV_DispatchThreadID) {
     float3 n = hit.n;
     if (dot(n, -dir) < 0.0f) n = -n;
     uint mi = (num_mats > 0u) ? min(hit.mat, num_mats - 1u) : 0u;
-    float3 albedo = MatSurfaceAlbedo(mi, hit.pos, n, dir);
+    float3 albedo = MatSurfaceAlbedo(mi, hit.pos, n, dir, hit.uv);
     float roughness = MatRoughness(mi);
     StoreGuide(pixel, float4(saturate(albedo), hit.t), float4(n, 1.0f + roughness));
 }

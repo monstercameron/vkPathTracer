@@ -260,8 +260,12 @@ float3 ProceduralWoodAlbedo(float3 base, float3 p, float roughness, float clearc
     return base * (1.0 - woodMix) + wood * woodMix;
 }
 
-float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd, float roughness, float clearcoat) {
+float3 MatSurfaceAlbedo(uint idx, float3 p, float3 n, float3 rd, float roughness, float clearcoat, float2 uv) {
     float3 color = MatAlbedo(idx);
+    uint baseTexture = MatBaseColorTextureIndex(idx);
+    if (baseTexture != kInvalidTextureIndex) {
+        color *= SampleBaseColorTexture(baseTexture, uv);
+    }
     uint effect = MatEffect(idx);
     if (effect == 0u) {
         return clamp(color, 0.0, 1.5);
@@ -654,7 +658,7 @@ float RandF(inout uint rng);
 float Halton2(uint idx);
 float Halton3(uint idx);
 void  ApplyCameraLens(inout float3 origin, inout float3 dir, inout uint rng);
-void  ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal, uint matIdx, float3 rayDir);
+void  ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal, uint matIdx, float3 rayDir, float2 uv);
 
 float4 LoadFilm(uint pixel) {
     return asfloat(FilmBuf.Load4(pixel * 16u));
@@ -725,7 +729,7 @@ void RayGen() {
                      ray, payload);
             if (sdfHit.ok && PayloadIsDone(payload) && ((payload.state & kPayloadSdfCandidate) != 0u)) {
                 payload.state &= ~kPayloadDone;
-                ShadeSurface(payload, sdfHit.pos, sdfHit.n, sdfHit.mat, rayDir);
+                ShadeSurface(payload, sdfHit.pos, sdfHit.n, sdfHit.mat, rayDir, float2(0.0f, 0.0f));
             } else {
                 payload.state &= ~kPayloadSdfCandidate;
             }
@@ -733,8 +737,12 @@ void RayGen() {
         total += payload.radiance;
     }
 
-    float4 prev = LoadFilm(pixel);
-    StoreFilm(pixel, float4(prev.xyz + total, prev.w + (float)rpp));
+    if (sample_index == 0u) {
+        StoreFilm(pixel, float4(total, (float)rpp));
+    } else {
+        float4 prev = LoadFilm(pixel);
+        StoreFilm(pixel, float4(prev.xyz + total, prev.w + (float)rpp));
+    }
 }
 
 // ---- Miss ------------------------------------------------------------------
@@ -755,7 +763,7 @@ void Miss(inout PathPayload payload) {
     PayloadSetDone(payload);
 }
 
-void ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal, uint matIdx, float3 rayDir) {
+void ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal, uint matIdx, float3 rayDir, float2 uv) {
     bool enteringSurface = dot(rayDir, surfaceNormal) < 0.0f;
     float3 n = enteringSurface ? surfaceNormal : -surfaceNormal;
     float3 emissive = MatEmissive(matIdx);
@@ -765,7 +773,7 @@ void ShadeSurface(inout PathPayload payload, float3 hitPos, float3 surfaceNormal
     float metallic = MatMetallic(matIdx);
     float transmission = MatTransmission(matIdx);
     float clearcoat = MatClearcoat(matIdx);
-    float3 albedo = MatSurfaceAlbedo(matIdx, hitPos, n, rayDir, roughness, clearcoat);
+    float3 albedo = MatSurfaceAlbedo(matIdx, hitPos, n, rayDir, roughness, clearcoat, uv);
     bool isMirror = (model == 2u) || (roughness <= 0.001);
     bool isMetallic = (model == 4u) || (metallic > 0.65);
     bool isTransmissive = (model == 5u) || (transmission > 0.05);
@@ -994,7 +1002,7 @@ void ClosestHit(inout PathPayload payload, in BuiltInTriangleIntersectionAttribu
             }
         }
     }
-    ShadeSurface(payload, hitPos, n, matIdx, WorldRayDirection());
+    ShadeSurface(payload, hitPos, n, matIdx, WorldRayDirection(), uv);
 }
 
 [shader("anyhit")]

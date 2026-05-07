@@ -525,15 +525,16 @@ D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS AddDxrBuildFlags(
 
 uint32_t SelectRaysPerPixelPerDispatch(const vkpt::pathtracer::RenderSettings& settings) {
   // Finite/offline renders should preserve the public --spp contract. Interactive
-  // preview uses an unlimited spp sentinel and can batch more rays per GPU submit.
+  // preview uses an unlimited spp sentinel and prioritizes frame cadence over
+  // convergence. Extra rays can still be requested with PT_D3D12_RAYS_PER_PIXEL.
   const bool interactivePreview = settings.spp == std::numeric_limits<uint32_t>::max();
-  const uint32_t fallback = interactivePreview ? 8u : 1u;
+  const uint32_t fallback = interactivePreview ? 1u : 1u;
   return ParseEnvU32("PT_D3D12_RAYS_PER_PIXEL", fallback, 1u, 64u);
 }
 
 uint32_t SelectReadbackInterval(const vkpt::pathtracer::RenderSettings& settings) {
   const bool interactivePreview = settings.spp == std::numeric_limits<uint32_t>::max();
-  const uint32_t fallback = interactivePreview ? 4u : 1u;
+  const uint32_t fallback = interactivePreview ? 1u : 1u;
   return ParseEnvU32("PT_D3D12_READBACK_INTERVAL", fallback, 1u, 64u);
 }
 

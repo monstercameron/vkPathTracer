@@ -26,6 +26,7 @@ struct FeatureFlags {
   bool sve = false;
   bool jolt = false;
   bool lua = false;
+  bool audio = false;
   bool editor = false;
   bool benchmark = false;
   bool profiling = false;
@@ -84,6 +85,7 @@ inline FeatureFlags FeatureFlagsFromBuildInfo(const vkpt::build::BuildMetadata& 
   out.sve = enabled("PT_ENABLE_SVE");
   out.jolt = enabled("PT_ENABLE_JOLT");
   out.lua = enabled("PT_ENABLE_LUA");
+  out.audio = enabled("PT_ENABLE_AUDIO");
   out.editor = enabled("PT_ENABLE_EDITOR");
   out.benchmark = enabled("PT_ENABLE_BENCHMARK");
   out.profiling = enabled("PT_ENABLE_PROFILING");
@@ -186,6 +188,7 @@ inline std::string SerializeFeatureFlags(const FeatureFlags& flags) {
   detail::AppendFlag(out, "sve", flags.sve, true);
   detail::AppendFlag(out, "jolt", flags.jolt, true);
   detail::AppendFlag(out, "lua", flags.lua, true);
+  detail::AppendFlag(out, "audio", flags.audio, true);
   detail::AppendFlag(out, "editor", flags.editor, true);
   detail::AppendFlag(out, "benchmark", flags.benchmark, true);
   detail::AppendFlag(out, "profiling", flags.profiling, true);

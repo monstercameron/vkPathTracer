@@ -18,12 +18,12 @@ bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
 
   // The heap layout is part of the shader ABI. New buffers must be appended
   // deliberately and mirrored in create_root_sig_and_pso() and HLSL bindings.
-  // Slots: t0-t12 (13 SRVs), u0 = FilmBuf, u1 = LdrBuf,
+  // Slots: t0-t14 (15 SRVs), u0 = FilmBuf, u1 = LdrBuf,
   // u2 = denoised HDR, u3 = current guide, u4 = temporal HDR,
   // u5 = temporal history, u6 = previous guide.
   D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
   heapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-  heapDesc.NumDescriptors = 20;
+  heapDesc.NumDescriptors = 22;
   heapDesc.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   if (FAILED(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_srvUavHeap)))) {
     m_error = "srv heap";
@@ -63,12 +63,14 @@ bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
   makeSrv(10, m_triDataBuf.Get(), m_gpuTriData.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
   makeSrv(11, m_envBuf.Get(), m_gpuEnv.size() * sizeof(float), DXGI_FORMAT_R32_FLOAT);
   makeSrv(12, m_envMetaBuf.Get(), m_gpuEnvMeta.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+  makeSrv(13, m_texelBuf.Get(), m_gpuTexels.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
+  makeSrv(14, m_texMetaBuf.Get(), m_gpuTextureMeta.size() * sizeof(uint32_t), DXGI_FORMAT_R32_UINT);
 
   {
     const UINT64 filmSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(filmSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(13) * inc;
+    h.ptr += static_cast<SIZE_T>(15) * inc;
     m_device->CreateUnorderedAccessView(m_filmBuf.Get(), nullptr, &uav, h);
   }
   {
@@ -77,42 +79,42 @@ bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
     uav.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
     uav.Buffer.NumElements = static_cast<UINT>(m_filmPixels);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(14) * inc;
+    h.ptr += static_cast<SIZE_T>(16) * inc;
     m_device->CreateUnorderedAccessView(m_ldrBuf.Get(), nullptr, &uav, h);
   }
   {
     const UINT64 denoiseSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(denoiseSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(15) * inc;
+    h.ptr += static_cast<SIZE_T>(17) * inc;
     m_device->CreateUnorderedAccessView(m_denoiseBuf.Get(), nullptr, &uav, h);
   }
   {
     const UINT64 guideSize = static_cast<UINT64>(m_filmPixels) * 8u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(guideSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(16) * inc;
+    h.ptr += static_cast<SIZE_T>(18) * inc;
     m_device->CreateUnorderedAccessView(m_guideBuf.Get(), nullptr, &uav, h);
   }
   {
     const UINT64 temporalSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(temporalSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(17) * inc;
+    h.ptr += static_cast<SIZE_T>(19) * inc;
     m_device->CreateUnorderedAccessView(m_temporalBuf.Get(), nullptr, &uav, h);
   }
   {
     const UINT64 temporalSize = static_cast<UINT64>(m_filmPixels) * 4u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(temporalSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(18) * inc;
+    h.ptr += static_cast<SIZE_T>(20) * inc;
     m_device->CreateUnorderedAccessView(m_temporalHistoryBuf.Get(), nullptr, &uav, h);
   }
   {
     const UINT64 guideSize = static_cast<UINT64>(m_filmPixels) * 8u * sizeof(float);
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav = MakeRawBufferUavDesc(guideSize);
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpuHandle;
-    h.ptr += static_cast<SIZE_T>(19) * inc;
+    h.ptr += static_cast<SIZE_T>(21) * inc;
     m_device->CreateUnorderedAccessView(m_prevGuideBuf.Get(), nullptr, &uav, h);
   }
 
@@ -181,13 +183,21 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     LogDebug(st.str());
   }
 
-  if (m_preferDxr) {
+  const bool fastMotionSample = m_fastMotionSamplesRemaining > 0u;
+  if (m_preferDxr && !fastMotionSample) {
     if (!m_dxrSupported || !m_dxrRuntimeObjectsReady) {
       m_error = "DXR path requested but runtime objects are unavailable";
       LogError("render_sample_batch: " + m_error);
       return false;
     }
     if (m_dxrPipelineReady && m_dxrAccelReady) {
+      if (m_dxrTlasUpdatePending) {
+        if (!update_dxr_instance_buffer_and_tlas_from(m_gpuInsts, m_dxrInstanceDescs)) {
+          LogError("render_sample_batch: " + m_error);
+          return false;
+        }
+        m_dxrTlasUpdatePending = false;
+      }
       // Route to hardware DXR dispatch
       m_usingDxrDispatch = true;
       return dispatch_dxr_rays(sample_idx, frame_idx, should_readback_sample(sample_idx));
@@ -241,7 +251,9 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
   pc.env_r = sc.environment_color.x;
   pc.env_g = sc.environment_color.y;
   pc.env_b = sc.environment_color.z;
-  pc.max_depth_f = static_cast<float>(std::max(1u, m_settings.max_depth));
+  pc.max_depth_f = fastMotionSample
+      ? 1.0f
+      : static_cast<float>(std::max(1u, m_settings.max_depth));
   pc.aperture_radius = sc.camera_aperture_radius > 0.0f
       ? sc.camera_aperture_radius
       : m_settings.camera_aperture_radius;
@@ -312,23 +324,30 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     LogError("render_sample_batch: " + m_error);
     return false;
   }
+  constexpr UINT64 kMotionUploadOffset = 4096u;
+  if (!emit_pending_instance_upload(m_cmdList.Get(), kMotionUploadOffset)) {
+    LogError("render_sample_batch: " + m_error);
+    return false;
+  }
 
   // Upload constants through the persistent upload heap and bind it as a CBV.
   // The command list is fenced before this memory is reused on the next submit.
   m_cmdList->SetComputeRootSignature(m_rootSig.Get());
 
   // Create descriptor heap for SRVs/UAVs lazily and reuse across samples.
-  // Slots: t0-t12 SRVs, u0 film, u1 LDR, u2 denoised HDR, u3/u6 guides, u4/u5 temporal.
+  // Slots: t0-t14 SRVs, u0 film, u1 LDR, u2 denoised HDR, u3/u6 guides, u4/u5 temporal.
   if (!ensure_compute_srv_uav_heap()) return false;
   D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
   const auto resolveSettings =
       vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData);
   const auto whiteBalance = vkpt::pathtracer::WhiteBalanceScale(resolveSettings.white_balance_kelvin);
+  const uint32_t effectiveRaysPerPixel =
+      fastMotionSample ? 1u : std::max(1u, m_raysPerPixelPerDispatch);
   const bool doReadback = should_readback_sample(sample_idx);
-  const bool doDenoise = doReadback && m_settings.enable_denoiser;
-  const bool doTemporal = doReadback && m_settings.enable_temporal_aa;
+  const bool doDenoise = doReadback && !fastMotionSample && m_settings.enable_denoiser;
+  const bool doTemporal = doReadback && !fastMotionSample && m_settings.enable_temporal_aa;
   const bool doGuide = doDenoise || doTemporal;
-  if (!m_settings.enable_temporal_aa) {
+  if (!m_settings.enable_temporal_aa || fastMotionSample) {
     m_temporalHistoryValid = false;
   }
   if (doDenoise && (!m_guidePso || !m_denoisePso || !m_guideBuf || !m_denoiseBuf)) {
@@ -342,7 +361,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     LogError("render_sample_batch: " + m_error);
     return false;
   }
-  pc.rays_per_pixel = std::max(1u, m_raysPerPixelPerDispatch);
+  pc.rays_per_pixel = effectiveRaysPerPixel;
   pc.exposure = resolveSettings.exposure;
   pc.tone_map = static_cast<uint32_t>(resolveSettings.tone_map);
   pc.output_transform = static_cast<uint32_t>(resolveSettings.output_transform);
@@ -602,13 +621,16 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
                + " non_black=" + (nonBlack ? "yes" : "no"));
     }
   }
-  const uint64_t rpp = static_cast<uint64_t>(std::max(1u, m_raysPerPixelPerDispatch));
+  if (m_fastMotionSamplesRemaining > 0u) {
+    --m_fastMotionSamplesRemaining;
+  }
+  const uint64_t rpp = static_cast<uint64_t>(effectiveRaysPerPixel);
   const uint64_t sampleInc = static_cast<uint64_t>(m_settings.width) * m_settings.height * rpp;
   const uint64_t raysPerSample =
       EstimateLogicalRaysPerD3D12Sample(m_settings, m_sceneData, m_usingDxrDispatch);
   m_counters.samples += sampleInc;
   m_counters.rays    += SaturatingMulU64(sampleInc, raysPerSample);
-  m_lastSampleIdx     = sample_idx * m_raysPerPixelPerDispatch + (m_raysPerPixelPerDispatch - 1u);
+  m_lastSampleIdx     = sample_idx * effectiveRaysPerPixel + (effectiveRaysPerPixel - 1u);
   if (verbose) {
     std::ostringstream en;
     en << "render_sample_batch complete frame=" << frame_idx << " sample=" << sample_idx
@@ -629,10 +651,10 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
   params[0].Descriptor.ShaderRegister = 0;
   params[0].Descriptor.RegisterSpace  = 0;
   params[0].ShaderVisibility          = D3D12_SHADER_VISIBILITY_ALL;
-  // Descriptor table (t0-t12 SRV + u0-u6 UAV at slots 13-19)
+  // Descriptor table (t0-t14 SRV + u0-u6 UAV at slots 15-21)
   D3D12_DESCRIPTOR_RANGE ranges[2]{};
   ranges[0].RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-  ranges[0].NumDescriptors     = 13;
+  ranges[0].NumDescriptors     = 15;
   ranges[0].BaseShaderRegister = 0;
   ranges[0].RegisterSpace      = 0;
   ranges[0].OffsetInDescriptorsFromTableStart = 0;
@@ -640,7 +662,7 @@ bool D3D12GpuPathTracer::create_root_sig_and_pso() {
   ranges[1].NumDescriptors     = 7; // u0 film, u1 LDR, u2 denoise, u3/u6 guides, u4/u5 temporal
   ranges[1].BaseShaderRegister = 0;
   ranges[1].RegisterSpace      = 0;
-  ranges[1].OffsetInDescriptorsFromTableStart = 13;
+  ranges[1].OffsetInDescriptorsFromTableStart = 15;
   params[1].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
   params[1].DescriptorTable.NumDescriptorRanges = 2;
   params[1].DescriptorTable.pDescriptorRanges   = ranges;

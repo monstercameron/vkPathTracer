@@ -331,6 +331,7 @@ bool D3D12GpuPathTracer::build_dxr_acceleration_structures() {
     return false;
   }
   m_dxrAccelReady = true;
+  m_dxrTlasUpdatePending = false;
   LogInfo("DXR BLAS/TLAS built: blas=" + std::to_string(m_dxrBlasBuffers.size()) +
           " tlas_instances=" + std::to_string(m_dxrInstanceDescs.size()) +
           " dynamic=" + std::to_string(m_dxrInstanceDescs.size() - (m_staticTriangleCount > 0u ? 1u : 0u)));
@@ -469,6 +470,11 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
     LogError("dispatch_dxr_rays: " + m_error);
     return false;
   }
+  constexpr UINT64 kMotionUploadOffset = 4096u;
+  if (!emit_pending_instance_upload(cl4.Get(), kMotionUploadOffset)) {
+    LogError("dispatch_dxr_rays: " + m_error);
+    return false;
+  }
 
   // Build PathTraceConstants (identical layout to compute path)
   const auto& sc = m_sceneData;
@@ -525,7 +531,13 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   const auto resolveSettings =
       vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData);
   const auto whiteBalance = vkpt::pathtracer::WhiteBalanceScale(resolveSettings.white_balance_kelvin);
-  pc.rays_per_pixel = std::max(1u, m_raysPerPixelPerDispatch);
+  const bool fastMotionSample = m_fastMotionSamplesRemaining > 0u;
+  if (fastMotionSample) {
+    pc.max_depth_f = 1.0f;
+  }
+  const uint32_t effectiveRaysPerPixel =
+      fastMotionSample ? 1u : std::max(1u, m_raysPerPixelPerDispatch);
+  pc.rays_per_pixel = effectiveRaysPerPixel;
   pc.exposure = resolveSettings.exposure;
   pc.tone_map = static_cast<uint32_t>(resolveSettings.tone_map);
   pc.output_transform = static_cast<uint32_t>(resolveSettings.output_transform);
@@ -534,10 +546,10 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   pc.white_balance_r = whiteBalance.x;
   pc.white_balance_g = whiteBalance.y;
   pc.white_balance_b = whiteBalance.z;
-  const bool doDenoise = doReadback && m_settings.enable_denoiser;
-  const bool doTemporal = doReadback && m_settings.enable_temporal_aa;
+  const bool doDenoise = doReadback && !fastMotionSample && m_settings.enable_denoiser;
+  const bool doTemporal = doReadback && !fastMotionSample && m_settings.enable_temporal_aa;
   const bool doGuide = doDenoise || doTemporal;
-  if (!m_settings.enable_temporal_aa) {
+  if (!m_settings.enable_temporal_aa || fastMotionSample) {
     m_temporalHistoryValid = false;
   }
   pc.denoiser_enabled = doDenoise ? 1u : 0u;
@@ -833,13 +845,16 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
     std::memcpy(m_ldrResolve.rgba8.data(), m_ldrReadbackPtr,
                 static_cast<size_t>(m_filmPixels) * 4u);
   }
-  const uint64_t rpp = static_cast<uint64_t>(std::max(1u, m_raysPerPixelPerDispatch));
+  if (m_fastMotionSamplesRemaining > 0u) {
+    --m_fastMotionSamplesRemaining;
+  }
+  const uint64_t rpp = static_cast<uint64_t>(effectiveRaysPerPixel);
   const uint64_t inc = static_cast<uint64_t>(m_settings.width) * m_settings.height * rpp;
   const uint64_t raysPerSample =
       EstimateLogicalRaysPerD3D12Sample(m_settings, m_sceneData, m_usingDxrDispatch);
   m_counters.samples += inc;
   m_counters.rays    += SaturatingMulU64(inc, raysPerSample);
-  m_lastSampleIdx     = sample_idx * m_raysPerPixelPerDispatch + (m_raysPerPixelPerDispatch - 1u);
+  m_lastSampleIdx     = sample_idx * effectiveRaysPerPixel + (effectiveRaysPerPixel - 1u);
   return true;
 }
 

@@ -134,7 +134,11 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
 
  private:
   struct DynamicInstanceTransformUpdateStage {
-    vkpt::pathtracer::RTSceneData scene;
+    // Mirrors only the slice of m_sceneData that can be mutated by a transform
+    // update (the instances vector). The rest of the scene snapshot —
+    // vertices, indices, materials, textures, lights, env map — is immutable
+    // for transform updates and is left untouched on the live RTSceneData.
+    std::vector<vkpt::pathtracer::RTInstance> instances;
     std::vector<uint32_t> gpu_instances;
     std::vector<float> gpu_dynamic_bvh;
     std::vector<D3D12_RAYTRACING_INSTANCE_DESC> dxr_instance_descs;
@@ -167,6 +171,8 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
                                    const std::vector<float>& gpuDynamicBvh,
                                    uint32_t firstInstance = 0u,
                                    uint32_t instanceCount = std::numeric_limits<uint32_t>::max());
+  bool emit_pending_instance_upload(ID3D12GraphicsCommandList* commandList,
+                                    UINT64 uploadOffsetBytes);
   /// Uploads material and/or light buffers for small scene deltas.
   bool upload_material_light_buffers(bool uploadMaterials, bool uploadLights);
   bool build_texture_buffers();
@@ -266,6 +272,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool        m_usingDxrDispatch = false;
   bool        m_loggedDxrFallback = false;
   bool        m_dxrAccelReady    = false;
+  bool        m_dxrTlasUpdatePending = false;
   bool        m_dxrPipelineReady = false;
   std::string m_rtHlslPath;
   // DXR resources
@@ -291,6 +298,10 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   uint32_t m_filmPixels = 0;
   uint32_t m_raysPerPixelPerDispatch = 1;
   uint32_t m_readbackInterval = 4;
+  uint32_t m_fastMotionSamplesRemaining = 0;
+  bool m_pendingInstanceUpload = false;
+  uint32_t m_pendingInstanceUploadFirst = 0u;
+  uint32_t m_pendingInstanceUploadCount = 0u;
   bool m_forceReadbackEverySample = false;
   bool m_dynamicInstanceTransformsAllowed = true;
   std::string m_dxrBuildMode = "fast_build";

@@ -10,67 +10,9 @@
 namespace vkpt::gpu {
 
 bool D3D12GpuPathTracer::reset_accumulation() {
-  if (!m_configured || !m_filmBuf || !m_clearHeap || !m_clearCpuHeap) return false;
-  // Zero the film on GPU using the persistent clear heap (avoids per-frame allocation).
-  if (!wait_for_gpu()) {
-    m_error = "reset wait_for_gpu";
-    LogError("reset_accumulation: " + m_error);
-    return false;
-  }
-  const auto res = m_cmdAllocator->Reset();
-  if (FAILED(res)) {
-    m_error = "cmd allocator reset failed hr=" + FormatHr(res);
-    LogError("reset_accumulation: " + m_error);
-    return false;
-  }
-  const auto res2 = m_cmdList->Reset(m_cmdAllocator.Get(), nullptr);
-  if (FAILED(res2)) {
-    m_error = "cmd list reset failed hr=" + FormatHr(res2);
-    LogError("reset_accumulation: " + m_error);
-    return false;
-  }
-
+  if (!m_configured || !m_filmBuf) return false;
   if (m_filmPixels == 0u) {
     m_error = "film pixel count is zero";
-    return false;
-  }
-
-  // Reuse the persistent clear heap created in create_film_buffer().
-  D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = m_clearCpuHeap->GetCPUDescriptorHandleForHeapStart();
-  D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_clearHeap->GetGPUDescriptorHandleForHeapStart();
-
-  // Transition film to unordered-access
-  D3D12_RESOURCE_BARRIER rb{};
-  rb.Type  = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  rb.Transition.pResource   = m_filmBuf.Get();
-  rb.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-  rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  rb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  m_cmdList->ResourceBarrier(1, &rb);
-  m_cmdList->SetDescriptorHeaps(1, m_clearHeap.GetAddressOf());
-  const UINT clearValues[4] = {0u, 0u, 0u, 0u};
-  m_cmdList->ClearUnorderedAccessViewUint(gpuHandle, cpuHandle, m_filmBuf.Get(),
-                                         clearValues, 0, nullptr);
-
-  rb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-  rb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
-  m_cmdList->ResourceBarrier(1, &rb);
-  const auto closeRes = m_cmdList->Close();
-  if (FAILED(closeRes)) {
-    m_error = "cmd list close failed";
-    return false;
-  }
-  ID3D12CommandList* lists[] = {m_cmdList.Get()};
-  m_cmdQueue->ExecuteCommandLists(1, lists);
-  if (!wait_for_gpu()) {
-    m_error = "reset wait_for_gpu";
-    LogError("reset_accumulation: " + m_error);
-    return false;
-  }
-  const auto removeHr = m_device->GetDeviceRemovedReason();
-  if (FAILED(removeHr)) {
-    m_error = "device removed during reset_accumulation hr=" + FormatHr(removeHr);
-    LogError("reset_accumulation: " + m_error);
     return false;
   }
 
@@ -78,11 +20,15 @@ bool D3D12GpuPathTracer::reset_accumulation() {
   m_counters = {};
   m_temporalHistoryValid = false;
   m_ldrResolve = {};
+  m_lastSampleIdx = 0u;
   LogDebug("reset_accumulation complete");
   return true;
 }
 
 bool D3D12GpuPathTracer::should_readback_sample(uint32_t sample_idx) const {
+  if (m_fastMotionSamplesRemaining > 0u) {
+    return true;
+  }
   if (m_forceReadbackEverySample) {
     return true;
   }
