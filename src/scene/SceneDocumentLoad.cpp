@@ -131,7 +131,6 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       read_string(item, "name", asset.name);
       read_u64(item, "parent", asset.parent);
       read_u32(item, "sibling_order", asset.sibling_order);
-      read_bool(item, "disable_imported_animation", asset.disable_imported_animation);
       if (const auto transformNode = item.object.find("transform"); transformNode != item.object.end()) {
         asset.has_transform = true;
         asset.transform = read_transform(transformNode->second);
@@ -359,17 +358,6 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         } else {
           entity.physics_body.body_type = entity.physics_body.dynamic ? "dynamic" : "static";
         }
-      }
-      if (const auto animNode = item.object.find("animation"); animNode != item.object.end()) {
-        read_string(animNode->second, "clip", entity.animation.clip);
-        read_bool(animNode->second, "looping", entity.animation.looping);
-        read_float(animNode->second, "duration_seconds", entity.animation.duration_seconds);
-        read_float(animNode->second, "duration", entity.animation.duration_seconds);
-        read_float(animNode->second, "playback_speed", entity.animation.playback_speed);
-        read_float(animNode->second, "speed", entity.animation.playback_speed);
-        read_vec3(animNode->second, "translation_amplitude", entity.animation.translation_amplitude);
-        read_vec3(animNode->second, "rotation_degrees", entity.animation.rotation_degrees);
-        read_vec3(animNode->second, "scale_amplitude", entity.animation.scale_amplitude);
       }
       if (const auto scriptNode = item.object.find("script"); scriptNode != item.object.end()) {
         // `path` is a legacy alias. Export normalizes the field back to `source`.
@@ -750,15 +738,6 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
          entity.light.beam_angle_degrees <= 0.0f || !std::isfinite(entity.light.blend) ||
          entity.light.blend < 0.0f)) {
       report("entity light has invalid values " + std::to_string(entity.id));
-    }
-    if (!entity.animation.clip.empty() &&
-        (!std::isfinite(entity.animation.duration_seconds) ||
-         entity.animation.duration_seconds <= 0.0f ||
-         !std::isfinite(entity.animation.playback_speed) ||
-         !finite_vec3(entity.animation.translation_amplitude) ||
-         !finite_vec3(entity.animation.rotation_degrees) ||
-         !finite_vec3(entity.animation.scale_amplitude))) {
-      report("entity animation has invalid values " + std::to_string(entity.id));
     }
   }
   for (const auto& transform : transforms) {

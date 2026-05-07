@@ -20,7 +20,6 @@ enum class AssetClass : std::uint8_t {
   Material,
   Scene,
   Shader,
-  Animation,
   BenchmarkScene,
   Unknown,
 };
@@ -67,8 +66,6 @@ inline const char* ToString(AssetClass asset_class) {
       return "scene";
     case AssetClass::Shader:
       return "shader";
-    case AssetClass::Animation:
-      return "animation";
     case AssetClass::BenchmarkScene:
       return "benchmark_scene";
     case AssetClass::Unknown:
@@ -83,7 +80,6 @@ inline AssetClass ParseAssetClass(std::string_view text) {
   if (text == "material") return AssetClass::Material;
   if (text == "scene") return AssetClass::Scene;
   if (text == "shader") return AssetClass::Shader;
-  if (text == "animation") return AssetClass::Animation;
   if (text == "benchmark_scene") return AssetClass::BenchmarkScene;
   return AssetClass::Unknown;
 }

@@ -553,12 +553,12 @@ uint32_t material_effect_from_family(std::string_view family) {
 }  // namespace
 
 vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::SceneDocument& doc) {
-  return BuildSceneDataFromDocumentAtFrame(doc, SceneParticleAnimationState{});
+  return BuildSceneDataFromDocumentAtFrame(doc, SceneParticleFrameState{});
 }
 
 vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
     const vkpt::scene::SceneDocument& doc,
-    const SceneParticleAnimationState& animation) {
+    const SceneParticleFrameState& frame_state) {
   RTSceneData scene;
   scene.camera_position = {0.0f, 1.0f, 4.0f};
   scene.camera_target = {0.0f, 1.0f, 0.0f};
@@ -716,37 +716,8 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
     return visible;
   };
 
-  std::unordered_map<vkpt::core::StableId, bool> animatedPathCache;
   std::unordered_map<vkpt::core::StableId, bool> scriptedPathCache;
-  animatedPathCache.reserve(doc.entities.size());
   scriptedPathCache.reserve(doc.entities.size());
-
-  auto entity_has_animated_transform_path =
-      [&](const vkpt::scene::SceneEntityDefinition& entity) {
-    if (const auto cached = animatedPathCache.find(entity.id); cached != animatedPathCache.end()) {
-      return cached->second;
-    }
-    bool animated = false;
-    const auto* current = &entity;
-    for (std::size_t depth = 0u; current != nullptr && depth <= doc.entities.size(); ++depth) {
-      if (const auto cached = animatedPathCache.find(current->id); cached != animatedPathCache.end()) {
-        animated = cached->second;
-        break;
-      }
-      if (!current->animation.clip.empty()) {
-        animated = true;
-        break;
-      }
-      const vkpt::core::StableId parent = current->has_hierarchy ? current->hierarchy.parent : 0u;
-      if (parent == 0u) {
-        break;
-      }
-      const auto parentIt = entityById.find(parent);
-      current = (parentIt != entityById.end()) ? parentIt->second : nullptr;
-    }
-    animatedPathCache.emplace(entity.id, animated);
-    return animated;
-  };
 
   auto entity_has_scripted_transform_path =
       [&](const vkpt::scene::SceneEntityDefinition& entity) {
@@ -836,7 +807,6 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
     const bool physicsDynamic =
         entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
     if (physicsDynamic ||
-        entity_has_animated_transform_path(entity) ||
         entity_has_scripted_transform_path(entity)) {
       add_capacity(dynamicVertexCapacity, geometry->vertices.size());
       add_capacity(dynamicIndexCapacity, geometry->indices.size());
@@ -874,10 +844,9 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
     const auto scale = transform.scale;
     const bool physics_dynamic =
         entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
-    const bool animation_dynamic = entity_has_animated_transform_path(entity);
     const bool scripted_dynamic = entity_has_scripted_transform_path(entity);
     const bool dynamic_transform =
-        physics_dynamic || animation_dynamic || scripted_dynamic;
+        physics_dynamic || scripted_dynamic;
     // Dynamic instances keep local geometry alongside world-space triangles for later refits.
     if (scene.vertices.size() >
         static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) -
@@ -1157,8 +1126,8 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
                            uint64_t seed,
                            uint32_t stream) {
     const float lifetime = emitter_lifetime(emitter);
-    const float animatedTime = emitter.time + (animation.advance_emitters ? animation.seconds : 0.0f);
-    return std::fmod(random01(seed, stream) + animatedTime / lifetime, 1.0f);
+    const float frameTime = emitter.time + (frame_state.advance_emitters ? frame_state.seconds : 0.0f);
+    return std::fmod(random01(seed, stream) + frameTime / lifetime, 1.0f);
   };
 
   auto append_rain_emitter = [&](const vkpt::scene::SceneParticleEmitterDefinition& emitter) {

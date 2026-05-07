@@ -52,7 +52,6 @@ struct SceneEntityDefinition {
   MaterialOverrideComponent material;
   HierarchyComponent hierarchy;
   PhysicsBodyComponent physics_body;
-  AnimationComponent animation;
   ScriptComponent script;
   BenchmarkTagComponent benchmark_tag;
 };
@@ -66,7 +65,6 @@ struct SceneAssetDefinition {
   std::uint32_t sibling_order = 0;
   bool has_transform = false;
   TransformComponent transform;
-  bool disable_imported_animation = false;
 };
 
 struct SceneMaterialDefinition {

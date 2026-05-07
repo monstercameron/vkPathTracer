@@ -22,7 +22,6 @@ enum class WorldSystemPhase : std::uint8_t {
   PreFrame,
   Input,
   ScriptEarly,
-  AnimationSample,
   PhysicsFixed,
   TransformAssembly,
   SceneCommandApply,
@@ -129,7 +128,6 @@ class SceneWorld : public IEcsWorld {
     std::optional<MaterialOverrideComponent> material_override;
     std::optional<PhysicsBodyComponent> physics_body;
     std::optional<ScriptComponent> script;
-    std::optional<AnimationComponent> animation;
     std::optional<BenchmarkTagComponent> benchmark_tag;
   };
 

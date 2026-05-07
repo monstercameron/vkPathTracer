@@ -332,7 +332,7 @@ struct RTSceneData {
   float camera_anamorphic_squeeze = 1.0f;
 };
 
-struct SceneParticleAnimationState {
+struct SceneParticleFrameState {
   vkpt::core::FrameIndex frame = 0;
   float seconds = 0.0f;
   float delta_seconds = 1.0f / 24.0f;
@@ -380,7 +380,6 @@ struct RTSceneDeltaUpdate {
 enum class RenderUpdateReason : std::uint8_t {
   Unknown,
   PhysicsMotion,
-  AnimationMotion,
   EditorGizmoMotion,
   ScriptTransformMotion,
   CameraMotion,
@@ -456,7 +455,6 @@ struct InstanceTransformUpdateResult {
 inline TransformFallbackPolicy DefaultTransformFallbackPolicy(RenderUpdateReason reason) {
   switch (reason) {
     case RenderUpdateReason::PhysicsMotion:
-    case RenderUpdateReason::AnimationMotion:
     case RenderUpdateReason::EditorGizmoMotion:
     case RenderUpdateReason::ScriptTransformMotion:
       return TransformFallbackPolicy::AllowDynamicAcceleration;
@@ -910,7 +908,7 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
 vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::SceneDocument& doc);
 vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
     const vkpt::scene::SceneDocument& doc,
-    const SceneParticleAnimationState& animation);
+    const SceneParticleFrameState& frame_state);
 bool SavePngCompat(const std::string& path, const FilmLdr& image, std::string* error = nullptr);
 bool SaveExrCompat(const std::string& path, const FilmHdr& image, std::string* error = nullptr);
 vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(std::vector<std::string>* diagnostics = nullptr);

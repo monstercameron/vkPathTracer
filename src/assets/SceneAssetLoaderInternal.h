@@ -46,7 +46,6 @@ struct ObjLoadResult {
   std::string source_format = "obj";
   bool has_root_transform = false;
   vkpt::scene::TransformComponent root_transform;
-  vkpt::scene::AnimationComponent animation;
 };
 
 std::string PathString(const std::filesystem::path& path);
