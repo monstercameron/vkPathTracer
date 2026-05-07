@@ -460,7 +460,8 @@ void RenderCoordinator::run(std::stop_token stop,
           ++m_stats.instance_transform_full_accel_required;
         }
         resetPublishClock = true;
-      } else if (plan.status == vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullSceneReload &&
+      } else if ((plan.status == vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullSceneReload ||
+                  plan.status == vkpt::pathtracer::InstanceTransformUpdateStatus::Unsupported) &&
                  options.fallback_policy >= vkpt::pathtracer::TransformFallbackPolicy::AllowFullSceneReload) {
         auto nextScene = scene;
         if (!vkpt::pathtracer::ApplyInstanceTransformUpdates(nextScene, updates) ||

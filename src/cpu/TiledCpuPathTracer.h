@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "cpu/ParallelBvhBuilder.h"
@@ -41,6 +42,12 @@ class TiledCpuPathTracer final : public vkpt::pathtracer::IPathTracer, public vk
   bool update_camera_state(const vkpt::pathtracer::RTCameraState& camera) override;
   bool update_instance_transforms(
       const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) override;
+  vkpt::pathtracer::InstanceTransformUpdatePlan plan_instance_transform_update(
+      std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+      const vkpt::pathtracer::InstanceTransformUpdateOptions& options) const override;
+  vkpt::pathtracer::InstanceTransformUpdateResult apply_instance_transform_update(
+      std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+      const vkpt::pathtracer::InstanceTransformUpdateOptions& options) override;
   bool update_scene_delta(const vkpt::pathtracer::RTSceneDeltaUpdate& update) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
   bool render_sample_batch_cancellable(uint32_t start_y,

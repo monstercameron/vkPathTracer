@@ -548,15 +548,13 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
   pc.temporal_feedback = 0.92f;
   pc.temporal_depth_sigma = 0.05f;
   pc.temporal_normal_power = 28.0f;
-  // DXR does not consume the compute temporal-AA constants; reuse those slots
-  // for BVH node counts so the shadow shader can skip empty acceleration trees.
-  pc.temporal_enabled = (m_staticTriangleCount > 0u)
+  pc.temporal_color_margin = 0.12f;
+  pc.static_bvh_node_count = (m_staticTriangleCount > 0u)
       ? static_cast<uint32_t>(m_gpuBvh.size() / 8u)
       : 0u;
-  pc.temporal_history_valid = (m_dynamicInstanceCount > 0u)
+  pc.dynamic_bvh_node_count = (m_dynamicInstanceCount > 0u)
       ? static_cast<uint32_t>(m_gpuDynamicBvh.size() / 8u)
       : 0u;
-  pc.temporal_color_margin = 0.12f;
   FillPreviousCameraConstants(pc, m_temporalHistoryValid ? m_temporalPrevCamera : MakeTemporalCameraState(pc));
   if (doReadback && (!m_ldrBuf || !m_ldrReadbackBuf || !m_ldrReadbackPtr || !ensure_compute_srv_uav_heap())) {
     m_error = "DXR LDR readback resources unavailable";
