@@ -256,6 +256,84 @@ bool TiledCpuPathTracer::update_instance_transforms(
   return ok;
 }
 
+vkpt::pathtracer::InstanceTransformUpdatePlan
+TiledCpuPathTracer::plan_instance_transform_update(
+    std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+    const vkpt::pathtracer::InstanceTransformUpdateOptions& /*options*/) const {
+  if (!m_initialized) {
+    return {vkpt::pathtracer::InstanceTransformUpdateStatus::Failed,
+            static_cast<std::uint32_t>(updates.size()),
+            0u,
+            "tiled CPU tracer is not initialized"};
+  }
+
+  std::uint32_t matched = 0u;
+  for (const auto& update : updates) {
+    std::uint32_t instanceIndex = update.instance_index;
+    if (instanceIndex >= m_scene.instances.size() && update.entity_id != 0u) {
+      for (std::size_t index = 0; index < m_scene.instances.size(); ++index) {
+        if (m_scene.instances[index].entity_id == update.entity_id) {
+          instanceIndex = static_cast<std::uint32_t>(index);
+          break;
+        }
+      }
+    }
+    if (instanceIndex >= m_scene.instances.size()) {
+      return {vkpt::pathtracer::InstanceTransformUpdateStatus::Failed,
+              static_cast<std::uint32_t>(updates.size()),
+              matched,
+              "tiled CPU transform update references an unknown instance"};
+    }
+    ++matched;
+  }
+
+  return {vkpt::pathtracer::InstanceTransformUpdateStatus::BlockedNeedsFullStaticAccelRebuild,
+          static_cast<std::uint32_t>(updates.size()),
+          matched,
+          "tiled CPU tracer rebuilds its shared BVH for instance transform updates"};
+}
+
+vkpt::pathtracer::InstanceTransformUpdateResult
+TiledCpuPathTracer::apply_instance_transform_update(
+    std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
+    const vkpt::pathtracer::InstanceTransformUpdateOptions& options) {
+  const auto plan = plan_instance_transform_update(updates, options);
+  if (!vkpt::pathtracer::TransformUpdateStatusAllowedByPolicy(
+          plan.status,
+          options.fallback_policy)) {
+    return {plan.status,
+            plan.requested_count,
+            0u,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            plan.message};
+  }
+
+  std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updateVec(
+      updates.begin(),
+      updates.end());
+  if (!update_instance_transforms(updateVec)) {
+    return {vkpt::pathtracer::InstanceTransformUpdateStatus::Failed,
+            static_cast<std::uint32_t>(updates.size()),
+            0u,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            "tiled CPU transform update rebuild failed"};
+  }
+  return {vkpt::pathtracer::InstanceTransformUpdateStatus::AppliedFullStaticAccelRebuild,
+          static_cast<std::uint32_t>(updates.size()),
+          static_cast<std::uint32_t>(updates.size()),
+          0.0,
+          0.0,
+          0.0,
+          static_cast<double>(m_bvhStats.build_ms),
+          "tiled CPU transform update rebuilt shared BVH"};
+}
+
 bool TiledCpuPathTracer::update_scene_delta(
     const vkpt::pathtracer::RTSceneDeltaUpdate& update) {
   if (!m_initialized) {

@@ -19,7 +19,8 @@ cbuffer PCBuf : register(b0) {
     float  iris_roundness; float anamorphic_squeeze; uint tone_map; uint output_transform;
     float  gamma; uint clamp_output; float white_balance_r; float white_balance_g;
     float  white_balance_b; uint denoiser_enabled; float denoiser_strength; float denoiser_color_sigma;
-    uint   static_bvh_node_count; uint dynamic_bvh_node_count; float _rt_pad0; float _rt_pad1;
+    uint   temporal_enabled; uint temporal_history_valid; float temporal_feedback; float temporal_depth_sigma;
+    float  temporal_normal_power; float temporal_color_margin; uint static_bvh_node_count; uint dynamic_bvh_node_count;
 };
 
 // ---- Resources -------------------------------------------------------------

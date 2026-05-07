@@ -224,7 +224,7 @@ static uint32_t dynamic_bvh_build(
   if (count <= 1u) {
     // Dynamic instance leaves encode the instance index directly. The shader
     // uses this separate top-level tree to cheaply reject unchanged static
-    // geometry while animated/physics instances move every frame.
+    // geometry while physics/script/editor instances move at runtime.
     gpu_bvh[base+6u] = as_fb(0x80000000u | refs[start].instance_index);
     gpu_bvh[base+7u] = as_fb(1u);
     return ni;

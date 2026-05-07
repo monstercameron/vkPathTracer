@@ -24,7 +24,7 @@ cbuffer PCBuf {
     float  gamma; uint clamp_output; float white_balance_r; float white_balance_g;
     float  white_balance_b; uint denoiser_enabled; float denoiser_strength; float denoiser_color_sigma;
     uint temporal_enabled; uint temporal_history_valid; float temporal_feedback; float temporal_depth_sigma;
-    float temporal_normal_power; float temporal_color_margin; float _pad0; float _pad1;
+    float temporal_normal_power; float temporal_color_margin; uint static_bvh_node_count; uint dynamic_bvh_node_count;
     float prev_camera_pos_x; float prev_camera_pos_y; float prev_camera_pos_z; float prev_fov_tan_half;
     float prev_cam_fwd_x; float prev_cam_fwd_y; float prev_cam_fwd_z; float prev_aspect;
     float prev_cam_right_x; float prev_cam_right_y; float prev_cam_right_z; float _pad2;
