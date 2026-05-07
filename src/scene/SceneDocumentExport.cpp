@@ -124,9 +124,6 @@ std::string SceneDocument::to_json(bool pretty) const {
     if (asset.has_transform) {
       item.object["transform"] = transform_value(asset.transform);
     }
-    if (asset.disable_imported_animation) {
-      item.object["disable_imported_animation"] = bool_value(true);
-    }
     assetsNode.array.push_back(std::move(item));
   }
   root.object["assets"] = std::move(assetsNode);
@@ -326,17 +323,6 @@ std::string SceneDocument::to_json(bool pretty) const {
       physicsNode.object["allow_sleeping"] = bool_value(entity.physics_body.allow_sleeping);
       physicsNode.object["continuous_collision"] = bool_value(entity.physics_body.continuous_collision);
       item.object["physics"] = std::move(physicsNode);
-    }
-    if (!entity.animation.clip.empty()) {
-      JsonValue animNode = object_value();
-      animNode.object["clip"] = string_value(entity.animation.clip);
-      animNode.object["looping"] = bool_value(entity.animation.looping);
-      animNode.object["duration_seconds"] = number_value(entity.animation.duration_seconds);
-      animNode.object["playback_speed"] = number_value(entity.animation.playback_speed);
-      animNode.object["translation_amplitude"] = vec3_value(entity.animation.translation_amplitude);
-      animNode.object["rotation_degrees"] = vec3_value(entity.animation.rotation_degrees);
-      animNode.object["scale_amplitude"] = vec3_value(entity.animation.scale_amplitude);
-      item.object["animation"] = std::move(animNode);
     }
     if (!entity.script.script.empty()) {
       JsonValue scriptNode = object_value();

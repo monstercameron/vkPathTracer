@@ -110,7 +110,6 @@ WorldSystemScheduler::WorldSystemScheduler(std::vector<WorldSystemPhase> phaseOr
   m_phaseOrder = {WorldSystemPhase::PreFrame,
                   WorldSystemPhase::Input,
                   WorldSystemPhase::ScriptEarly,
-                  WorldSystemPhase::AnimationSample,
                   WorldSystemPhase::PhysicsFixed,
                   WorldSystemPhase::TransformAssembly,
                   WorldSystemPhase::SceneCommandApply,

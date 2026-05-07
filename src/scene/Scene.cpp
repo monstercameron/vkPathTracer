@@ -236,8 +236,6 @@ std::string_view to_string(ComponentKind kind) {
       return "PhysicsBody";
     case ComponentKind::Script:
       return "Script";
-    case ComponentKind::Animation:
-      return "Animation";
     case ComponentKind::BenchmarkTag:
       return "BenchmarkTag";
     default:
@@ -251,8 +249,6 @@ std::string_view to_string(TransformAuthority authority) {
       return "BenchmarkFrozen";
     case TransformAuthority::PhysicsControlled:
       return "PhysicsControlled";
-    case TransformAuthority::AnimationControlled:
-      return "AnimationControlled";
     case TransformAuthority::ScriptControlled:
       return "ScriptControlled";
     case TransformAuthority::EditorControlled:
@@ -296,9 +292,6 @@ vkpt::core::Result<SceneWorld> SceneDocument::to_world() const {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::InvalidArgument);
     }
     if (entity.has_physics_body && !world.set_component(id, ComponentKind::PhysicsBody, entity.physics_body)) {
-      return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
-    }
-    if (!entity.animation.clip.empty() && !world.set_component(id, ComponentKind::Animation, entity.animation)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
     if (!entity.script.script.empty() && !world.set_component(id, ComponentKind::Script, entity.script)) {

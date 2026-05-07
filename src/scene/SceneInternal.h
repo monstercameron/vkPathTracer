@@ -22,8 +22,6 @@ inline uint8_t authority_rank(TransformAuthority authority) {
       return 5;
     case TransformAuthority::PhysicsControlled:
       return 4;
-    case TransformAuthority::AnimationControlled:
-      return 3;
     case TransformAuthority::ScriptControlled:
       return 2;
     case TransformAuthority::EditorControlled:

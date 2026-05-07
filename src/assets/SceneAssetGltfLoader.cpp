@@ -351,12 +351,6 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
     return result;
   }
   const auto& root = *parsed;
-  const bool has_skins = [&]() {
-    const auto* skins_node = JsonMember(root, "skins");
-    return skins_node != nullptr &&
-           skins_node->kind == vkpt::scene::JsonValue::Kind::Array &&
-           !skins_node->array.empty();
-  }();
   const auto* buffers_node = JsonMember(root, "buffers");
   const auto* buffer_views_node = JsonMember(root, "bufferViews");
   const auto* accessors_node = JsonMember(root, "accessors");
@@ -603,56 +597,6 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
     JsonReadQuatMember(node, "rotation", result.root_transform.rotation);
     JsonReadVec3Member(node, "scale", result.root_transform.scale);
     result.has_root_transform = true;
-  }
-
-  const auto* animations_node = JsonMember(root, "animations");
-  if (!has_skins &&
-      animations_node != nullptr &&
-      animations_node->kind == vkpt::scene::JsonValue::Kind::Array &&
-      !animations_node->array.empty()) {
-    const auto& animation_node = animations_node->array.front();
-    result.animation.clip = JsonStringMember(animation_node, "name", "gltf_animation");
-    result.animation.looping = true;
-    result.animation.duration_seconds = 1.0f;
-    result.animation.playback_speed = 1.0f;
-    bool has_motion = false;
-    if (const auto* samplers = JsonMember(animation_node, "samplers");
-        samplers != nullptr && samplers->kind == vkpt::scene::JsonValue::Kind::Array) {
-      for (const auto& sampler : samplers->array) {
-        if (const auto input = JsonIndexMember(sampler, "input")) {
-          std::vector<float> times;
-          std::size_t components = 0u;
-          if (GltfReadAccessorFloats(accessors, buffer_views, buffers, *input, times, &components) &&
-              components == 1u && !times.empty()) {
-            const auto max_time = *std::max_element(times.begin(), times.end());
-            if (std::isfinite(max_time) && max_time > 0.0f) {
-              result.animation.duration_seconds =
-                  std::max(result.animation.duration_seconds, max_time);
-            }
-          }
-        }
-      }
-    }
-    if (const auto* channels = JsonMember(animation_node, "channels");
-        channels != nullptr && channels->kind == vkpt::scene::JsonValue::Kind::Array) {
-      for (const auto& channel : channels->array) {
-        const auto* target = JsonMember(channel, "target");
-        const auto path = target == nullptr ? std::string{} : JsonStringMember(*target, "path");
-        if (path == "rotation") {
-          result.animation.rotation_degrees.y = 360.0f;
-          has_motion = true;
-        } else if (path == "translation") {
-          result.animation.translation_amplitude.y = 0.25f;
-          has_motion = true;
-        } else if (path == "scale") {
-          result.animation.scale_amplitude = {0.1f, 0.1f, 0.1f};
-          has_motion = true;
-        }
-      }
-    }
-    if (!has_motion) {
-      result.animation.clip.clear();
-    }
   }
 
   std::sort(result.texture_uris.begin(), result.texture_uris.end());

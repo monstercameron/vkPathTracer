@@ -328,12 +328,6 @@ bool SceneWorld::add_component(vkpt::core::StableId id, ComponentKind kind, cons
         return true;
       }
       return false;
-    case ComponentKind::Animation:
-      if (const auto* value = std::get_if<AnimationComponent>(&component)) {
-        record->animation = *value;
-        return true;
-      }
-      return false;
     case ComponentKind::BenchmarkTag:
       if (const auto* value = std::get_if<BenchmarkTagComponent>(&component)) {
         record->benchmark_tag = *value;
@@ -391,9 +385,6 @@ bool SceneWorld::remove_component(vkpt::core::StableId id, ComponentKind kind) {
       return true;
     case ComponentKind::Script:
       record->script.reset();
-      return true;
-    case ComponentKind::Animation:
-      record->animation.reset();
       return true;
     case ComponentKind::BenchmarkTag:
       record->benchmark_tag.reset();
@@ -503,11 +494,6 @@ std::vector<vkpt::core::StableId> SceneWorld::query(ComponentKind kind) const {
         break;
       case ComponentKind::Script:
         if (entity->script.has_value()) {
-          out.push_back(id);
-        }
-        break;
-      case ComponentKind::Animation:
-        if (entity->animation.has_value()) {
           out.push_back(id);
         }
         break;
