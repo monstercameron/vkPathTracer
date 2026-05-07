@@ -1,0 +1,164 @@
+{
+    "asset":  {
+                  "generator":  "glTF-Transform v4.3.0",
+                  "version":  "2.0"
+              },
+    "accessors":  [
+                      {
+                          "type":  "VEC3",
+                          "componentType":  5126,
+                          "count":  242056,
+                          "max":  [
+                                      0.9487259984016418,
+                                      0.5052310824394226,
+                                      0.6210169792175293
+                                  ],
+                          "min":  [
+                                      -0.9506080150604248,
+                                      -0.5058181285858154,
+                                      -0.6226431131362915
+                                  ],
+                          "bufferView":  0,
+                          "byteOffset":  0
+                      },
+                      {
+                          "type":  "VEC3",
+                          "componentType":  5126,
+                          "count":  242056,
+                          "bufferView":  0,
+                          "byteOffset":  12
+                      },
+                      {
+                          "type":  "VEC2",
+                          "componentType":  5126,
+                          "count":  242056,
+                          "bufferView":  0,
+                          "byteOffset":  24
+                      },
+                      {
+                          "type":  "SCALAR",
+                          "componentType":  5125,
+                          "count":  972123,
+                          "bufferView":  1,
+                          "byteOffset":  0
+                      }
+                  ],
+    "bufferViews":  [
+                        {
+                            "buffer":  0,
+                            "byteOffset":  0,
+                            "byteLength":  7745792,
+                            "byteStride":  32,
+                            "target":  34962
+                        },
+                        {
+                            "buffer":  0,
+                            "byteOffset":  7745792,
+                            "byteLength":  3888492,
+                            "target":  34963
+                        }
+                    ],
+    "samplers":  [
+                     {
+                         "magFilter":  9729,
+                         "minFilter":  9987,
+                         "wrapS":  10497,
+                         "wrapT":  10497
+                     }
+                 ],
+    "textures":  [
+                     {
+                         "source":  0,
+                         "sampler":  0
+                     },
+                     {
+                         "source":  3,
+                         "sampler":  0
+                     },
+                     {
+                         "source":  2,
+                         "sampler":  0
+                     },
+                     {
+                         "source":  1,
+                         "sampler":  0
+                     }
+                 ],
+    "images":  [
+                   {
+                       "mimeType":  "image/jpeg",
+                       "uri":  "../textures/baseColor_1.jpg"
+                   },
+                   {
+                       "mimeType":  "image/jpeg",
+                       "uri":  "../textures/metallicRoughness_1.jpg"
+                   },
+                   {
+                       "mimeType":  "image/jpeg",
+                       "uri":  "../textures/normal_1.jpg"
+                   },
+                   {
+                       "mimeType":  "image/jpeg",
+                       "uri":  "../textures/emissive_1.jpg"
+                   }
+               ],
+    "buffers":  [
+                    {
+                        "uri":  "Meshy_AI_Stacked_U_S_Army_Amm_0507155007_texture__lod2_far_r0p25.bin",
+                        "byteLength":  11634284
+                    }
+                ],
+    "materials":  [
+                      {
+                          "doubleSided":  true,
+                          "pbrMetallicRoughness":  {
+                                                       "baseColorTexture":  {
+                                                                                "index":  0
+                                                                            },
+                                                       "metallicRoughnessTexture":  {
+                                                                                        "index":  3
+                                                                                    }
+                                                   },
+                          "emissiveFactor":  [
+                                                 1,
+                                                 1,
+                                                 1
+                                             ],
+                          "emissiveTexture":  {
+                                                  "index":  1
+                                              },
+                          "normalTexture":  {
+                                                "index":  2
+                                            }
+                      }
+                  ],
+    "meshes":  [
+                   {
+                       "primitives":  [
+                                          {
+                                              "attributes":  {
+                                                                 "POSITION":  0,
+                                                                 "NORMAL":  1,
+                                                                 "TEXCOORD_0":  2
+                                                             },
+                                              "mode":  4,
+                                              "material":  0,
+                                              "indices":  3
+                                          }
+                                      ]
+                   }
+               ],
+    "nodes":  [
+                  {
+                      "mesh":  0
+                  }
+              ],
+    "scenes":  [
+                   {
+                       "nodes":  [
+                                     0
+                                 ]
+                   }
+               ],
+    "scene":  0
+}

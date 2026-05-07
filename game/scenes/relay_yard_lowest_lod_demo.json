@@ -1,0 +1,3036 @@
+{
+    "metadata":  {
+                     "schema":  "1.0",
+                     "scene_name":  "Lowest LOD Military Warehouse",
+                     "author":  "vkPathTracer",
+                     "created":  "2026-05-07",
+                     "notes":  "Generated military warehouse layout for all lod3_very_far_r0p1 game model assets. Assets are semantically scaled to human-realistic size, with vehicles on the floor, weapons and grenades on benches, concrete walls, ceiling, high-bay lights, and per-model inspection spots."
+                 },
+    "assets":  [
+                   {
+                       "id":  10000,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_5_56mm_Ammunition_Cra_0507152524_texture/lod3_very_far_r0p1/Meshy_AI_5_56mm_Ammunition_Cra_0507152524_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "5 56mm Ammunition Cra realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -13,
+                                                             1.059451,
+                                                             4.9
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.069756,
+                                                          0,
+                                                          0.997564
+                                                      ],
+                                         "scale":  [
+                                                       0.289688,
+                                                       0.289688,
+                                                       0.289688
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10001,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Black_Ops_Operator_in_0507164325_texture/lod3_very_far_r0p1/Meshy_AI_Black_Ops_Operator_in_0507164325_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Black Ops Operator in realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -4.2,
+                                                             0.890464,
+                                                             -1.4
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.156434,
+                                                          0,
+                                                          0.987688
+                                                      ],
+                                         "scale":  [
+                                                       0.937833,
+                                                       0.937833,
+                                                       0.937833
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10002,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Boho_Western_Muse_0507144919_texture/lod3_very_far_r0p1/Meshy_AI_Boho_Western_Muse_0507144919_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Boho Western Muse realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             0,
+                                                             0.84149,
+                                                             -1.2
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0,
+                                                          0,
+                                                          1
+                                                      ],
+                                         "scale":  [
+                                                       0.885172,
+                                                       0.885172,
+                                                       0.885172
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10003,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Colt_1911_Pistol_0507162945_texture/lod3_very_far_r0p1/Meshy_AI_Colt_1911_Pistol_0507162945_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Colt 1911 Pistol realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -16.2,
+                                                             0.996876,
+                                                             6.9
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.104528,
+                                                          0,
+                                                          0.994522
+                                                      ],
+                                         "scale":  [
+                                                       0.131729,
+                                                       0.131729,
+                                                       0.131729
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10004,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Comms_01_U_S_Army_Sa_0507165042_texture/lod3_very_far_r0p1/Meshy_AI_Comms_01_U_S_Army_Sa_0507165042_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Comms 01 U S Army Sa realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             7.2,
+                                                             0.986348,
+                                                             2.2
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          -0.258819,
+                                                          0,
+                                                          0.965926
+                                                      ],
+                                         "scale":  [
+                                                       0.86916,
+                                                       0.86916,
+                                                       0.86916
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10005,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Desert_Night_Assault__0507161337_texture/lod3_very_far_r0p1/Meshy_AI_Desert_Night_Assault__0507161337_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Desert Night Assault realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -14.2,
+                                                             1.131189,
+                                                             6.9
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          -0.069756,
+                                                          0,
+                                                          0.997564
+                                                      ],
+                                         "scale":  [
+                                                       0.500403,
+                                                       0.500403,
+                                                       0.500403
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10006,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Green_20_Foot_Cargo_C_0507171501_texture/lod3_very_far_r0p1/Meshy_AI_Green_20_Foot_Cargo_C_0507171501_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Green 20 Foot Cargo C realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -12.6,
+                                                             1.302423,
+                                                             -8.7
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.034899,
+                                                          0,
+                                                          0.999391
+                                                      ],
+                                         "scale":  [
+                                                       3.211694,
+                                                       3.211694,
+                                                       3.211694
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10007,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Maelstrom_12_0507163515_texture/lod3_very_far_r0p1/Meshy_AI_Maelstrom_12_0507163515_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Maelstrom 12 realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -12,
+                                                             1.054029,
+                                                             6.9
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.061049,
+                                                          0,
+                                                          0.998135
+                                                      ],
+                                         "scale":  [
+                                                       0.500208,
+                                                       0.500208,
+                                                       0.500208
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10008,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Modern_Tactical_Opera_0507150958_texture/lod3_very_far_r0p1/Meshy_AI_Modern_Tactical_Opera_0507150958_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Modern Tactical Opera realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             4.2,
+                                                             0.890574,
+                                                             -1.4
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          -0.156434,
+                                                          0,
+                                                          0.987688
+                                                      ],
+                                         "scale":  [
+                                                       0.9376,
+                                                       0.9376,
+                                                       0.9376
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10009,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Mud_Caked_6x6_Armored_0507165836_texture/lod3_very_far_r0p1/Meshy_AI_Mud_Caked_6x6_Armored_0507165836_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Mud Caked 6x6 Armored realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -2,
+                                                             1.43842,
+                                                             -8.4
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          -0.043619,
+                                                          0,
+                                                          0.999048
+                                                      ],
+                                         "scale":  [
+                                                       3.688796,
+                                                       3.688796,
+                                                       3.688796
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10010,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Nightfall_AR_15_0507162037_texture/lod3_very_far_r0p1/Meshy_AI_Nightfall_AR_15_0507162037_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Nightfall AR 15 realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -9.7,
+                                                             1.115719,
+                                                             6.9
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          -0.043619,
+                                                          0,
+                                                          0.999048
+                                                      ],
+                                         "scale":  [
+                                                       0.500214,
+                                                       0.500214,
+                                                       0.500214
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10011,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Pineapple_Grenade_0507163421_texture/lod3_very_far_r0p1/Meshy_AI_Pineapple_Grenade_0507163421_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Pineapple Grenade realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -5.9,
+                                                             0.98506,
+                                                             6.9
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0,
+                                                          0,
+                                                          1
+                                                      ],
+                                         "scale":  [
+                                                       0.068454,
+                                                       0.068454,
+                                                       0.068454
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10012,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Relic_of_Ironwood_0507161634_texture/lod3_very_far_r0p1/Meshy_AI_Relic_of_Ironwood_0507161634_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Relic of Ironwood realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -4.5,
+                                                             0.982944,
+                                                             6.9
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          -0.121869,
+                                                          0,
+                                                          0.992546
+                                                      ],
+                                         "scale":  [
+                                                       0.342327,
+                                                       0.342327,
+                                                       0.342327
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10013,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Rusty_5000W_Portable__0507153845_texture/lod3_very_far_r0p1/Meshy_AI_Rusty_5000W_Portable__0507153845_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Rusty 5000W Portable realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             15,
+                                                             0.492155,
+                                                             2.2
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          -0.087156,
+                                                          0,
+                                                          0.996195
+                                                      ],
+                                         "scale":  [
+                                                       0.605536,
+                                                       0.605536,
+                                                       0.605536
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10014,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Rusty_Vintage_Fuel_Ba_0507155907_texture/lod3_very_far_r0p1/Meshy_AI_Rusty_Vintage_Fuel_Ba_0507155907_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Rusty Vintage Fuel Ba realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             17.4,
+                                                             0.171185,
+                                                             2.6
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.069756,
+                                                          0,
+                                                          0.997564
+                                                      ],
+                                         "scale":  [
+                                                       0.47398,
+                                                       0.47398,
+                                                       0.47398
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10015,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Sabotage_Interface_Te_0507165812_texture/lod3_very_far_r0p1/Meshy_AI_Sabotage_Interface_Te_0507165812_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Sabotage Interface Te realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             11.3,
+                                                             0.835688,
+                                                             2.1
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.207912,
+                                                          0,
+                                                          0.978148
+                                                      ],
+                                         "scale":  [
+                                                       0.710696,
+                                                       0.710696,
+                                                       0.710696
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10016,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Signal_Tower_in_the_D_0507165015_texture/lod3_very_far_r0p1/Meshy_AI_Signal_Tower_in_the_D_0507165015_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Signal Tower in the D realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             17.2,
+                                                             3.405785,
+                                                             -8.4
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          -0.139173,
+                                                          0,
+                                                          0.990268
+                                                      ],
+                                         "scale":  [
+                                                       3.582005,
+                                                       3.582005,
+                                                       3.582005
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10017,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_SP5K_Night_Raider_0507162915_texture/lod3_very_far_r0p1/Meshy_AI_SP5K_Night_Raider_0507162915_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "SP5K Night Raider realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -7.6,
+                                                             1.063781,
+                                                             6.9
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.078459,
+                                                          0,
+                                                          0.996917
+                                                      ],
+                                         "scale":  [
+                                                       0.289527,
+                                                       0.289527,
+                                                       0.289527
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10018,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Stacked_U_S_Army_Amm_0507155007_texture/lod3_very_far_r0p1/Meshy_AI_Stacked_U_S_Army_Amm_0507155007_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Stacked U S Army Amm realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -17,
+                                                             0.519542,
+                                                             1.6
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.104528,
+                                                          0,
+                                                          0.994522
+                                                      ],
+                                         "scale":  [
+                                                       0.710841,
+                                                       0.710841,
+                                                       0.710841
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10019,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_Weathered_Jersey_Barr_0507153544_texture/lod3_very_far_r0p1/Meshy_AI_Weathered_Jersey_Barr_0507153544_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "Weathered Jersey Barr realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             13.3,
+                                                             0.206454,
+                                                             -2.3
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.707107,
+                                                          0,
+                                                          0.707107
+                                                      ],
+                                         "scale":  [
+                                                       0.552746,
+                                                       0.552746,
+                                                       0.552746
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10020,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_WWII_U_S_Army_Ammuni_0507160533_texture/lod3_very_far_r0p1/Meshy_AI_WWII_U_S_Army_Ammuni_0507160533_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "WWII U S Army Ammuni realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             -11,
+                                                             1.07687,
+                                                             4.9
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          -0.087156,
+                                                          0,
+                                                          0.996195
+                                                      ],
+                                         "scale":  [
+                                                       0.342937,
+                                                       0.342937,
+                                                       0.342937
+                                                   ]
+                                     }
+                   },
+                   {
+                       "id":  10021,
+                       "type":  "model/gltf",
+                       "uri":  "../models/lods/Meshy_AI_WWII_US_Army_2_5_Ton__0507154947_texture/lod3_very_far_r0p1/Meshy_AI_WWII_US_Army_2_5_Ton__0507154947_texture__lod3_very_far_r0p1.gltf",
+                       "name":  "WWII US Army 2 5 Ton realistic lowest LOD",
+                       "transform":  {
+                                         "translation":  [
+                                                             9.8,
+                                                             1.584909,
+                                                             -8.2
+                                                         ],
+                                         "rotation":  [
+                                                          0,
+                                                          0.069756,
+                                                          0,
+                                                          0.997564
+                                                      ],
+                                         "scale":  [
+                                                       3.372262,
+                                                       3.372262,
+                                                       3.372262
+                                                   ]
+                                     }
+                   }
+               ],
+    "materials":  [
+                      {
+                          "id":  9001,
+                          "name":  "sealed warehouse concrete",
+                          "family":  "diffuse",
+                          "albedo":  [
+                                         0.26,
+                                         0.27,
+                                         0.25
+                                     ],
+                          "roughness":  0.92,
+                          "metallic":  0,
+                          "double_sided":  true
+                      },
+                      {
+                          "id":  9002,
+                          "name":  "painted reinforced concrete wall",
+                          "family":  "diffuse",
+                          "albedo":  [
+                                         0.43,
+                                         0.45,
+                                         0.43
+                                     ],
+                          "roughness":  0.86,
+                          "metallic":  0,
+                          "double_sided":  true
+                      },
+                      {
+                          "id":  9003,
+                          "name":  "dark corrugated warehouse ceiling",
+                          "family":  "diffuse",
+                          "albedo":  [
+                                         0.23,
+                                         0.24,
+                                         0.25
+                                     ],
+                          "roughness":  0.82,
+                          "metallic":  0.05,
+                          "double_sided":  true
+                      },
+                      {
+                          "id":  9004,
+                          "name":  "dark parkerized steel fixtures",
+                          "family":  "metallic",
+                          "albedo":  [
+                                         0.22,
+                                         0.23,
+                                         0.23
+                                     ],
+                          "roughness":  0.55,
+                          "metallic":  0.65,
+                          "double_sided":  true
+                      },
+                      {
+                          "id":  9005,
+                          "name":  "rough military wood pallet",
+                          "family":  "rough_wood",
+                          "albedo":  [
+                                         0.42,
+                                         0.3,
+                                         0.18
+                                     ],
+                          "roughness":  0.82,
+                          "metallic":  0,
+                          "double_sided":  true
+                      },
+                      {
+                          "id":  9006,
+                          "name":  "worn safety yellow floor paint",
+                          "family":  "diffuse",
+                          "albedo":  [
+                                         0.95,
+                                         0.68,
+                                         0.12
+                                     ],
+                          "roughness":  0.72,
+                          "metallic":  0,
+                          "double_sided":  true
+                      },
+                      {
+                          "id":  9007,
+                          "name":  "cool white high bay diffuser",
+                          "family":  "emissive",
+                          "albedo":  [
+                                         0.88,
+                                         0.95,
+                                         1
+                                     ],
+                          "emission":  [
+                                           0.75,
+                                           0.86,
+                                           1
+                                       ],
+                          "emission_intensity":  28,
+                          "roughness":  0.25,
+                          "double_sided":  true
+                      }
+                  ],
+    "geometry":  [
+                     {
+                         "id":  9101,
+                         "primitive":  "triangle",
+                         "material_id":  9001,
+                         "vertices":  [
+                                          [
+                                              -0.5,
+                                              -0.5,
+                                              -0.5
+                                          ],
+                                          [
+                                              0.5,
+                                              -0.5,
+                                              -0.5
+                                          ],
+                                          [
+                                              0.5,
+                                              0.5,
+                                              -0.5
+                                          ],
+                                          [
+                                              -0.5,
+                                              0.5,
+                                              -0.5
+                                          ],
+                                          [
+                                              -0.5,
+                                              -0.5,
+                                              0.5
+                                          ],
+                                          [
+                                              0.5,
+                                              -0.5,
+                                              0.5
+                                          ],
+                                          [
+                                              0.5,
+                                              0.5,
+                                              0.5
+                                          ],
+                                          [
+                                              -0.5,
+                                              0.5,
+                                              0.5
+                                          ]
+                                      ],
+                         "indices":  [
+                                         0,
+                                         1,
+                                         2,
+                                         0,
+                                         2,
+                                         3,
+                                         4,
+                                         6,
+                                         5,
+                                         4,
+                                         7,
+                                         6,
+                                         0,
+                                         4,
+                                         5,
+                                         0,
+                                         5,
+                                         1,
+                                         3,
+                                         2,
+                                         6,
+                                         3,
+                                         6,
+                                         7,
+                                         1,
+                                         5,
+                                         6,
+                                         1,
+                                         6,
+                                         2,
+                                         0,
+                                         3,
+                                         7,
+                                         0,
+                                         7,
+                                         4
+                                     ]
+                     }
+                 ],
+    "entities":  [
+                     {
+                         "id":  9200,
+                         "name":  "Large military warehouse concrete floor",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               -0.05,
+                                                               0
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         44,
+                                                         0.1,
+                                                         32
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9001
+                                  }
+                     },
+                     {
+                         "id":  9201,
+                         "name":  "Rear reinforced concrete wall",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               3.55,
+                                                               -16
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         44,
+                                                         7.1,
+                                                         0.22
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9002
+                                  }
+                     },
+                     {
+                         "id":  9202,
+                         "name":  "Left reinforced concrete wall",
+                         "transform":  {
+                                           "translation":  [
+                                                               -22,
+                                                               3.55,
+                                                               0
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.22,
+                                                         7.1,
+                                                         32
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9002
+                                  }
+                     },
+                     {
+                         "id":  9203,
+                         "name":  "Right reinforced concrete wall",
+                         "transform":  {
+                                           "translation":  [
+                                                               22,
+                                                               3.55,
+                                                               0
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.22,
+                                                         7.1,
+                                                         32
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9002
+                                  }
+                     },
+                     {
+                         "id":  9204,
+                         "name":  "Warehouse ceiling slab",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               7.15,
+                                                               0
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         44,
+                                                         0.22,
+                                                         32
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9003
+                                  }
+                     },
+                     {
+                         "id":  9205,
+                         "name":  "Open loading bay left column",
+                         "transform":  {
+                                           "translation":  [
+                                                               -18.5,
+                                                               3,
+                                                               15.9
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.8,
+                                                         6,
+                                                         0.32
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9002
+                                  }
+                     },
+                     {
+                         "id":  9206,
+                         "name":  "Open loading bay right column",
+                         "transform":  {
+                                           "translation":  [
+                                                               18.5,
+                                                               3,
+                                                               15.9
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.8,
+                                                         6,
+                                                         0.32
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9002
+                                  }
+                     },
+                     {
+                         "id":  9207,
+                         "name":  "Open loading bay header",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               6.45,
+                                                               15.9
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         37.8,
+                                                         0.7,
+                                                         0.32
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9002
+                                  }
+                     },
+                     {
+                         "id":  9208,
+                         "name":  "Center vehicle lane safety stripe",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               0.01,
+                                                               -2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1.1,
+                                                         0.025,
+                                                         25
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9006
+                                  }
+                     },
+                     {
+                         "id":  9209,
+                         "name":  "Left vehicle lane safety stripe",
+                         "transform":  {
+                                           "translation":  [
+                                                               -7.4,
+                                                               0.01,
+                                                               -2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.28,
+                                                         0.025,
+                                                         25
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9006
+                                  }
+                     },
+                     {
+                         "id":  9210,
+                         "name":  "Right vehicle lane safety stripe",
+                         "transform":  {
+                                           "translation":  [
+                                                               7.4,
+                                                               0.01,
+                                                               -2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.28,
+                                                         0.025,
+                                                         25
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9006
+                                  }
+                     },
+                     {
+                         "id":  9220,
+                         "name":  "front weapons inspection bench steel tabletop",
+                         "transform":  {
+                                           "translation":  [
+                                                               -11,
+                                                               0.86,
+                                                               6.9
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         11.8,
+                                                         0.1,
+                                                         1.35
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9004
+                                  }
+                     },
+                     {
+                         "id":  9221,
+                         "name":  "front weapons inspection bench left front leg",
+                         "transform":  {
+                                           "translation":  [
+                                                               -15.956,
+                                                               0.42,
+                                                               6.414
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.12,
+                                                         0.84,
+                                                         0.12
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9004
+                                  }
+                     },
+                     {
+                         "id":  9222,
+                         "name":  "front weapons inspection bench right front leg",
+                         "transform":  {
+                                           "translation":  [
+                                                               -6.044,
+                                                               0.42,
+                                                               6.414
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.12,
+                                                         0.84,
+                                                         0.12
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9004
+                                  }
+                     },
+                     {
+                         "id":  9223,
+                         "name":  "front weapons inspection bench left rear leg",
+                         "transform":  {
+                                           "translation":  [
+                                                               -15.956,
+                                                               0.42,
+                                                               7.386
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.12,
+                                                         0.84,
+                                                         0.12
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9004
+                                  }
+                     },
+                     {
+                         "id":  9224,
+                         "name":  "front weapons inspection bench right rear leg",
+                         "transform":  {
+                                           "translation":  [
+                                                               -6.044,
+                                                               0.42,
+                                                               7.386
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.12,
+                                                         0.84,
+                                                         0.12
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9004
+                                  }
+                     },
+                     {
+                         "id":  9230,
+                         "name":  "ammo inventory bench steel tabletop",
+                         "transform":  {
+                                           "translation":  [
+                                                               -11.9,
+                                                               0.86,
+                                                               4.9
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         4.8,
+                                                         0.1,
+                                                         1.35
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9004
+                                  }
+                     },
+                     {
+                         "id":  9231,
+                         "name":  "ammo inventory bench left front leg",
+                         "transform":  {
+                                           "translation":  [
+                                                               -13.916,
+                                                               0.42,
+                                                               4.414
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.12,
+                                                         0.84,
+                                                         0.12
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9004
+                                  }
+                     },
+                     {
+                         "id":  9232,
+                         "name":  "ammo inventory bench right front leg",
+                         "transform":  {
+                                           "translation":  [
+                                                               -9.884,
+                                                               0.42,
+                                                               4.414
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.12,
+                                                         0.84,
+                                                         0.12
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9004
+                                  }
+                     },
+                     {
+                         "id":  9233,
+                         "name":  "ammo inventory bench left rear leg",
+                         "transform":  {
+                                           "translation":  [
+                                                               -13.916,
+                                                               0.42,
+                                                               5.386
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.12,
+                                                         0.84,
+                                                         0.12
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9004
+                                  }
+                     },
+                     {
+                         "id":  9234,
+                         "name":  "ammo inventory bench right rear leg",
+                         "transform":  {
+                                           "translation":  [
+                                                               -9.884,
+                                                               0.42,
+                                                               5.386
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         0.12,
+                                                         0.84,
+                                                         0.12
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9004
+                                  }
+                     },
+                     {
+                         "id":  9240,
+                         "name":  "ammo stack pallet",
+                         "transform":  {
+                                           "translation":  [
+                                                               -17,
+                                                               0.08,
+                                                               1.6
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         2.4,
+                                                         0.16,
+                                                         1.6
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9005
+                                  }
+                     },
+                     {
+                         "id":  9241,
+                         "name":  "comms equipment pallet",
+                         "transform":  {
+                                           "translation":  [
+                                                               7.2,
+                                                               0.08,
+                                                               2.2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         2.2,
+                                                         0.16,
+                                                         1.8
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9005
+                                  }
+                     },
+                     {
+                         "id":  9242,
+                         "name":  "sabotage terminal pallet",
+                         "transform":  {
+                                           "translation":  [
+                                                               11.3,
+                                                               0.08,
+                                                               2.1
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1.8,
+                                                         0.16,
+                                                         1.5
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9005
+                                  }
+                     },
+                     {
+                         "id":  9243,
+                         "name":  "generator pallet",
+                         "transform":  {
+                                           "translation":  [
+                                                               15,
+                                                               0.08,
+                                                               2.2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         2,
+                                                         0.16,
+                                                         1.5
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9005
+                                  }
+                     },
+                     {
+                         "id":  9260,
+                         "name":  "high bay emissive ceiling panel 9260",
+                         "transform":  {
+                                           "translation":  [
+                                                               -13.5,
+                                                               6.96,
+                                                               -10.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         5.6,
+                                                         0.04,
+                                                         0.62
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9007
+                                  }
+                     },
+                     {
+                         "id":  9400,
+                         "name":  "high bay warehouse spot 9400",
+                         "transform":  {
+                                           "translation":  [
+                                                               -13.5,
+                                                               6.75,
+                                                               -10.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.92,
+                                                     0.96,
+                                                     1
+                                                 ],
+                                       "intensity":  520,
+                                       "radius":  0.7,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         0.03
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.78
+                                   }
+                     },
+                     {
+                         "id":  9261,
+                         "name":  "high bay emissive ceiling panel 9261",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               6.96,
+                                                               -10.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         5.6,
+                                                         0.04,
+                                                         0.62
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9007
+                                  }
+                     },
+                     {
+                         "id":  9401,
+                         "name":  "high bay warehouse spot 9401",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               6.75,
+                                                               -10.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.92,
+                                                     0.96,
+                                                     1
+                                                 ],
+                                       "intensity":  520,
+                                       "radius":  0.7,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         0.03
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.78
+                                   }
+                     },
+                     {
+                         "id":  9262,
+                         "name":  "high bay emissive ceiling panel 9262",
+                         "transform":  {
+                                           "translation":  [
+                                                               13.5,
+                                                               6.96,
+                                                               -10.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         5.6,
+                                                         0.04,
+                                                         0.62
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9007
+                                  }
+                     },
+                     {
+                         "id":  9402,
+                         "name":  "high bay warehouse spot 9402",
+                         "transform":  {
+                                           "translation":  [
+                                                               13.5,
+                                                               6.75,
+                                                               -10.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.92,
+                                                     0.96,
+                                                     1
+                                                 ],
+                                       "intensity":  520,
+                                       "radius":  0.7,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         0.03
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.78
+                                   }
+                     },
+                     {
+                         "id":  9263,
+                         "name":  "high bay emissive ceiling panel 9263",
+                         "transform":  {
+                                           "translation":  [
+                                                               -13.5,
+                                                               6.96,
+                                                               -2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         5.6,
+                                                         0.04,
+                                                         0.62
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9007
+                                  }
+                     },
+                     {
+                         "id":  9403,
+                         "name":  "high bay warehouse spot 9403",
+                         "transform":  {
+                                           "translation":  [
+                                                               -13.5,
+                                                               6.75,
+                                                               -2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.92,
+                                                     0.96,
+                                                     1
+                                                 ],
+                                       "intensity":  520,
+                                       "radius":  0.7,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         0.03
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.78
+                                   }
+                     },
+                     {
+                         "id":  9264,
+                         "name":  "high bay emissive ceiling panel 9264",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               6.96,
+                                                               -2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         5.6,
+                                                         0.04,
+                                                         0.62
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9007
+                                  }
+                     },
+                     {
+                         "id":  9404,
+                         "name":  "high bay warehouse spot 9404",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               6.75,
+                                                               -2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.92,
+                                                     0.96,
+                                                     1
+                                                 ],
+                                       "intensity":  520,
+                                       "radius":  0.7,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         0.03
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.78
+                                   }
+                     },
+                     {
+                         "id":  9265,
+                         "name":  "high bay emissive ceiling panel 9265",
+                         "transform":  {
+                                           "translation":  [
+                                                               13.5,
+                                                               6.96,
+                                                               -2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         5.6,
+                                                         0.04,
+                                                         0.62
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9007
+                                  }
+                     },
+                     {
+                         "id":  9405,
+                         "name":  "high bay warehouse spot 9405",
+                         "transform":  {
+                                           "translation":  [
+                                                               13.5,
+                                                               6.75,
+                                                               -2
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.92,
+                                                     0.96,
+                                                     1
+                                                 ],
+                                       "intensity":  520,
+                                       "radius":  0.7,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         0.03
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.78
+                                   }
+                     },
+                     {
+                         "id":  9266,
+                         "name":  "high bay emissive ceiling panel 9266",
+                         "transform":  {
+                                           "translation":  [
+                                                               -13.5,
+                                                               6.96,
+                                                               6.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         5.6,
+                                                         0.04,
+                                                         0.62
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9007
+                                  }
+                     },
+                     {
+                         "id":  9406,
+                         "name":  "high bay warehouse spot 9406",
+                         "transform":  {
+                                           "translation":  [
+                                                               -13.5,
+                                                               6.75,
+                                                               6.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.92,
+                                                     0.96,
+                                                     1
+                                                 ],
+                                       "intensity":  520,
+                                       "radius":  0.7,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         0.03
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.78
+                                   }
+                     },
+                     {
+                         "id":  9267,
+                         "name":  "high bay emissive ceiling panel 9267",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               6.96,
+                                                               6.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         5.6,
+                                                         0.04,
+                                                         0.62
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9007
+                                  }
+                     },
+                     {
+                         "id":  9407,
+                         "name":  "high bay warehouse spot 9407",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               6.75,
+                                                               6.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.92,
+                                                     0.96,
+                                                     1
+                                                 ],
+                                       "intensity":  520,
+                                       "radius":  0.7,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         0.03
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.78
+                                   }
+                     },
+                     {
+                         "id":  9268,
+                         "name":  "high bay emissive ceiling panel 9268",
+                         "transform":  {
+                                           "translation":  [
+                                                               13.5,
+                                                               6.96,
+                                                               6.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         5.6,
+                                                         0.04,
+                                                         0.62
+                                                     ]
+                                       },
+                         "mesh":  {
+                                      "mesh_id":  9101,
+                                      "material_id":  9007
+                                  }
+                     },
+                     {
+                         "id":  9408,
+                         "name":  "high bay warehouse spot 9408",
+                         "transform":  {
+                                           "translation":  [
+                                                               13.5,
+                                                               6.75,
+                                                               6.5
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.92,
+                                                     0.96,
+                                                     1
+                                                 ],
+                                       "intensity":  520,
+                                       "radius":  0.7,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         0.03
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.78
+                                   }
+                     },
+                     {
+                         "id":  9500,
+                         "name":  "5 56mm Ammunition Cra overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -13,
+                                                               2.648476,
+                                                               5.35
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  210,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  40,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9501,
+                         "name":  "Black Ops Operator in overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -4.2,
+                                                               3.23,
+                                                               -0.95
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  360,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  52,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9502,
+                         "name":  "Boho Western Muse overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               3.13,
+                                                               -0.75
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  360,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  52,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9503,
+                         "name":  "Colt 1911 Pistol overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -16.2,
+                                                               2.523835,
+                                                               7.35
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  210,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  40,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9504,
+                         "name":  "Comms 01 U S Army Sa overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               7.2,
+                                                               3.26,
+                                                               2.65
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  360,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  52,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9505,
+                         "name":  "Desert Night Assault overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -14.2,
+                                                               2.791637,
+                                                               7.35
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  210,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  40,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9506,
+                         "name":  "Green 20 Foot Cargo C overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -12.6,
+                                                               4.047021,
+                                                               -8.25
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  620,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  64,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9507,
+                         "name":  "Maelstrom 12 overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -12,
+                                                               2.636578,
+                                                               7.35
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  210,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  40,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9508,
+                         "name":  "Modern Tactical Opera overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               4.2,
+                                                               3.23,
+                                                               -0.95
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  360,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  52,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9509,
+                         "name":  "Mud Caked 6x6 Armored overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -2,
+                                                               4.333215,
+                                                               -7.95
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  620,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  64,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9510,
+                         "name":  "Nightfall AR 15 overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -9.7,
+                                                               2.760168,
+                                                               7.35
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  210,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  40,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9511,
+                         "name":  "Pineapple Grenade overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -5.9,
+                                                               2.5,
+                                                               7.35
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  210,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  40,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9512,
+                         "name":  "Relic of Ironwood overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -4.5,
+                                                               2.495761,
+                                                               7.35
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  210,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  40,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9513,
+                         "name":  "Rusty 5000W Portable overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               15,
+                                                               2.4,
+                                                               2.65
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  360,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  52,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9514,
+                         "name":  "Rusty Vintage Fuel Ba overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               17.4,
+                                                               2.4,
+                                                               3.05
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  360,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  52,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9515,
+                         "name":  "Sabotage Interface Te overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               11.3,
+                                                               2.96,
+                                                               2.55
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  360,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  52,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9516,
+                         "name":  "Signal Tower in the D overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               17.2,
+                                                               6.45,
+                                                               -7.95
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  620,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  64,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9517,
+                         "name":  "SP5K Night Raider overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -7.6,
+                                                               2.657344,
+                                                               7.35
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  210,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  40,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9518,
+                         "name":  "Stacked U S Army Amm overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -17,
+                                                               2.4,
+                                                               2.05
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  360,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  52,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9519,
+                         "name":  "Weathered Jersey Barr overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               13.3,
+                                                               2.4,
+                                                               -1.85
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  360,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  52,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9520,
+                         "name":  "WWII U S Army Ammuni overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               -11,
+                                                               2.683463,
+                                                               5.35
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  210,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  40,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9521,
+                         "name":  "WWII US Army 2 5 Ton overhead inspection spot",
+                         "transform":  {
+                                           "translation":  [
+                                                               9.8,
+                                                               4.609334,
+                                                               -7.75
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.96,
+                                                     0.88
+                                                 ],
+                                       "intensity":  620,
+                                       "radius":  0.35,
+                                       "direction":  [
+                                                         0,
+                                                         -1,
+                                                         -0.18
+                                                     ],
+                                       "beam_angle_degrees":  64,
+                                       "blend":  0.7
+                                   }
+                     },
+                     {
+                         "id":  9700,
+                         "name":  "loading bay warm flood left",
+                         "transform":  {
+                                           "translation":  [
+                                                               -12,
+                                                               5.7,
+                                                               12.8
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.82,
+                                                     0.58
+                                                 ],
+                                       "intensity":  280,
+                                       "radius":  0.6,
+                                       "direction":  [
+                                                         0.25,
+                                                         -1,
+                                                         -0.65
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.74
+                                   }
+                     },
+                     {
+                         "id":  9701,
+                         "name":  "loading bay cool flood right",
+                         "transform":  {
+                                           "translation":  [
+                                                               12,
+                                                               5.7,
+                                                               12.8
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.72,
+                                                     0.84,
+                                                     1
+                                                 ],
+                                       "intensity":  260,
+                                       "radius":  0.6,
+                                       "direction":  [
+                                                         -0.25,
+                                                         -1,
+                                                         -0.65
+                                                     ],
+                                       "beam_angle_degrees":  68,
+                                       "blend":  0.74
+                                   }
+                     },
+                     {
+                         "id":  9702,
+                         "name":  "rear wall vehicle rim left",
+                         "transform":  {
+                                           "translation":  [
+                                                               -15.5,
+                                                               5.9,
+                                                               -14.4
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     0.58,
+                                                     0.68,
+                                                     1
+                                                 ],
+                                       "intensity":  180,
+                                       "radius":  0.5,
+                                       "direction":  [
+                                                         0.35,
+                                                         -0.9,
+                                                         0.45
+                                                     ],
+                                       "beam_angle_degrees":  60,
+                                       "blend":  0.66
+                                   }
+                     },
+                     {
+                         "id":  9703,
+                         "name":  "rear wall vehicle rim right",
+                         "transform":  {
+                                           "translation":  [
+                                                               15.5,
+                                                               5.9,
+                                                               -14.4
+                                                           ],
+                                           "rotation":  [
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            1
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "light":  {
+                                       "type":  "spot",
+                                       "color":  [
+                                                     1,
+                                                     0.62,
+                                                     0.32
+                                                 ],
+                                       "intensity":  180,
+                                       "radius":  0.5,
+                                       "direction":  [
+                                                         -0.35,
+                                                         -0.9,
+                                                         0.45
+                                                     ],
+                                       "beam_angle_degrees":  60,
+                                       "blend":  0.66
+                                   }
+                     },
+                     {
+                         "id":  9800,
+                         "name":  "Warehouse ambient fill",
+                         "light":  {
+                                       "type":  "environment",
+                                       "color":  [
+                                                     0.09,
+                                                     0.1,
+                                                     0.105
+                                                 ],
+                                       "intensity":  1.25,
+                                       "radius":  0
+                                   }
+                     },
+                     {
+                         "id":  9900,
+                         "name":  "Main warehouse camera",
+                         "transform":  {
+                                           "translation":  [
+                                                               0,
+                                                               4.9,
+                                                               17.8
+                                                           ],
+                                           "rotation":  [
+                                                            -0.095846,
+                                                            0,
+                                                            0,
+                                                            0.995396
+                                                        ],
+                                           "scale":  [
+                                                         1,
+                                                         1,
+                                                         1
+                                                     ]
+                                       },
+                         "camera":  {
+                                        "fov":  64,
+                                        "near_plane":  0.05,
+                                        "far_plane":  180,
+                                        "focus_distance":  16,
+                                        "f_stop":  7,
+                                        "exposure_compensation":  2.35
+                                    }
+                     }
+                 ],
+    "cameras":  [
+                    {
+                        "id":  9900,
+                        "name":  "Main warehouse camera",
+                        "fov":  64,
+                        "near_plane":  0.05,
+                        "far_plane":  180,
+                        "focus_distance":  16,
+                        "f_stop":  7,
+                        "exposure_compensation":  2.35
+                    }
+                ],
+    "benchmark":  {
+                      "enabled":  true,
+                      "frame_target":  48,
+                      "warmup_frames":  4
+                  }
+}

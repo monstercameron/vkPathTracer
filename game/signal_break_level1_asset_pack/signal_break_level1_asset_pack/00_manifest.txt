@@ -1,0 +1,13 @@
+Signal Break — Level 1 Asset Reference Pack
+
+Contents:
+- 00_remaining_asset_sheet: generated overview sheet for the remaining Level 1 assets.
+- 01_characters: existing individual character references generated during the session.
+- 02_weapons: existing individual weapon references generated during the session.
+- 03_pickups: existing pickup references generated during the session.
+- 04_objectives_comms: objective/comms references, including the terminal control box, comms tower, satellite dish.
+- 05_environment_cover: cover, vehicle, crate, barrier, and prop references generated during the session.
+- 06_remaining_section_crops: enlarged section crops and individual crops from the remaining-assets overview sheet.
+
+Note:
+The remaining assets were generated as a consolidated overview sheet rather than separate high-detail single-asset renders. I included section and item crops so the zip is easier to browse and use as reference, but the highest-detail single-asset images are the ones in folders 01 through 05.
