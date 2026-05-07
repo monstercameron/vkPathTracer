@@ -229,7 +229,7 @@ EditorCommand MakeMenuCommand(std::string_view action_id, std::string_view sourc
              action_id == "scene.hot_reload_scripts" || action_id == "scene.scene_settings" ||
              action_id == "scene.lighting_settings" || action_id == "scene.environment_settings" ||
              action_id == "scene.camera_settings" || action_id == "scene.physics_settings" ||
-             action_id == "scene.script_settings" || action_id == "scene.animation_settings" ||
+             action_id == "scene.script_settings" ||
              action_id == "edit.reparent_selection" ||
               action_id.starts_with("view.") || action_id.starts_with("render.") ||
               action_id.starts_with("tools.") || action_id.starts_with("help.") ||

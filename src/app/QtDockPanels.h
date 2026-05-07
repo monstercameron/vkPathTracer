@@ -25,9 +25,8 @@ inline constexpr std::uint32_t kQtSceneTreeFilterModel = 1u << 2u;
 inline constexpr std::uint32_t kQtSceneTreeFilterSdf = 1u << 3u;
 inline constexpr std::uint32_t kQtSceneTreeFilterPhysics = 1u << 4u;
 inline constexpr std::uint32_t kQtSceneTreeFilterScript = 1u << 5u;
-inline constexpr std::uint32_t kQtSceneTreeFilterAnimation = 1u << 6u;
-inline constexpr std::uint32_t kQtSceneTreeFilterEntity = 1u << 7u;
-inline constexpr std::uint32_t kQtSceneTreeFilterParticle = 1u << 8u;
+inline constexpr std::uint32_t kQtSceneTreeFilterEntity = 1u << 6u;
+inline constexpr std::uint32_t kQtSceneTreeFilterParticle = 1u << 7u;
 
 struct QtDockProperty {
   std::string id;

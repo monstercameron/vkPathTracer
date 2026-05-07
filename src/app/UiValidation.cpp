@@ -178,7 +178,7 @@ bool RunUiModelSmokeTests() {
     "scene.validate_scene", "scene.freeze_benchmark_snapshot", "scene.reset_accumulation",
     "scene.reload_scene", "scene.reload_assets", "scene.hot_reload_scripts", "scene.scene_settings",
     "scene.lighting_settings", "scene.environment_settings", "scene.camera_settings",
-    "scene.physics_settings", "scene.script_settings", "scene.animation_settings"
+    "scene.physics_settings", "scene.script_settings"
   });
   has_menu_items(menu, "render", {
     "render.start_render", "render.backend", "render.renderer_path", "render.quality_presets", "render.resolution",

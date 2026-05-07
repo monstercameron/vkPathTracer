@@ -407,7 +407,7 @@
                 updates,
                 vkpt::pathtracer::InstanceTransformUpdateOptions{
                     vkpt::pathtracer::RenderUpdateReason::PhysicsMotion,
-                    vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
+                    vkpt::pathtracer::TransformFallbackPolicy::AllowFullSceneReload,
                     true,
                     true,
                     false,
@@ -485,11 +485,12 @@
           }
         }
 
+        double physicsExtractMs = 0.0;
+        std::vector<vkpt::physics::PhysicsTransformWrite> physicsWrites;
         if (stepped) {
           bool sceneChanged = false;
-          double physicsExtractMs = 0.0;
           const auto extractStart = std::chrono::steady_clock::now();
-          const auto physicsWrites = qtPhysics->extract_transform_writes();
+          physicsWrites = qtPhysics->extract_transform_writes();
           physicsExtractMs = std::chrono::duration<double, std::milli>(
                                  std::chrono::steady_clock::now() - extractStart)
                                  .count();
@@ -583,9 +584,17 @@
             qtPhysicsSceneReloadMs = qtPhysicsSceneReloadMs <= 0.0
                 ? publishMs
                 : (qtPhysicsSceneReloadMs * 0.75 + publishMs * 0.25);
-            qtPhysicsTransformUpdateSupported = false;
-            qtPreviewStatus = "physics transform update blocked";
-            ui_runtime_state.status_message = "physics transform update blocked";
+            if (qtReloadEditedScene("physics simulation")) {
+              qtPhysicsScenePublishPending = false;
+              qtPendingPhysicsInstanceUpdates.clear();
+              qtPhysicsTransformUpdateSupported = false;
+              qtPreviewStatus = "physics simulation";
+              ui_runtime_state.status_message = "physics simulation";
+            } else {
+              qtPhysicsTransformUpdateSupported = false;
+              qtPreviewStatus = "physics transform update blocked";
+              ui_runtime_state.status_message = "physics transform update blocked";
+            }
           }
           const auto slowNow = std::chrono::steady_clock::now();
           if ((physicsStepMs > 4.0 || physicsExtractMs > 2.0 || physicsWrites.size() > 64u) &&

@@ -333,9 +333,31 @@
         qtFpsCollisionWorker.submit(request);
         qtFpsPlayer.jump_queued = false;
       };
+      (void)qtApplyContinuousOrbitCameraMovement;
+      (void)qtApplyContinuousFpsMovement;
       qtSetFpsMode = [&](bool enabled,
                          vkpt::core::FrameIndex frameIndex,
                          std::string_view source) {
+        if (enabled) {
+          qtFpsMode = false;
+          qtFpsPlayer = {};
+          qtDiscardFpsMovementResults();
+          qtSetViewportMouseLocked(false);
+          qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
+          ui_runtime_state.active_viewport_tool = vkpt::editor::ViewportTool::Select;
+          ui_runtime_state.status_message = "fps movement disabled in static mode";
+          PushUiEvent(ui_event_log,
+                      "viewport_camera_mode",
+                      "viewport",
+                      std::string(source),
+                      frameIndex,
+                      {},
+                      "disabled",
+                      ui_runtime_state.status_message);
+          qtDockPanelsDirty = true;
+          updateQtSelectionOverlay();
+          return;
+        }
         if (qtFpsMode == enabled && (!enabled || qtFpsPlayer.initialized)) {
           return;
         }
@@ -380,7 +402,54 @@
         qtDockPanelsDirty = true;
         updateQtSelectionOverlay();
       };
+      std::unordered_set<vkpt::core::StableId> qtPendingGizmoTransformTouchedIds;
+      auto qtDiscardPendingGizmoTransformUpdates = [&]() {
+        qtPendingGizmoTransformTouchedIds.clear();
+      };
+      auto qtQueueGizmoTransformTouchedIds =
+          [&](const std::unordered_set<vkpt::core::StableId>& touchedIds) {
+        qtPendingGizmoTransformTouchedIds.insert(touchedIds.begin(), touchedIds.end());
+      };
+      auto qtFlushPendingGizmoTransformUpdates = [&](bool force) {
+        if (qtPendingGizmoTransformTouchedIds.empty()) {
+          return true;
+        }
+        if (!qtGizmoDrag.active && !force) {
+          qtDiscardPendingGizmoTransformUpdates();
+          return true;
+        }
+
+        auto transformBuild = qtBuildInstanceTransformUpdatesForTouchedEntities(
+            qtPendingGizmoTransformTouchedIds,
+            0u,
+            qtScriptTransformRevision);
+        qtDiscardPendingGizmoTransformUpdates();
+        if (transformBuild.unsupported_instances || transformBuild.updates.empty()) {
+          if (qtGizmoDrag.active) {
+            qtGizmoDrag.scene_reload_pending = true;
+          }
+          return false;
+        }
+        if (!(qtPublishInstanceTransformUpdates &&
+              qtPublishInstanceTransformUpdates(
+                  transformBuild.updates,
+                  vkpt::pathtracer::InstanceTransformUpdateOptions{
+                      vkpt::pathtracer::RenderUpdateReason::EditorGizmoMotion,
+                      vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
+                      true,
+                      true,
+                      false,
+                      0u,
+                      "qt-viewport"}))) {
+          if (qtGizmoDrag.active) {
+            qtGizmoDrag.scene_reload_pending = true;
+          }
+          return false;
+        }
+        return true;
+      };
       auto qtCaptureGizmoDrag = [&](const ViewportGizmoHit& hit, float x, float y) {
+        qtDiscardPendingGizmoTransformUpdates();
         qtGizmoDrag = {};
         qtGizmoDrag.active = true;
         qtGizmoDrag.hit = hit;
@@ -535,30 +604,7 @@
           transformTouchedIds.insert(start.entity_id);
         }
         if (!transformTouchedIds.empty()) {
-          auto transformBuild = qtBuildInstanceTransformUpdatesForTouchedEntities(
-              transformTouchedIds,
-              0u,
-              qtScriptTransformRevision);
-          if (transformBuild.unsupported_instances) {
-            qtGizmoDrag.scene_reload_pending = true;
-          }
-          if (transformBuild.updates.empty()) {
-            qtGizmoDrag.scene_reload_pending = true;
-          }
-          if (!transformBuild.updates.empty() &&
-              !(qtPublishInstanceTransformUpdates &&
-                qtPublishInstanceTransformUpdates(
-                    transformBuild.updates,
-                    vkpt::pathtracer::InstanceTransformUpdateOptions{
-                        vkpt::pathtracer::RenderUpdateReason::EditorGizmoMotion,
-                        vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration,
-                        true,
-                        true,
-                        false,
-                        0u,
-                        "qt-viewport"}))) {
-            qtGizmoDrag.scene_reload_pending = true;
-          }
+          qtQueueGizmoTransformTouchedIds(transformTouchedIds);
         }
         PushUiEvent(ui_event_log,
                     "viewport_gizmo_drag",
@@ -573,6 +619,7 @@
         if (!qtGizmoDrag.active) {
           return;
         }
+        qtFlushPendingGizmoTransformUpdates(true);
         if (qtGizmoDrag.scene_reload_pending) {
           qtReloadEditedScene("drag commit");
         } else {

@@ -172,7 +172,7 @@ void PrintUsage() {
   std::cout << "  --ui-model-smoke      Run headless UI model smoke checks\n";
   std::cout << "  --ui-release-gate     Print UI release-gate evidence and deferred gaps\n";
   std::cout << "  --dynamic-physics-gate  Run D3D12 dynamic physics transform-update performance gate\n";
-  std::cout << "  --third-person-script-gate  Run D3D12 Lua third-person movement performance gate\n";
+  std::cout << "  --third-person-script-gate  Emit static-mode script gate artifact\n";
   std::cout << "  --render              Render using scalar CPU path tracer\n";
   std::cout << "  --output <path>       Render output PNG path\n";
   std::cout << "  --exr-output <path>   Render output EXR path\n";
@@ -180,10 +180,10 @@ void PrintUsage() {
   std::cout << "  --height <px>         Render height\n";
   std::cout << "  --spp <samples>       Samples per pixel\n";
   std::cout << "  --max-depth <depth>   Max ray depth\n";
-  std::cout << "  --render-frame <n>    Advance scene particles to frame n for still renders\n";
-  std::cout << "  --render-time <sec>   Advance scene particles to a specific time for still renders\n";
-  std::cout << "  --render-sequence <n> Write n numbered animation frames from --output\n";
-  std::cout << "  --render-fps <fps>    Particle animation frame rate for render sequences\n";
+  std::cout << "  --render-frame <n>    Select numbered render frame for still output\n";
+  std::cout << "  --render-time <sec>   Attach render time metadata for still output\n";
+  std::cout << "  --render-sequence <n> Write n numbered static frames from --output\n";
+  std::cout << "  --render-fps <fps>    Frame rate metadata for render sequences\n";
   std::cout << "  --denoiser            Enable GPU denoiser for D3D12 renders\n";
   std::cout << "  --temporal-aa         Enable temporal reuse for D3D12 renders\n";
 }

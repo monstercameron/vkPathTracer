@@ -191,11 +191,6 @@ vkpt::pathtracer::Vec3 InverseSceneTransformPoint(const vkpt::pathtracer::Vec3& 
                                                   const vkpt::scene::TransformComponent& transform);
 float ClampFloat(float value, float min_value, float max_value);
 float DegToRad(float degrees);
-bool AnimationHasAuthoredMotion(const vkpt::scene::AnimationComponent& animation);
-vkpt::scene::TransformComponent SampleAnimationTransform(
-    const vkpt::scene::TransformComponent& base,
-    const vkpt::scene::AnimationComponent& animation,
-    float elapsed_seconds);
 vkpt::pathtracer::Vec3 ToPtVec3(const vkpt::scene::Vec3& v);
 vkpt::scene::Vec3 ToSceneVec3(const vkpt::pathtracer::Vec3& v);
 vkpt::pathtracer::Quat4 ToPtQuat4(const vkpt::scene::Quat& q);

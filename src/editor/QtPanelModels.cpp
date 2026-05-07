@@ -139,9 +139,6 @@ std::string EntityComponentSummary(const vkpt::scene::SceneEntityDefinition& ent
   if (!entity.script.script.empty()) {
     components.push_back("Script");
   }
-  if (!entity.animation.clip.empty()) {
-    components.push_back("Animation");
-  }
   if (entity.has_physics_body) {
     components.push_back(entity.physics_body.enabled ? "Physics" : "Physics Off");
   }
@@ -252,18 +249,6 @@ void AddEntityProperties(QtPanelRow& row, const vkpt::scene::SceneEntityDefiniti
   if (!entity.script.script.empty()) {
     row.properties.push_back(Property("script.path", "Script", entity.script.script, "Script",
                                       QtPanelPropertyKind::Asset, true));
-  }
-  if (!entity.animation.clip.empty()) {
-    row.properties.push_back(Property("animation.clip", "Clip", entity.animation.clip, "Animation",
-                                      QtPanelPropertyKind::Asset, true));
-    row.properties.push_back(Property("animation.looping", "Looping", BoolText(entity.animation.looping), "Animation",
-                                      QtPanelPropertyKind::Toggle, true));
-    row.properties.push_back(Property("animation.duration_seconds", "Duration", FloatText(entity.animation.duration_seconds),
-                                      "Animation", QtPanelPropertyKind::Number, true));
-    row.properties.push_back(Property("animation.playback_speed", "Speed", FloatText(entity.animation.playback_speed),
-                                      "Animation", QtPanelPropertyKind::Number, true));
-    row.properties.push_back(Property("animation.rotation_degrees", "Rotation", Vec3Text(entity.animation.rotation_degrees),
-                                      "Animation", QtPanelPropertyKind::Vector3, true));
   }
   row.properties.push_back(Property("physics.enabled", "Physics Enabled",
                                     BoolText(entity.has_physics_body && entity.physics_body.enabled),

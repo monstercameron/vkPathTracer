@@ -46,7 +46,6 @@
         qtPromoteSceneObjectCamerasAndLights();
         EnsureQtFallbackLightingEntities(qtSceneDocument);
         ui_selection_state = vkpt::editor::CreateDefaultSelectionState();
-        qtAnimationBaseTransforms.clear();
         config.scene_path.value = displayPath;
         config.scene_path.source = vkpt::config::ConfigSource::CliFlag;
         vkpt::diagnostics::CrashRecorder::instance().update_scene(displayPath);
@@ -56,7 +55,6 @@
         if (qtSyncActiveCameraObjectFromPose) {
           qtSyncActiveCameraObjectFromPose();
         }
-        qtRefreshAnimationBaseTransforms(true);
         syncQtCameraPoseFromScene();
         syncQtFpsAnglesFromPose();
         qtCameraFocusDistance = std::max(
@@ -207,8 +205,7 @@
                                           !importedRoot->has_physics_body &&
                                           !importedRoot->has_benchmark_tag &&
                                           !importedRoot->has_sdf_primitive &&
-                                          importedRoot->script.script.empty() &&
-                                          importedRoot->animation.clip.empty();
+                                          importedRoot->script.script.empty();
             std::vector<vkpt::core::StableId> rootChildren;
             for (const auto& entity : qtSceneDocument.entities) {
               if (qtEntityParentId(entity) == importStats.imported_root_entity) {
@@ -248,9 +245,7 @@
           ui_selection_state = vkpt::editor::ApplySelectionCommand(ui_selection_state, selectCommand);
           ui_command_history.push(selectCommand);
         }
-        qtAnimationBaseTransforms.clear();
         const bool loaded = qtReloadEditedScene("asset browser model spawn");
-        qtRefreshAnimationBaseTransforms(true);
         qtPreviewStatus = loaded ? "model spawned" : "model spawned; renderer reload failed";
         ui_runtime_state.focused_panel = "asset_browser";
         ui_runtime_state.last_file_drop_path = displayPath;
@@ -384,9 +379,7 @@
         ui_selection_state = vkpt::editor::ApplySelectionCommand(ui_selection_state, selectCommand);
         ui_command_history.push(selectCommand);
 
-        qtAnimationBaseTransforms.clear();
         const bool loaded = qtReloadEditedScene("asset browser model spawn");
-        qtRefreshAnimationBaseTransforms(true);
         ui_runtime_state.focused_panel = "asset_browser";
         ui_runtime_state.last_file_drop_path = displayPaths.front();
         ui_runtime_state.status_message = loaded
@@ -737,6 +730,21 @@
                     {"bindings", std::to_string(qtScriptState.binding_summary.binding_count)},
                     {"runnable", std::to_string(qtScriptState.binding_summary.runnable_count)}},
                    frameIndex);
+        if (enabled) {
+          qtScriptState.playing = false;
+          qtScriptState.status = "script playback disabled in static mode";
+          ui_runtime_state.status_message = qtScriptState.status;
+          qtDockPanelsDirty = true;
+          PushUiEvent(ui_event_log,
+                      "lua_playable_mode_toggle",
+                      "viewport",
+                      source,
+                      frameIndex,
+                      {},
+                      "disabled",
+                      qtScriptState.status);
+          return;
+        }
         if (enabled && qtScriptRuntime && !qtScriptRuntime->execution_available()) {
           qtScriptState.scripts_enabled = true;
           qtScriptState.playing = false;

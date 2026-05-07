@@ -39,37 +39,24 @@
               if (!QtParseBool(edit.value, value)) {
                 return failEdit("expected true or false");
               }
-              qtScriptState.playing = value;
-              qtScriptState.status = value ? "script playback running" : "script playback paused";
+              qtScriptState.playing = false;
+              qtScriptState.status = value ? "script playback disabled in static mode" : "script playback paused";
             } else if (parts[2] == "play") {
-              qtScriptState.playing = true;
-              qtScriptState.scripts_enabled = true;
-              qtScriptState.status = "script playback running";
+              qtScriptState.playing = false;
+              qtScriptState.status = "script playback disabled in static mode";
             } else if (parts[2] == "pause") {
               qtScriptState.playing = false;
               qtScriptState.status = "script playback paused";
             } else if (parts[2] == "step") {
-              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUpdate,
-                                   frameIndex,
-                                   1.0 / 60.0,
-                                   "script step");
+              qtScriptState.status = "script dispatch disabled in static mode";
             } else if (parts[2] == "reload") {
               qtReloadScriptsFromDocument("dock");
             } else if (parts[2] == "dispatch_on_load") {
-              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLoad,
-                                   frameIndex,
-                                   0.0,
-                                   "script manual");
+              qtScriptState.status = "script dispatch disabled in static mode";
             } else if (parts[2] == "dispatch_fixed_update") {
-              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnFixedUpdate,
-                                   frameIndex,
-                                   1.0 / 60.0,
-                                   "script manual");
+              qtScriptState.status = "script dispatch disabled in static mode";
             } else if (parts[2] == "dispatch_late_update") {
-              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLateUpdate,
-                                   frameIndex,
-                                   0.0,
-                                   "script manual");
+              qtScriptState.status = "script dispatch disabled in static mode";
             } else {
               return failEdit("unknown script runtime property");
             }
@@ -86,7 +73,6 @@
             if (name == "sdf") return kQtSceneTreeFilterSdf;
             if (name == "physics") return kQtSceneTreeFilterPhysics;
             if (name == "script") return kQtSceneTreeFilterScript;
-            if (name == "animation") return kQtSceneTreeFilterAnimation;
             if (name == "entity") return kQtSceneTreeFilterEntity;
             if (name == "particle") return kQtSceneTreeFilterParticle;
             return 0u;

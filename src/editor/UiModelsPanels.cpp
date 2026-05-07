@@ -167,7 +167,7 @@ std::vector<UiPanelDefinition> BuildDefaultPanelDefinitions() {
     {"asset_browser", "Asset Browser", "view.panel.asset_browser", true, true, true, true, 720.0f, 260.0f,
      UiDockArea::Bottom, "assets", 130, "asset_browser", "Asset search, validation, import, and assignment."},
     {"timeline", "Timeline", "view.panel.timeline", false, true, true, true, 720.0f, 220.0f,
-     UiDockArea::Bottom, "animation", 140, "timeline", "Animation timeline and keyframe controls."},
+     UiDockArea::Bottom, "scene", 140, "timeline", "Static frame and benchmark timing controls."},
     {"script_panel", "Scripting", "view.panel.script_panel", true, true, true, true, 520.0f, 420.0f,
      UiDockArea::Right, "properties", 75, "scripts", "Script attachment, runtime status, and playback controls."},
     {"physics", "Physics", "view.panel.physics", false, true, true, true, 420.0f, 360.0f,
@@ -321,7 +321,6 @@ std::vector<ScriptLifecycleHookState> BuildDefaultScriptLifecycleHooks() {
   const std::vector<std::string_view> names = {
     "on_load", "on_spawn", "on_enable", "on_disable", "on_update",
     "on_fixed_update", "on_late_update", "on_collision", "on_trigger",
-    "on_animation_event", "on_animation_loop", "on_keyframe_reached",
     "on_destroy", "on_unload"
   };
   std::vector<ScriptLifecycleHookState> hooks;
