@@ -320,6 +320,7 @@
         qtDockPanelsDirty = true;
         return true;
       };
+      bool qtSkipScriptReloadForSceneReload = false;
       auto qtApplyScriptCommandsToDocument =
           [&](const vkpt::scene::WorldCommandBuffer& commands) {
         if (commands.commands().empty()) {
@@ -396,7 +397,6 @@
             if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::CreateEntityCommand>) {
               ++createCount;
               fullSceneReloadNeeded = true;
-              scriptBindingsDirty = true;
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::DestroyEntityCommand>) {
               ++destroyCount;
               fullSceneReloadNeeded = true;
@@ -815,7 +815,10 @@
         }
 
         if (qtReloadEditedScene) {
+          const bool previousSkipScriptReload = qtSkipScriptReloadForSceneReload;
+          qtSkipScriptReloadForSceneReload = !scriptBindingsDirty;
           qtReloadEditedScene("script command");
+          qtSkipScriptReloadForSceneReload = previousSkipScriptReload;
         } else if (scriptBindingsDirty) {
           qtReloadScriptsFromDocument("script command");
         }
@@ -1039,7 +1042,9 @@
         const auto rendererEnd = std::chrono::steady_clock::now();
         qtDockPanelsDirty = true;
         qtSyncPhysicsFromSceneDocument();
-        qtReloadScriptsFromDocument("scene edited");
+        if (!qtSkipScriptReloadForSceneReload) {
+          qtReloadScriptsFromDocument("scene edited");
+        }
         qtPreviewStatus = qtTracerReady
             ? (rendererUpdatedIncrementally && hasSceneDeltaWork
                    ? "scene delta update"

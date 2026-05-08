@@ -76,7 +76,7 @@ The runtime dispatches bindings in stable entity order. Commands are written to 
 - `diagnostic(level, message)`, `include(source)`
 - `audio:post_event(event, options)`, `audio:stop(handle)`
 
-Entity handles expose methods: `id()`, `get_name()`, `set_name(name)`, `get_transform()`, `set_transform(transform)`, `get_light()`, `set_light(light)`, `get_camera()`, `set_camera(camera)`, `get_physics()`, `get_ui_panel()`, `set_ui_panel(panel)`, `log(message)`, and `set_debug_value(name, value)`.
+Entity handles expose methods: `id()`, `get_name()`, `set_name(name)`, `get_transform()`, `set_transform(transform)`, `get_light()`, `set_light(light)`, `get_camera()`, `set_camera(camera)`, `get_physics()`, `get_material_id()`, `get_ui_panel()`, `set_ui_panel(panel)`, `log(message)`, and `set_debug_value(name, value)`.
 
 `world:spawn_entity(def)` accepts a table with these fields:
 

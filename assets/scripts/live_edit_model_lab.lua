@@ -103,6 +103,23 @@ local function transform_or_default(entity)
   }
 end
 
+local function current_material_id(entity)
+  if entity == nil or entity.get_material_id == nil then
+    return 0
+  end
+  return entity:get_material_id() or 0
+end
+
+local function skip_model_material_child(entity)
+  if entity == nil or entity.get_name == nil then
+    return false
+  end
+  local name = entity:get_name() or ""
+  return name == "Live Edit Orbiter A" or
+      name == "Live Edit Orbiter B" or
+      name == "Live Edit Control Panel"
+end
+
 local function read_settings(ctx)
   return {
     animation_enabled = param_bool(ctx, "animation_enabled", true),
@@ -152,7 +169,9 @@ local function assign_material_tree(ctx, entity, material_id, depth)
     return
   end
   for _, child in ipairs(ctx.world:children_of(entity) or {}) do
-    assign_material_tree(ctx, child, material_id, depth - 1)
+    if not skip_model_material_child(child) then
+      assign_material_tree(ctx, child, material_id, depth - 1)
+    end
   end
 end
 
@@ -171,7 +190,7 @@ local function update_light(ctx, name, intensity, hue, saturation, value)
   entity:set_light(light)
 end
 
-local function update_orbiter(ctx, name, phase, settings, t, material_id)
+local function update_orbiter(ctx, name, phase, settings, t, material_id, assign_material)
   local entity = ctx.world:find_entity(name)
   if entity == nil then
     return
@@ -188,7 +207,9 @@ local function update_orbiter(ctx, name, phase, settings, t, material_id)
   }
   transform.rotation = yaw_quat(angle)
   entity:set_transform(transform)
-  ctx.world:assign_material(entity, material_id)
+  if assign_material or current_material_id(entity) ~= material_id then
+    ctx.world:assign_material(entity, material_id)
+  end
 end
 
 local function update_camera(ctx, settings)
@@ -262,15 +283,17 @@ function script.on_update(self, ctx)
   end
   self:set_transform(transform)
 
-  assign_material_tree(ctx, self, material_id, 4)
+  if current_material_id(self) ~= material_id then
+    assign_material_tree(ctx, self, material_id, 4)
+  end
   update_light(ctx, "Live Edit Key Light", settings.key_intensity, 0.095, 0.34, 1.0)
   update_light(ctx, "Live Edit Rim Light", settings.rim_intensity, hue, 0.78, 1.0)
   update_light(ctx, "Live Edit Floor Glow", settings.rim_intensity * 0.32, hue + 0.12, 0.66, 0.85)
   update_camera(ctx, settings)
 
   if settings.orbiter_enabled then
-    update_orbiter(ctx, "Live Edit Orbiter A", 0.0, settings, t, settings.accent_material_id)
-    update_orbiter(ctx, "Live Edit Orbiter B", math.pi, settings, t, material_id)
+    update_orbiter(ctx, "Live Edit Orbiter A", 0.0, settings, t, settings.accent_material_id, false)
+    update_orbiter(ctx, "Live Edit Orbiter B", math.pi, settings, t, material_id, false)
   end
   update_panel(ctx, settings, material_id, hue)
 end

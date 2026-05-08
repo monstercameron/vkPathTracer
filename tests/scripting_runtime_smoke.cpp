@@ -1178,6 +1178,32 @@ return script
              "generic FPS camera should be able to spawn a scriptable controls panel")) {
     return 1;
   }
+  if (!Check(static_cast<bool>(fps_camera_commands.replay(fps_camera_world)),
+             "generic FPS camera controls panel spawn should replay into the ECS world")) {
+    return 1;
+  }
+  vkpt::scene::WorldCommandBuffer fps_camera_next_commands;
+  fps_camera_context.frame = 22;
+  fps_camera_context.elapsed_seconds = 1.0 / 60.0;
+  const auto fps_camera_next_dispatch = fps_camera_runtime->dispatch_hook(
+      fps_camera_world,
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      fps_camera_context,
+      fps_camera_next_commands);
+  bool respawned_fps_panel = false;
+  for (const auto& command : fps_camera_next_commands.commands()) {
+    if (std::holds_alternative<vkpt::scene::WorldCommandBuffer::CreateEntityCommand>(
+            command.payload)) {
+      respawned_fps_panel = true;
+      break;
+    }
+  }
+  if (!Check(fps_camera_next_dispatch.hook_call_count == 1u,
+             "generic FPS camera should keep running after its panel exists") ||
+      !Check(!respawned_fps_panel,
+             "generic FPS camera controls panel should not respawn every update")) {
+    return 1;
+  }
 
   const auto lowest_lod_scene_path = FindRepoFile("game/scenes/relay_yard_lowest_lod_demo.json");
   auto lowest_lod_document_result =
@@ -2200,6 +2226,32 @@ return script
              "live edit model lab should update scripted camera focus") ||
       !Check(live_edit_updated_panel,
              "live edit model lab should update its in-scene control panel")) {
+    return 1;
+  }
+  if (!Check(static_cast<bool>(live_edit_commands.replay(live_edit_world_result.value())),
+             "live edit model lab commands should replay into the ECS world")) {
+    return 1;
+  }
+  vkpt::scene::WorldCommandBuffer live_edit_next_commands;
+  live_edit_context.frame = 65u;
+  live_edit_context.elapsed_seconds = 2.26;
+  const auto live_edit_next_dispatch =
+      live_edit_runtime->dispatch_hook(live_edit_world_result.value(),
+                                       vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+                                       live_edit_context,
+                                       live_edit_next_commands);
+  bool live_edit_reassigned_unchanged_material = false;
+  for (const auto& command : live_edit_next_commands.commands()) {
+    if (std::holds_alternative<vkpt::scene::WorldCommandBuffer::AssignMaterialCommand>(
+            command.payload)) {
+      live_edit_reassigned_unchanged_material = true;
+      break;
+    }
+  }
+  if (!Check(live_edit_next_dispatch.hook_call_count >= 2u,
+             "live edit model lab should keep running after its first command replay") ||
+      !Check(!live_edit_reassigned_unchanged_material,
+             "live edit model lab should not reassign unchanged materials every update")) {
     return 1;
   }
 #else

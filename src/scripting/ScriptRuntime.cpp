@@ -1040,6 +1040,30 @@ int LuaEntityGetPhysics(lua_State* lua) {
   return 1;
 }
 
+int LuaEntityGetMaterialId(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->world == nullptr) {
+    lua_pushinteger(lua, 0);
+    return 1;
+  }
+  const auto* entity = host->world->get_entity(entity_id);
+  if (entity == nullptr) {
+    lua_pushinteger(lua, 0);
+    return 1;
+  }
+  if (entity->material_override.has_value() && entity->material_override->material_id != 0u) {
+    lua_pushinteger(lua, static_cast<lua_Integer>(entity->material_override->material_id));
+    return 1;
+  }
+  if (entity->mesh_renderer.has_value() && entity->mesh_renderer->material_id != 0u) {
+    lua_pushinteger(lua, static_cast<lua_Integer>(entity->mesh_renderer->material_id));
+    return 1;
+  }
+  lua_pushinteger(lua, 0);
+  return 1;
+}
+
 int LuaEntityGetUiPanel(lua_State* lua) {
   auto* host = Host(lua);
   const auto entity_id = LuaSelfEntity(lua, 1);
@@ -1106,6 +1130,8 @@ void PushEntityObject(lua_State* lua, LuaHostContext& host, vkpt::core::StableEn
   lua_setfield(lua, -2, "set_camera");
   PushHostClosure(lua, host, LuaEntityGetPhysics);
   lua_setfield(lua, -2, "get_physics");
+  PushHostClosure(lua, host, LuaEntityGetMaterialId);
+  lua_setfield(lua, -2, "get_material_id");
   PushHostClosure(lua, host, LuaEntityGetUiPanel);
   lua_setfield(lua, -2, "get_ui_panel");
   PushHostClosure(lua, host, LuaEntitySetUiPanel);
