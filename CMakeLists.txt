@@ -502,6 +502,7 @@ set(PT_CPU_SOURCES
   src/scene/Scene.cpp
   src/scene/SceneDocumentExport.cpp
   src/scene/SceneDocumentLoad.cpp
+  src/scene/SceneScriptBootstrap.cpp
   src/scene/SceneWorld.cpp
   src/scene/SceneWorldExtraction.cpp
   src/scene/WorldCommandBuffer.cpp
@@ -840,6 +841,81 @@ if(PT_ENABLE_AUDIO)
     target_compile_definitions(pt_scripting_smoke PRIVATE PT_ENABLE_MINIAUDIO)
   endif()
   target_compile_definitions(pt_scripting_smoke PRIVATE PT_ENABLE_AUDIO)
+endif()
+
+add_executable(pt_editor_override_tracker_smoke EXCLUDE_FROM_ALL
+  tests/editor_override_tracker_smoke.cpp
+)
+
+target_include_directories(pt_editor_override_tracker_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_editor_override_tracker_smoke PRIVATE cxx_std_23)
+
+foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
+  target_compile_definitions(pt_editor_override_tracker_smoke PRIVATE ${feature})
+endforeach()
+
+add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
+  tests/scene_script_bootstrap_smoke.cpp
+  src/scene/SceneScriptBootstrap.cpp
+)
+
+target_include_directories(pt_scene_script_bootstrap_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_scene_script_bootstrap_smoke PRIVATE cxx_std_23)
+
+# Drag-throughput smoke for the D3D12 path tracer. Built only when D3D12 is
+# enabled because the test is a thin wrapper around D3D12GpuPathTracer; the
+# bug it measures only manifests on that backend in the editor.
+if(PT_ENABLE_D3D12)
+  add_executable(pt_drag_throughput_smoke EXCLUDE_FROM_ALL
+    tests/transform_drag_throughput.cpp
+    ${PT_CPU_SOURCES}
+  )
+  target_include_directories(pt_drag_throughput_smoke PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_BINARY_DIR}/generated"
+  )
+  target_compile_features(pt_drag_throughput_smoke PRIVATE cxx_std_23)
+  target_link_libraries(pt_drag_throughput_smoke PRIVATE d3d12 dxgi d3dcompiler dxguid)
+  target_compile_definitions(pt_drag_throughput_smoke PRIVATE
+    PT_SHADER_HLSL_PATH=\"${CMAKE_SOURCE_DIR}/src/shaders/gpu/pathtrace_cs.hlsl\")
+  if(PT_ENABLE_QT)
+    target_link_libraries(pt_drag_throughput_smoke PRIVATE pt_platform_qt)
+    if(PT_ENABLE_QT_EDITOR)
+      target_compile_definitions(pt_drag_throughput_smoke PRIVATE
+        VKPT_QT_EDITOR=1
+      )
+    endif()
+  endif()
+  if(PT_ENABLE_VULKAN)
+    target_include_directories(pt_drag_throughput_smoke PRIVATE ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(pt_drag_throughput_smoke PRIVATE ${Vulkan_LIBRARIES})
+  endif()
+  if(PT_ENABLE_JOLT)
+    target_link_libraries(pt_drag_throughput_smoke PRIVATE ${PT_JOLT_TARGET})
+    target_compile_definitions(pt_drag_throughput_smoke PRIVATE
+      PT_ENABLE_JOLT
+      PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
+  endif()
+  if(PT_ENABLE_LUA)
+    target_link_libraries(pt_drag_throughput_smoke PRIVATE ${PT_LUA_TARGET})
+    target_compile_definitions(pt_drag_throughput_smoke PRIVATE PT_ENABLE_LUA)
+  endif()
+  if(PT_ENABLE_AUDIO)
+    if(PT_MINIAUDIO_TARGET)
+      target_link_libraries(pt_drag_throughput_smoke PRIVATE ${PT_MINIAUDIO_TARGET})
+      target_compile_definitions(pt_drag_throughput_smoke PRIVATE PT_ENABLE_MINIAUDIO)
+    endif()
+    target_compile_definitions(pt_drag_throughput_smoke PRIVATE PT_ENABLE_AUDIO)
+  endif()
+  foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
+    target_compile_definitions(pt_drag_throughput_smoke PRIVATE ${feature})
+  endforeach()
 endif()
 
 add_custom_target(hello
