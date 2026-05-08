@@ -69,7 +69,7 @@ The runtime dispatches bindings in stable entity order. Commands are written to 
 
 - `entity_id`, `frame`, `elapsed_seconds`, `delta_seconds`, `dt`, `fixed_delta_seconds`
 - `deterministic`, `params`
-- `input:key_down(key)`, `input:mouse_delta()`, raw mouse delta fields
+- `input:key_down(key)`, `input:mouse_down(button)`, `input:mouse_delta()`, raw mouse delta fields
 - `world:find_entity(id_or_name)`, `world:entity(id_or_name)`, `world:children_of(entity_or_id)`, `world:spawn_entity(def)`, `world:destroy_entity(entity_or_id)`
 - `world:has_component(entity_or_id, name)`, `world:reparent_entity(child, parent)`, `world:reorder_entity(moved, before, after)`, `world:remove_component(entity, name)`, `world:assign_material(entity, material_id)`
 - `scene:main_camera()`, `scene:find_entity(id_or_name)`, `scene:entities_with_component(name)`, `scene:ensure_script(entity, source, params)`, `scene:use_system(module_name)`, `scene:register_interactable(entity, config)`
