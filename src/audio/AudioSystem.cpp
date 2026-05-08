@@ -507,6 +507,7 @@ struct VoiceStreamFillRequest {
   std::shared_ptr<const std::vector<float>> samples;
   std::uint32_t channels = 1;
   bool loop = false;
+  double start_frame = 0.0;
 };
 
 class NoopAudioDevice final : public IAudioDevice {
@@ -1183,7 +1184,6 @@ class EngineAudioSystem final : public IAudioSystem {
     ++m_diag.listener_updates;
     record_snapshot_metrics(snapshot);
     set_listener_locked(m_listener);
-    publish_rt_state_locked();
     VKP_LOG(Debug,
             "audio",
             "snapshot_consumed",
@@ -1196,6 +1196,8 @@ class EngineAudioSystem final : public IAudioSystem {
   void update() override {
     std::lock_guard lock(m_mutex);
     drain_audio_commands_locked();
+    sync_runtime_voice_state_from_rt_locked();
+    const auto voicesBeforeCleanup = m_voices.size();
     m_voices.erase(std::remove_if(m_voices.begin(), m_voices.end(), [&](const auto& voice) {
       return voice == nullptr || voice_finished_locked(*voice);
     }), m_voices.end());
@@ -1205,7 +1207,9 @@ class EngineAudioSystem final : public IAudioSystem {
       return item.second.loop || item.second.bus == "music" || item.second.bus == "ambience";
     }));
     m_diag.events = m_events.size();
-    publish_rt_state_locked();
+    if (m_voices.size() != voicesBeforeCleanup) {
+      publish_rt_state_locked();
+    }
   }
 
   AudioDiagnostics diagnostics() const override {
@@ -1375,7 +1379,19 @@ class EngineAudioSystem final : public IAudioSystem {
     }
     const std::uint32_t framesPerPage =
         std::max<std::uint32_t>(1u, kPcmPageSampleCapacity / channels);
-    std::size_t cursor = 0u;
+    double startFrame = request.start_frame;
+    if (!std::isfinite(startFrame) || startFrame < 0.0) {
+      startFrame = 0.0;
+    }
+    if (request.loop) {
+      startFrame = std::fmod(startFrame, static_cast<double>(frameCount));
+      if (startFrame < 0.0) {
+        startFrame = 0.0;
+      }
+    } else {
+      startFrame = std::min(startFrame, static_cast<double>(frameCount));
+    }
+    std::size_t cursor = static_cast<std::size_t>(startFrame);
     std::uint64_t pagesProduced = 0u;
     while (pagesProduced < request.ring->capacity()) {
       PcmPage page;
@@ -1545,7 +1561,32 @@ class EngineAudioSystem final : public IAudioSystem {
     }
   }
 
+  void sync_runtime_voice_state_from_rt_locked() {
+    auto state = m_rtMixState.load(std::memory_order_acquire);
+    if (!state) {
+      return;
+    }
+    for (auto& voice : m_voices) {
+      if (!voice) {
+        continue;
+      }
+      const auto rtVoice = std::find_if(state->voices.begin(), state->voices.end(), [&](const RtVoice& item) {
+        return item.handle.slot == voice->handle.slot && item.handle.generation == voice->handle.generation;
+      });
+      if (rtVoice == state->voices.end()) {
+        continue;
+      }
+      if (std::isfinite(rtVoice->cursor_frame)) {
+        voice->cursor_frame = std::max(0.0, rtVoice->cursor_frame);
+      }
+      if (!rtVoice->playing && !voice->loop) {
+        voice->playing = false;
+      }
+    }
+  }
+
   void publish_rt_state_locked() {
+    sync_runtime_voice_state_from_rt_locked();
     auto state = std::make_shared<RtMixState>();
     state->generation = ++m_rtStateGeneration;
     state->muted = m_config.muted;
@@ -1583,7 +1624,8 @@ class EngineAudioSystem final : public IAudioSystem {
           pcmRing,
           clipIt->second.rt_samples,
           clipIt->second.channels,
-          voice->loop});
+          voice->loop,
+          voice->cursor_frame});
       state->voices.push_back(RtVoice{
           voice->handle,
           voice->clip,
@@ -1738,7 +1780,6 @@ class EngineAudioSystem final : public IAudioSystem {
       return {};
     }
 
-    const AudioVoiceHandle handle = allocate_handle_locked();
     const auto busName = NormalizeEventName(desc.bus.empty() ? event.bus : desc.bus);
     auto& bus = bus_state_locked(busName);
     ++bus.play_requests;
@@ -1749,6 +1790,38 @@ class EngineAudioSystem final : public IAudioSystem {
     const bool spatialEnabled = desc.spatial || event.spatial;
     const float volume = std::max(0.0f, desc.volume * event.volume);
     const float pitch = std::clamp(desc.pitch * event.pitch, 0.25f, 4.0f);
+    const bool looped = desc.loop || event.loop || clipIt->second.loop_default;
+    const bool longLived = looped || busName == "music" || busName == "ambience";
+    if (longLived) {
+      sync_runtime_voice_state_from_rt_locked();
+      for (auto& voice : m_voices) {
+        if (!voice || voice_finished_locked(*voice) || voice->event_name != event.name ||
+            voice->bus != busName || voice->entity != desc.entity) {
+          continue;
+        }
+        voice->loop = voice->loop || looped;
+        voice->spatial = spatialEnabled;
+        voice->volume = volume;
+        voice->pitch = pitch;
+        voice->position = position;
+        voice->pan = spatialEnabled ? spatial.pan : 0.0f;
+        voice->gain = spatialEnabled ? spatial.gain : 1.0f;
+        voice->min_distance = event.min_distance;
+        voice->max_distance = event.max_distance;
+        voice->priority = std::clamp(desc.priority > 0.0f ? desc.priority : event.priority, 0.0f, 1.0f);
+        publish_rt_state_locked();
+        vkpt::log::Logger::instance().log(
+            vkpt::log::Severity::Debug,
+            "audio",
+            "audio loop already active",
+            {{"event", event.name},
+             {"entity", std::to_string(desc.entity)},
+             {"bus", busName}});
+        return voice->handle;
+      }
+    }
+
+    const AudioVoiceHandle handle = allocate_handle_locked();
 
     AudioCmd cmd;
     cmd.kind = AudioCmdKind::PlayResolved;
@@ -1767,7 +1840,7 @@ class EngineAudioSystem final : public IAudioSystem {
     cmd.min_distance = event.min_distance;
     cmd.max_distance = event.max_distance;
     cmd.priority = std::clamp(desc.priority > 0.0f ? desc.priority : event.priority, 0.0f, 1.0f);
-    cmd.loop = desc.loop || event.loop || clipIt->second.loop_default;
+    cmd.loop = looped;
     cmd.spatial = spatialEnabled;
     if (!enqueue_audio_cmd_locked(std::move(cmd))) {
       ++m_diag.failed_play_requests;
@@ -1804,7 +1877,7 @@ class EngineAudioSystem final : public IAudioSystem {
          {"clip", clipIt->second.uri},
          {"bus", busName},
          {"spatial", spatialEnabled ? "true" : "false"},
-         {"loop", (desc.loop || event.loop || clipIt->second.loop_default) ? "true" : "false"},
+         {"loop", looped ? "true" : "false"},
          {"hardware", m_hardware_playback_enabled_locked() ? "true" : "false"}});
     return handle;
   }
