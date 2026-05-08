@@ -1,5 +1,30 @@
 -- Canonical reusable FPS camera system. Keep the legacy compatibility path at
 -- assets/scripts/generic_fps_camera.lua runnable until authored scenes migrate.
+-- @editor movement_mode text default=walk label="Movement Mode"
+-- @editor walk_speed number default=4.2 min=0 max=20 step=0.1 label="Walk Speed"
+-- @editor run_multiplier number default=1.75 min=1 max=5 step=0.05 label="Run Multiplier"
+-- @editor mouse_yaw_sensitivity number default=0.0020 min=0 max=0.02 step=0.0001 label="Yaw Sensitivity"
+-- @editor mouse_pitch_sensitivity number default=0.0016 min=0 max=0.02 step=0.0001 label="Pitch Sensitivity"
+-- @editor max_mouse_delta number default=120.0 min=1 max=500 step=1 label="Max Mouse Delta"
+-- @editor invert_y bool default=false label="Invert Y"
+-- @editor min_pitch_degrees number default=-82.0 min=-89 max=0 step=1 label="Min Pitch"
+-- @editor max_pitch_degrees number default=82.0 min=0 max=89 step=1 label="Max Pitch"
+-- @editor max_dt number default=0.08 min=0.001 max=0.25 step=0.001 label="Max Delta Time"
+-- @editor enable_vertical bool default=false label="Vertical Movement"
+-- @editor fixed_y number min=-20 max=20 step=0.01 label="Fixed Y"
+-- @editor min_x number min=-200 max=200 step=0.5 label="Min X"
+-- @editor max_x number min=-200 max=200 step=0.5 label="Max X"
+-- @editor min_y number min=-200 max=200 step=0.5 label="Min Y"
+-- @editor max_y number min=-200 max=200 step=0.5 label="Max Y"
+-- @editor min_z number min=-200 max=200 step=0.5 label="Min Z"
+-- @editor max_z number min=-200 max=200 step=0.5 label="Max Z"
+-- @editor fov number min=15 max=120 step=1 label="Camera FOV"
+-- @editor focus_distance number min=0 max=200 step=0.25 label="Focus Distance"
+-- @editor show_controls bool default=true label="Show Controls"
+-- @editor controls_panel_name text default="FPS Camera Controls Panel" label="Controls Entity"
+-- @editor controls_panel_id number default=0 min=0 max=999999 step=1 label="Controls Entity ID"
+-- @editor controls_title text default="FPS Camera Controls" label="Controls Title"
+-- @editor controls_anchor text default=top_left label="Controls Anchor"
 local script = {}
 
 local DEFAULT_WALK_SPEED = 4.2

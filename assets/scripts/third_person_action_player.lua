@@ -1,5 +1,31 @@
+-- @editor camera_name text default="Action Camera" label="Camera Entity"
+-- @editor controls_panel_name text default="Third Person Controls Panel" label="Controls Entity"
+-- @editor controls_panel_id number default=9190 min=0 max=999999 step=1 label="Controls Entity ID"
+-- @editor mouse_yaw_sensitivity number default=0.0018 min=0 max=0.02 step=0.0001 label="Yaw Sensitivity"
+-- @editor mouse_pitch_sensitivity number default=0.0014 min=0 max=0.02 step=0.0001 label="Pitch Sensitivity"
+-- @editor max_mouse_delta number default=90.0 min=1 max=500 step=1 label="Max Mouse Delta"
+-- @editor min_camera_pitch number default=0.08 min=-1.2 max=1.2 step=0.01 label="Min Camera Pitch"
+-- @editor max_camera_pitch number default=0.62 min=-1.2 max=1.2 step=0.01 label="Max Camera Pitch"
+-- @editor default_camera_pitch number default=0.20 min=-1.2 max=1.2 step=0.01 label="Default Camera Pitch"
+-- @editor camera_target_y number default=1.35 min=-2 max=4 step=0.01 label="Camera Target Y"
+-- @editor camera_distance number default=5.0 min=0.5 max=20 step=0.1 label="Camera Distance"
+-- @editor camera_run_distance number default=5.6 min=0.5 max=20 step=0.1 label="Run Camera Distance"
+-- @editor camera_fov number default=50.0 min=15 max=120 step=1 label="Camera FOV"
+-- @editor camera_run_fov number default=56.0 min=15 max=120 step=1 label="Run Camera FOV"
+-- @editor model_yaw_sign number default=-1.0 min=-1 max=1 step=1 label="Model Yaw Sign"
+-- @editor walk_speed number default=1.55 min=0 max=10 step=0.05 label="Walk Speed"
+-- @editor run_speed number default=2.65 min=0 max=14 step=0.05 label="Run Speed"
+-- @editor move_min_x number default=-4.8 min=-50 max=50 step=0.1 label="Min X"
+-- @editor move_max_x number default=4.8 min=-50 max=50 step=0.1 label="Max X"
+-- @editor move_min_z number default=-4.8 min=-50 max=50 step=0.1 label="Min Z"
+-- @editor move_max_z number default=4.8 min=-50 max=50 step=0.1 label="Max Z"
+-- @editor player_collision_radius number default=0.42 min=0.01 max=3 step=0.01 label="Player Radius"
+-- @editor contact_slop number default=0.015 min=0 max=0.2 step=0.001 label="Contact Slop"
+-- @editor character_model_scale number default=0.31 min=0.01 max=4 step=0.01 label="Model Scale"
+
 local script = {}
 
+local ACTION_CAMERA_NAME = "Action Camera"
 local MOUSE_YAW_SENSITIVITY = 0.0018
 local MOUSE_PITCH_SENSITIVITY = 0.0014
 local MAX_MOUSE_DELTA = 90.0
@@ -8,6 +34,16 @@ local MAX_CAMERA_PITCH = 0.62
 local DEFAULT_CAMERA_PITCH = 0.20
 local MODEL_YAW_SIGN = -1.0
 local CAMERA_TARGET_Y = 1.35
+local CAMERA_DISTANCE = 5.0
+local CAMERA_RUN_DISTANCE = 5.6
+local CAMERA_FOV = 50.0
+local CAMERA_RUN_FOV = 56.0
+local WALK_SPEED = 1.55
+local RUN_SPEED = 2.65
+local MOVE_MIN_X = -4.8
+local MOVE_MAX_X = 4.8
+local MOVE_MIN_Z = -4.8
+local MOVE_MAX_Z = 4.8
 local PLAYER_COLLISION_RADIUS = 0.42
 local CONTACT_SLOP = 0.015
 local CONTROLS_PANEL_ID = 9190
@@ -17,6 +53,53 @@ local CHARACTER_MODEL_NAMES = {
 }
 local CHARACTER_MODEL_SCALE = 0.31
 
+local function param_number(ctx, name, fallback)
+  if ctx == nil or ctx.params == nil then
+    return fallback
+  end
+  local parsed = tonumber(ctx.params[name])
+  if parsed == nil then
+    return fallback
+  end
+  return parsed
+end
+
+local function param_string(ctx, name, fallback)
+  if ctx == nil or ctx.params == nil or ctx.params[name] == nil or ctx.params[name] == "" then
+    return fallback
+  end
+  return ctx.params[name]
+end
+
+local function read_settings(ctx)
+  return {
+    camera_name = param_string(ctx, "camera_name", ACTION_CAMERA_NAME),
+    controls_panel_name = param_string(ctx, "controls_panel_name", CONTROLS_PANEL_NAME),
+    controls_panel_id = math.floor(param_number(ctx, "controls_panel_id", CONTROLS_PANEL_ID)),
+    mouse_yaw_sensitivity = param_number(ctx, "mouse_yaw_sensitivity", MOUSE_YAW_SENSITIVITY),
+    mouse_pitch_sensitivity = param_number(ctx, "mouse_pitch_sensitivity", MOUSE_PITCH_SENSITIVITY),
+    max_mouse_delta = param_number(ctx, "max_mouse_delta", MAX_MOUSE_DELTA),
+    min_camera_pitch = param_number(ctx, "min_camera_pitch", MIN_CAMERA_PITCH),
+    max_camera_pitch = param_number(ctx, "max_camera_pitch", MAX_CAMERA_PITCH),
+    default_camera_pitch = param_number(ctx, "default_camera_pitch", DEFAULT_CAMERA_PITCH),
+    model_yaw_sign = param_number(ctx, "model_yaw_sign", MODEL_YAW_SIGN),
+    camera_target_y = param_number(ctx, "camera_target_y", CAMERA_TARGET_Y),
+    camera_distance = param_number(ctx, "camera_distance", CAMERA_DISTANCE),
+    camera_run_distance = param_number(ctx, "camera_run_distance", CAMERA_RUN_DISTANCE),
+    camera_fov = param_number(ctx, "camera_fov", CAMERA_FOV),
+    camera_run_fov = param_number(ctx, "camera_run_fov", CAMERA_RUN_FOV),
+    walk_speed = param_number(ctx, "walk_speed", WALK_SPEED),
+    run_speed = param_number(ctx, "run_speed", RUN_SPEED),
+    move_min_x = param_number(ctx, "move_min_x", MOVE_MIN_X),
+    move_max_x = param_number(ctx, "move_max_x", MOVE_MAX_X),
+    move_min_z = param_number(ctx, "move_min_z", MOVE_MIN_Z),
+    move_max_z = param_number(ctx, "move_max_z", MOVE_MAX_Z),
+    player_collision_radius = param_number(ctx, "player_collision_radius", PLAYER_COLLISION_RADIUS),
+    contact_slop = param_number(ctx, "contact_slop", CONTACT_SLOP),
+    character_model_scale = param_number(ctx, "character_model_scale", CHARACTER_MODEL_SCALE),
+  }
+end
+
 local function clamp(value, lo, hi)
   return math.max(lo, math.min(hi, value))
 end
@@ -25,19 +108,19 @@ local function length2(x, z)
   return math.sqrt(x * x + z * z)
 end
 
-local function filtered_mouse_delta(value)
+local function filtered_mouse_delta(value, settings)
   if math.abs(value) < 0.01 then
     return 0.0
   end
-  return clamp(value, -MAX_MOUSE_DELTA, MAX_MOUSE_DELTA)
+  return clamp(value, -settings.max_mouse_delta, settings.max_mouse_delta)
 end
 
-local function model_yaw_from_camera_yaw(camera_yaw)
-  return camera_yaw * MODEL_YAW_SIGN
+local function model_yaw_from_camera_yaw(camera_yaw, settings)
+  return camera_yaw * settings.model_yaw_sign
 end
 
-local function camera_yaw_from_model_yaw(model_yaw)
-  return model_yaw * MODEL_YAW_SIGN
+local function camera_yaw_from_model_yaw(model_yaw, settings)
+  return model_yaw * settings.model_yaw_sign
 end
 
 local function transform_or_default(entity)
@@ -115,15 +198,15 @@ local function entity_physics(entity)
   return entity:get_physics()
 end
 
-local function ensure_controls_panel(ctx)
-  local panel = ctx.world:find_entity(CONTROLS_PANEL_NAME)
+local function ensure_controls_panel(ctx, settings)
+  local panel = ctx.world:find_entity(settings.controls_panel_name)
   if panel ~= nil then
     return
   end
 
   ctx.world:spawn_entity({
-    id = CONTROLS_PANEL_ID,
-    name = CONTROLS_PANEL_NAME,
+    id = settings.controls_panel_id,
+    name = settings.controls_panel_name,
     parent = 9100,
     ui_panel = {
       id = "third_person.controls",
@@ -191,13 +274,13 @@ local function collect_contact_colliders(ctx, self_id)
   return boxes, balls
 end
 
-local function resolve_circle_box(x, z, box)
+local function resolve_circle_box(x, z, box, settings)
   local closest_x = clamp(x, box.x - box.half_x, box.x + box.half_x)
   local closest_z = clamp(z, box.z - box.half_z, box.z + box.half_z)
   local dx = x - closest_x
   local dz = z - closest_z
   local dist_sq = dx * dx + dz * dz
-  local radius = PLAYER_COLLISION_RADIUS + CONTACT_SLOP
+  local radius = settings.player_collision_radius + settings.contact_slop
   if dist_sq >= radius * radius then
     return x, z, false
   end
@@ -223,11 +306,11 @@ local function resolve_circle_box(x, z, box)
   return x, box.z + box.half_z + radius, true
 end
 
-local function resolve_static_contacts(x, z, boxes)
+local function resolve_static_contacts(x, z, boxes, settings)
   for _ = 1, 3 do
     local changed = false
     for _, box in ipairs(boxes) do
-      local next_x, next_z, hit = resolve_circle_box(x, z, box)
+      local next_x, next_z, hit = resolve_circle_box(x, z, box, settings)
       x = next_x
       z = next_z
       changed = changed or hit
@@ -239,12 +322,12 @@ local function resolve_static_contacts(x, z, boxes)
   return x, z
 end
 
-local function resolve_dynamic_ball_contacts(x, z, balls, move_x, move_z, speed, dt)
+local function resolve_dynamic_ball_contacts(x, z, balls, move_x, move_z, speed, dt, settings)
   for _, ball in ipairs(balls) do
     local ball_transform = ball.transform
     local dx = ball_transform.translation.x - x
     local dz = ball_transform.translation.z - z
-    local min_dist = PLAYER_COLLISION_RADIUS + ball.radius + CONTACT_SLOP
+    local min_dist = settings.player_collision_radius + ball.radius + settings.contact_slop
     local dist_sq = dx * dx + dz * dz
     if dist_sq < min_dist * min_dist then
       local nx = move_x
@@ -343,7 +426,7 @@ local function set_limb(ctx, name, angle, lift)
   entity:set_transform(transform)
 end
 
-local function update_walk_pose(ctx, moving, running, strafe_input)
+local function update_walk_pose(ctx, moving, running, strafe_input, settings)
   local t = ctx.elapsed_seconds or 0.0
   local stride_rate = running and 9.5 or 6.6
   local stride = math.sin(t * stride_rate)
@@ -362,9 +445,9 @@ local function update_walk_pose(ctx, moving, running, strafe_input)
       transform.translation.y = body_bob
       transform.rotation = pose_rotation
       transform.scale = {
-        x = CHARACTER_MODEL_SCALE,
-        y = CHARACTER_MODEL_SCALE,
-        z = CHARACTER_MODEL_SCALE,
+        x = settings.character_model_scale,
+        y = settings.character_model_scale,
+        z = settings.character_model_scale,
       }
       model:set_transform(transform)
       posed_model = true
@@ -383,13 +466,13 @@ local function update_walk_pose(ctx, moving, running, strafe_input)
   end
 end
 
-local function current_camera_pitch(camera_transform, player_transform)
-  local target_y = player_transform.translation.y + CAMERA_TARGET_Y
+local function current_camera_pitch(camera_transform, player_transform, settings)
+  local target_y = player_transform.translation.y + settings.camera_target_y
   local dx = camera_transform.translation.x - player_transform.translation.x
   local dz = camera_transform.translation.z - player_transform.translation.z
   local horizontal = math.max(0.0001, math.sqrt(dx * dx + dz * dz))
   return clamp(math.atan(camera_transform.translation.y - target_y, horizontal),
-      MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
+      settings.min_camera_pitch, settings.max_camera_pitch)
 end
 
 local function camera_yaw_from_transform(camera_transform, player_transform, fallback_yaw)
@@ -405,8 +488,8 @@ local function camera_basis(yaw)
   return math.sin(yaw), -math.cos(yaw), math.cos(yaw), math.sin(yaw)
 end
 
-local function update_camera(ctx, player_transform, camera_yaw, pitch, running)
-  local camera = ctx.world:find_entity("Action Camera")
+local function update_camera(ctx, player_transform, camera_yaw, pitch, running, settings)
+  local camera = ctx.world:find_entity(settings.camera_name)
   if camera == nil then
     return
   end
@@ -414,11 +497,11 @@ local function update_camera(ctx, player_transform, camera_yaw, pitch, running)
   local px = player_transform.translation.x
   local pz = player_transform.translation.z
   local target_x = px
-  local target_y = player_transform.translation.y + CAMERA_TARGET_Y
+  local target_y = player_transform.translation.y + settings.camera_target_y
   local target_z = pz
   local forward_x = math.sin(camera_yaw)
   local forward_z = -math.cos(camera_yaw)
-  local distance = running and 5.6 or 5.0
+  local distance = running and settings.camera_run_distance or settings.camera_distance
   local horizontal_distance = math.cos(pitch) * distance
   local vertical_distance = math.sin(pitch) * distance
 
@@ -440,7 +523,7 @@ local function update_camera(ctx, player_transform, camera_yaw, pitch, running)
 
   local camera_component = camera:get_camera()
   if camera_component ~= nil then
-    local target_fov = running and 56.0 or 50.0
+    local target_fov = running and settings.camera_run_fov or settings.camera_fov
     if math.abs((camera_component.focus_distance or 0.0) - distance) > 0.01 or
         math.abs((camera_component.fov or 0.0) - target_fov) > 0.01 then
       camera_component.focus_distance = distance
@@ -455,11 +538,12 @@ function script.on_load(self, ctx)
 end
 
 function script.on_update(self, ctx)
-  ensure_controls_panel(ctx)
+  local settings = read_settings(ctx)
+  ensure_controls_panel(ctx, settings)
 
   local input = ctx.input
-  local mouse_dx = filtered_mouse_delta(input.mouse_delta_x or 0.0)
-  local mouse_dy = filtered_mouse_delta(input.mouse_delta_y or 0.0)
+  local mouse_dx = filtered_mouse_delta(input.mouse_delta_x or 0.0, settings)
+  local mouse_dy = filtered_mouse_delta(input.mouse_delta_y or 0.0, settings)
   local mouse_look = math.abs(mouse_dx) > 0.001 or math.abs(mouse_dy) > 0.001
   local forward_input = 0.0
   local strafe_input = 0.0
@@ -484,17 +568,20 @@ function script.on_update(self, ctx)
   local dt = math.min(ctx.dt or ctx.delta_seconds or 0.016, 0.05)
   local transform = transform_or_default(self)
   local facing_yaw = yaw_from_quat(transform.rotation)
-  local camera = ctx.world:find_entity("Action Camera")
+  local camera = ctx.world:find_entity(settings.camera_name)
   local camera_transform = camera ~= nil and transform_or_default(camera) or nil
+  local fallback_pitch = settings.default_camera_pitch or DEFAULT_CAMERA_PITCH
   local camera_yaw = camera_transform ~= nil and
-      camera_yaw_from_transform(camera_transform, transform, camera_yaw_from_model_yaw(facing_yaw)) or
-      camera_yaw_from_model_yaw(facing_yaw)
+      camera_yaw_from_transform(camera_transform, transform, camera_yaw_from_model_yaw(facing_yaw, settings)) or
+      camera_yaw_from_model_yaw(facing_yaw, settings)
   local pitch = camera_transform ~= nil and
-      current_camera_pitch(camera_transform, transform) or DEFAULT_CAMERA_PITCH
+      current_camera_pitch(camera_transform, transform, settings) or fallback_pitch
 
   if mouse_look then
-    camera_yaw = camera_yaw + mouse_dx * MOUSE_YAW_SENSITIVITY
-    pitch = clamp(pitch + mouse_dy * MOUSE_PITCH_SENSITIVITY, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
+    camera_yaw = camera_yaw + mouse_dx * settings.mouse_yaw_sensitivity
+    pitch = clamp(pitch + mouse_dy * settings.mouse_pitch_sensitivity,
+        settings.min_camera_pitch,
+        settings.max_camera_pitch)
   end
 
   if moving then
@@ -504,19 +591,23 @@ function script.on_update(self, ctx)
     move_len = length2(move_x, move_z)
     move_x = move_x / move_len
     move_z = move_z / move_len
-    local speed = running and 2.65 or 1.55
-    local next_x = clamp(transform.translation.x + move_x * speed * dt, -4.8, 4.8)
-    local next_z = clamp(transform.translation.z + move_z * speed * dt, -4.8, 4.8)
+    local speed = running and settings.run_speed or settings.walk_speed
+    local next_x = clamp(transform.translation.x + move_x * speed * dt,
+        settings.move_min_x,
+        settings.move_max_x)
+    local next_z = clamp(transform.translation.z + move_z * speed * dt,
+        settings.move_min_z,
+        settings.move_max_z)
     local boxes, balls = collect_contact_colliders(ctx, self:id())
-    next_x, next_z = resolve_static_contacts(next_x, next_z, boxes)
-    next_x, next_z = resolve_dynamic_ball_contacts(next_x, next_z, balls, move_x, move_z, speed, dt)
-    next_x, next_z = resolve_static_contacts(next_x, next_z, boxes)
-    transform.translation.x = clamp(next_x, -4.8, 4.8)
-    transform.translation.z = clamp(next_z, -4.8, 4.8)
+    next_x, next_z = resolve_static_contacts(next_x, next_z, boxes, settings)
+    next_x, next_z = resolve_dynamic_ball_contacts(next_x, next_z, balls, move_x, move_z, speed, dt, settings)
+    next_x, next_z = resolve_static_contacts(next_x, next_z, boxes, settings)
+    transform.translation.x = clamp(next_x, settings.move_min_x, settings.move_max_x)
+    transform.translation.z = clamp(next_z, settings.move_min_z, settings.move_max_z)
   end
 
   if moving or mouse_look then
-    facing_yaw = model_yaw_from_camera_yaw(camera_yaw)
+    facing_yaw = model_yaw_from_camera_yaw(camera_yaw, settings)
   end
 
   if moving or mouse_look then
@@ -524,9 +615,9 @@ function script.on_update(self, ctx)
     self:set_transform(transform)
   end
   if moving then
-    update_walk_pose(ctx, moving, running, strafe_input)
+    update_walk_pose(ctx, moving, running, strafe_input, settings)
   end
-  update_camera(ctx, transform, camera_yaw, pitch, running)
+  update_camera(ctx, transform, camera_yaw, pitch, running, settings)
 end
 
 return script

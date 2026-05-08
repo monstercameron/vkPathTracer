@@ -1,3 +1,24 @@
+-- @editor camera_name text default="Audio Demo Camera Listener" label="Camera Entity"
+-- @editor controls_panel_name text default="Audio Controls Panel" label="Controls Entity"
+-- @editor controls_panel_id number default=9790 min=0 max=999999 step=1 label="Controls Entity ID"
+-- @editor camera_target_y number default=0.65 min=-2 max=4 step=0.01 label="Camera Target Y"
+-- @editor camera_distance number default=5.8 min=0.5 max=20 step=0.1 label="Camera Distance"
+-- @editor camera_run_distance number default=6.4 min=0.5 max=20 step=0.1 label="Run Camera Distance"
+-- @editor min_camera_pitch number default=0.12 min=-1.2 max=1.2 step=0.01 label="Min Camera Pitch"
+-- @editor max_camera_pitch number default=0.72 min=-1.2 max=1.2 step=0.01 label="Max Camera Pitch"
+-- @editor mouse_yaw_sensitivity number default=0.0018 min=0 max=0.02 step=0.0001 label="Yaw Sensitivity"
+-- @editor mouse_pitch_sensitivity number default=0.0014 min=0 max=0.02 step=0.0001 label="Pitch Sensitivity"
+-- @editor max_mouse_delta number default=90.0 min=1 max=500 step=1 label="Max Mouse Delta"
+-- @editor walk_speed number default=2.2 min=0 max=10 step=0.1 label="Walk Speed"
+-- @editor run_speed number default=3.8 min=0 max=14 step=0.1 label="Run Speed"
+-- @editor ambience_volume number default=0.32 min=0 max=1 step=0.01 label="Ambience Volume"
+-- @editor footstep_walk_volume number default=0.52 min=0 max=1 step=0.01 label="Walk Footsteps"
+-- @editor footstep_run_volume number default=0.72 min=0 max=1 step=0.01 label="Run Footsteps"
+-- @editor fire_volume number default=0.85 min=0 max=1 step=0.01 label="Fire Volume"
+-- @editor pickup_volume number default=0.68 min=0 max=1 step=0.01 label="Pickup Volume"
+-- @editor terminal_volume number default=0.75 min=0 max=1 step=0.01 label="Terminal Volume"
+-- @editor radar_volume number default=0.35 min=0 max=1 step=0.01 label="Radar Volume"
+
 local script = {}
 
 local CONTROLS_PANEL_ID = 9790
@@ -11,7 +32,15 @@ local MAX_CAMERA_PITCH = 0.72
 local MOUSE_YAW_SENSITIVITY = 0.0018
 local MOUSE_PITCH_SENSITIVITY = 0.0014
 local MAX_MOUSE_DELTA = 90.0
+local WALK_SPEED = 2.2
+local RUN_SPEED = 3.8
 local AMBIENCE_VOLUME = 0.32
+local FOOTSTEP_WALK_VOLUME = 0.52
+local FOOTSTEP_RUN_VOLUME = 0.72
+local FIRE_VOLUME = 0.85
+local PICKUP_VOLUME = 0.68
+local TERMINAL_VOLUME = 0.75
+local RADAR_VOLUME = 0.35
 
 local function param_number(ctx, name, fallback)
   if ctx == nil or ctx.params == nil then
@@ -34,6 +63,8 @@ end
 local function read_settings(ctx)
   return {
     camera_name = param_string(ctx, "camera_name", CAMERA_NAME),
+    controls_panel_name = param_string(ctx, "controls_panel_name", CONTROLS_PANEL_NAME),
+    controls_panel_id = math.floor(param_number(ctx, "controls_panel_id", CONTROLS_PANEL_ID)),
     camera_target_y = param_number(ctx, "camera_target_y", CAMERA_TARGET_Y),
     camera_distance = param_number(ctx, "camera_distance", CAMERA_DISTANCE),
     camera_run_distance = param_number(ctx, "camera_run_distance", CAMERA_RUN_DISTANCE),
@@ -42,7 +73,15 @@ local function read_settings(ctx)
     mouse_yaw_sensitivity = param_number(ctx, "mouse_yaw_sensitivity", MOUSE_YAW_SENSITIVITY),
     mouse_pitch_sensitivity = param_number(ctx, "mouse_pitch_sensitivity", MOUSE_PITCH_SENSITIVITY),
     max_mouse_delta = param_number(ctx, "max_mouse_delta", MAX_MOUSE_DELTA),
+    walk_speed = param_number(ctx, "walk_speed", WALK_SPEED),
+    run_speed = param_number(ctx, "run_speed", RUN_SPEED),
     ambience_volume = param_number(ctx, "ambience_volume", AMBIENCE_VOLUME),
+    footstep_walk_volume = param_number(ctx, "footstep_walk_volume", FOOTSTEP_WALK_VOLUME),
+    footstep_run_volume = param_number(ctx, "footstep_run_volume", FOOTSTEP_RUN_VOLUME),
+    fire_volume = param_number(ctx, "fire_volume", FIRE_VOLUME),
+    pickup_volume = param_number(ctx, "pickup_volume", PICKUP_VOLUME),
+    terminal_volume = param_number(ctx, "terminal_volume", TERMINAL_VOLUME),
+    radar_volume = param_number(ctx, "radar_volume", RADAR_VOLUME),
   }
 end
 
@@ -240,17 +279,17 @@ local function play(ctx, event_name, options)
   end
 end
 
-local function ensure_controls_panel(ctx)
+local function ensure_controls_panel(ctx, settings)
   if ctx == nil or ctx.world == nil then
     return
   end
-  if ctx.world:find_entity(CONTROLS_PANEL_NAME) ~= nil then
+  if ctx.world:find_entity(settings.controls_panel_name) ~= nil then
     return
   end
 
   ctx.world:spawn_entity({
-    id = CONTROLS_PANEL_ID,
-    name = CONTROLS_PANEL_NAME,
+    id = settings.controls_panel_id,
+    name = settings.controls_panel_name,
     parent = 9730,
     ui_panel = {
       id = "audio_demo.controls",
@@ -278,7 +317,8 @@ local function ensure_controls_panel(ctx)
 end
 
 function script.on_load(self, ctx)
-  play(ctx, "ui.radar.ping", { volume = 0.55, spatial = false })
+  local settings = read_settings(ctx)
+  play(ctx, "ui.radar.ping", { volume = settings.radar_volume, spatial = false })
 end
 
 function script.on_enable(self, ctx)
@@ -291,12 +331,12 @@ function script.on_enable(self, ctx)
 end
 
 function script.on_update(self, ctx)
-  ensure_controls_panel(ctx)
+  local settings = read_settings(ctx)
+  ensure_controls_panel(ctx, settings)
   if ctx == nil or ctx.world == nil then
     return
   end
 
-  local settings = read_settings(ctx)
   local transform = transform_or_default(self)
   local camera = ctx.world:find_entity(settings.camera_name)
   local camera_transform = camera ~= nil and transform_or_default(camera) or nil
@@ -322,7 +362,7 @@ function script.on_update(self, ctx)
   local dx, dz, moving = movement_axis(input, camera_yaw)
   local dt = ctx.dt or ctx.delta_seconds or 0.016
   local running = moving and key(input, "shift")
-  local speed = running and 3.8 or 2.2
+  local speed = running and settings.run_speed or settings.walk_speed
 
   if moving then
     transform.translation.x = transform.translation.x + dx * speed * dt
@@ -332,7 +372,7 @@ function script.on_update(self, ctx)
     if (ctx.frame % cadence) == 0 then
       play(ctx, "player.footstep.dirt", {
         position = transform.translation,
-        volume = running and 0.72 or 0.52,
+        volume = running and settings.footstep_run_volume or settings.footstep_walk_volume,
         pitch = running and 1.12 or 0.96,
         spatial = true
       })
@@ -347,7 +387,7 @@ function script.on_update(self, ctx)
   if key(input, "space") and (ctx.frame % 10) == 0 then
     play(ctx, "weapon.rifle.fire", {
       position = transform.translation,
-      volume = 0.85,
+      volume = settings.fire_volume,
       pitch = 1.0,
       spatial = true
     })
@@ -356,7 +396,7 @@ function script.on_update(self, ctx)
   if key(input, "E") and (ctx.frame % 30) == 0 then
     play(ctx, "pickup.collect", {
       position = transform.translation,
-      volume = 0.68,
+      volume = settings.pickup_volume,
       spatial = true
     })
   end
@@ -364,13 +404,13 @@ function script.on_update(self, ctx)
   if key(input, "G") and (ctx.frame % 45) == 0 then
     play(ctx, "objective.terminal.disabled", {
       position = transform.translation,
-      volume = 0.75,
+      volume = settings.terminal_volume,
       spatial = true
     })
   end
 
   if (ctx.frame % 180) == 0 then
-    play(ctx, "ui.radar.ping", { volume = 0.35, spatial = false })
+    play(ctx, "ui.radar.ping", { volume = settings.radar_volume, spatial = false })
   end
 end
 

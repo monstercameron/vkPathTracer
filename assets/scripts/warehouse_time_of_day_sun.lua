@@ -1,3 +1,11 @@
+-- @editor time_of_day_hour number default=15.5 min=0 max=24 step=0.25 label="Time Of Day"
+-- @editor sunrise_hour number default=6.0 min=0 max=12 step=0.25 label="Sunrise Hour"
+-- @editor sunset_hour number default=18.5 min=12 max=24 step=0.25 label="Sunset Hour"
+-- @editor max_elevation_degrees number default=62.0 min=5 max=90 step=1 label="Max Elevation"
+-- @editor azimuth_start_degrees number default=-98.0 min=-180 max=180 step=1 label="Azimuth Start"
+-- @editor azimuth_end_degrees number default=84.0 min=-180 max=180 step=1 label="Azimuth End"
+-- @editor sun_distance_meters number default=34.0 min=1 max=120 step=1 label="Sun Distance"
+-- @editor sun_intensity number default=900.0 min=0 max=5000 step=25 label="Sun Intensity"
 local script = {}
 
 local DEFAULTS = {
