@@ -2,7 +2,7 @@ local script = {}
 
 function script.on_spawn(self, ctx)
   self:set_name("Script Spawned Child - on_spawn complete")
-  self:set_debug_value("spawn_frame", ctx.frame)
+  self:log("debug spawn_frame")
 end
 
 function script.on_update(self, ctx)

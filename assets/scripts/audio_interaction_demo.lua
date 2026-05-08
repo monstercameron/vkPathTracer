@@ -11,16 +11,50 @@ local MAX_CAMERA_PITCH = 0.72
 local MOUSE_YAW_SENSITIVITY = 0.0018
 local MOUSE_PITCH_SENSITIVITY = 0.0014
 local MAX_MOUSE_DELTA = 90.0
+local AMBIENCE_VOLUME = 0.32
+
+local function param_number(ctx, name, fallback)
+  if ctx == nil or ctx.params == nil then
+    return fallback
+  end
+  local parsed = tonumber(ctx.params[name])
+  if parsed == nil then
+    return fallback
+  end
+  return parsed
+end
+
+local function param_string(ctx, name, fallback)
+  if ctx == nil or ctx.params == nil or ctx.params[name] == nil or ctx.params[name] == "" then
+    return fallback
+  end
+  return ctx.params[name]
+end
+
+local function read_settings(ctx)
+  return {
+    camera_name = param_string(ctx, "camera_name", CAMERA_NAME),
+    camera_target_y = param_number(ctx, "camera_target_y", CAMERA_TARGET_Y),
+    camera_distance = param_number(ctx, "camera_distance", CAMERA_DISTANCE),
+    camera_run_distance = param_number(ctx, "camera_run_distance", CAMERA_RUN_DISTANCE),
+    min_camera_pitch = param_number(ctx, "min_camera_pitch", MIN_CAMERA_PITCH),
+    max_camera_pitch = param_number(ctx, "max_camera_pitch", MAX_CAMERA_PITCH),
+    mouse_yaw_sensitivity = param_number(ctx, "mouse_yaw_sensitivity", MOUSE_YAW_SENSITIVITY),
+    mouse_pitch_sensitivity = param_number(ctx, "mouse_pitch_sensitivity", MOUSE_PITCH_SENSITIVITY),
+    max_mouse_delta = param_number(ctx, "max_mouse_delta", MAX_MOUSE_DELTA),
+    ambience_volume = param_number(ctx, "ambience_volume", AMBIENCE_VOLUME),
+  }
+end
 
 local function clamp(value, lo, hi)
   return math.max(lo, math.min(hi, value))
 end
 
-local function filtered_mouse_delta(value)
+local function filtered_mouse_delta(value, max_delta)
   if math.abs(value) < 0.01 then
     return 0.0
   end
-  return clamp(value, -MAX_MOUSE_DELTA, MAX_MOUSE_DELTA)
+  return clamp(value, -max_delta, max_delta)
 end
 
 local function key(input, name)
@@ -157,25 +191,25 @@ local function camera_yaw_from_transform(camera_transform, player_transform, fal
   return math.atan(forward_x, -forward_z)
 end
 
-local function current_camera_pitch(camera_transform, player_transform)
-  local target_y = player_transform.translation.y + CAMERA_TARGET_Y
+local function current_camera_pitch(camera_transform, player_transform, settings)
+  local target_y = player_transform.translation.y + settings.camera_target_y
   local dx = camera_transform.translation.x - player_transform.translation.x
   local dz = camera_transform.translation.z - player_transform.translation.z
   local horizontal = math.max(0.0001, math.sqrt(dx * dx + dz * dz))
   return clamp(math.atan(camera_transform.translation.y - target_y, horizontal),
-      MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
+      settings.min_camera_pitch, settings.max_camera_pitch)
 end
 
-local function update_camera(ctx, player_transform, camera_yaw, pitch, running)
-  local camera = ctx.world:find_entity(CAMERA_NAME)
+local function update_camera(ctx, player_transform, camera_yaw, pitch, running, settings)
+  local camera = ctx.world:find_entity(settings.camera_name)
   if camera == nil then
     return
   end
 
   local camera_transform = transform_or_default(camera)
-  local distance = running and CAMERA_RUN_DISTANCE or CAMERA_DISTANCE
+  local distance = running and settings.camera_run_distance or settings.camera_distance
   local target_x = player_transform.translation.x
-  local target_y = player_transform.translation.y + CAMERA_TARGET_Y
+  local target_y = player_transform.translation.y + settings.camera_target_y
   local target_z = player_transform.translation.z
   local forward_x = math.sin(camera_yaw)
   local forward_z = -math.cos(camera_yaw)
@@ -247,30 +281,42 @@ function script.on_load(self, ctx)
   play(ctx, "ui.radar.ping", { volume = 0.55, spatial = false })
 end
 
+function script.on_enable(self, ctx)
+  local settings = read_settings(ctx)
+  play(ctx, "ambience.forest", {
+    volume = settings.ambience_volume,
+    spatial = false,
+    loop = true
+  })
+end
+
 function script.on_update(self, ctx)
   ensure_controls_panel(ctx)
   if ctx == nil or ctx.world == nil then
     return
   end
 
+  local settings = read_settings(ctx)
   local transform = transform_or_default(self)
-  local camera = ctx.world:find_entity(CAMERA_NAME)
+  local camera = ctx.world:find_entity(settings.camera_name)
   local camera_transform = camera ~= nil and transform_or_default(camera) or nil
   local facing_yaw = yaw_from_quat(transform.rotation)
   local camera_yaw = camera_transform ~= nil and
       camera_yaw_from_transform(camera_transform, transform, facing_yaw) or
       facing_yaw
   local pitch = camera_transform ~= nil and
-      current_camera_pitch(camera_transform, transform) or
-      MIN_CAMERA_PITCH
+      current_camera_pitch(camera_transform, transform, settings) or
+      settings.min_camera_pitch
 
   local input = ctx.input
-  local mouse_dx = filtered_mouse_delta(input.mouse_delta_x or 0.0)
-  local mouse_dy = filtered_mouse_delta(input.mouse_delta_y or 0.0)
+  local mouse_dx = filtered_mouse_delta(input.mouse_delta_x or 0.0, settings.max_mouse_delta)
+  local mouse_dy = filtered_mouse_delta(input.mouse_delta_y or 0.0, settings.max_mouse_delta)
   local mouse_look = math.abs(mouse_dx) > 0.001 or math.abs(mouse_dy) > 0.001
   if mouse_look then
-    camera_yaw = camera_yaw + mouse_dx * MOUSE_YAW_SENSITIVITY
-    pitch = clamp(pitch + mouse_dy * MOUSE_PITCH_SENSITIVITY, MIN_CAMERA_PITCH, MAX_CAMERA_PITCH)
+    camera_yaw = camera_yaw + mouse_dx * settings.mouse_yaw_sensitivity
+    pitch = clamp(pitch + mouse_dy * settings.mouse_pitch_sensitivity,
+        settings.min_camera_pitch,
+        settings.max_camera_pitch)
   end
 
   local dx, dz, moving = movement_axis(input, camera_yaw)
@@ -296,7 +342,7 @@ function script.on_update(self, ctx)
     transform.rotation = yaw_quat(camera_yaw)
     self:set_transform(transform)
   end
-  update_camera(ctx, transform, camera_yaw, pitch, running)
+  update_camera(ctx, transform, camera_yaw, pitch, running, settings)
 
   if key(input, "space") and (ctx.frame % 10) == 0 then
     play(ctx, "weapon.rifle.fire", {

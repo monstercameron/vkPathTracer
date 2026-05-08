@@ -140,6 +140,14 @@
         "focus_distance": 7.42,
         "f_stop": 5.6,
         "iso": 100.0
+      },
+      "script": {
+        "source": "assets/scripts/generic_fps_camera.lua",
+        "language": "lua",
+        "entry": "default",
+        "module_id": "generic_fps_camera",
+        "enabled": true,
+        "reload_on_save": true
       }
     },
     {

@@ -370,6 +370,108 @@
       }
     },
     {
+      "id": 9112,
+      "name": "Hero Torso",
+      "transform": {
+        "translation": [0.0, 1.24, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.46, 0.72, 0.26]
+      },
+      "mesh": {
+        "mesh_id": 9301,
+        "material_id": 9202
+      },
+      "hierarchy": {
+        "parent": 9110,
+        "sibling_order": 2
+      }
+    },
+    {
+      "id": 9113,
+      "name": "Hero Head",
+      "transform": {
+        "translation": [0.0, 1.98, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.28, 0.28, 0.24]
+      },
+      "mesh": {
+        "mesh_id": 9301,
+        "material_id": 9203
+      },
+      "hierarchy": {
+        "parent": 9110,
+        "sibling_order": 3
+      }
+    },
+    {
+      "id": 9114,
+      "name": "Hero Left Arm",
+      "transform": {
+        "translation": [-0.46, 1.3, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.16, 0.58, 0.16]
+      },
+      "mesh": {
+        "mesh_id": 9301,
+        "material_id": 9202
+      },
+      "hierarchy": {
+        "parent": 9110,
+        "sibling_order": 4
+      }
+    },
+    {
+      "id": 9115,
+      "name": "Hero Right Arm",
+      "transform": {
+        "translation": [0.46, 1.3, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.16, 0.58, 0.16]
+      },
+      "mesh": {
+        "mesh_id": 9301,
+        "material_id": 9202
+      },
+      "hierarchy": {
+        "parent": 9110,
+        "sibling_order": 5
+      }
+    },
+    {
+      "id": 9116,
+      "name": "Hero Left Leg",
+      "transform": {
+        "translation": [-0.18, 0.35, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.18, 0.68, 0.18]
+      },
+      "mesh": {
+        "mesh_id": 9301,
+        "material_id": 9204
+      },
+      "hierarchy": {
+        "parent": 9110,
+        "sibling_order": 6
+      }
+    },
+    {
+      "id": 9117,
+      "name": "Hero Right Leg",
+      "transform": {
+        "translation": [0.18, 0.35, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.18, 0.68, 0.18]
+      },
+      "mesh": {
+        "mesh_id": 9301,
+        "material_id": 9204
+      },
+      "hierarchy": {
+        "parent": 9110,
+        "sibling_order": 7
+      }
+    },
+    {
       "id": 9120,
       "name": "Cover Block Left",
       "transform": {

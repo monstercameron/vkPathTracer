@@ -750,6 +750,14 @@
         "iso": 200.0,
         "exposure_compensation": 0.15,
         "white_balance_kelvin": 4000.0
+      },
+      "script": {
+        "source": "assets/scripts/generic_fps_camera.lua",
+        "language": "lua",
+        "entry": "default",
+        "module_id": "generic_fps_camera",
+        "enabled": true,
+        "reload_on_save": true
       }
     },
     {

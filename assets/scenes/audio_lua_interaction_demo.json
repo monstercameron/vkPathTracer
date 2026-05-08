@@ -241,6 +241,18 @@
         "source": "assets/scripts/audio_interaction_demo.lua",
         "language": "lua",
         "entry": "default",
+        "params": {
+          "camera_name": "Audio Demo Camera Listener",
+          "camera_target_y": 0.65,
+          "camera_distance": 5.8,
+          "camera_run_distance": 6.4,
+          "min_camera_pitch": 0.12,
+          "max_camera_pitch": 0.72,
+          "mouse_yaw_sensitivity": 0.0018,
+          "mouse_pitch_sensitivity": 0.0014,
+          "max_mouse_delta": 90.0,
+          "ambience_volume": 0.32
+        },
         "enabled": true,
         "reload_on_save": true
       }
@@ -315,7 +327,7 @@
         "event": "ambience.forest",
         "bus": "ambience",
         "enabled": true,
-        "autoplay": true,
+        "autoplay": false,
         "loop": true,
         "spatial": false,
         "volume": 0.32,

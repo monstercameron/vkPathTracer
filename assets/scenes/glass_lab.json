@@ -244,7 +244,15 @@
         "rotation": [-0.074, 0.0, 0.0, 0.997],
         "scale": [1.0, 1.0, 1.0]
       },
-      "hierarchy": {"parent": 606, "sibling_order": 0}
+      "hierarchy": {"parent": 606, "sibling_order": 0},
+      "script": {
+        "source": "assets/scripts/generic_fps_camera.lua",
+        "language": "lua",
+        "entry": "default",
+        "module_id": "generic_fps_camera",
+        "enabled": true,
+        "reload_on_save": true
+      }
     },
     {"id": 630, "name": "charcoal floor", "mesh": {"mesh_id": 610, "material_id": 610}, "hierarchy": {"parent": 608, "sibling_order": 0}},
     {"id": 631, "name": "front warm reference stripe", "mesh": {"mesh_id": 611, "material_id": 611}, "hierarchy": {"parent": 608, "sibling_order": 1}},

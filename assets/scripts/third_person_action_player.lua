@@ -370,10 +370,6 @@ local function update_walk_pose(ctx, moving, running, strafe_input)
       posed_model = true
     end
   end
-  if posed_model then
-    return
-  end
-
   set_limb(ctx, "Hero Left Arm", counter * amount * 0.7)
   set_limb(ctx, "Hero Right Arm", stride * amount * 0.7)
   set_limb(ctx, "Hero Left Leg", stride * amount, 0.35 + body_bob)

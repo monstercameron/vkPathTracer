@@ -491,19 +491,57 @@ function Build-Scene([string]$outputPath) {
       entry = "default"
       enabled = $true
       reload_on_save = $true
+      params = [ordered]@{
+        time_of_day_hour = "15.5"
+        sunrise_hour = "6.0"
+        sunset_hour = "18.5"
+        max_elevation_degrees = "62.0"
+        azimuth_start_degrees = "-98.0"
+        azimuth_end_degrees = "84.0"
+        sun_distance_meters = "34.0"
+        sun_intensity = "900.0"
+      }
     }
   })
   $entities.Add([ordered]@{
     id = 9900
-    name = "Main warehouse camera"
-    transform = CameraTransform 0.0 4.9 17.8 -11.0
+    name = "FPS warehouse walkthrough camera"
+    transform = Transform 0.0 1.72 14.2 1.0
     camera = [ordered]@{
       fov = 64.0
       near_plane = 0.05
       far_plane = 180.0
-      focus_distance = 16.0
+      focus_distance = 12.0
       f_stop = 7.0
       exposure_compensation = 2.35
+    }
+    script = [ordered]@{
+      source = "assets/scripts/generic_fps_camera.lua"
+      language = "lua"
+      entry = "default"
+      enabled = $true
+      reload_on_save = $true
+      params = [ordered]@{
+        movement_mode = "walk"
+        walk_speed = "4.2"
+        run_multiplier = "1.75"
+        mouse_yaw_sensitivity = "0.002"
+        mouse_pitch_sensitivity = "0.0016"
+        min_pitch_degrees = "-82"
+        max_pitch_degrees = "82"
+        fixed_y = "1.72"
+        min_x = "-20"
+        max_x = "20"
+        min_z = "-14.8"
+        max_z = "14.4"
+        fov = "64"
+        focus_distance = "12"
+        show_controls = "true"
+        controls_panel_id = "9901"
+        controls_panel_name = "FPS Camera Controls Panel"
+        controls_title = "FPS Camera Controls"
+        controls_anchor = "top_left"
+      }
     }
   })
 
@@ -513,7 +551,7 @@ function Build-Scene([string]$outputPath) {
       scene_name = "Lowest LOD Military Warehouse"
       author = "vkPathTracer"
       created = (Get-Date).ToString("yyyy-MM-dd")
-      notes = "Generated military warehouse layout for all lod3_very_far_r0p1 game model assets. Assets are semantically scaled to human-realistic size and staged on large or small lazy susan display turntables. The warehouse has clean tile flooring, window openings with glass panes for HDRI sky light, high-bay lights, per-model inspection spots, and a Lua-controlled sun with time_of_day_hour exposed in the scripting panel variables."
+      notes = "Generated military warehouse layout for all lod3_very_far_r0p1 game model assets. Assets are semantically scaled to human-realistic size and staged on large or small lazy susan display turntables. The warehouse has clean tile flooring, window openings with glass panes for HDRI sky light, high-bay lights, per-model inspection spots, a human-height FPS walkthrough camera with a generic Lua controller, and a Lua-controlled sun with time_of_day_hour exposed in the scripting panel variables."
     }
     assets = $assets
     materials = $materials
@@ -522,11 +560,11 @@ function Build-Scene([string]$outputPath) {
     cameras = @(
       [ordered]@{
         id = 9900
-        name = "Main warehouse camera"
+        name = "FPS warehouse walkthrough camera"
         fov = 64.0
         near_plane = 0.05
         far_plane = 180.0
-        focus_distance = 16.0
+        focus_distance = 12.0
         f_stop = 7.0
         exposure_compensation = 2.35
       }

@@ -1,13 +1,16 @@
 local script = {}
 
-script.time_of_day_hour = 15.5
-script.sunrise_hour = 6.0
-script.sunset_hour = 18.5
-script.max_elevation_degrees = 62.0
-script.azimuth_start_degrees = -98.0
-script.azimuth_end_degrees = 84.0
-script.sun_distance_meters = 34.0
-script.sun_intensity = 900.0
+local DEFAULTS = {
+  time_of_day_hour = 15.5,
+  sunrise_hour = 6.0,
+  sunset_hour = 18.5,
+  max_elevation_degrees = 62.0,
+  azimuth_start_degrees = -98.0,
+  azimuth_end_degrees = 84.0,
+  sun_distance_meters = 34.0,
+  sun_intensity = 900.0,
+}
+
 script.last_elevation_degrees = 0.0
 script.last_azimuth_degrees = 0.0
 script.last_direction = "not evaluated"
@@ -34,6 +37,18 @@ local function normalize(v)
   return { x = v.x / len, y = v.y / len, z = v.z / len }
 end
 
+local function param_number(ctx, name)
+  local fallback = DEFAULTS[name]
+  if ctx == nil or ctx.params == nil then
+    return fallback
+  end
+  local value = tonumber(ctx.params[name])
+  if value == nil then
+    return fallback
+  end
+  return value
+end
+
 local function transform_or_default(self)
   local transform = self:get_transform()
   if transform ~= nil then
@@ -47,7 +62,7 @@ local function transform_or_default(self)
   }
 end
 
-local function light_or_default(self)
+local function light_or_default(self, sun_intensity)
   local light = self:get_light()
   if light ~= nil then
     return light
@@ -56,7 +71,7 @@ local function light_or_default(self)
   return {
     type = "spot",
     color = { x = 1.0, y = 0.86, z = 0.62 },
-    intensity = script.sun_intensity,
+    intensity = sun_intensity,
     radius = 0.12,
     direction = { x = 0.535, y = -0.566, z = -0.629 },
     beam_angle = 72.0,
@@ -64,11 +79,20 @@ local function light_or_default(self)
   }
 end
 
-local function apply_time_of_day(self)
-  local day_span = math.max(0.1, script.sunset_hour - script.sunrise_hour)
-  local t = clamp((script.time_of_day_hour - script.sunrise_hour) / day_span, 0.0, 1.0)
-  local elevation = math.sin(t * math.pi) * script.max_elevation_degrees
-  local azimuth = script.azimuth_start_degrees + (script.azimuth_end_degrees - script.azimuth_start_degrees) * t
+local function apply_time_of_day(self, ctx)
+  local time_of_day_hour = param_number(ctx, "time_of_day_hour")
+  local sunrise_hour = param_number(ctx, "sunrise_hour")
+  local sunset_hour = param_number(ctx, "sunset_hour")
+  local max_elevation_degrees = param_number(ctx, "max_elevation_degrees")
+  local azimuth_start_degrees = param_number(ctx, "azimuth_start_degrees")
+  local azimuth_end_degrees = param_number(ctx, "azimuth_end_degrees")
+  local sun_distance_meters = param_number(ctx, "sun_distance_meters")
+  local sun_intensity = param_number(ctx, "sun_intensity")
+
+  local day_span = math.max(0.1, sunset_hour - sunrise_hour)
+  local t = clamp((time_of_day_hour - sunrise_hour) / day_span, 0.0, 1.0)
+  local elevation = math.sin(t * math.pi) * max_elevation_degrees
+  local azimuth = azimuth_start_degrees + (azimuth_end_degrees - azimuth_start_degrees) * t
   local elevation_rad = radians(elevation)
   local azimuth_rad = radians(azimuth)
   local cos_elevation = math.cos(elevation_rad)
@@ -85,21 +109,21 @@ local function apply_time_of_day(self)
   })
 
   local transform = transform_or_default(self)
-  transform.translation.x = from_origin_to_sun.x * script.sun_distance_meters
-  transform.translation.y = 1.8 + math.max(6.0, from_origin_to_sun.y * script.sun_distance_meters)
-  transform.translation.z = from_origin_to_sun.z * script.sun_distance_meters
+  transform.translation.x = from_origin_to_sun.x * sun_distance_meters
+  transform.translation.y = 1.8 + math.max(6.0, from_origin_to_sun.y * sun_distance_meters)
+  transform.translation.z = from_origin_to_sun.z * sun_distance_meters
   self:set_transform(transform)
 
   local warm = 1.0 - clamp(elevation / 45.0, 0.0, 1.0)
   local brightness = math.max(0.22, math.sin(elevation_rad))
-  local light = light_or_default(self)
+  local light = light_or_default(self, sun_intensity)
   light.type = "spot"
   light.color = {
     x = 1.0,
     y = 0.78 + (1.0 - warm) * 0.16,
     z = 0.52 + (1.0 - warm) * 0.34,
   }
-  light.intensity = script.sun_intensity * brightness
+  light.intensity = sun_intensity * brightness
   light.radius = 0.12
   light.direction = from_sun_to_origin
   light.beam_angle = 72.0
@@ -112,11 +136,11 @@ local function apply_time_of_day(self)
 end
 
 function script.on_load(self, ctx)
-  apply_time_of_day(self)
+  apply_time_of_day(self, ctx)
 end
 
 function script.on_update(self, ctx)
-  apply_time_of_day(self)
+  apply_time_of_day(self, ctx)
 end
 
 return script
