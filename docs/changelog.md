@@ -1,11 +1,23 @@
 # Changelog
 
+## 2026-05-08 (session 40)
+
+### Scene script bootstrap and Lua structure
+
+- Added runtime-only scene script bootstrap worlds so top-level `scene_script` bindings and default FPS fallback scripts execute without mutating source scene JSON.
+- Exposed Lua scene bootstrap helpers for main-camera lookup, component queries, idempotent script attachment, built-in system lookup, interactable registration diagnostics, structured diagnostics, and safe engine-owned includes.
+- Wired Qt Play/Live Edit script reload and dispatch through the same bootstrap-resolved runtime world, dispatching `on_load` when script-running modes start.
+- Added script dock bootstrap diagnostics and scene-init management commands for create/open, default FPS bake, and fallback disable flows.
+- Expanded Lua editor annotations with `-- [editor]` alias support, optional metadata-only params, generated Qt controls for missing annotated params, and converted tunable sample scripts to `ctx.params`.
+- Expanded bootstrap and scripting smoke coverage for runtime overlays, generic FPS fallback, safe include, and `ctx.scene` APIs.
+
 ## 2026-05-07 (session 39)
 
 ### Audio, script UI, and runtime cleanup
 
 - Added optional audio build plumbing, audio ECS listener/emitter components, no-op/miniaudio-backed playback, Lua audio event posting, and file-backed footsteps/forest ambience for the Lua audio demo scene.
 - Added scriptable ECS UI panels with Lua spawn/update support and Qt canvas rendering for gameplay controls in the third-person and audio demo scenes.
+- Added Lua `-- @editor` parameter annotations so scripts can declare panel defaults, types, labels, and numeric ranges while scene `script.params` remain the persisted overrides.
 - Hardened Qt editor/playable boundaries so canvas drops and gizmo edits stay in C++ editor mode, playable Lua owns mouse-look input, selection overlays follow current transforms, and the provisional raster polygon preview path was removed.
 - Expanded transform-update diagnostics and frame-update handling across Qt, RenderCoordinator, D3D12/DXR/compute paths, and GPU buffer uploads.
 - Fixed D3D12 denoiser and temporal AA setting toggles so they update render constants, reset accumulation, and invalidate temporal history without forcing a full scene/acceleration rebuild when resources are already compatible.

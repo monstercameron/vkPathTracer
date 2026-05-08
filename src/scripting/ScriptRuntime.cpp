@@ -134,6 +134,7 @@ struct LuaHostContext {
   std::vector<ScriptDiagnostic>* runtime_diagnostics = nullptr;
   vkpt::core::StableEntityId next_entity_id = 1;
   std::unordered_set<vkpt::core::StableEntityId> reserved_entity_ids;
+  std::unordered_set<std::string> ensured_script_keys;
 };
 
 struct LuaMemoryBudget {
@@ -503,6 +504,27 @@ bool LuaBoolField(lua_State* lua, int table_index, const char* field, bool fallb
   return fallback;
 }
 
+std::unordered_map<std::string, std::string> LuaParamsTable(lua_State* lua, int table_index) {
+  std::unordered_map<std::string, std::string> params;
+  if (!lua_istable(lua, table_index)) {
+    return params;
+  }
+  const int absolute = lua_absindex(lua, table_index);
+  lua_pushnil(lua);
+  while (lua_next(lua, absolute) != 0) {
+    if (lua_isstring(lua, -2) &&
+        (lua_isstring(lua, -1) || lua_isnumber(lua, -1) || lua_isboolean(lua, -1))) {
+      if (lua_isstring(lua, -1) && !lua_isnumber(lua, -1)) {
+        params[lua_tostring(lua, -2)] = lua_tostring(lua, -1);
+      } else {
+        params[lua_tostring(lua, -2)] = LuaScalarValueText(lua, -1);
+      }
+    }
+    lua_pop(lua, 1);
+  }
+  return params;
+}
+
 vkpt::core::StableEntityId LuaStableIdField(lua_State* lua,
                                             int table_index,
                                             const char* field,
@@ -769,6 +791,12 @@ void PushScriptParams(lua_State* lua,
                       const ScriptBinding& binding,
                       const std::unordered_map<std::string, ScriptVariableOverride>& overrides) {
   lua_newtable(lua);
+  for (const auto& param : binding.editor_params) {
+    if (!param.default_value.empty()) {
+      lua_pushstring(lua, param.default_value.c_str());
+      lua_setfield(lua, -2, param.name.c_str());
+    }
+  }
   for (const auto& [key, value] : binding.params) {
     lua_pushstring(lua, value.c_str());
     lua_setfield(lua, -2, key.c_str());
@@ -1371,6 +1399,241 @@ int LuaWorldSpawnEntity(lua_State* lua) {
   return 1;
 }
 
+vkpt::core::StableEntityId LuaEntityArgument(lua_State* lua, LuaHostContext& host, int index) {
+  if (lua_istable(lua, index)) {
+    return LuaSelfEntity(lua, index);
+  }
+  if (lua_isinteger(lua, index) || lua_isnumber(lua, index)) {
+    return static_cast<vkpt::core::StableEntityId>(
+        std::max<lua_Integer>(0, lua_tointeger(lua, index)));
+  }
+  if (lua_isstring(lua, index) && host.world != nullptr) {
+    const std::string name = lua_tostring(lua, index);
+    for (const auto entity_id : host.world->all_entities()) {
+      const auto* entity = host.world->get_entity(entity_id);
+      if (entity != nullptr && entity->identity.name == name) {
+        return entity_id;
+      }
+    }
+  }
+  return 0;
+}
+
+bool ComponentNameMatches(const vkpt::scene::SceneWorld::EntityRecord& entity,
+                          std::string_view component) {
+  return (component == "transform" && entity.transform.has_value()) ||
+         (component == "camera" && entity.camera.has_value()) ||
+         (component == "light" && entity.light.has_value()) ||
+         (component == "mesh" && entity.mesh_renderer.has_value()) ||
+         (component == "mesh_renderer" && entity.mesh_renderer.has_value()) ||
+         (component == "sdf" && entity.sdf_primitive.has_value()) ||
+         (component == "sdf_primitive" && entity.sdf_primitive.has_value()) ||
+         (component == "physics" && entity.physics_body.has_value()) ||
+         (component == "physics_body" && entity.physics_body.has_value()) ||
+         (component == "script" && entity.script.has_value()) ||
+         (component == "audio_listener" && entity.audio_listener.has_value()) ||
+         (component == "audio_emitter" && entity.audio_emitter.has_value()) ||
+         (component == "ui_panel" && entity.ui_panel.has_value()) ||
+         (component == "benchmark_tag" && entity.benchmark_tag.has_value());
+}
+
+std::string BuiltinSystemSource(std::string_view module_name) {
+  if (module_name == "systems.generic_fps_camera" ||
+      module_name == "generic_fps_camera") {
+    return "assets/scripts/systems/generic_fps_camera.lua";
+  }
+  return {};
+}
+
+void PushSystemDescriptor(lua_State* lua,
+                          std::string_view module_name,
+                          std::string_view source) {
+  lua_newtable(lua);
+  lua_pushlstring(lua, module_name.data(), module_name.size());
+  lua_setfield(lua, -2, "module");
+  lua_pushlstring(lua, source.data(), source.size());
+  lua_setfield(lua, -2, "source");
+}
+
+int LuaInclude(lua_State* lua) {
+  auto* host = Host(lua);
+  const int source_index = lua_isstring(lua, 2) ? 2 : (lua_isstring(lua, 1) ? 1 : 0);
+  if (host == nullptr || source_index == 0) {
+    return luaL_error(lua, "include requires a script source path");
+  }
+  const std::string source = lua_tostring(lua, source_index);
+  const auto path = ResolveScriptPath(source);
+  const auto script_text = ReadTextFile(path);
+  if (!script_text) {
+    return luaL_error(lua, "included script source could not be read: %s",
+                      path.generic_string().c_str());
+  }
+  const auto chunk_name = "@" + path.generic_string();
+  if (luaL_loadbufferx(lua,
+                       script_text->data(),
+                       script_text->size(),
+                       chunk_name.c_str(),
+                       "t") != LUA_OK) {
+    return lua_error(lua);
+  }
+  if (lua_pcall(lua, 0, 1, 0) != LUA_OK) {
+    return lua_error(lua);
+  }
+  return 1;
+}
+
+int LuaSceneMainCamera(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr || host->world == nullptr) {
+    lua_pushnil(lua);
+    return 1;
+  }
+  for (const auto entity_id : host->world->all_entities()) {
+    const auto* entity = host->world->get_entity(entity_id);
+    if (entity != nullptr && entity->camera.has_value()) {
+      PushEntityObject(lua, *host, entity_id);
+      return 1;
+    }
+  }
+  lua_pushnil(lua);
+  return 1;
+}
+
+int LuaSceneFindEntity(lua_State* lua) {
+  return LuaWorldFindEntity(lua);
+}
+
+int LuaSceneEntitiesWithComponent(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr || host->world == nullptr || !lua_isstring(lua, 2)) {
+    lua_newtable(lua);
+    return 1;
+  }
+  const std::string component = lua_tostring(lua, 2);
+  lua_newtable(lua);
+  lua_Integer index = 1;
+  for (const auto entity_id : host->world->all_entities()) {
+    const auto* entity = host->world->get_entity(entity_id);
+    if (entity != nullptr && ComponentNameMatches(*entity, component)) {
+      PushEntityObject(lua, *host, entity_id);
+      lua_seti(lua, -2, index++);
+    }
+  }
+  return 1;
+}
+
+int LuaSceneEnsureScript(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr || host->commands == nullptr || host->world == nullptr) {
+    lua_pushboolean(lua, 0);
+    return 1;
+  }
+  const auto entity_id = LuaEntityArgument(lua, *host, 2);
+  if (entity_id == 0 || !lua_isstring(lua, 3)) {
+    lua_pushboolean(lua, 0);
+    return 1;
+  }
+  const std::string source = lua_tostring(lua, 3);
+  if (source.empty()) {
+    lua_pushboolean(lua, 0);
+    return 1;
+  }
+  const std::string key = std::to_string(entity_id) + "|" + source;
+  if (host->ensured_script_keys.contains(key)) {
+    lua_pushboolean(lua, 1);
+    return 1;
+  }
+  if (const auto* entity = host->world->get_entity(entity_id);
+      entity != nullptr && entity->script.has_value() &&
+      entity->script->script == source) {
+    lua_pushboolean(lua, 1);
+    return 1;
+  }
+
+  vkpt::scene::ScriptComponent script;
+  script.script = source;
+  script.language = "lua";
+  script.entry = "default";
+  script.module_id = source;
+  script.enabled = true;
+  script.reload_on_save = true;
+  if (lua_istable(lua, 4)) {
+    script.params = LuaParamsTable(lua, 4);
+  }
+  script.params.emplace("runtime_attached_by",
+                        host->binding == nullptr ? "scene" : host->binding->source);
+  host->commands->add_set_component(entity_id,
+                                    vkpt::scene::ComponentKind::Script,
+                                    script);
+  host->ensured_script_keys.insert(key);
+  lua_pushboolean(lua, 1);
+  return 1;
+}
+
+int LuaSceneUseSystem(lua_State* lua) {
+  auto* host = Host(lua);
+  const int module_index = lua_isstring(lua, 2) ? 2 : (lua_isstring(lua, 1) ? 1 : 0);
+  if (host == nullptr || module_index == 0) {
+    lua_pushnil(lua);
+    return 1;
+  }
+  const std::string module_name = lua_tostring(lua, module_index);
+  const auto source = BuiltinSystemSource(module_name);
+  if (source.empty()) {
+    AddLuaDiagnostic(*host,
+                     ScriptDiagnosticSeverity::Warning,
+                     "script system is not registered: " + module_name);
+    lua_pushnil(lua);
+    return 1;
+  }
+  PushSystemDescriptor(lua, module_name, source);
+  return 1;
+}
+
+int LuaSceneRegisterInteractable(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr) {
+    lua_pushboolean(lua, 0);
+    return 1;
+  }
+  const auto entity_id = LuaEntityArgument(lua, *host, 2);
+  if (entity_id == 0) {
+    AddLuaDiagnostic(*host,
+                     ScriptDiagnosticSeverity::Warning,
+                     "scene:register_interactable skipped an invalid entity");
+    lua_pushboolean(lua, 0);
+    return 1;
+  }
+  AddLuaDiagnostic(*host,
+                   ScriptDiagnosticSeverity::Info,
+                   "registered interactable entity " + std::to_string(entity_id));
+  lua_pushboolean(lua, 1);
+  return 1;
+}
+
+int LuaContextDiagnostic(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr) {
+    return 0;
+  }
+  const int level_index = lua_istable(lua, 1) ? 2 : 1;
+  const int message_index = level_index + 1;
+  std::string level = lua_isstring(lua, level_index) ? lua_tostring(lua, level_index) : "info";
+  std::transform(level.begin(), level.end(), level.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  ScriptDiagnosticSeverity severity = ScriptDiagnosticSeverity::Info;
+  if (level == "warning" || level == "warn") {
+    severity = ScriptDiagnosticSeverity::Warning;
+  } else if (level == "error") {
+    severity = ScriptDiagnosticSeverity::Error;
+  }
+  const std::string message =
+      lua_isstring(lua, message_index) ? lua_tostring(lua, message_index) : "script diagnostic";
+  AddLuaDiagnostic(*host, severity, message);
+  return 0;
+}
+
 std::vector<int> LuaKeyCandidates(lua_State* lua, int index) {
   std::vector<int> candidates;
   if (lua_isinteger(lua, index) || lua_isnumber(lua, index)) {
@@ -1461,6 +1724,22 @@ void PushWorldTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "remove_component");
   PushHostClosure(lua, host, LuaWorldAssignMaterial);
   lua_setfield(lua, -2, "assign_material");
+}
+
+void PushSceneTable(lua_State* lua, LuaHostContext& host) {
+  lua_newtable(lua);
+  PushHostClosure(lua, host, LuaSceneMainCamera);
+  lua_setfield(lua, -2, "main_camera");
+  PushHostClosure(lua, host, LuaSceneFindEntity);
+  lua_setfield(lua, -2, "find_entity");
+  PushHostClosure(lua, host, LuaSceneEntitiesWithComponent);
+  lua_setfield(lua, -2, "entities_with_component");
+  PushHostClosure(lua, host, LuaSceneEnsureScript);
+  lua_setfield(lua, -2, "ensure_script");
+  PushHostClosure(lua, host, LuaSceneUseSystem);
+  lua_setfield(lua, -2, "use_system");
+  PushHostClosure(lua, host, LuaSceneRegisterInteractable);
+  lua_setfield(lua, -2, "register_interactable");
 }
 
 std::string ResolvedRuntimeMode(const ScriptExecutionContext& context) {
@@ -1647,12 +1926,18 @@ void PushContextTable(lua_State* lua,
   lua_setfield(lua, -2, "params");
   PushWorldTable(lua, host);
   lua_setfield(lua, -2, "world");
+  PushSceneTable(lua, host);
+  lua_setfield(lua, -2, "scene");
   PushInputTable(lua, host);
   lua_setfield(lua, -2, "input");
   PushEditorTable(lua, context);
   lua_setfield(lua, -2, "editor");
   PushAudioTable(lua, host);
   lua_setfield(lua, -2, "audio");
+  PushHostClosure(lua, host, LuaContextDiagnostic);
+  lua_setfield(lua, -2, "diagnostic");
+  PushHostClosure(lua, host, LuaInclude);
+  lua_setfield(lua, -2, "include");
 }
 
 vkpt::core::StableEntityId NextEntityId(const vkpt::scene::SceneWorld& world) {
@@ -1709,6 +1994,8 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
   const auto hook_start = std::chrono::steady_clock::now();
 
   OpenSafeLuaLibraries(lua);
+  PushHostClosure(lua, host, LuaInclude);
+  lua_setglobal(lua, "include");
   if (context.instruction_budget > 0) {
     lua_sethook(lua,
                 LuaInstructionBudgetHook,
@@ -1867,6 +2154,7 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
   if (BindingSignature(current_bindings) != BindingSignature(m_bindings)) {
     // Entity/script topology changes invalidate stable dispatch order and compiled bytecode assumptions.
     m_bindings = current_bindings;
+    ApplyScriptEditorAnnotations(m_bindings);
     m_lua_bytecode_cache.clear();
     m_disabled_until_reload.clear();
   }

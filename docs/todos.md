@@ -4019,7 +4019,7 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 # 20. Scene Init, Default FPS Bootstrap, and Scalable Script Layout Backlog
 
-## [ ] INIT01 - Add a scene-level init script field to the scene schema
+## [x] INIT01 - Add a scene-level init script field to the scene schema
 
 **Deliverable:** Scenes can declare one authoritative bootstrap script without abusing camera or entity script components.
 
@@ -4031,7 +4031,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Add round-trip coverage for top-level scene init scripts, disabled init scripts, and legacy scenes with no top-level script.
 
-## [ ] INIT02 - Define a scalable script directory layout
+**Completed:** `scene_script` now loads, validates, exports, and round-trips with entity-script-compatible fields.
+
+## [x] INIT02 - Define a scalable script directory layout
 
 **Deliverable:** Script files are organized for large scenes with reusable systems, scene-specific config, and compatibility wrappers.
 
@@ -4043,7 +4045,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Add a Lua loader smoke that imports one script from each layout tier and verifies legacy generic FPS paths still resolve.
 
-## [ ] INIT03 - Create a default FPS scene init script
+**Completed:** Reusable scripts now have `assets/scripts/systems/`, scene bootstrap scaffolds live under `assets/scripts/scenes/`, and the legacy generic FPS path remains compatible through safe engine include support.
+
+## [x] INIT03 - Create a default FPS scene init script
 
 **Deliverable:** A scene without authored gameplay becomes playable in Game Mode through a runtime-only default bootstrap.
 
@@ -4055,7 +4059,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Cover runtime fallback, reload without persistence, and bake-to-scene behavior.
 
-## [ ] INIT04 - Implement a deterministic bootstrap policy
+**Completed:** Scriptless Game/Live Edit runtime worlds inject the generic FPS controller at runtime, with `assets/scripts/scenes/default_fps/init.lua` available as the authored bootstrap scaffold.
+
+## [x] INIT04 - Implement a deterministic bootstrap policy
 
 **Deliverable:** Game Mode and Live Edit choose authored init, authored entity scripts, fallback FPS bootstrap, or no scripts through explicit rules.
 
@@ -4067,7 +4073,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Unit-test authored init, entity-script-only, scriptless-with-camera, scriptless-without-camera, and fallback-opt-in branches.
 
-## [ ] INIT05 - Add robust main-camera discovery
+**Completed:** `DecideSceneScriptBootstrap` covers authored scene init, entity scripts, scriptless camera fallback, and no-camera transient camera fallback, with diagnostics and smoke coverage.
+
+## [x] INIT05 - Add robust main-camera discovery
 
 **Deliverable:** Default bootstrap can find the intended gameplay camera in imported and hand-authored scenes.
 
@@ -4079,7 +4087,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Cover explicit metadata, name/tag selection, first-camera fallback, multi-camera ordering, and no-camera diagnostics.
 
-## [ ] INIT06 - Add runtime-only script injection support
+**Completed:** Bootstrap selection prefers named gameplay cameras, then visible entity cameras, then legacy top-level camera sections, and diagnoses hidden or missing camera cases.
+
+## [x] INIT06 - Add runtime-only script injection support
 
 **Deliverable:** Default bootstrap and preview-only scripts can be applied to the runtime world without dirtying scene files.
 
@@ -4089,7 +4099,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Load, apply fallback, save, and compare JSON. Re-enter Game Mode repeatedly and assert one injected controller per target.
 
-## [ ] INIT07 - Expose scene-level Lua bootstrap APIs
+**Completed:** `BuildSceneScriptRuntimeWorld` injects scene init and fallback scripts into a transient world without mutating the source document.
+
+## [x] INIT07 - Expose scene-level Lua bootstrap APIs
 
 **Deliverable:** Init scripts can compose systems and attach behavior without hard-coded C++ scene edits.
 
@@ -4101,7 +4113,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Lua smoke scripts call every bootstrap API. Calling `ensure_script` twice creates one runtime attachment. Invalid entity names produce Lua-visible errors and editor diagnostics.
 
-## [ ] INIT08 - Surface bootstrap diagnostics in the editor
+**Completed:** Lua exposes `ctx.scene`, scene lookup/query helpers, idempotent `ensure_script`, a built-in system registry hook, interactable registration diagnostics, `ctx:diagnostic`, and safe `ctx:include`.
+
+## [x] INIT08 - Surface bootstrap diagnostics in the editor
 
 **Deliverable:** Users can see whether the scene is running authored init, default fallback, disabled fallback, or no gameplay scripts.
 
@@ -4113,7 +4127,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Extend UI model smoke tests to verify bootstrap source, mouse lock state, and last error fields.
 
-## [ ] INIT09 - Add editor commands for default script management
+**Completed:** The script dock runtime model now carries bootstrap policy, operation, target, status, and whether scene init or fallback overlays are active.
+
+## [x] INIT09 - Add editor commands for default script management
 
 **Deliverable:** Users can create, open, disable, or bake default bootstrap behavior from the editor.
 
@@ -4125,7 +4141,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Command smoke tests update the scene document correctly, and disabled fallback remains disabled after reload.
 
-## [ ] INIT10 - Introduce a script system registry
+**Completed:** The script panel exposes create/open scene init, bake default FPS, and disable fallback actions through the existing command property path.
+
+## [x] INIT10 - Introduce a script system registry
 
 **Deliverable:** Scene init scripts attach named gameplay systems without duplicating loader paths and default params.
 
@@ -4137,7 +4155,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Registry smoke tests cover successful lookup, missing system diagnostics, and default param merging.
 
-## [ ] INIT11 - Migrate the generic FPS camera script to the new layout
+**Completed:** Lua `scene:use_system("systems.generic_fps_camera")` resolves the built-in generic FPS system and reports missing systems as diagnostics.
+
+## [x] INIT11 - Migrate the generic FPS camera script to the new layout
 
 **Deliverable:** The reusable FPS camera lives under systems while existing scene references continue to work.
 
@@ -4147,7 +4167,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Run scripting smoke coverage for both old and new generic FPS script paths.
 
-## [ ] INIT12 - Add scene-specific init and config examples
+**Completed:** The canonical implementation lives at `assets/scripts/systems/generic_fps_camera.lua`, while `assets/scripts/generic_fps_camera.lua` remains a compatible include wrapper.
+
+## [x] INIT12 - Add scene-specific init and config examples
 
 **Deliverable:** Large-scene patterns are demonstrated with small init scripts and separate config tables.
 
@@ -4159,7 +4181,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Validate referenced entity names, sound asset IDs, and script module paths for the example scenes.
 
-## [ ] INIT13 - Make script hot reload idempotent
+**Completed:** Added scene init/config examples for the audio interaction demo and the lowest-LOD showcase using the new `ctx.scene`, safe include, registry, and interactable APIs.
+
+## [x] INIT13 - Make script hot reload idempotent
 
 **Deliverable:** Reloading init scripts during Live Edit does not duplicate components, event listeners, audio handles, or interaction zones.
 
@@ -4169,7 +4193,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Repeatedly reload scene init and assert stable script attachment counts and Lua state cleanup.
 
-## [ ] INIT14 - Apply sandboxing and performance budgets to init scripts
+**Completed:** Runtime overlays are rebuilt from source documents on reload, fallback injection is transient, and `scene:ensure_script` is idempotent within init execution and when target scripts already exist.
+
+## [x] INIT14 - Apply sandboxing and performance budgets to init scripts
 
 **Deliverable:** Scene bootstrapping cannot freeze the editor or bypass Lua safety rules.
 
@@ -4179,7 +4205,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Budget and sandbox probe scripts fail safely when executed as scene init scripts.
 
-## [ ] INIT15 - Build a scene bootstrap test matrix
+**Completed:** Scene init scripts execute through the same Lua runtime, safe libraries, include path, memory budget, and instruction budget enforcement as entity scripts.
+
+## [x] INIT15 - Build a scene bootstrap test matrix
 
 **Deliverable:** Every checked-in scene has predictable Game Mode behavior.
 
@@ -4191,7 +4219,9 @@ Agent 8: docs, workflow notes, and migration cleanup.
 
 **Tests:** Run the bootstrap matrix in addition to scene schema, Lua smoke, UI model smoke, and whitespace checks.
 
-## [ ] INIT16 - Split the first implementation pass across focused ownership lanes
+**Completed:** `pt_scene_script_bootstrap_smoke` now loads checked-in scene JSON files and resolves each through the bootstrap runtime world builder.
+
+## [x] INIT16 - Split the first implementation pass across focused ownership lanes
 
 **Deliverable:** The first pass is parallelized without overlapping write ownership.
 
@@ -4202,3 +4232,5 @@ Agent 8: docs, workflow notes, and migration cleanup.
 **Acceptance:** Each lane reports changed files, tests run, and integration blockers before final merge.
 
 **Tests:** Final integration runs scene schema checks, Lua smoke checks, UI model smoke checks, and `git diff --check`.
+
+**Completed:** The first pass landed through separate schema, bootstrap, Lua asset, API audit, editor integration, and scene-audit lanes.

@@ -1,9 +1,16 @@
 #include "scripting/ScriptRuntime.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "core/Logging.h"
@@ -21,6 +28,232 @@ bool IsLuaCompiledIn() {
 
 bool IsSupportedLanguage(std::string_view language) {
   return language.empty() || language == "lua";
+}
+
+std::string TrimCopy(std::string_view value) {
+  auto begin = value.begin();
+  auto end = value.end();
+  while (begin != end && std::isspace(static_cast<unsigned char>(*begin)) != 0) {
+    ++begin;
+  }
+  while (end != begin && std::isspace(static_cast<unsigned char>(*(end - 1))) != 0) {
+    --end;
+  }
+  return std::string(begin, end);
+}
+
+std::string LowerCopy(std::string_view value) {
+  std::string out(value);
+  std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return out;
+}
+
+bool ValidEditorParamName(std::string_view name) {
+  if (name.empty() || name.find('=') != std::string_view::npos) {
+    return false;
+  }
+  return std::all_of(name.begin(), name.end(), [](unsigned char c) {
+    return std::isalnum(c) != 0 || c == '_' || c == '-' || c == '.';
+  });
+}
+
+std::string NormalizeEditorParamType(std::string_view type) {
+  const auto lower = LowerCopy(type);
+  if (lower == "bool" || lower == "boolean" || lower == "toggle") {
+    return "bool";
+  }
+  if (lower == "number" || lower == "float" || lower == "double" ||
+      lower == "int" || lower == "integer" || lower == "slider") {
+    return "number";
+  }
+  return "text";
+}
+
+std::vector<std::string> TokenizeAnnotation(std::string_view text) {
+  std::vector<std::string> tokens;
+  std::string token;
+  char quote = '\0';
+  bool escaped = false;
+  for (const char c : text) {
+    if (quote != '\0') {
+      token.push_back(c);
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == quote) {
+        quote = '\0';
+      }
+      continue;
+    }
+    if (c == '"' || c == '\'') {
+      quote = c;
+      token.push_back(c);
+      continue;
+    }
+    if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+      if (!token.empty()) {
+        tokens.push_back(std::move(token));
+        token.clear();
+      }
+      continue;
+    }
+    token.push_back(c);
+  }
+  if (!token.empty()) {
+    tokens.push_back(std::move(token));
+  }
+  return tokens;
+}
+
+std::string UnquoteAnnotationValue(std::string value) {
+  if (value.size() >= 2u && ((value.front() == '"' && value.back() == '"') ||
+                             (value.front() == '\'' && value.back() == '\''))) {
+    const char quote = value.front();
+    std::string out;
+    out.reserve(value.size() - 2u);
+    bool escaped = false;
+    for (std::size_t i = 1u; i + 1u < value.size(); ++i) {
+      const char c = value[i];
+      if (escaped) {
+        out.push_back(c);
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else {
+        out.push_back(c);
+      }
+    }
+    (void)quote;
+    return out;
+  }
+  return value;
+}
+
+std::optional<double> ParseAnnotationDouble(std::string_view value) {
+  const std::string text(value);
+  char* end = nullptr;
+  const double parsed = std::strtod(text.c_str(), &end);
+  if (end == text.c_str() || end == nullptr || *end != '\0') {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+std::filesystem::path ResolveScriptPath(std::string_view source) {
+  const std::filesystem::path requested{std::string(source)};
+  std::error_code ec;
+  if (requested.is_absolute() || (std::filesystem::exists(requested, ec) && !ec)) {
+    return requested.lexically_normal();
+  }
+  auto current = std::filesystem::current_path();
+  for (int i = 0; i < 8; ++i) {
+    const auto candidate = (current / requested).lexically_normal();
+    ec.clear();
+    if (std::filesystem::exists(candidate, ec) && !ec) {
+      return candidate;
+    }
+    if (!current.has_parent_path() || current.parent_path() == current) {
+      break;
+    }
+    current = current.parent_path();
+  }
+  return requested.lexically_normal();
+}
+
+std::optional<std::string> ReadTextFile(const std::filesystem::path& path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) {
+    return std::nullopt;
+  }
+  std::ostringstream buffer;
+  buffer << file.rdbuf();
+  return buffer.str();
+}
+
+std::optional<ScriptEditorParam> ParseEditorAnnotationLine(std::string_view line) {
+  std::string trimmed = TrimCopy(line);
+  if (!trimmed.starts_with("--")) {
+    return std::nullopt;
+  }
+  trimmed = TrimCopy(std::string_view(trimmed).substr(2u));
+  std::size_t markerLength = 0u;
+  if (trimmed.starts_with("@editor")) {
+    markerLength = 7u;
+  } else if (trimmed.starts_with("[editor]")) {
+    markerLength = 8u;
+  } else {
+    return std::nullopt;
+  }
+
+  const auto tokens = TokenizeAnnotation(TrimCopy(std::string_view(trimmed).substr(markerLength)));
+  if (tokens.empty() || !ValidEditorParamName(tokens.front())) {
+    return std::nullopt;
+  }
+
+  ScriptEditorParam param;
+  param.name = tokens.front();
+  param.label = param.name;
+  std::size_t index = 1u;
+  if (index < tokens.size() && tokens[index].find('=') == std::string::npos) {
+    param.type = NormalizeEditorParamType(tokens[index]);
+    ++index;
+  }
+
+  for (; index < tokens.size(); ++index) {
+    const auto equals = tokens[index].find('=');
+    if (equals == std::string::npos || equals == 0u) {
+      continue;
+    }
+    const auto key = LowerCopy(std::string_view(tokens[index]).substr(0u, equals));
+    const auto value = UnquoteAnnotationValue(tokens[index].substr(equals + 1u));
+    if (key == "type") {
+      param.type = NormalizeEditorParamType(value);
+    } else if (key == "default" || key == "value") {
+      param.default_value = value;
+    } else if (key == "label") {
+      param.label = value.empty() ? param.name : value;
+    } else if (key == "min" || key == "minimum") {
+      if (const auto parsed = ParseAnnotationDouble(value)) {
+        param.minimum = *parsed;
+        param.has_minimum = true;
+      }
+    } else if (key == "max" || key == "maximum") {
+      if (const auto parsed = ParseAnnotationDouble(value)) {
+        param.maximum = *parsed;
+        param.has_maximum = true;
+      }
+    } else if (key == "step") {
+      if (const auto parsed = ParseAnnotationDouble(value)) {
+        param.step = *parsed;
+        param.has_step = true;
+      }
+    }
+  }
+  return param;
+}
+
+std::vector<ScriptEditorParam> ParseScriptEditorAnnotations(std::string_view source) {
+  std::vector<ScriptEditorParam> params;
+  std::unordered_set<std::string> seen;
+  std::size_t offset = 0u;
+  while (offset <= source.size()) {
+    const auto newline = source.find('\n', offset);
+    const auto count = newline == std::string_view::npos ? source.size() - offset : newline - offset;
+    const auto line = source.substr(offset, count);
+    if (auto param = ParseEditorAnnotationLine(line)) {
+      if (seen.insert(param->name).second) {
+        params.push_back(std::move(*param));
+      }
+    }
+    if (newline == std::string_view::npos) {
+      break;
+    }
+    offset = newline + 1u;
+  }
+  return params;
 }
 
 std::string ScriptVariableOverrideKey(vkpt::core::StableEntityId entity,
@@ -102,6 +335,21 @@ std::vector<ScriptBinding> BuildScriptBindings(const vkpt::scene::SceneWorld& wo
   return bindings;
 }
 
+void ApplyScriptEditorAnnotations(std::vector<ScriptBinding>& bindings) {
+  for (auto& binding : bindings) {
+    binding.editor_params.clear();
+    if (!IsSupportedLanguage(binding.language) || binding.source.empty()) {
+      continue;
+    }
+    const auto path = ResolveScriptPath(binding.source);
+    const auto source = ReadTextFile(path);
+    if (!source) {
+      continue;
+    }
+    binding.editor_params = ParseScriptEditorAnnotations(*source);
+  }
+}
+
 ScriptBindingSummary SummarizeScriptBindings(const std::vector<ScriptBinding>& bindings,
                                              bool lua_compiled_in,
                                              bool execution_available) {
@@ -128,6 +376,7 @@ ScriptBindingSummary SummarizeScriptBindings(const std::vector<ScriptBinding>& b
 
 ScriptBindingSummary EcsScriptRuntime::reload_bindings(const vkpt::scene::SceneWorld& world) {
   m_bindings = BuildScriptBindings(world);
+  ApplyScriptEditorAnnotations(m_bindings);
   // Source paths can resolve differently after reload, so bytecode is rebuilt on demand.
   m_lua_bytecode_cache.clear();
   m_variable_snapshots.clear();

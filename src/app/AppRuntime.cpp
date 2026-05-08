@@ -82,6 +82,7 @@
 #include "platform/PlatformFactory.h"
 #include "physics/PhysicsWorld.h"
 #include "scene/Scene.h"
+#include "scene/SceneScriptBootstrap.h"
 #include "scripting/ScriptRuntime.h"
 #include "render/backends/BackendFactory.h"
 #include "render/backends/D3D12Backend.h"

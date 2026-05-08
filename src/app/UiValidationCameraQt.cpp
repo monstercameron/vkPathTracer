@@ -234,6 +234,29 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     binding.enabled = true;
     binding.reload_on_save = true;
     binding.params = scriptedEntity.script.params;
+    vkpt::scripting::ScriptEditorParam annotatedParam;
+    annotatedParam.name = "annotated_gain";
+    annotatedParam.type = "number";
+    annotatedParam.label = "Annotated Gain";
+    annotatedParam.default_value = "4";
+    annotatedParam.minimum = 0.0;
+    annotatedParam.maximum = 8.0;
+    annotatedParam.step = 0.5;
+    annotatedParam.has_minimum = true;
+    annotatedParam.has_maximum = true;
+    annotatedParam.has_step = true;
+    binding.editor_params.push_back(annotatedParam);
+    vkpt::scripting::ScriptEditorParam optionalParam;
+    optionalParam.name = "optional_focus";
+    optionalParam.type = "number";
+    optionalParam.label = "Optional Focus";
+    optionalParam.minimum = 0.0;
+    optionalParam.maximum = 100.0;
+    optionalParam.step = 0.5;
+    optionalParam.has_minimum = true;
+    optionalParam.has_maximum = true;
+    optionalParam.has_step = true;
+    binding.editor_params.push_back(optionalParam);
     scriptRuntime.bindings.push_back(binding);
     vkpt::scripting::ScriptBindingRuntimeState runtimeState;
     runtimeState.entity = scriptedEntity.id;
@@ -371,7 +394,19 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                  hasScriptProperty("entity.901.script.language", "dropdown") &&
                  hasScriptProperty("entity.901.script.enabled", "toggle") &&
                  hasScriptProperty("entity.901.script.param.offset_x", "number") &&
+                 hasScriptProperty("entity.901.script.param.annotated_gain", "slider") &&
+                 hasScriptProperty("entity.901.script.param.optional_focus", "number") &&
                  hasScriptProperty("entity.901.script.param.enabled", "toggle") &&
+                 std::any_of(scriptDock->properties.begin(),
+                             scriptDock->properties.end(),
+                             [](const QtDockProperty& property) {
+                               return property.id == "entity.901.script.param.annotated_gain" &&
+                                      property.label == "Annotated Gain" &&
+                                      property.has_numeric_range &&
+                                      property.minimum == 0.0 &&
+                                      property.maximum == 8.0 &&
+                                      property.step == 0.5;
+                             }) &&
                  std::any_of(scriptDock->properties.begin(),
                              scriptDock->properties.end(),
                              [](const QtDockProperty& property) {

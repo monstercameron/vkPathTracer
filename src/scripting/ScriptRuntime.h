@@ -77,6 +77,19 @@ struct ScriptExecutionContext {
   EditorState editor;
 };
 
+struct ScriptEditorParam {
+  std::string name;
+  std::string type = "text";
+  std::string label;
+  std::string default_value;
+  double minimum = 0.0;
+  double maximum = 1.0;
+  double step = 0.01;
+  bool has_minimum = false;
+  bool has_maximum = false;
+  bool has_step = false;
+};
+
 /// Runtime binding produced from an entity ScriptComponent.
 struct ScriptBinding {
   vkpt::core::StableEntityId entity = 0;
@@ -89,6 +102,7 @@ struct ScriptBinding {
   bool enabled = true;
   bool reload_on_save = true;
   std::unordered_map<std::string, std::string> params;
+  std::vector<ScriptEditorParam> editor_params;
 };
 
 struct ScriptBindingSummary {
@@ -214,6 +228,8 @@ class EcsScriptRuntime final : public IScriptRuntime {
 
 /// Scan the world in stable entity order and create runnable script bindings.
 std::vector<ScriptBinding> BuildScriptBindings(const vkpt::scene::SceneWorld& world);
+/// Read `-- @editor ...` annotations from binding sources and attach editor metadata.
+void ApplyScriptEditorAnnotations(std::vector<ScriptBinding>& bindings);
 /// Count binding states without touching runtime caches or executing scripts.
 ScriptBindingSummary SummarizeScriptBindings(const std::vector<ScriptBinding>& bindings,
                                              bool lua_compiled_in,

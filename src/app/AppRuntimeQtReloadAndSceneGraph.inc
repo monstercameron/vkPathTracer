@@ -248,15 +248,65 @@
           qtRefreshViewportPickablesNow();
         }
       };
+      auto qtMakeScriptBootstrapOptions = [&](bool enableFallback) {
+        vkpt::scene::SceneScriptBootstrapOptions options;
+        options.enable_default_fps_fallback = enableFallback;
+        return options;
+      };
+      auto qtRecordScriptBootstrapState =
+          [&](const vkpt::scene::SceneScriptRuntimeWorld& runtimeWorld) {
+        const auto& decision = runtimeWorld.decision;
+        qtScriptState.bootstrap_policy = std::string(vkpt::scene::to_string(decision.policy));
+        qtScriptState.bootstrap_operation =
+            std::string(vkpt::scene::to_string(decision.fallback.operation));
+        qtScriptState.bootstrap_scene_init_injected = runtimeWorld.scene_init_injected;
+        qtScriptState.bootstrap_fallback_injected = runtimeWorld.fallback_injected;
+        qtScriptState.bootstrap_target.clear();
+        if (decision.fallback.target_entity_id != 0u) {
+          qtScriptState.bootstrap_target =
+              std::to_string(decision.fallback.target_entity_id);
+          if (!decision.fallback.target_entity_name.empty()) {
+            qtScriptState.bootstrap_target += " " + decision.fallback.target_entity_name;
+          }
+        } else if (decision.main_camera.has_value()) {
+          qtScriptState.bootstrap_target =
+              std::to_string(decision.main_camera->entity_id);
+          if (!decision.main_camera->entity_name.empty()) {
+            qtScriptState.bootstrap_target += " " + decision.main_camera->entity_name;
+          }
+        }
+        qtScriptState.bootstrap_diagnostics.clear();
+        for (const auto& diagnostic : decision.diagnostics) {
+          qtScriptState.bootstrap_diagnostics.push_back(
+              diagnostic.code + ": " + diagnostic.message);
+        }
+        qtScriptState.bootstrap_status =
+            runtimeWorld.scene_init_injected || runtimeWorld.fallback_injected
+                ? "runtime overlay active"
+                : "authored runtime world";
+        if (!decision.diagnostics.empty()) {
+          qtScriptState.bootstrap_status += "; " + decision.diagnostics.back().code;
+        }
+      };
+      auto qtBuildScriptRuntimeWorld =
+          [&](bool enableFallback)
+              -> vkpt::core::Result<vkpt::scene::SceneScriptRuntimeWorld> {
+        auto runtimeWorld = vkpt::scene::BuildSceneScriptRuntimeWorld(
+            qtSceneDocument, qtMakeScriptBootstrapOptions(enableFallback));
+        if (runtimeWorld) {
+          qtRecordScriptBootstrapState(runtimeWorld.value());
+        }
+        return runtimeWorld;
+      };
       auto qtReloadScriptsFromDocument = [&](std::string_view reason) {
-        auto worldResult = qtSceneDocument.to_world();
+        auto worldResult = qtBuildScriptRuntimeWorld(qtScriptsRunning());
         if (!worldResult) {
           qtScriptState.status = "world build failed";
           ui_runtime_state.last_warning_or_error = "script reload failed: world build";
           qtDockPanelsDirty = true;
           return false;
         }
-        auto world = std::move(worldResult.value());
+        auto world = std::move(worldResult.value().world);
         world.recompute_world_transforms();
         qtScriptState.binding_summary = qtScriptRuntime->reload_bindings(world);
         qtScriptState.bindings = qtScriptRuntime->bindings();
@@ -794,14 +844,14 @@
                      frameIndex);
           return false;
         }
-        auto worldResult = qtSceneDocument.to_world();
+        auto worldResult = qtBuildScriptRuntimeWorld(qtScriptsRunning());
         if (!worldResult) {
           qtScriptState.status = "dispatch failed: world build";
           ui_runtime_state.last_warning_or_error = qtScriptState.status;
           qtDockPanelsDirty = true;
           return false;
         }
-        auto world = std::move(worldResult.value());
+        auto world = std::move(worldResult.value().world);
         world.recompute_world_transforms();
         vkpt::scene::WorldCommandBuffer commands;
         vkpt::scripting::ScriptExecutionContext context;

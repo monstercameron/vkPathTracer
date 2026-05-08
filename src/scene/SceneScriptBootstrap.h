@@ -31,8 +31,11 @@ enum class SceneScriptBootstrapFallbackOperation : std::uint8_t {
 };
 
 struct SceneScriptBootstrapOptions {
-  std::string default_fps_script = "assets/scripts/generic_fps_camera.lua";
+  std::string default_fps_script = "assets/scripts/systems/generic_fps_camera.lua";
+  std::string default_fps_module_id = "systems.generic_fps_camera";
+  std::string scene_init_entity_name = "Scene Init Script";
   std::string runtime_camera_name = "Runtime FPS Camera";
+  bool enable_default_fps_fallback = true;
 };
 
 struct SceneScriptBootstrapDiagnostic {
@@ -74,10 +77,22 @@ struct SceneScriptBootstrapDecision {
   std::vector<SceneScriptBootstrapDiagnostic> diagnostics;
 };
 
+struct SceneScriptRuntimeWorld {
+  SceneScriptBootstrapDecision decision;
+  SceneWorld world;
+  bool scene_init_injected = false;
+  bool fallback_injected = false;
+  bool mutates_source_document = false;
+};
+
 std::string_view to_string(SceneScriptBootstrapPolicy policy);
 std::string_view to_string(SceneScriptBootstrapFallbackOperation operation);
 
 SceneScriptBootstrapDecision DecideSceneScriptBootstrap(
+    const SceneDocument& document,
+    const SceneScriptBootstrapOptions& options = {});
+
+vkpt::core::Result<SceneScriptRuntimeWorld> BuildSceneScriptRuntimeWorld(
     const SceneDocument& document,
     const SceneScriptBootstrapOptions& options = {});
 

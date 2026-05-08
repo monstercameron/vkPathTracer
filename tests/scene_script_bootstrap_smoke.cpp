@@ -1,9 +1,11 @@
 #include "scene/SceneScriptBootstrap.h"
 
 #include <iostream>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -23,6 +25,39 @@ bool HasDiagnostic(const vkpt::scene::SceneScriptBootstrapDecision& decision,
     }
   }
   return false;
+}
+
+bool PathExists(const std::filesystem::path& path) {
+  std::error_code ec;
+  return std::filesystem::exists(path, ec) && !ec;
+}
+
+std::filesystem::path FindRepoPath(const std::filesystem::path& relative_path) {
+  auto current = std::filesystem::current_path();
+  for (int i = 0; i < 8; ++i) {
+    const auto candidate = current / relative_path;
+    if (PathExists(candidate)) {
+      return candidate;
+    }
+    if (!current.has_parent_path() || current.parent_path() == current) {
+      break;
+    }
+    current = current.parent_path();
+  }
+  return relative_path;
+}
+
+std::vector<std::filesystem::path> SceneJsonFiles(const std::filesystem::path& root) {
+  std::vector<std::filesystem::path> out;
+  if (!PathExists(root)) {
+    return out;
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(root)) {
+    if (entry.is_regular_file() && entry.path().extension() == ".json") {
+      out.push_back(entry.path());
+    }
+  }
+  return out;
 }
 
 vkpt::scene::SceneEntityDefinition MakeCameraEntity(vkpt::core::StableId id,
@@ -78,6 +113,32 @@ int main() {
                "authored scene init should suppress default fallback")) {
       return 1;
     }
+
+    const auto runtime_world =
+        vkpt::scene::BuildSceneScriptRuntimeWorld(scene_init_document);
+    if (!Check(static_cast<bool>(runtime_world),
+               "authored scene init should build a runtime world") ||
+        !Check(runtime_world.value().scene_init_injected,
+               "authored scene init should be injected as a runtime-only binding") ||
+        !Check(!runtime_world.value().fallback_injected,
+               "authored scene init should not also inject fallback") ||
+        !Check(scene_init_document.entities.empty(),
+               "scene init runtime injection must not mutate source document")) {
+      return 1;
+    }
+    const auto& init_world = runtime_world.value().world;
+    bool found_init_binding = false;
+    for (const auto entity_id : init_world.all_entities()) {
+      const auto* entity = init_world.get_entity(entity_id);
+      found_init_binding = found_init_binding ||
+          (entity != nullptr && entity->script.has_value() &&
+           entity->script->script == "assets/scripts/scene_bootstrap.lua" &&
+           entity->identity.name == "Scene Init Script");
+    }
+    if (!Check(found_init_binding,
+               "scene init runtime world should expose one synthetic binding")) {
+      return 1;
+    }
   }
 
   {
@@ -105,6 +166,26 @@ int main() {
                "fallback target should be the selected main camera") ||
         !Check(HasDiagnostic(decision, "camera.hidden_skipped"),
                "hidden entity cameras should be diagnosed")) {
+      return 1;
+    }
+
+    const auto runtime_world =
+        vkpt::scene::BuildSceneScriptRuntimeWorld(camera_document);
+    if (!Check(static_cast<bool>(runtime_world),
+               "camera fallback should build a runtime world") ||
+        !Check(runtime_world.value().fallback_injected,
+               "camera fallback should be injected in the runtime world") ||
+        !Check(camera_document.entities[1].script.script.empty(),
+               "camera fallback must not mutate source scene JSON data")) {
+      return 1;
+    }
+    const auto* fallback_entity = runtime_world.value().world.get_entity(300u);
+    if (!Check(fallback_entity != nullptr &&
+                   fallback_entity->script.has_value() &&
+                   fallback_entity->script->script ==
+                       "assets/scripts/systems/generic_fps_camera.lua",
+               "camera fallback should attach the generic FPS system to the "
+               "selected camera binding")) {
       return 1;
     }
   }
@@ -168,6 +249,60 @@ int main() {
                "params-only script data should be diagnosed")) {
       return 1;
     }
+
+    const auto runtime_world =
+        vkpt::scene::BuildSceneScriptRuntimeWorld(params_only_document);
+    if (!Check(static_cast<bool>(runtime_world),
+               "scriptless no-camera fallback should build a runtime world") ||
+        !Check(runtime_world.value().fallback_injected,
+               "scriptless no-camera fallback should inject a transient camera")) {
+      return 1;
+    }
+    const auto& spawned_world = runtime_world.value().world;
+    bool found_spawned_camera = false;
+    for (const auto entity_id : spawned_world.all_entities()) {
+      const auto* entity = spawned_world.get_entity(entity_id);
+      found_spawned_camera = found_spawned_camera ||
+          (entity != nullptr && entity->identity.name == "Runtime FPS Camera" &&
+           entity->camera.has_value() && entity->script.has_value());
+    }
+    if (!Check(found_spawned_camera,
+               "scriptless no-camera fallback should create one runtime FPS "
+               "camera binding")) {
+      return 1;
+    }
+  }
+
+  {
+    std::vector<std::filesystem::path> scene_files = SceneJsonFiles(FindRepoPath("assets/scenes"));
+    const auto game_scene_files = SceneJsonFiles(FindRepoPath("game/scenes"));
+    scene_files.insert(scene_files.end(), game_scene_files.begin(), game_scene_files.end());
+    std::size_t loaded_count = 0u;
+    std::size_t authored_init_count = 0u;
+    std::size_t fallback_count = 0u;
+    for (const auto& scene_path : scene_files) {
+      auto document = vkpt::scene::SceneDocument::load_from_file(scene_path.string());
+      if (!Check(static_cast<bool>(document),
+                 "bootstrap matrix scene should load: " + scene_path.generic_string())) {
+        return 1;
+      }
+      auto runtime_world = vkpt::scene::BuildSceneScriptRuntimeWorld(document.value());
+      if (!Check(static_cast<bool>(runtime_world),
+                 "bootstrap matrix scene should build runtime world: " +
+                     scene_path.generic_string())) {
+        return 1;
+      }
+      ++loaded_count;
+      authored_init_count += runtime_world.value().scene_init_injected ? 1u : 0u;
+      fallback_count += runtime_world.value().fallback_injected ? 1u : 0u;
+    }
+    if (!Check(loaded_count > 0u,
+               "bootstrap matrix should discover checked-in scenes") ||
+        !Check(fallback_count > 0u,
+               "bootstrap matrix should exercise default fallback scenes")) {
+      return 1;
+    }
+    (void)authored_init_count;
   }
 
   std::cout << "scene script bootstrap smoke: ok\n";

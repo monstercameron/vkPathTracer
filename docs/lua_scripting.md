@@ -22,6 +22,25 @@ Lua scripts attach to scene entities through `script` components. Runtime mode c
 
 `source` is the script path. Legacy `path` is accepted on load and normalized back to `source` on export. `params` currently preserve scalar values as strings for compatibility with existing scenes; the Qt script panel infers text, number, and boolean editors from those values and writes changes back through scene commands. Scripts should convert with `tonumber(...)` or string comparisons when they need typed values.
 
+Scenes may also declare a top-level `scene_script` block with the same fields. Scene init scripts are injected into the runtime world as transient bindings for Play and Live Edit; the injection does not mutate source JSON.
+
+Scripts can declare editor metadata and defaults with Lua comments. These annotations do not replace scene `params`; `default=...` values populate missing defaults in `ctx.params`, and every annotation tells the Qt scripting panel which editor control to use. Scene-authored params still win and remain the persisted source of truth.
+
+```lua
+-- @editor walk_speed number default=4.2 min=0 max=20 step=0.1 label="Walk Speed"
+-- @editor show_controls bool default=true
+-- [editor] focus_distance number min=0 max=200 step=0.25 label="Focus Distance"
+local script = {}
+
+function script.on_update(self, ctx)
+  local speed = tonumber(ctx.params.walk_speed or "4.2") or 4.2
+end
+
+return script
+```
+
+Supported annotation fields are `type`, `default`, `label`, `min`, `max`, and `step`. The shorthand form above treats the first token after the name as the type. `-- @editor` and `-- [editor]` are both accepted; omit `default` for optional params that should appear in the panel without changing runtime behavior until the user authors a value.
+
 ## Lifecycle
 
 Scripts return a table. Any of these hooks may be defined:
@@ -53,6 +72,8 @@ The runtime dispatches bindings in stable entity order. Commands are written to 
 - `input:key_down(key)`, `input:mouse_delta()`, raw mouse delta fields
 - `world:find_entity(id_or_name)`, `world:entity(id_or_name)`, `world:children_of(entity_or_id)`, `world:spawn_entity(def)`, `world:destroy_entity(entity_or_id)`
 - `world:has_component(entity_or_id, name)`, `world:reparent_entity(child, parent)`, `world:reorder_entity(moved, before, after)`, `world:remove_component(entity, name)`, `world:assign_material(entity, material_id)`
+- `scene:main_camera()`, `scene:find_entity(id_or_name)`, `scene:entities_with_component(name)`, `scene:ensure_script(entity, source, params)`, `scene:use_system(module_name)`, `scene:register_interactable(entity, config)`
+- `diagnostic(level, message)`, `include(source)`
 - `audio:post_event(event, options)`, `audio:stop(handle)`
 
 Entity handles expose methods: `id()`, `get_name()`, `set_name(name)`, `get_transform()`, `set_transform(transform)`, `get_light()`, `set_light(light)`, `get_camera()`, `set_camera(camera)`, `get_physics()`, `get_ui_panel()`, `set_ui_panel(panel)`, `log(message)`, and `set_debug_value(name, value)`.
@@ -100,11 +121,11 @@ return script
 
 ## Generic FPS Camera
 
-`assets/scripts/generic_fps_camera.lua` is a reusable game-mode controller for any active camera entity. Attach it as that camera's `script` component, then tune behavior through params:
+`assets/scripts/systems/generic_fps_camera.lua` is the canonical reusable game-mode controller for any active camera entity. `assets/scripts/generic_fps_camera.lua` remains as a compatibility wrapper for older scenes. Attach either path as that camera's `script` component, then tune behavior through params:
 
 ```json
 "script": {
-  "source": "assets/scripts/generic_fps_camera.lua",
+  "source": "assets/scripts/systems/generic_fps_camera.lua",
   "language": "lua",
   "entry": "default",
   "enabled": true,

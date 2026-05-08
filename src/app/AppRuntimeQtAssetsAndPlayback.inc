@@ -1040,6 +1040,11 @@
         qtScriptState.benchmark_scripts_allowed = requestedScriptsRunning;
         if (requestedScriptsRunning && !wasScriptsRunning) {
           qtSyncPhysicsFromSceneDocument();
+          qtReloadScriptsFromDocument(requestedPlayMode ? "play mode enter" : "live edit enter");
+          qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLoad,
+                               frameIndex,
+                               0.0,
+                               requestedPlayMode ? "play mode load" : "live edit load");
           qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnEnable,
                                frameIndex,
                                0.0,

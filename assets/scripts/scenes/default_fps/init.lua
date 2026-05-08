@@ -1,7 +1,7 @@
 local script = {}
 
--- Mirrored from config.lua because the current sandbox intentionally blocks
--- require/dofile/loadfile.
+-- Mirrored from config.lua so the bootstrap remains runnable even when authored
+-- into scenes that do not load external config.
 local CONFIG = {
   system_source = "assets/scripts/systems/generic_fps_camera.lua",
   system_module = "systems.generic_fps_camera",

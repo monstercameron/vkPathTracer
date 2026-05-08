@@ -126,6 +126,13 @@ struct QtDockScriptRuntimeState {
   vkpt::core::FrameIndex last_frame = 0u;
   std::uint64_t dispatch_count = 0u;
   bool viewport_input_forwarding = false;
+  std::string bootstrap_policy = "unknown";
+  std::string bootstrap_operation = "none";
+  std::string bootstrap_target;
+  std::string bootstrap_status;
+  bool bootstrap_scene_init_injected = false;
+  bool bootstrap_fallback_injected = false;
+  std::vector<std::string> bootstrap_diagnostics;
   vkpt::scripting::ScriptBindingSummary binding_summary{};
   vkpt::scripting::ScriptDispatchSummary last_dispatch{};
   vkpt::audio::AudioDiagnostics audio{};

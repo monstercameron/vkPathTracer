@@ -1,5 +1,7 @@
 #include "scene/SceneScriptBootstrap.h"
 
+#include <algorithm>
+#include <cctype>
 #include <concepts>
 #include <sstream>
 #include <unordered_map>
@@ -80,6 +82,119 @@ bool has_entity_script_source(const SceneEntityDefinition& entity) {
   return !entity.script.script.empty();
 }
 
+bool has_scene_script_source(const SceneDocument& document) {
+  return !document.scene_script.script.empty() && document.scene_script.enabled;
+}
+
+vkpt::core::StableId allocate_runtime_entity_id(const SceneDocument& document) {
+  vkpt::core::StableId next = 9'000'000'000ull;
+  auto collides = [&](vkpt::core::StableId id) {
+    for (const auto& entity : document.entities) {
+      if (entity.id == id) {
+        return true;
+      }
+    }
+    for (const auto& camera : document.cameras) {
+      if (camera.id == id) {
+        return true;
+      }
+    }
+    for (const auto& light : document.lights) {
+      if (light.id == id) {
+        return true;
+      }
+    }
+    for (const auto& transform : document.transforms) {
+      if (transform.id == id) {
+        return true;
+      }
+    }
+    return false;
+  };
+  while (next != 0 && collides(next)) {
+    ++next;
+  }
+  return next;
+}
+
+SceneEntityDefinition* find_entity(SceneDocument& document,
+                                   vkpt::core::StableId entity_id) {
+  for (auto& entity : document.entities) {
+    if (entity.id == entity_id) {
+      return &entity;
+    }
+  }
+  return nullptr;
+}
+
+const SceneCameraDefinition* find_legacy_camera(const SceneDocument& document,
+                                                vkpt::core::StableId entity_id) {
+  for (const auto& camera : document.cameras) {
+    if (camera.id == entity_id) {
+      return &camera;
+    }
+  }
+  return nullptr;
+}
+
+const SceneTransformEntry* find_legacy_transform(const SceneDocument& document,
+                                                 vkpt::core::StableId entity_id) {
+  for (const auto& transform : document.transforms) {
+    if (transform.id == entity_id) {
+      return &transform;
+    }
+  }
+  return nullptr;
+}
+
+void ensure_legacy_component_entities(SceneDocument& document) {
+  auto ensure_entity = [&](vkpt::core::StableId id, std::string_view name) -> SceneEntityDefinition& {
+    if (auto* existing = find_entity(document, id); existing != nullptr) {
+      return *existing;
+    }
+    SceneEntityDefinition entity;
+    entity.id = id;
+    entity.name = std::string(name) + " " + std::to_string(id);
+    document.entities.push_back(std::move(entity));
+    return document.entities.back();
+  };
+
+  for (const auto& transform : document.transforms) {
+    if (transform.id != 0) {
+      auto& entity = ensure_entity(transform.id, "Legacy Transform Entity");
+      entity.has_transform = true;
+      entity.transform = transform.transform;
+    }
+  }
+  for (const auto& camera : document.cameras) {
+    if (camera.id != 0) {
+      auto& entity = ensure_entity(camera.id, "Legacy Camera Entity");
+      entity.has_camera = true;
+      entity.camera = camera.camera;
+    }
+  }
+  for (const auto& light : document.lights) {
+    if (light.id != 0) {
+      auto& entity = ensure_entity(light.id, "Legacy Light Entity");
+      entity.has_light = true;
+      entity.light = light.light;
+    }
+  }
+}
+
+ScriptComponent default_fps_script_component(const SceneScriptBootstrapOptions& options) {
+  ScriptComponent script;
+  script.script = options.default_fps_script;
+  script.language = "lua";
+  script.entry = "default";
+  script.module_id = options.default_fps_module_id;
+  script.enabled = true;
+  script.reload_on_save = true;
+  script.params["runtime_only"] = "true";
+  script.params["bootstrap"] = "default_fps";
+  return script;
+}
+
 bool has_transform_definition(const SceneDocument& document,
                               vkpt::core::StableId entity_id) {
   if (entity_id == 0) {
@@ -145,6 +260,47 @@ std::optional<SceneScriptBootstrapCameraSelection> select_main_camera(
 
   std::size_t camera_definition_count = 0;
   std::size_t hidden_entity_camera_count = 0;
+  auto preferred_camera_name = [](std::string_view name) {
+    std::string normalized;
+    normalized.reserve(name.size());
+    for (const unsigned char ch : name) {
+      if (std::isalnum(ch) != 0) {
+        normalized.push_back(static_cast<char>(std::tolower(ch)));
+      } else if (!normalized.empty() && normalized.back() != '_') {
+        normalized.push_back('_');
+      }
+    }
+    while (!normalized.empty() && normalized.back() == '_') {
+      normalized.pop_back();
+    }
+    return normalized == "main_camera" || normalized == "player_camera";
+  };
+
+  auto make_entity_camera_selection =
+      [&](const SceneEntityDefinition& entity, std::size_t index) {
+    SceneScriptBootstrapCameraSelection selection;
+    selection.entity_id = entity.id;
+    selection.entity_name = entity.name;
+    selection.from_entity_camera = true;
+    selection.has_authored_transform = has_transform_definition(document, entity.id);
+    selection.document_order = index;
+    return selection;
+  };
+
+  for (std::size_t index = 0; index < document.entities.size(); ++index) {
+    const auto& entity = document.entities[index];
+    if (!entity.has_camera || entity.id == 0 ||
+        !preferred_camera_name(entity.name) ||
+        !entity_visible_path(document, entity, entities_by_id)) {
+      continue;
+    }
+    add_diagnostic(decision,
+                   SceneScriptBootstrapDiagnosticSeverity::Info,
+                   "camera.named_main",
+                   "Selected a named gameplay camera before document-order "
+                   "fallback.");
+    return make_entity_camera_selection(entity, index);
+  }
 
   for (std::size_t index = 0; index < document.entities.size(); ++index) {
     const auto& entity = document.entities[index];
@@ -163,12 +319,7 @@ std::optional<SceneScriptBootstrapCameraSelection> select_main_camera(
       ++hidden_entity_camera_count;
       continue;
     }
-    SceneScriptBootstrapCameraSelection selection;
-    selection.entity_id = entity.id;
-    selection.entity_name = entity.name;
-    selection.from_entity_camera = true;
-    selection.has_authored_transform = has_transform_definition(document, entity.id);
-    selection.document_order = index;
+    SceneScriptBootstrapCameraSelection selection = make_entity_camera_selection(entity, index);
     if (hidden_entity_camera_count > 0) {
       add_diagnostic(decision,
                      SceneScriptBootstrapDiagnosticSeverity::Info,
@@ -374,6 +525,93 @@ std::string DescribeRuntimeFallbackInjection(
     return "No runtime fallback injection is required.";
   }
   return decision.fallback.description;
+}
+
+vkpt::core::Result<SceneScriptRuntimeWorld> BuildSceneScriptRuntimeWorld(
+    const SceneDocument& document,
+    const SceneScriptBootstrapOptions& options) {
+  auto runtime_document = document;
+  SceneScriptRuntimeWorld result;
+  result.decision = DecideSceneScriptBootstrap(document, options);
+  ensure_legacy_component_entities(runtime_document);
+
+  if (has_scene_script_source(document)) {
+    SceneEntityDefinition scene_init_entity;
+    scene_init_entity.id = allocate_runtime_entity_id(runtime_document);
+    scene_init_entity.name = options.scene_init_entity_name;
+    scene_init_entity.visible = false;
+    scene_init_entity.script = document.scene_script;
+    scene_init_entity.script.params.emplace("runtime_only", "true");
+    scene_init_entity.script.params.emplace("bootstrap", "scene_script");
+    runtime_document.entities.insert(runtime_document.entities.begin(),
+                                     std::move(scene_init_entity));
+    result.scene_init_injected = true;
+  } else if (document.has_scene_script && !document.scene_script.script.empty() &&
+             !document.scene_script.enabled) {
+    add_diagnostic(result.decision,
+                   SceneScriptBootstrapDiagnosticSeverity::Info,
+                   "scene_script.disabled",
+                   "Scene init script is authored but disabled; it was not "
+                   "injected into the runtime world.");
+  }
+
+  if (options.enable_default_fps_fallback &&
+      result.decision.fallback.operation ==
+          SceneScriptBootstrapFallbackOperation::AttachDefaultFpsToMainCamera) {
+    auto* entity = find_entity(runtime_document, result.decision.fallback.target_entity_id);
+    if (entity == nullptr) {
+      SceneEntityDefinition camera_owner;
+      camera_owner.id = result.decision.fallback.target_entity_id;
+      camera_owner.name = result.decision.fallback.target_entity_name.empty()
+          ? "Runtime Main Camera"
+          : result.decision.fallback.target_entity_name;
+      camera_owner.has_transform = true;
+      if (const auto* legacy_transform =
+              find_legacy_transform(runtime_document, camera_owner.id)) {
+        camera_owner.transform = legacy_transform->transform;
+      }
+      if (const auto* legacy_camera = find_legacy_camera(runtime_document, camera_owner.id)) {
+        camera_owner.has_camera = true;
+        camera_owner.camera = legacy_camera->camera;
+      }
+      runtime_document.entities.push_back(std::move(camera_owner));
+      entity = &runtime_document.entities.back();
+    }
+    entity->script = default_fps_script_component(options);
+    result.fallback_injected = true;
+  } else if (options.enable_default_fps_fallback &&
+             result.decision.fallback.operation ==
+                 SceneScriptBootstrapFallbackOperation::SpawnDefaultFpsCamera) {
+    SceneEntityDefinition camera_entity;
+    camera_entity.id = allocate_runtime_entity_id(runtime_document);
+    camera_entity.name = options.runtime_camera_name;
+    camera_entity.has_transform = true;
+    camera_entity.transform.translation = {0.0f, 1.7f, 4.0f};
+    camera_entity.has_camera = true;
+    camera_entity.camera.fov = 65.0f;
+    camera_entity.camera.focus_distance = 4.0f;
+    camera_entity.script = default_fps_script_component(options);
+    result.decision.fallback.target_entity_id = camera_entity.id;
+    result.decision.fallback.target_entity_name = camera_entity.name;
+    runtime_document.entities.push_back(std::move(camera_entity));
+    result.fallback_injected = true;
+  } else if (!options.enable_default_fps_fallback &&
+             result.decision.fallback.operation !=
+                 SceneScriptBootstrapFallbackOperation::None) {
+    add_diagnostic(result.decision,
+                   SceneScriptBootstrapDiagnosticSeverity::Info,
+                   "fallback.disabled_for_mode",
+                   "Default FPS fallback was resolved but not injected because "
+                   "the current mode does not run gameplay scripts.");
+  }
+
+  auto world = runtime_document.to_world();
+  if (!world) {
+    return vkpt::core::Result<SceneScriptRuntimeWorld>::error(world.error());
+  }
+  result.world = std::move(world.value());
+  result.mutates_source_document = false;
+  return vkpt::core::Result<SceneScriptRuntimeWorld>::ok(std::move(result));
 }
 
 }  // namespace vkpt::scene

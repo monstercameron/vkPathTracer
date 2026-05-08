@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <optional>
 #include <sstream>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -298,9 +299,57 @@ bool QtDockScriptRuntimeScriptsRunning(const QtDockScriptRuntimeState* runtime) 
 void QtDockAddScriptParamProperty(QtDockPanelContent& panel,
                                   vkpt::core::StableId entity_id,
                                   std::string_view name,
-                                  std::string value) {
+                                  std::string value,
+                                  const vkpt::scripting::ScriptEditorParam* metadata = nullptr) {
   const std::string id = "entity." + std::to_string(entity_id) + ".script.param." + std::string(name);
-  QtDockAddTypedScriptValueProperty(panel, id, "Params", name, std::move(value), true);
+  const std::string label = metadata != nullptr && !metadata->label.empty()
+      ? metadata->label
+      : std::string(name);
+  if (metadata != nullptr) {
+    const auto type = QtDockToLower(metadata->type);
+    if (type == "bool") {
+      QtDockAddToggleGroupedProperty(panel,
+                                     id,
+                                     "Params",
+                                     label,
+                                     QtDockToLower(value) == "true" || value == "1");
+      return;
+    }
+    if (type == "number") {
+      if (const auto parsed = QtDockParseNumber(value)) {
+        if (metadata->has_minimum || metadata->has_maximum || metadata->has_step) {
+          const double minimum = metadata->has_minimum ? metadata->minimum : std::min(0.0, *parsed);
+          const double maximum = metadata->has_maximum ? metadata->maximum : std::max(1.0, *parsed);
+          const double step = metadata->has_step ? metadata->step : 0.01;
+          const double default_value =
+              metadata->default_value.empty()
+                  ? *parsed
+                  : QtDockParseNumber(metadata->default_value).value_or(*parsed);
+          QtDockAddSliderGroupedProperty(panel,
+                                         id,
+                                         "Params",
+                                         label,
+                                         *parsed,
+                                         minimum,
+                                         maximum,
+                                         step,
+                                         default_value);
+        } else {
+          QtDockAddEditableGroupedProperty(panel, id, "Params", label, std::move(value));
+          panel.properties.back().editor = "number";
+        }
+        return;
+      }
+      QtDockAddEditableGroupedProperty(panel, id, "Params", label, std::move(value));
+      panel.properties.back().editor = "number";
+      return;
+    }
+  }
+  QtDockAddTypedScriptValueProperty(panel, id, "Params", label, std::move(value), true);
+}
+
+std::string QtDockScriptParamMetadataKey(vkpt::core::StableId entity_id, std::string_view name) {
+  return std::to_string(entity_id) + "|" + std::string(name);
 }
 
 void QtDockAddRuntimeVariableProperty(QtDockPanelContent& panel,
@@ -481,6 +530,30 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
   QtDockAddCommandProperty(panel, "script.actions.new_lua_script", "Controls", "New Lua script", "New");
   QtDockAddCommandProperty(panel, "script.actions.open_folder", "Controls", "Open script folder", "Open");
   QtDockAddCommandProperty(panel,
+                           "script.scene_init.create",
+                           "Scene Init",
+                           "Create scene init",
+                           "Create",
+                           true);
+  QtDockAddCommandProperty(panel,
+                           "script.scene_init.open",
+                           "Scene Init",
+                           "Open scene init",
+                           "Open",
+                           document.has_scene_script && !document.scene_script.script.empty());
+  QtDockAddCommandProperty(panel,
+                           "script.scene_init.bake_default_fps",
+                           "Scene Init",
+                           "Bake default FPS",
+                           "Bake",
+                           runtime != nullptr && runtime->bootstrap_fallback_injected);
+  QtDockAddCommandProperty(panel,
+                           "script.scene_init.disable_fallback",
+                           "Scene Init",
+                           "Disable fallback",
+                           "Disable",
+                           true);
+  QtDockAddCommandProperty(panel,
                            "script.selection.open",
                            "Controls",
                            "Open selected script",
@@ -512,6 +585,38 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
                                    "Runtime",
                                    "viewport input",
                                    QtDockBool(QtDockScriptViewportInputForwarding(runtime)));
+  if (runtime != nullptr) {
+    QtDockAddReadOnlyGroupedProperty(panel,
+                                     "script.bootstrap.policy",
+                                     "Bootstrap",
+                                     "policy",
+                                     runtime->bootstrap_policy);
+    QtDockAddReadOnlyGroupedProperty(panel,
+                                     "script.bootstrap.operation",
+                                     "Bootstrap",
+                                     "operation",
+                                     runtime->bootstrap_operation);
+    QtDockAddReadOnlyGroupedProperty(panel,
+                                     "script.bootstrap.target",
+                                     "Bootstrap",
+                                     "target",
+                                     runtime->bootstrap_target.empty() ? "none" : runtime->bootstrap_target);
+    QtDockAddReadOnlyGroupedProperty(panel,
+                                     "script.bootstrap.status",
+                                     "Bootstrap",
+                                     "status",
+                                     runtime->bootstrap_status.empty() ? "not resolved" : runtime->bootstrap_status);
+    QtDockAddReadOnlyGroupedProperty(panel,
+                                     "script.bootstrap.scene_init",
+                                     "Bootstrap",
+                                     "scene init",
+                                     QtDockBool(runtime->bootstrap_scene_init_injected));
+    QtDockAddReadOnlyGroupedProperty(panel,
+                                     "script.bootstrap.fallback",
+                                     "Bootstrap",
+                                     "fallback",
+                                     QtDockBool(runtime->bootstrap_fallback_injected));
+  }
   if (selectedEntity != 0u) {
     QtDockAddProperty(panel, "selected entity", std::to_string(selectedEntity));
   }
@@ -533,6 +638,14 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
     }
     QtDockAddTreeRow(panel, std::move(scriptGroup));
   }
+  std::unordered_map<std::string, const vkpt::scripting::ScriptEditorParam*> editorParamMetadata;
+  if (runtime != nullptr) {
+    for (const auto& binding : runtime->bindings) {
+      for (const auto& param : binding.editor_params) {
+        editorParamMetadata[QtDockScriptParamMetadataKey(binding.entity, param.name)] = &param;
+      }
+    }
+  }
   for (const auto& entity : document.entities) {
     if (entity.script.script.empty() && entity.script.params.empty()) {
       continue;
@@ -546,10 +659,32 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
     QtDockAddToggleGroupedProperty(panel, prefix + "enabled", label, "Enabled", entity.script.enabled);
     QtDockAddToggleGroupedProperty(panel, prefix + "reload_on_save", label, "Reload on save", entity.script.reload_on_save);
     for (const auto& [name, value] : entity.script.params) {
-      QtDockAddScriptParamProperty(panel, entity.id, name, value);
+      const auto metadata = editorParamMetadata.find(QtDockScriptParamMetadataKey(entity.id, name));
+      QtDockAddScriptParamProperty(panel,
+                                   entity.id,
+                                   name,
+                                   value,
+                                   metadata == editorParamMetadata.end() ? nullptr : metadata->second);
     }
   }
   if (runtime != nullptr) {
+    for (const auto& binding : runtime->bindings) {
+      const auto* entity = FindQtSceneEntity(document, binding.entity);
+      if (entity == nullptr) {
+        continue;
+      }
+      for (const auto& param : binding.editor_params) {
+        if (entity->script.params.find(param.name) != entity->script.params.end()) {
+          continue;
+        }
+        const auto value = binding.params.find(param.name);
+        QtDockAddScriptParamProperty(panel,
+                                     binding.entity,
+                                     param.name,
+                                     value == binding.params.end() ? param.default_value : value->second,
+                                     &param);
+      }
+    }
     QtDockAddProperty(panel, "lua compiled", QtDockBool(runtime->binding_summary.lua_compiled_in));
     QtDockAddProperty(panel, "execution available", QtDockBool(runtime->binding_summary.execution_available));
     QtDockAddProperty(panel, "bindings", std::to_string(runtime->binding_summary.binding_count));

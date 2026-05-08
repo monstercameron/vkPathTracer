@@ -859,7 +859,22 @@ endforeach()
 
 add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
   tests/scene_script_bootstrap_smoke.cpp
+  src/assets/AssetImporters.cpp
+  src/assets/AssetImportersTexture.cpp
+  src/assets/SceneAssetLoader.cpp
+  src/assets/SceneAssetLoaderSupport.cpp
+  src/assets/SceneAssetObjLoader.cpp
+  src/assets/SceneAssetGltfLoader.cpp
+  src/pathtracer/SceneConversion.cpp
+  src/physics/PhysicsWorld.cpp
+  src/scene/Json.cpp
+  src/scene/Scene.cpp
+  src/scene/SceneDocumentExport.cpp
+  src/scene/SceneDocumentLoad.cpp
   src/scene/SceneScriptBootstrap.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
 )
 
 target_include_directories(pt_scene_script_bootstrap_smoke PRIVATE
@@ -867,6 +882,13 @@ target_include_directories(pt_scene_script_bootstrap_smoke PRIVATE
 )
 
 target_compile_features(pt_scene_script_bootstrap_smoke PRIVATE cxx_std_23)
+
+if(PT_ENABLE_JOLT)
+  target_link_libraries(pt_scene_script_bootstrap_smoke PRIVATE ${PT_JOLT_TARGET})
+  target_compile_definitions(pt_scene_script_bootstrap_smoke PRIVATE
+    PT_ENABLE_JOLT
+    PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
+endif()
 
 # Drag-throughput smoke for the D3D12 path tracer. Built only when D3D12 is
 # enabled because the test is a thin wrapper around D3D12GpuPathTracer; the

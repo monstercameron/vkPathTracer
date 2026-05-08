@@ -520,10 +520,37 @@ int RunScriptingRuntimeSmoke() {
   }
   auto param_runtime = vkpt::scripting::CreateScriptRuntime();
   const auto param_binding_summary = param_runtime->reload_bindings(param_world);
+  const auto& param_binding = param_runtime->bindings().front();
+  const auto offset_editor_param = std::find_if(
+      param_binding.editor_params.begin(),
+      param_binding.editor_params.end(),
+      [](const vkpt::scripting::ScriptEditorParam& param) {
+        return param.name == "offset_x";
+      });
+  const auto offset_y_editor_param = std::find_if(
+      param_binding.editor_params.begin(),
+      param_binding.editor_params.end(),
+      [](const vkpt::scripting::ScriptEditorParam& param) {
+        return param.name == "offset_y";
+      });
   if (!Check(param_binding_summary.binding_count == 1u,
              "param probe should expose one binding") ||
-      !Check(param_runtime->bindings().front().params.at("offset_x") == "2.5",
-             "script params should carry into runtime bindings")) {
+      !Check(param_binding.params.at("offset_x") == "2.5",
+             "script params should carry into runtime bindings") ||
+      !Check(offset_editor_param != param_binding.editor_params.end() &&
+                 offset_editor_param->type == "number" &&
+                 offset_editor_param->default_value == "1.25" &&
+                 offset_editor_param->has_minimum &&
+                 std::abs(offset_editor_param->minimum + 10.0) < 0.001 &&
+                 offset_editor_param->has_maximum &&
+                 std::abs(offset_editor_param->maximum - 10.0) < 0.001 &&
+                 offset_editor_param->has_step &&
+                 std::abs(offset_editor_param->step - 0.25) < 0.001,
+             "script @editor annotations should expose typed param metadata") ||
+      !Check(offset_y_editor_param != param_binding.editor_params.end() &&
+                 offset_y_editor_param->type == "number" &&
+                 offset_y_editor_param->default_value == "0.5",
+             "script [editor] annotations should be accepted as an alias")) {
     return 1;
   }
   vkpt::scripting::ScriptExecutionContext param_context;
@@ -550,7 +577,7 @@ int RunScriptingRuntimeSmoke() {
   if (!Check(param_dispatch.hook_call_count == 1u,
              "param probe Lua script should execute") ||
       !Check(param_write != nullptr && std::abs(param_write->transform.translation.x - 2.5f) < 0.001f,
-             "ctx.params should be visible to Lua scripts") ||
+             "authored ctx.params should override script @editor defaults") ||
       !Check(!param_runtime->runtime_states().empty() &&
                  param_runtime->runtime_states().front().command_count >= 1u,
              "runtime state should record command count") ||
@@ -582,6 +609,40 @@ int RunScriptingRuntimeSmoke() {
       !Check(param_override_write != nullptr &&
                  std::abs(param_override_write->transform.translation.x - 4.75f) < 0.001f,
              "runtime variable overrides should flow into Lua ctx.params")) {
+    return 1;
+  }
+
+  vkpt::scene::SceneWorld annotated_default_world;
+  const auto annotated_default_entity =
+      annotated_default_world.create_entity("annotated_default_probe", 121);
+  annotated_default_world.set_transform(annotated_default_entity, vkpt::scene::TransformComponent{});
+  vkpt::scene::ScriptComponent annotated_default_script;
+  annotated_default_script.script = "assets/scripts/script_param_probe.lua";
+  if (!annotated_default_world.set_component(
+          annotated_default_entity,
+          vkpt::scene::ComponentKind::Script,
+          annotated_default_script)) {
+    return 1;
+  }
+  auto annotated_default_runtime = vkpt::scripting::CreateScriptRuntime();
+  annotated_default_runtime->reload_bindings(annotated_default_world);
+  vkpt::scripting::ScriptExecutionContext annotated_default_context;
+  annotated_default_context.game_mode = true;
+  annotated_default_context.frame = 11;
+  annotated_default_context.delta_seconds = 1.0 / 60.0;
+  vkpt::scene::WorldCommandBuffer annotated_default_commands;
+  const auto annotated_default_dispatch = annotated_default_runtime->dispatch_hook(
+      annotated_default_world,
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      annotated_default_context,
+      annotated_default_commands);
+  const auto* annotated_default_write =
+      FindSetTransform(annotated_default_commands, annotated_default_entity);
+  if (!Check(annotated_default_dispatch.hook_call_count == 1u,
+             "annotated default probe should execute") ||
+      !Check(annotated_default_write != nullptr &&
+                 std::abs(annotated_default_write->transform.translation.x - 1.25f) < 0.001f,
+             "script @editor defaults should flow into ctx.params when scene params are missing")) {
     return 1;
   }
 
@@ -778,6 +839,109 @@ return {
   }
 
 #ifdef PT_ENABLE_LUA
+  const auto scene_api_probe_path =
+      std::filesystem::temp_directory_path() / "vkpt_scene_api_probe.lua";
+  {
+    std::ofstream probe(scene_api_probe_path, std::ios::binary);
+    probe << R"lua(
+local script = {}
+
+function script.on_load(self, ctx)
+  ctx:diagnostic("info", "scene api probe running")
+  local camera = ctx.scene:main_camera()
+  if camera == nil then error("missing main camera") end
+  local found = ctx.scene:find_entity("Main Camera")
+  if found == nil then error("scene find_entity failed") end
+  local cameras = ctx.scene:entities_with_component("camera")
+  if #cameras ~= 1 then error("camera component query failed") end
+  local system = ctx.scene:use_system("systems.generic_fps_camera")
+  if system == nil or system.source ~= "assets/scripts/systems/generic_fps_camera.lua" then
+    error("generic FPS system lookup failed")
+  end
+  local config = ctx:include("assets/scripts/scenes/default_fps/config.lua")
+  if config == nil or config.system_source ~= system.source then
+    error("safe include failed")
+  end
+  local audio_init = ctx:include("assets/scripts/scenes/audio_lua_interaction_demo/init.lua")
+  if type(audio_init) ~= "table" or type(audio_init.on_load) ~= "function" then
+    error("audio scene init include failed")
+  end
+  local warehouse_init = ctx:include("assets/scripts/scenes/lowest_lod_asset_showcase/init.lua")
+  if type(warehouse_init) ~= "table" or type(warehouse_init.on_load) ~= "function" then
+    error("warehouse scene init include failed")
+  end
+  local ok = ctx.scene:ensure_script(camera, system.source, { foo = "bar", speed = 3 })
+  if ok ~= true then error("ensure_script failed") end
+  ctx.scene:ensure_script(camera, system.source, { foo = "duplicate" })
+end
+
+return script
+)lua";
+  }
+
+  vkpt::scene::SceneWorld scene_api_world;
+  const auto scene_api_camera = scene_api_world.create_entity("Main Camera", 210);
+  vkpt::scene::TransformComponent scene_api_transform;
+  scene_api_world.set_transform(scene_api_camera, scene_api_transform);
+  vkpt::scene::CameraComponent scene_api_camera_component;
+  scene_api_world.set_component(scene_api_camera,
+                                vkpt::scene::ComponentKind::Camera,
+                                scene_api_camera_component);
+  vkpt::scene::ScriptComponent scene_api_script;
+  scene_api_script.script = scene_api_probe_path.string();
+  scene_api_world.set_component(scene_api_camera,
+                                vkpt::scene::ComponentKind::Script,
+                                scene_api_script);
+  auto scene_api_runtime = vkpt::scripting::CreateScriptRuntime();
+  scene_api_runtime->reload_bindings(scene_api_world);
+  vkpt::scripting::ScriptExecutionContext scene_api_context;
+  scene_api_context.game_mode = true;
+  scene_api_context.frame = 10u;
+  vkpt::scene::WorldCommandBuffer scene_api_commands;
+  const auto scene_api_dispatch =
+      scene_api_runtime->dispatch_hook(scene_api_world,
+                                       vkpt::scripting::ScriptLifecycleHook::OnLoad,
+                                       scene_api_context,
+                                       scene_api_commands);
+  std::size_t ensured_scripts = 0u;
+  bool ensured_has_params = false;
+  for (const auto& command : scene_api_commands.commands()) {
+    if (const auto* set_component =
+            std::get_if<vkpt::scene::WorldCommandBuffer::SetComponentCommand>(
+                &command.payload);
+        set_component != nullptr &&
+        set_component->kind == vkpt::scene::ComponentKind::Script) {
+      ++ensured_scripts;
+      if (const auto* ensured =
+              std::get_if<vkpt::scene::ScriptComponent>(&set_component->component);
+          ensured != nullptr &&
+          ensured->script == "assets/scripts/systems/generic_fps_camera.lua") {
+        const auto foo = ensured->params.find("foo");
+        const auto speed = ensured->params.find("speed");
+        ensured_has_params =
+            foo != ensured->params.end() && foo->second == "bar" &&
+            speed != ensured->params.end() &&
+            (speed->second == "3" || speed->second == "3.000000");
+      }
+    }
+  }
+  if (!Check(scene_api_dispatch.hook_call_count == 1u,
+             "scene API probe should execute one on_load hook") ||
+      !Check(scene_api_dispatch.diagnostics.size() == 1u &&
+                 scene_api_dispatch.diagnostics.front().message ==
+                     "scene api probe running",
+             "ctx:diagnostic should publish one scene API diagnostic") ||
+      !Check(ensured_scripts == 1u,
+             "scene:ensure_script should be idempotent within one hook") ||
+      !Check(ensured_has_params,
+             "scene:ensure_script should enqueue the target script and params")) {
+    std::error_code remove_error;
+    std::filesystem::remove(scene_api_probe_path, remove_error);
+    return 1;
+  }
+  std::error_code scene_api_remove_error;
+  std::filesystem::remove(scene_api_probe_path, scene_api_remove_error);
+
   vkpt::scene::SceneWorld sun_world;
   const auto sun_entity = sun_world.create_entity("warehouse_sun_probe", 131);
   vkpt::scene::TransformComponent sun_transform;

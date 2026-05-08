@@ -184,6 +184,130 @@
             } else {
               return failEdit("unknown script selection action");
             }
+          } else if (parts.size() >= 3u && parts[1] == "scene_init") {
+            auto sceneInitId = [&]() {
+              std::string raw = qtSceneDocument.metadata.scene_name;
+              if (raw.empty()) {
+                raw = std::filesystem::path(ui_runtime_state.active_scene).stem().generic_string();
+              }
+              if (raw.empty() || raw == "none") {
+                raw = "current_scene";
+              }
+              std::string out;
+              out.reserve(raw.size());
+              for (const unsigned char ch : raw) {
+                if (std::isalnum(ch) != 0) {
+                  out.push_back(static_cast<char>(std::tolower(ch)));
+                } else if (!out.empty() && out.back() != '_') {
+                  out.push_back('_');
+                }
+              }
+              while (!out.empty() && out.back() == '_') {
+                out.pop_back();
+              }
+              return out.empty() ? std::string("current_scene") : out;
+            };
+            auto sceneInitPath = [&]() {
+              return std::filesystem::path("assets/scripts/scenes") / sceneInitId() / "init.lua";
+            };
+            auto ensureSceneInitFile = [&](const std::filesystem::path& scriptPath) {
+              std::error_code ec;
+              std::filesystem::create_directories(scriptPath.parent_path(), ec);
+              if (ec) {
+                return false;
+              }
+              if (std::filesystem::exists(scriptPath)) {
+                return true;
+              }
+              std::ofstream out(scriptPath, std::ios::binary);
+              if (!out) {
+                return false;
+              }
+              out << "local script = {}\n\n"
+                     "function script.on_load(self, ctx)\n"
+                     "  if ctx ~= nil and type(ctx.diagnostic) == \"function\" then\n"
+                     "    ctx:diagnostic(\"info\", \"scene init loaded\")\n"
+                     "  end\n"
+                     "end\n\n"
+                     "return script\n";
+              return true;
+            };
+            auto assignSceneInit = [&](const std::filesystem::path& scriptPath, bool enabled) {
+              qtSceneDocument.has_scene_script = true;
+              qtSceneDocument.scene_script.script = scriptPath.generic_string();
+              qtSceneDocument.scene_script.language = "lua";
+              qtSceneDocument.scene_script.entry = "default";
+              qtSceneDocument.scene_script.module_id = sceneInitId();
+              qtSceneDocument.scene_script.enabled = enabled;
+              qtSceneDocument.scene_script.reload_on_save = true;
+            };
+            if (parts[2] == "create") {
+              const auto scriptPath = sceneInitPath();
+              if (!ensureSceneInitFile(scriptPath)) {
+                return failEdit("could not create scene init script");
+              }
+              assignSceneInit(scriptPath, true);
+              qtReloadScriptsFromDocument("scene init created");
+              ui_runtime_state.status_message = "created scene init: " + scriptPath.generic_string();
+            } else if (parts[2] == "open") {
+              if (qtSceneDocument.scene_script.script.empty()) {
+                return failEdit("scene has no init script");
+              }
+              if (!OpenPathInExplorer(std::filesystem::path(qtSceneDocument.scene_script.script))) {
+                return failEdit("could not open scene init script");
+              }
+              ui_runtime_state.status_message = "opened scene init: " + qtSceneDocument.scene_script.script;
+            } else if (parts[2] == "bake_default_fps") {
+              const auto decision = vkpt::scene::DecideSceneScriptBootstrap(qtSceneDocument);
+              vkpt::scene::ScriptComponent script;
+              script.script = "assets/scripts/systems/generic_fps_camera.lua";
+              script.language = "lua";
+              script.entry = "default";
+              script.module_id = "systems.generic_fps_camera";
+              script.enabled = true;
+              script.reload_on_save = true;
+              script.params["baked_from"] = "default_fps_fallback";
+              if (decision.fallback.operation ==
+                      vkpt::scene::SceneScriptBootstrapFallbackOperation::AttachDefaultFpsToMainCamera &&
+                  decision.fallback.target_entity_id != 0u) {
+                auto* entity = qtFindEntity(decision.fallback.target_entity_id);
+                if (entity == nullptr) {
+                  return failEdit("fallback target camera is not an authored entity");
+                }
+                entity->script = script;
+              } else if (decision.fallback.operation ==
+                         vkpt::scene::SceneScriptBootstrapFallbackOperation::SpawnDefaultFpsCamera) {
+                vkpt::scene::SceneEntityDefinition entity;
+                entity.id = 9'000'000'000ull;
+                for (const auto& existing : qtSceneDocument.entities) {
+                  if (existing.id >= entity.id) {
+                    entity.id = existing.id + 1u;
+                  }
+                }
+                entity.name = "Runtime FPS Camera";
+                entity.has_transform = true;
+                entity.transform.translation = {0.0f, 1.7f, 4.0f};
+                entity.has_camera = true;
+                entity.camera.fov = 65.0f;
+                entity.camera.focus_distance = 4.0f;
+                entity.script = script;
+                qtSceneDocument.entities.push_back(std::move(entity));
+              } else {
+                return failEdit("default FPS fallback is not active for this scene");
+              }
+              qtReloadScriptsFromDocument("default FPS baked");
+              ui_runtime_state.status_message = "baked default FPS script into scene";
+            } else if (parts[2] == "disable_fallback") {
+              const auto scriptPath = sceneInitPath();
+              if (!ensureSceneInitFile(scriptPath)) {
+                return failEdit("could not create disabled scene init script");
+              }
+              assignSceneInit(scriptPath, false);
+              qtReloadScriptsFromDocument("default fallback disabled");
+              ui_runtime_state.status_message = "disabled default bootstrap fallback";
+            } else {
+              return failEdit("unknown scene init action");
+            }
           } else if (parts.size() >= 3u && parts[1] == "actions") {
             if (parts[2] == "open_folder") {
               if (!OpenPathInExplorer(std::filesystem::path("assets/scripts"))) {
