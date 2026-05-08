@@ -160,14 +160,19 @@ void SetPhysicsStatusBodyCounts(PhysicsStatus& status, const PhysicsSyncSummary&
 
 void RecordPhysicsSyncTelemetry(const PhysicsSyncSummary& summary) {
   SetPhysicsBodyCountMetrics(summary);
-  if (summary.enabled_bodies != summary.ecs_entities) {
+  // Sync drift = backend disagrees with what we asked it to sync. Comparing
+  // enabled_bodies against ecs_entities is wrong: most entities don't have
+  // physics components, so the inequality is the steady-state, not a drift,
+  // and the warning floods the log on every sync (multiple per second on
+  // both UI and worker threads in 1000+ entity scenes).
+  if (summary.enabled_bodies != summary.backend_bodies) {
     vkpt::log::Logger::instance().log(
         vkpt::log::Severity::Warning,
         "physics",
         "physics.sync_drift",
         {{"enabled_bodies", std::to_string(summary.enabled_bodies)},
-         {"ecs_entities", std::to_string(summary.ecs_entities)},
-         {"backend_bodies", std::to_string(summary.backend_bodies)}});
+         {"backend_bodies", std::to_string(summary.backend_bodies)},
+         {"ecs_entities", std::to_string(summary.ecs_entities)}});
   }
 }
 
@@ -790,7 +795,14 @@ class ThreadedPhysicsWorld final : public IPhysicsWorld {
     auto summary = BuildSyncSummary(bodies, ecs_entities);
     enqueue_command(PhysicsCmd{PhysicsSyncBodiesCmd{next_request_id(), std::move(bodies), ecs_entities}});
     m_latestSummary = summary;
-    RecordPhysicsSyncTelemetry(summary);
+    // Do NOT call RecordPhysicsSyncTelemetry here — the summary at this
+    // point reflects the request, not the backend. backend_bodies is 0
+    // until the worker thread processes the enqueued command and pushes
+    // the real summary back via PhysicsSyncSummaryDelta. Telemetry is
+    // recorded on the worker side (sync_backend_from_known_bodies) where
+    // the numbers match reality. Logging here was producing
+    // physics.sync_drift warnings every sync (multiple per second on
+    // 1000+ entity scenes) with bogus backend_bodies=0.
     {
       std::scoped_lock lock(m_state->status_mutex);
       m_state->status.backend = m_state->cached_info.engine_name;
