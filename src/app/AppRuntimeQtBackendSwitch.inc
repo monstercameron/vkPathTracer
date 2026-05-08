@@ -102,7 +102,9 @@
         qtShowBackendSwitchLoading(normalized, "starting renderer", 3u);
         config.backend = {next.requested_backend, vkpt::config::ConfigSource::CliFlag};
         qtRendererPath = next.renderer_path;
-        status.selected_renderer_path = qtRendererPath;
+        updateStatusFile([&](auto& fileStatus) {
+          fileStatus.selected_renderer_path = qtRendererPath;
+        });
         qtUseBg = next.background;
         qtEnableAutoOrbit = (windowFrameLimit == 0u) && !qtUseBg && !qtPhysicsRuntimeEnabled;
         qtTracerReady = true;
@@ -112,6 +114,7 @@
           vkpt::render::RenderCoordinatorConfig coordinatorConfig{};
           coordinatorConfig.publish_hz = qtPreviewPublishHz;
           coordinatorConfig.immediate_publish_count = kQtPreviewImmediatePublishes;
+          coordinatorConfig.snapshot_ring = &qtSnapshotRing;
           qtRenderCoordinator = std::make_unique<vkpt::render::RenderCoordinator>(
               std::move(next.tracer),
               qtSettings,

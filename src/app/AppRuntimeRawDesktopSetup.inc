@@ -245,6 +245,13 @@
     // active tiled tracer after the coordinator starts.
     std::unique_ptr<vkpt::render::RenderCoordinator> bgRenderCoordinator;
     bool useBgRender = false;
+    vkpt::scene::SnapshotRing previewSnapshotRing;
+    vkpt::scene::RenderSceneSnapshotRevisions previewSnapshotRevisions{};
+    previewSnapshotRevisions.generation = 1u;
+    previewSnapshotRevisions.topology_revision = 1u;
+    previewSnapshotRevisions.transform_revision = 1u;
+    previewSnapshotRevisions.camera_revision = 1u;
+    previewSnapshotRevisions.material_revision = 1u;
 
     auto resetPreviewPixelOrder = [&](uint32_t sampleIndex) {
       std::iota(previewPixelOrder.begin(), previewPixelOrder.end(), 0u);
@@ -268,7 +275,7 @@
     };
     resetPreviewPixelOrder(previewSampleIndex);
 
-    auto buildWindowSceneData = [&](vkpt::pathtracer::RTSceneData& outScene, std::string* outErr) -> bool {
+    auto buildWindowSceneData = [&](vkpt::pathtracer::PathTracerSceneSnapshot& outScene, std::string* outErr) -> bool {
       outScene = {};
       if (!config.scene_path.value.empty()) {
         auto parseResult = vkpt::scene::SceneDocument::load_from_file(config.scene_path.value);
@@ -301,7 +308,35 @@
       return true;
       };
 
-    vkpt::pathtracer::RTSceneData previewScene;
+    vkpt::pathtracer::PathTracerSceneSnapshot previewScene;
+    auto publishPreviewSnapshot =
+        [&](bool topology_changed,
+            bool transform_changed,
+            bool camera_changed,
+            bool material_changed) {
+      auto previous = previewSnapshotRing.current();
+      previewSnapshotRevisions.generation =
+          std::max<std::uint64_t>(previewSnapshotRevisions.generation + 1u,
+                                  previous ? previous->generation + 1u : 1u);
+      if (topology_changed) {
+        ++previewSnapshotRevisions.topology_revision;
+      }
+      if (transform_changed) {
+        ++previewSnapshotRevisions.transform_revision;
+      }
+      if (camera_changed) {
+        ++previewSnapshotRevisions.camera_revision;
+      }
+      if (material_changed) {
+        ++previewSnapshotRevisions.material_revision;
+      }
+      auto snapshot = vkpt::scene::BuildRenderSceneSnapshot(
+          previewScene,
+          previous.get(),
+          previewSnapshotRevisions);
+      previewSnapshotRing.publish(std::move(snapshot));
+    };
+    bool previewSceneLoaded = false;
     if (!buildWindowSceneData(previewScene, &previewError)) {
       // Fall back to a guaranteed visible diagnostic texture if scene load/setup fails.
       const uint32_t fbw = std::max<uint32_t>(64u, static_cast<uint32_t>(desktopWindow->metrics().width));
@@ -327,10 +362,20 @@
                    {"error", previewError}
                  },
                  0);
-    } else if (!previewTracer->configure(previewSettings) ||
-               !previewTracer->load_scene_snapshot(previewScene) ||
-               !previewTracer->build_or_update_acceleration() ||
-               !previewTracer->reset_accumulation()) {
+    } else {
+      previewSceneLoaded = true;
+      auto snapshot = vkpt::scene::BuildRenderSceneSnapshot(
+          previewScene,
+          nullptr,
+          previewSnapshotRevisions);
+      previewSnapshotRing.publish(std::move(snapshot));
+    }
+
+    if (previewSceneLoaded &&
+        (!previewTracer->configure(previewSettings) ||
+         !previewTracer->load_scene_snapshot(previewScene) ||
+         !previewTracer->build_or_update_acceleration() ||
+         !previewTracer->reset_accumulation())) {
       previewError = "window preview tracer init failed";
       std::string previewInitFailureReason;
 #ifdef PT_ENABLE_D3D12
@@ -352,7 +397,7 @@
                    {"error", previewInitFailureReason}
                   },
                   0);
-    } else {
+    } else if (previewSceneLoaded) {
       previewTracerReady = true;
       previewError.clear();
       logger.log(vkpt::log::Severity::Info, "traceprobe",
@@ -377,6 +422,7 @@
         vkpt::render::RenderCoordinatorConfig coordinatorConfig{};
         coordinatorConfig.publish_hz = 60u;
         coordinatorConfig.immediate_publish_count = 4u;
+        coordinatorConfig.snapshot_ring = &previewSnapshotRing;
         bgRenderCoordinator = std::make_unique<vkpt::render::RenderCoordinator>(
             std::move(previewTracer),
             previewSettings,

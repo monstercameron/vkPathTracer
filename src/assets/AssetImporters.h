@@ -12,6 +12,8 @@
 
 #include "assets/AssetRegistry.h"
 #include "assets/TextureAsset.h"
+#include "core/contracts/Lifecycle.h"
+#include "core/contracts/Result.h"
 
 namespace vkpt::assets {
 
@@ -40,6 +42,7 @@ struct AssetImportSource {
   std::vector<std::byte> bytes;
   std::string root_directory;
   std::string binding_context;
+  std::uint64_t flow_id = 0;
 };
 
 struct AssetImportOptions {
@@ -54,10 +57,39 @@ struct AssetImportOptions {
 
 struct AssetImportResult {
   bool success = false;
+  vkpt::core::Status status =
+      vkpt::core::Status::error(vkpt::core::StatusCode::InternalError, "import not run");
   std::vector<AssetRecord> assets;
   std::vector<AssetImportDiagnostic> diagnostics;
   std::string deterministic_import_hash;
 };
+
+struct AssetTelemetryStatus {
+  vkpt::core::contracts::ComponentLifecycle lifecycle =
+      vkpt::core::contracts::ComponentLifecycle::Uninitialized;
+  std::uint64_t last_tick_ns = 0;
+  std::uint64_t ticks_total = 0;
+  std::uint64_t errors_total = 0;
+  std::uint64_t load_started_total = 0;
+  std::uint64_t load_completed_total = 0;
+  std::uint64_t load_failed_total = 0;
+  std::uint64_t cache_hit_total = 0;
+  std::uint64_t cache_miss_total = 0;
+  std::uint64_t load_us_count = 0;
+  std::uint64_t load_us_sum = 0;
+  std::uint64_t last_load_us = 0;
+  std::uint64_t last_load_bytes = 0;
+  std::uint64_t total_bytes_loaded = 0;
+  std::uint64_t in_flight = 0;
+  double cache_hit_rate = 0.0;
+  std::string last_asset_id;
+  std::string last_kind;
+  std::string last_error;
+  std::string last_failure;
+  std::uint64_t current_flow_id = 0;
+};
+
+struct AssetsStatus : AssetTelemetryStatus {};
 
 class IAssetImporter {
  public:
@@ -105,6 +137,15 @@ std::string FileNameOrUri(std::string_view uri);
 
 class ImporterRegistry {
  public:
+  // State machine:
+  // state\method  register_importer validate_source import_source status
+  // Empty         ok                error/noop      error/noop    ok
+  // Ready         ok                ok              ok            ok
+  // Degraded      ok                ok              ok            ok
+  //
+  // ImporterRegistry itself is intentionally stateless with respect to asset
+  // lifetime; process-wide telemetry reports Busy while imports are in flight
+  // and Degraded after a recoverable import failure has been observed.
   // Dispatches by normalized extension so scene, mesh, and texture pipelines share diagnostics.
   bool register_importer(std::shared_ptr<IAssetImporter> importer);
 
@@ -195,6 +236,11 @@ class ExrPolicyImporter final : public IAssetImporter {
 };
 
 ImporterRegistry CreateDefaultImporterRegistry(bool include_fake_importer = false);
+
+AssetTelemetryStatus GetAssetTelemetryStatus();
+AssetsStatus GetAssetsStatus();
+void ResetAssetTelemetryForTest();
+void RegisterAssetHealthProbeForProcess();
 
 std::string SerializeAssetCapabilityMatrix(const ImporterRegistry& registry,
                                            const ExrSupportPolicy& exr_policy = GetDefaultExrSupportPolicy());

@@ -31,6 +31,7 @@ struct AppOptions {
   bool ui_release_gate = false;
   bool dynamic_physics_gate = false;
   bool third_person_script_gate = false;
+  bool qt_stress_gate = false;
   bool open_window = false;
   bool list_gpus = false;
   bool auto_exit_window = false;
@@ -45,6 +46,9 @@ struct AppOptions {
   std::string platform_name;
   std::string output_path = "artifacts/renders/cornell.png";
   std::string exr_output_path;
+  std::string qt_stress_output = "artifacts/perf-qt-stress-gate";
+  std::string qt_stress_scene;
+  std::uint32_t qt_stress_phase_seconds = 5;
   std::string log_level = "info";
   std::uint32_t width = 320;
   std::uint32_t height = 240;
@@ -60,6 +64,8 @@ struct AppOptions {
   bool gpu_denoiser = false;
   bool temporal_aa = false;
   bool audio_mute = false;
+  bool deterministic = false;
+  bool snapshot_bus = true;
   std::optional<std::uint32_t> ui_present_hz;
 };
 

@@ -175,6 +175,10 @@ void PrintUsage() {
   std::cout << "  --ui-release-gate     Print UI release-gate evidence and deferred gaps\n";
   std::cout << "  --dynamic-physics-gate  Run D3D12 dynamic physics transform-update performance gate\n";
   std::cout << "  --third-person-script-gate  Emit static-mode script gate artifact\n";
+  std::cout << "  --qt-stress-gate      Run Qt orchestration stress gate (camera/transform/lua)\n";
+  std::cout << "  --qt-stress-output <dir>  Output directory for qt-stress-gate artifact (default artifacts/perf-qt-stress-gate)\n";
+  std::cout << "  --qt-stress-scene <path>  Override scene used by --qt-stress-gate\n";
+  std::cout << "  --qt-stress-phase-seconds <n>  Per-phase duration for --qt-stress-gate (default 5)\n";
   std::cout << "  --render              Render using scalar CPU path tracer\n";
   std::cout << "  --output <path>       Render output PNG path\n";
   std::cout << "  --exr-output <path>   Render output EXR path\n";
@@ -188,6 +192,8 @@ void PrintUsage() {
   std::cout << "  --render-fps <fps>    Frame rate metadata for render sequences\n";
   std::cout << "  --denoiser            Enable GPU denoiser for D3D12 renders\n";
   std::cout << "  --temporal-aa         Enable temporal reuse for D3D12 renders\n";
+  std::cout << "  --deterministic       Force deterministic script/job scheduling where available\n";
+  std::cout << "  --snapshot-bus        Explicitly use the snapshot-bus render path (default)\n";
 }
 
 void PrintVersionText(vkpt::platform::RuntimePlatformKind platform_shell) {
@@ -348,6 +354,10 @@ AppOptionsParseResult ParseAppOptions(int argc, char** argv) {
       options.temporal_aa = true;
     } else if (token == "--audio-mute") {
       options.audio_mute = true;
+    } else if (token == "--deterministic") {
+      options.deterministic = true;
+    } else if (token == "--snapshot-bus") {
+      options.snapshot_bus = true;
     } else if (token == "--list-gpus") {
       options.list_gpus = true;
     } else if (token == "--crash-test") {
@@ -360,6 +370,20 @@ AppOptionsParseResult ParseAppOptions(int argc, char** argv) {
       options.dynamic_physics_gate = true;
     } else if (token == "--third-person-script-gate") {
       options.third_person_script_gate = true;
+    } else if (token == "--qt-stress-gate") {
+      options.qt_stress_gate = true;
+    } else if (token == "--qt-stress-output") {
+      if (!HasValue(args, i)) return ParseError("missing value for --qt-stress-output");
+      options.qt_stress_output = std::string(args[++i]);
+    } else if (token == "--qt-stress-scene") {
+      if (!HasValue(args, i)) return ParseError("missing value for --qt-stress-scene");
+      options.qt_stress_scene = std::string(args[++i]);
+    } else if (token == "--qt-stress-phase-seconds") {
+      if (!HasValue(args, i) ||
+          !ParseUnsigned(args[++i], options.qt_stress_phase_seconds) ||
+          options.qt_stress_phase_seconds == 0u) {
+        return ParseError("invalid value for --qt-stress-phase-seconds");
+      }
     } else if (token == "--exit") {
       options.auto_exit_window = true;
     } else if (token == "--config") {

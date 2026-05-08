@@ -24,7 +24,9 @@
     const std::string crashDir = vkpt::diagnostics::CrashRecorder::instance().flush(
         config.crash_artifact_dir.value);
     std::cout << "crash test: artifact written to " << (crashDir.empty() ? "(failed)" : crashDir) << "\n";
-    status.last_crash_artifact = crashDir;
+    updateStatusFile([&](auto& fileStatus) {
+      fileStatus.last_crash_artifact = crashDir;
+    });
     writeStatus("crash_test", "crash_test_requested");
     return 42;
   }
@@ -92,6 +94,9 @@
     settings.enable_mis = true;
     settings.enable_denoiser = gpuDenoiser;
     settings.enable_temporal_aa = temporalAa;
+    if (startupDeterminismContext) {
+      settings.set_determinism(*startupDeterminismContext);
+    }
 
     const auto makeParticleFrameState = [&](uint32_t frame) {
       vkpt::pathtracer::SceneParticleFrameState frameState{};
@@ -138,7 +143,9 @@
     if (useVulkan) {
       vkpt::diagnostics::CrashRecorder::instance().update_backend("vulkan-compute");
       vkpt::diagnostics::CrashRecorder::instance().update_frame_stage("vulkan_bvh_pass", 0);
-      status.selected_renderer_path = "vulkan_bvh_compute";
+      updateStatusFile([](auto& fileStatus) {
+        fileStatus.selected_renderer_path = "vulkan_bvh_compute";
+      });
 
       vkpt::render::VulkanComputeBackend vulkanBackend;
       auto bvhResult = vkpt::render::RunVulkanBVHPass(
@@ -179,7 +186,9 @@
       const std::string perfSummary = "vertices=" + std::to_string(bvhResult.vertex_buffer_count)
                                     + " indices=" + std::to_string(bvhResult.index_buffer_count)
                                     + " bvh_nodes=" + std::to_string(bvhResult.bvh_node_estimate);
-      status.performance_summary = perfSummary;
+      updateStatusFile([&](auto& fileStatus) {
+        fileStatus.performance_summary = perfSummary;
+      });
       vkpt::core::TraceExecution("render_vulkan_bvh_complete", {
         {"renderer_path", "vulkan_bvh_compute"},
         {"output", config.output_path.value},
@@ -236,7 +245,9 @@
         }
         tracer = std::move(gpuT);
         if (requestDxr) {
-          status.selected_renderer_path = "d3d12_dxr_phase1";
+          updateStatusFile([](auto& fileStatus) {
+            fileStatus.selected_renderer_path = "d3d12_dxr_phase1";
+          });
           selectedTracerPath = "d3d12_dxr";
         } else {
           selectedTracerPath = "d3d12_compute";
@@ -304,7 +315,7 @@
         std::filesystem::create_directories(parent);
       }
     };
-    const auto renderFrameToFile = [&](const vkpt::pathtracer::RTSceneData& frameScene,
+    const auto renderFrameToFile = [&](const vkpt::pathtracer::PathTracerSceneSnapshot& frameScene,
                                        uint32_t frame,
                                        const std::string& outputPath,
                                        const std::string& exrOutputPath) {
@@ -319,11 +330,17 @@
       ensureOutputDirectory(outputPath);
       tracer->reset_accumulation();
       for (uint32_t sample = 0; sample < settings.spp; ++sample) {
-        if (!tracer->render_sample_batch(0, settings.height, sample, frame)) {
+        vkpt::pathtracer::RenderTile tile;
+        tile.x = 0u;
+        tile.y = 0u;
+        tile.width = settings.width;
+        tile.height = settings.height;
+        tile.sample_index = sample;
+        if (!tracer->render_tile(tile, frame)) {
           std::cerr << "render failed\n";
           recordUiAction("app.render", "render", "render sample failed",
-                         MakeUnsupportedUiCommand("app.render", "render_sample_batch_failed"));
-          writeStatus("error:render_failed", "render_sample_batch_failed");
+                         MakeUnsupportedUiCommand("app.render", "render_tile_failed"));
+          writeStatus("error:render_failed", "render_tile_failed");
           return false;
         }
       }
@@ -385,7 +402,9 @@
     const std::string perfSummary = "samples=" + std::to_string(counters.samples)
                                   + " rays=" + std::to_string(counters.rays)
                                   + " tri_hits=" + std::to_string(counters.triangle_hits);
-    status.performance_summary = perfSummary;
+    updateStatusFile([&](auto& fileStatus) {
+      fileStatus.performance_summary = perfSummary;
+    });
     vkpt::core::TraceExecution("render_complete", {
       {"renderer_path", selectedTracerPath},
       {"output", config.output_path.value},

@@ -20,7 +20,7 @@ std::string QtDockNumber(double value, int precision = 2);
 std::string QtDockBytes(std::uint64_t bytes);
 std::string QtDockRate(double raysPerSecond);
 int QtDockPreferredPixels(float value);
-std::uint64_t EstimateQtSceneMemoryBytes(const vkpt::pathtracer::RTSceneData& scene);
+std::uint64_t EstimateQtSceneMemoryBytes(const vkpt::pathtracer::PathTracerSceneSnapshot& scene);
 std::string QtDockFeatureSummary(const vkpt::render::RenderBackendCapabilities& caps);
 std::string QtDockAcceleratorKind(const vkpt::render::AcceleratorCapabilities& accel);
 std::string QtDockMemoryUsage(std::uint64_t usage,
@@ -183,13 +183,13 @@ QtDockPanelContent BuildQtInspectorDock(const vkpt::scene::SceneDocument& docume
                                         const vkpt::editor::UiRuntimeState& runtime,
                                         const vkpt::editor::UiLayoutDocument& layout);
 QtDockPanelContent BuildQtMaterialsDock(const vkpt::scene::SceneDocument& document,
-                                        const vkpt::pathtracer::RTSceneData& scene,
+                                        const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                         const vkpt::editor::UiLayoutDocument& layout);
 QtDockPanelContent BuildQtLightsDock(const vkpt::scene::SceneDocument& document,
-                                     const vkpt::pathtracer::RTSceneData& scene,
+                                     const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                      const vkpt::editor::UiLayoutDocument& layout);
 QtDockPanelContent BuildQtCameraDock(const vkpt::scene::SceneDocument& document,
-                                     const vkpt::pathtracer::RTSceneData& scene,
+                                     const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                      const vkpt::editor::UiRuntimeState& runtime,
                                      const vkpt::editor::UiLayoutDocument& layout,
                                      const QtDockFrameStats& frame_stats,
@@ -204,6 +204,9 @@ QtDockPanelContent BuildQtDiagnosticsDock(const vkpt::editor::UiRuntimeState& ru
 QtDockPanelContent BuildQtPerformanceDock(const vkpt::editor::UiRuntimeState& runtime,
                                           const vkpt::editor::UiLayoutDocument& layout,
                                           const QtDockFrameStats& frame_stats);
+QtDockPanelContent BuildQtMetricsDock(const vkpt::editor::UiLayoutDocument& layout);
+QtDockPanelContent BuildQtEventsDock(const vkpt::editor::UiLayoutDocument& layout);
+QtDockPanelContent BuildQtHealthDock(const vkpt::editor::UiLayoutDocument& layout);
 QtDockPanelContent BuildQtDebugViewsDock(const vkpt::editor::UiRuntimeState& runtime,
                                          const vkpt::editor::UiLayoutDocument& layout);
 QtDockPanelContent BuildQtTimelineDock(const vkpt::scene::SceneDocument& document,

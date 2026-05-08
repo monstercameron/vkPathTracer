@@ -99,16 +99,17 @@
         bool valid = false;
       };
       std::vector<QtRtInstanceLocalBoundsCacheEntry> qtRtInstanceLocalBoundsCache;
-      auto qtRefreshSelectionBoundsFromRtScene = [&]() {
-        if (qtRtInstanceLocalBoundsCache.size() != qtScene.instances.size()) {
-          qtRtInstanceLocalBoundsCache.assign(qtScene.instances.size(), {});
+      auto qtRefreshSelectionBoundsFromSnapshot =
+          [&](const vkpt::scene::RenderSceneSnapshot& snapshot) {
+        if (qtRtInstanceLocalBoundsCache.size() != snapshot.instances.size()) {
+          qtRtInstanceLocalBoundsCache.assign(snapshot.instances.size(), {});
         }
         auto localBoundsForInstance =
             [&](std::size_t instanceIndex,
                 const vkpt::pathtracer::RTInstance& instance)
                 -> std::optional<vkpt::editor::Bounds> {
           if (instance.local_vertex_count == 0u ||
-              instance.local_first_vertex >= qtScene.local_vertices.size() ||
+              instance.local_first_vertex >= snapshot.local_vertices.size() ||
               instanceIndex >= qtRtInstanceLocalBoundsCache.size()) {
             return std::nullopt;
           }
@@ -116,24 +117,24 @@
           if (cache.valid &&
               cache.first_vertex == instance.local_first_vertex &&
               cache.vertex_count == instance.local_vertex_count &&
-              cache.local_vertices_data == qtScene.local_vertices.data() &&
-              cache.local_vertices_size == qtScene.local_vertices.size()) {
+              cache.local_vertices_data == snapshot.local_vertices.data() &&
+              cache.local_vertices_size == snapshot.local_vertices.size()) {
             return cache.bounds;
           }
 
           vkpt::editor::Bounds localBounds{};
           const uint64_t localEnd = std::min<uint64_t>(
-              static_cast<uint64_t>(qtScene.local_vertices.size()),
+              static_cast<uint64_t>(snapshot.local_vertices.size()),
               static_cast<uint64_t>(instance.local_first_vertex) +
                   static_cast<uint64_t>(instance.local_vertex_count));
           for (uint64_t index = instance.local_first_vertex; index < localEnd; ++index) {
             ExpandBounds(localBounds,
-                         qtScene.local_vertices[static_cast<std::size_t>(index)]);
+                         snapshot.local_vertices[static_cast<std::size_t>(index)]);
           }
           cache.first_vertex = instance.local_first_vertex;
           cache.vertex_count = instance.local_vertex_count;
-          cache.local_vertices_data = qtScene.local_vertices.data();
-          cache.local_vertices_size = qtScene.local_vertices.size();
+          cache.local_vertices_data = snapshot.local_vertices.data();
+          cache.local_vertices_size = snapshot.local_vertices.size();
           cache.bounds = localBounds;
           cache.valid = localBounds.valid;
           if (!cache.valid) {
@@ -182,17 +183,17 @@
               static_cast<uint64_t>(instance.first_triangle) * 3ull;
           const uint64_t indexCount =
               static_cast<uint64_t>(instance.triangle_count) * 3ull;
-          if (firstIndex > qtScene.indices.size() ||
-              indexCount > qtScene.indices.size() - firstIndex) {
+          if (firstIndex > snapshot.indices.size() ||
+              indexCount > snapshot.indices.size() - firstIndex) {
             return false;
           }
           for (uint64_t offset = 0u; offset < indexCount; ++offset) {
             const uint32_t vertexIndex =
-                qtScene.indices[static_cast<std::size_t>(firstIndex + offset)];
-            if (vertexIndex >= qtScene.vertices.size()) {
+                snapshot.indices[static_cast<std::size_t>(firstIndex + offset)];
+            if (vertexIndex >= snapshot.vertices.size()) {
               continue;
             }
-            expandPoint(bounds, qtScene.vertices[vertexIndex]);
+            expandPoint(bounds, snapshot.vertices[vertexIndex]);
             found = true;
           }
           return found;
@@ -200,9 +201,9 @@
         for (const auto selectedId : ui_selection_state.selected_entity_ids) {
           auto bounds = vkpt::editor::Bounds{};
           bool found = false;
-          for (std::size_t instanceIndex = 0; instanceIndex < qtScene.instances.size();
+          for (std::size_t instanceIndex = 0; instanceIndex < snapshot.instances.size();
                ++instanceIndex) {
-            const auto& instance = qtScene.instances[instanceIndex];
+            const auto& instance = snapshot.instances[instanceIndex];
             if (instance.entity_id != selectedId) {
               continue;
             }
@@ -213,12 +214,84 @@
           }
         }
       };
+      auto qtRefreshSelectionBoundsFromCurrentSnapshot = [&]() {
+        if (const auto snapshot = qtCurrentUiSnapshot()) {
+          qtRefreshSelectionBoundsFromSnapshot(*snapshot);
+        } else {
+          RebuildSelectionBounds(ui_selection_state, qtPickables);
+        }
+      };
       auto qtLastViewportPickablesRefresh = std::chrono::steady_clock::time_point{};
       bool qtViewportPickablesRefreshPending = false;
       constexpr auto kQtTransformPickablesRefreshInterval =
           std::chrono::milliseconds(100);
+      auto qtSetViewportPickablesFromSnapshot =
+          [&](vkpt::scene::RenderSceneSnapshot::Ptr snapshot) {
+        if (snapshot) {
+          qtViewportPickablesSnapshot = std::move(snapshot);
+          qtViewportPickablesSnapshotGeneration =
+              qtViewportPickablesSnapshot->generation;
+          qtViewportPickablesTopologyRevision =
+              qtViewportPickablesSnapshot->topology_revision;
+          qtViewportPickablesTransformRevision =
+              qtViewportPickablesSnapshot->transform_revision;
+          qtPickables =
+              BuildViewportPickables(qtSceneDocument, *qtViewportPickablesSnapshot);
+        } else {
+          qtViewportPickablesSnapshot.reset();
+          qtViewportPickablesSnapshotGeneration = 0u;
+          qtViewportPickablesTopologyRevision = 0u;
+          qtViewportPickablesTransformRevision = 0u;
+          qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
+        }
+      };
       auto qtRefreshViewportPickablesNow = [&]() {
-        qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
+        qtSetViewportPickablesFromSnapshot(qtCurrentUiSnapshot());
+        qtFpsCollisionWorker.set_pickables(qtPickables);
+        RebuildSelectionBounds(ui_selection_state, qtPickables);
+        qtViewportPickablesRefreshPending = false;
+        qtLastViewportPickablesRefresh = std::chrono::steady_clock::now();
+        updateQtSelectionOverlay();
+      };
+      auto qtRefreshViewportPickablesIfSnapshotChanged = [&]() {
+        const auto snapshot = qtCurrentUiSnapshot();
+        if (!snapshot) {
+          return;
+        }
+        if (snapshot->topology_revision == qtViewportPickablesTopologyRevision &&
+            snapshot->transform_revision == qtViewportPickablesTransformRevision) {
+          qtViewportPickablesSnapshot = snapshot;
+          qtViewportPickablesSnapshotGeneration = snapshot->generation;
+          return;
+        }
+        // Topology changes (geometry add/remove, mesh swap) must rebuild the
+        // pickable triangles immediately — the indices encoded in the existing
+        // list are no longer valid. Transform-only changes (gizmo drag,
+        // physics step, Lua mutation) only shift world bounds; rebuilding
+        // BuildViewportPickables for 1000+ instances costs ~14ms/frame at
+        // p50 and pegs the UI thread at single-digit FPS during drag/physics.
+        // Throttle the transform-only rebuild to kQtTransformPickablesRefreshInterval
+        // (100ms) and let qtMaybeRefreshPendingViewportPickables catch up
+        // when the cadence allows. The pickables stay world-stale for at
+        // most one throttle interval, which is acceptable: gizmo dragging
+        // skips this path entirely (qtGizmoDrag.active gate at the call
+        // site), and post-drag picking always sees the freshest snapshot.
+        const bool topologyChanged =
+            snapshot->topology_revision != qtViewportPickablesTopologyRevision;
+        if (!topologyChanged) {
+          const auto now = std::chrono::steady_clock::now();
+          if (qtLastViewportPickablesRefresh !=
+                  std::chrono::steady_clock::time_point{} &&
+              (now - qtLastViewportPickablesRefresh) <
+                  kQtTransformPickablesRefreshInterval) {
+            qtViewportPickablesSnapshot = snapshot;
+            qtViewportPickablesSnapshotGeneration = snapshot->generation;
+            qtViewportPickablesTransformRevision = snapshot->transform_revision;
+            qtViewportPickablesRefreshPending = true;
+            return;
+          }
+        }
+        qtSetViewportPickablesFromSnapshot(snapshot);
         qtFpsCollisionWorker.set_pickables(qtPickables);
         RebuildSelectionBounds(ui_selection_state, qtPickables);
         qtViewportPickablesRefreshPending = false;
@@ -231,7 +304,7 @@
           return;
         }
         qtViewportPickablesRefreshPending = true;
-        qtRefreshSelectionBoundsFromRtScene();
+        qtRefreshSelectionBoundsFromCurrentSnapshot();
         updateQtSelectionOverlay();
         if (qtGizmoDrag.active) {
           return;
@@ -769,8 +842,7 @@
               qtPublishedRays.store(0u, std::memory_order_relaxed);
               const auto cameraState = vkpt::pathtracer::ExtractCameraState(qtScene);
               if (qtUseBg && qtRenderCoordinator) {
-                qtMarkOverlayRequiresRenderCatchup();
-                qtRenderCoordinator->post_camera_state(cameraState);
+                qtPublishRenderSnapshotForBackground(false, false, true, false);
                 postedCamera = true;
               } else if (!qtUseBg && qtTracerReady) {
                 bool cameraOk = qtTracer->update_camera_state(cameraState);
@@ -781,6 +853,9 @@
                 qtTracerReady = cameraOk && qtTracer->reset_accumulation();
                 qtSampleIndex = 0u;
                 postedCamera = qtTracerReady;
+                if (postedCamera) {
+                  (void)qtPublishRenderSnapshot(false, false, true, false);
+                }
               } else {
                 incrementalOk = false;
               }
@@ -863,6 +938,11 @@
         context.elapsed_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - qtScriptRuntimeStartTime).count();
         context.scripts_enabled = qtScriptsRunning() && qtScriptState.scripts_enabled;
+        context.deterministic = deterministic;
+        if (startupDeterminismContext) {
+          context.determinism_base_seed = startupDeterminismContext->base_seed;
+          context.determinism_scenario_id = startupDeterminismContext->scenario_id;
+        }
         context.game_mode = qtIsPlayMode();
         context.runtime.mode = std::string(qtRuntimeModeName());
         context.runtime.scripts_running = qtScriptsRunning();
@@ -996,7 +1076,10 @@
                 : PtLength(PtSub(qtCameraPose.target, qtCameraPose.position)));
         qtCameraFocusPoint =
             PtAdd(qtCameraPose.position, PtMul(qtCameraForward(), qtCameraFocusDistance));
-        qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
+        if (!qtUseBg) {
+          (void)qtPublishRenderSnapshot(true, true, true, true);
+        }
+        qtSetViewportPickablesFromSnapshot(qtCurrentUiSnapshot());
         qtViewportPickablesRefreshPending = false;
         qtLastViewportPickablesRefresh = std::chrono::steady_clock::now();
         qtFpsCollisionWorker.set_pickables(qtPickables);
@@ -1007,8 +1090,7 @@
         const auto rendererStart = std::chrono::steady_clock::now();
         if (hasSceneDeltaWork) {
           if (qtUseBg && qtRenderCoordinator) {
-            qtMarkOverlayRequiresRenderCatchup();
-            qtRenderCoordinator->post_scene_delta(*sceneDelta);
+            qtPublishRenderSnapshotForBackground(false, false, false, true);
             rendererUpdatedIncrementally = true;
             accumulationReset = true;
           } else if (!qtUseBg && qtTracerReady) {
@@ -1026,8 +1108,7 @@
 
         if (!rendererUpdatedIncrementally) {
           if (qtUseBg && qtRenderCoordinator) {
-            qtMarkOverlayRequiresRenderCatchup();
-            qtRenderCoordinator->post_scene(qtScene);
+            qtPublishRenderSnapshotForBackground(true, true, true, true);
             accumulationReset = true;
           } else if (!qtUseBg && qtTracer) {
             const bool configured = qtTracerReady || qtTracer->configure(qtSettings);
@@ -1217,13 +1298,12 @@
               updates,
               vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly);
           if (mirrored) {
-            qtMarkOverlayRequiresRenderCatchup();
-            qtRenderCoordinator->post_instance_transforms(updates, options);
+            qtPublishRenderSnapshotForBackground(false, true, false, false);
             posted = true;
           }
           qtLogInstanceTransformUpdate(
               mirrored ? vkpt::log::Severity::Debug : vkpt::log::Severity::Warning,
-              mirrored ? "posted Qt instance transform update to render coordinator"
+              mirrored ? "published Qt instance transform snapshot"
                        : "Qt instance transform update failed app metadata mirror",
               updates.size(),
               options,
@@ -1264,6 +1344,9 @@
                   vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly)) {
             qtTracerReady = qtTracer->reset_accumulation();
             posted = qtTracerReady;
+            if (posted) {
+              (void)qtPublishRenderSnapshot(false, true, false, false);
+            }
             qtSampleIndex = 0u;
           } else {
             posted = false;

@@ -7,6 +7,8 @@
 #include "app/AppQtSceneDocumentActions.h"
 #include "app/QtDockPanels.h"
 #include "app/ViewportInteraction.h"
+#include "core/metrics/Metrics.h"
+#include "scene/SceneSnapshot.h"
 #endif
 
 #include <algorithm>
@@ -47,7 +49,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     check_true("camera json roundtrip exposure", std::abs(camera.exposure_compensation - 1.0f) < 0.001f);
   }
 
-  vkpt::pathtracer::RTSceneData physicalScene;
+  vkpt::pathtracer::PathTracerSceneSnapshot physicalScene;
   physicalScene.camera_f_stop = 2.8f;
   physicalScene.camera_shutter_seconds = 1.0f / 30.0f;
   physicalScene.camera_iso = 200.0f;
@@ -72,7 +74,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
   check_true("output transform changes film resolve",
              !ldrLinear.rgba8.empty() && !ldrGamma.rgba8.empty() &&
              ldrLinear.rgba8[0] != ldrGamma.rgba8[0]);
-  const auto layoutManifest = vkpt::pathtracer::BuildRTSceneDataLayoutManifest();
+  const auto layoutManifest = vkpt::pathtracer::BuildPathTracerSceneSnapshotLayoutManifest();
   check_true("camera gpu layout manifest builds", layoutManifest.has_value());
   if (layoutManifest) {
     auto has_layout_field = [&](std::string_view field_name) {
@@ -86,6 +88,11 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     check_true("camera gpu layout has anamorphic", has_layout_field("camera_anamorphic_squeeze"));
   }
 #ifdef PT_ENABLE_QT
+  vkpt::core::metrics::MetricsRegistry::instance().reset("vkp.ui_smoke.");
+  VKP_METRIC_INC("vkp.ui_smoke.frames");
+  VKP_METRIC_SET("vkp.ui_smoke.frame_ms", 16.667);
+  VKP_METRIC_OBSERVE("vkp.ui_smoke.input_latency_us", 1200u);
+
   const auto cameraDockScene = vkpt::pathtracer::BuildSceneDataFromDocument(cameraDoc);
   check_true("camera dock scene builds", cameraDockScene.has_value());
   if (cameraDockScene) {
@@ -115,6 +122,28 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                                           [](const QtDockPanelContent& panel) {
                                             return panel.id == "script_panel";
                                           });
+    const auto metricsPanel = std::find_if(cameraDockPanels.begin(),
+                                           cameraDockPanels.end(),
+                                           [](const QtDockPanelContent& panel) {
+                                             return panel.id == "metrics";
+                                           });
+    auto hasPropertyLabel = [](const QtDockPanelContent& panel,
+                               std::string_view label) {
+      return std::any_of(panel.properties.begin(),
+                         panel.properties.end(),
+                         [label](const QtDockProperty& property) {
+                           return property.label == label;
+                         });
+    };
+    auto findPanelProperty = [](const QtDockPanelContent& panel,
+                                std::string_view label) -> const QtDockProperty* {
+      const auto it = std::find_if(panel.properties.begin(),
+                                   panel.properties.end(),
+                                   [label](const QtDockProperty& property) {
+                                     return property.label == label;
+                                   });
+      return it == panel.properties.end() ? nullptr : &*it;
+    };
     auto hasActivatableAssetRow = [](const QtDockPanelContent& panel,
                                      std::string_view idPrefix,
                                      std::string_view icon) {
@@ -137,6 +166,20 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     check_true("asset browser lists activatable models",
                assetBrowserPanel != cameraDockPanels.end() &&
                hasActivatableAssetRow(*assetBrowserPanel, "asset.model.", "model"));
+    check_true("metrics dock scrapes vkp registry metrics",
+               metricsPanel != cameraDockPanels.end() &&
+               hasPropertyLabel(*metricsPanel, "vkp.ui_smoke.frames") &&
+               hasPropertyLabel(*metricsPanel, "vkp.ui_smoke.frame_ms") &&
+               hasPropertyLabel(*metricsPanel, "vkp.ui_smoke.input_latency_us") &&
+               vkpt::core::metrics::MetricsRegistry::instance().dump_json().find(
+                   "\"name\":\"vkp.ui_smoke.frames\"") != std::string::npos);
+    const auto* framesMetricProperty = metricsPanel == cameraDockPanels.end()
+        ? nullptr
+        : findPanelProperty(*metricsPanel, "vkp.ui_smoke.frames");
+    check_true("metrics dock exposes rate columns and sparklines",
+               framesMetricProperty != nullptr &&
+               framesMetricProperty->value.find("rate ") != std::string::npos &&
+               framesMetricProperty->value.find("spark ") != std::string::npos);
     check_true("asset browser model rows are draggable",
                assetBrowserPanel != cameraDockPanels.end() &&
                std::any_of(assetBrowserPanel->tree_rows.begin(),
@@ -257,6 +300,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     optionalParam.has_maximum = true;
     optionalParam.has_step = true;
     binding.editor_params.push_back(optionalParam);
+    binding.editor_param_diagnostics.push_back("line 4: invalid numeric default 'fast' for 'gain'");
     scriptRuntime.bindings.push_back(binding);
     vkpt::scripting::ScriptBindingRuntimeState runtimeState;
     runtimeState.entity = scriptedEntity.id;
@@ -422,6 +466,13 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                  std::any_of(scriptDock->properties.begin(),
                              scriptDock->properties.end(),
                              [](const QtDockProperty& property) {
+                               return property.id == "script.annotation.901.0" &&
+                                      property.group == "Annotation Diagnostics" &&
+                                      property.value.find("invalid numeric default") != std::string::npos;
+                             }) &&
+                 std::any_of(scriptDock->properties.begin(),
+                             scriptDock->properties.end(),
+                             [](const QtDockProperty& property) {
                                return property.label == "runtime 1" &&
                                       property.value.find("cmds=1") != std::string::npos;
                              }) &&
@@ -547,6 +598,63 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                                         6.0f);
     check_true("viewport click state rejects editor drag selection",
                !clickResult.editor_pick_allowed && clickResult.drag_pixels > 6.0f);
+  }
+
+  {
+    vkpt::scene::SceneDocument snapshotPickDoc;
+    vkpt::scene::SceneGeometryDefinition tri;
+    tri.id = 510;
+    tri.vertices = {{-1.0f, -1.0f, 0.0f},
+                    { 1.0f, -1.0f, 0.0f},
+                    { 0.0f,  1.0f, 0.0f}};
+    tri.indices = {0, 1, 2};
+    snapshotPickDoc.geometry.push_back(tri);
+    vkpt::scene::SceneEntityDefinition mesh;
+    mesh.id = 511;
+    mesh.name = "Snapshot Pick Mesh";
+    mesh.has_mesh = true;
+    mesh.mesh.mesh_id = tri.id;
+    snapshotPickDoc.entities.push_back(mesh);
+    auto snapshotPickScene =
+        vkpt::pathtracer::BuildSceneDataFromDocument(snapshotPickDoc);
+    check_true("viewport snapshot pick scene builds", snapshotPickScene.has_value());
+    if (snapshotPickScene) {
+      auto snapshot = vkpt::scene::BuildRenderSceneSnapshot(
+          snapshotPickScene.value(), nullptr, vkpt::scene::RenderSceneSnapshotRevisions{});
+      for (auto& vertex : snapshotPickScene.value().vertices) {
+        vertex.x += 20.0f;
+      }
+      const auto pickables = BuildViewportPickables(snapshotPickDoc, *snapshot);
+      ViewportCameraPose camera;
+      camera.position = {0.0f, 0.0f, 3.0f};
+      camera.target = {0.0f, 0.0f, 0.0f};
+      camera.up = {0.0f, 1.0f, 0.0f};
+      camera.fov_deg = 60.0f;
+      const auto picked = PickViewportObject(
+          pickables, *snapshot, camera, 100.0f, 100.0f, 200.0f, 200.0f, 1.0f);
+      check_true("viewport picking uses render snapshot data",
+                 picked && picked->entity_id == mesh.id &&
+                 !pickables.empty() &&
+                 pickables.front().rt_primitive_count > 0u);
+
+      SelectionState snapshotSelection;
+      snapshotSelection.selected_entity_ids = {mesh.id};
+      snapshotSelection.active_primary_entity = mesh.id;
+      RebuildSelectionBounds(snapshotSelection, pickables);
+      const auto overlay = BuildSelectionOverlayBoxes(
+          snapshotSelection,
+          pickables,
+          camera,
+          200.0f,
+          200.0f,
+          1.0f,
+          GizmoMode::Universal,
+          std::nullopt);
+      check_true("viewport gizmo bounds use render snapshot data",
+                 snapshotSelection.aggregate_bounds.valid &&
+                 !overlay.empty() &&
+                 (!overlay.front().lines.empty() || !overlay.front().points.empty()));
+    }
   }
 
   {
@@ -867,7 +975,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
     renderDevice.selected_backend = "cpu";
     renderDevice.runtime_backend_options = {"auto", "cpu", "d3d12", "d3d12-dxr", "vulkan", "null"};
     const auto renderPanel = BuildQtRenderSettingsDock(
-        vkpt::pathtracer::RTSceneData{},
+        vkpt::pathtracer::PathTracerSceneSnapshot{},
         renderSettings,
         UiRuntimeState{},
         CreateDefaultLayout(),
@@ -949,7 +1057,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
         metricFrame.accumulated_rays_per_second,
         true});
     const auto devicePanel = BuildQtDeviceDock(
-        vkpt::pathtracer::RTSceneData{},
+        vkpt::pathtracer::PathTracerSceneSnapshot{},
         UiRuntimeState{},
         CreateDefaultLayout(),
         metricFrame,

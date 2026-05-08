@@ -51,6 +51,8 @@ AssetImportResult TextureMetadataImporter::import_source(const AssetImportSource
     result.diagnostics.push_back(detail::Diagnostic(ImportDiagnosticSeverity::Error,
                                                     "texture.parse_failed",
                                                     "Texture metadata could not be parsed"));
+    result.status = vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument,
+                                              "Texture metadata could not be parsed");
     return result;
   }
 
@@ -76,6 +78,7 @@ AssetImportResult TextureMetadataImporter::import_source(const AssetImportSource
   result.deterministic_import_hash =
       HashTextHex(std::string("texture:") + source.uri + ":" + desc.source_hash);
   result.success = true;
+  result.status = vkpt::core::Status::ok("texture metadata import completed");
   return result;
 }
 
@@ -251,6 +254,7 @@ AssetImportResult ExrPolicyImporter::import_source(const AssetImportSource& sour
                                                   true));
   result.deterministic_import_hash = HashTextHex(std::string("exr:") + source.uri + ":" + source_hash);
   result.success = true;
+  result.status = vkpt::core::Status::ok("EXR policy import completed");
   return result;
 }
 

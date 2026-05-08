@@ -222,7 +222,7 @@ int RunDynamicPhysicsPerformanceGate(std::string scenePath, std::string backend,
       return fail("physics step failed");
     }
 
-    const auto writes = physics->extract_transform_writes();
+    const auto writes = physics->step_snapshot().transform_writes;
     physicsWrites += writes.size();
     std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates;
     updates.reserve(writes.size());
@@ -265,8 +265,14 @@ int RunDynamicPhysicsPerformanceGate(std::string scenePath, std::string backend,
       return fail("accumulation reset failed after dynamic transform update");
     }
     const auto renderStart = std::chrono::steady_clock::now();
-    if (!tracer->render_sample_batch(0, settings.height, frame, frame)) {
-      return fail("render_sample_batch failed after dynamic transform update");
+    vkpt::pathtracer::RenderTile tile;
+    tile.x = 0u;
+    tile.y = 0u;
+    tile.width = settings.width;
+    tile.height = settings.height;
+    tile.sample_index = frame;
+    if (!tracer->render_tile(tile, frame)) {
+      return fail("render_tile failed after dynamic transform update");
     }
     renderMs += std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - renderStart)
@@ -656,8 +662,14 @@ int RunThirdPersonScriptPerformanceGate(std::string scenePath,
       return fail("accumulation reset failed after script transform update");
     }
     const auto renderStart = std::chrono::steady_clock::now();
-    if (!tracer->render_sample_batch(0, settings.height, frame, frame)) {
-      return fail("render_sample_batch failed after script transform update");
+    vkpt::pathtracer::RenderTile tile;
+    tile.x = 0u;
+    tile.y = 0u;
+    tile.width = settings.width;
+    tile.height = settings.height;
+    tile.sample_index = frame;
+    if (!tracer->render_tile(tile, frame)) {
+      return fail("render_tile failed after script transform update");
     }
     renderMs += std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - renderStart)

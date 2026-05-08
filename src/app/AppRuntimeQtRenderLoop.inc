@@ -209,6 +209,15 @@
       while (window->is_open()) {
         const auto qtFrameStart = std::chrono::steady_clock::now();
 
+        if (qtStressGate) {
+          if (qtStressAdvance() && !qtStressReportWritten) {
+            qtStressWriteReport();
+            qtStressReportWritten = true;
+            window->close();
+            break;
+          }
+        }
+
         const float qtInputDt = ClampFloat(
             std::chrono::duration<float>(qtFrameStart - qtInputPrevTime).count(),
             0.0f,
@@ -674,13 +683,13 @@
         }
         qtApplyContinuousOrbitCameraMovement(qtInputDt);
         qtApplyContinuousFpsMovement(qtInputDt);
-        qtApplyPhysicsSimulation(qtFrameStart);
-        const auto qtAfterPhysics = std::chrono::steady_clock::now();
         const bool qtScriptDispatched = qtApplyGameModeScripts(qtFrameStart, qtFrameCount, qtInputDt);
         if (qtScriptDispatched && qtScriptsRunning() && !qtFpsMode) {
           qtPendingFpsLookDx = 0.0f;
           qtPendingFpsLookDy = 0.0f;
         }
+        qtApplyPhysicsSimulation(qtFrameStart);
+        const auto qtAfterPhysics = std::chrono::steady_clock::now();
         if (qtAudioSystem) {
           const auto audioForward = qtCameraForward();
           vkpt::audio::AudioListenerState listener;
@@ -689,6 +698,9 @@
           listener.up = {qtCameraPose.up.x, qtCameraPose.up.y, qtCameraPose.up.z};
           qtAudioSystem->set_listener(listener);
           qtAudioSystem->update();
+        }
+        if (!qtGizmoDrag.active) {
+          qtRefreshViewportPickablesIfSnapshotChanged();
         }
         updateQtSelectionOverlay();
         const auto qtAfterSelectionOverlay = std::chrono::steady_clock::now();
@@ -713,23 +725,20 @@
 #endif
             qtOrbitLastAngleDeg = angleDeg;
             if (qtUseBg && qtRenderCoordinator) {
-              // Post camera update; coordinator will apply it between samples.
-              qtMarkOverlayRequiresRenderCatchup();
-              qtRenderCoordinator->post_camera(vkpt::render::RenderCameraCommand{
-                  qtScene.camera_position,
-                  qtScene.camera_target,
-                  qtScene.camera_up,
-                  qtScene.camera_fov_deg});
+              qtPublishRenderSnapshotForBackground(false, false, true, false);
             } else {
               // Synchronous (GPU) path — update directly on main thread.
-              const bool camOk = qtTracer->update_camera(
+              bool camOk = qtTracer->update_camera(
                   qtScene.camera_position, qtScene.camera_target,
                   qtScene.camera_up, qtScene.camera_fov_deg);
               if (!camOk) {
-                qtTracer->load_scene_snapshot(qtScene);
-                qtTracer->build_or_update_acceleration();
+                camOk = qtTracer->load_scene_snapshot(qtScene) &&
+                        qtTracer->build_or_update_acceleration();
               }
-              qtTracer->reset_accumulation();
+              const bool resetOk = camOk && qtTracer->reset_accumulation();
+              if (camOk && resetOk) {
+                (void)qtPublishRenderSnapshot(false, false, true, false);
+              }
               qtSampleIndex = 0u;
             }
           }
@@ -802,10 +811,16 @@
             const auto countersBefore = qtTracer->read_counters();
 #endif
             const auto batchStart = std::chrono::steady_clock::now();
-            if (!qtTracer->render_sample_batch(0, qtSettings.height, qtSampleIndex, qtFrameCount)) {
+            vkpt::pathtracer::RenderTile tile;
+            tile.x = 0u;
+            tile.y = 0u;
+            tile.width = qtSettings.width;
+            tile.height = qtSettings.height;
+            tile.sample_index = qtSampleIndex;
+            if (!qtTracer->render_tile(tile, qtFrameCount)) {
               qtTracerReady = false;
               qtPreviewStatus = "render sample failed";
-              std::cerr << "[qt] render_sample_batch failed at sample " << qtSampleIndex << "\n";
+              std::cerr << "[qt] render_tile failed at sample " << qtSampleIndex << "\n";
               logger.log(vkpt::log::Severity::Error, "app", "Qt render sample failed", {
                 {"sample", std::to_string(qtSampleIndex)},
                 {"effective_preview_present_hz", std::to_string(qtPreviewPublishHz)}
@@ -859,6 +874,17 @@
         const double qtThisFrameSelectionMs = std::chrono::duration<double, std::milli>(qtAfterSelectionOverlay - qtAfterPhysics).count();
         const double qtThisFrameRenderMs = std::chrono::duration<double, std::milli>(qtAfterRender - qtAfterSelectionOverlay).count();
         const double qtThisFrameUiMs = std::chrono::duration<double, std::milli>(qtAfterUi - qtAfterRender).count();
+        const auto qtRepaintUs = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(qtAfterUi - qtFrameStart).count());
+        const double qtRepaintHz = qtProfileCurrentFrameMs > 0.0
+            ? 1000.0 / qtProfileCurrentFrameMs
+            : 0.0;
+        vkpt::platform::RecordUiRepaint(qtRepaintUs, qtRepaintHz, qtThisFrameRenderMs + qtThisFrameUiMs);
+        if (!qtInputEvents.empty()) {
+          const auto inputToPixelUs = static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::microseconds>(qtAfterUi - qtAfterPoll).count());
+          VKP_METRIC_OBSERVE("vkp.ui.input_to_pixel_us", inputToPixelUs);
+        }
         qtProfilePollMs += qtThisFramePollMs;
         qtProfileInputMs += qtThisFrameInputMs;
         qtProfilePhysicsMs += qtThisFramePhysicsMs;
@@ -976,7 +1002,9 @@
                       << " latest_presented_generation=" << qtStats.latestPresentedGeneration
                       << " latest_published_generation=" << qtStats.latestPublishedGeneration
                       << " window_dropped=" << qtStats.dropped;
-        status.performance_summary = qtPerfSummary.str();
+        updateStatusFile([&](auto& fileStatus) {
+          fileStatus.performance_summary = qtPerfSummary.str();
+        });
         logger.log(vkpt::log::Severity::Info, "app", "Qt preview shutdown metadata", {
           {"effective_preview_present_hz", std::to_string(qtPreviewPublishHz)},
           {"render_published", std::to_string(qtPublishedFrames.load(std::memory_order_relaxed))},

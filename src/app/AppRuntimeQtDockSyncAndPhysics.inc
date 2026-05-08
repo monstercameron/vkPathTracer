@@ -390,6 +390,9 @@
       qtPhysicsStepConfig.fixed_dt = 1.0f / 60.0f;
       qtPhysicsStepConfig.collision_steps = 2;
       qtPhysicsStepConfig.deterministic = true;
+      if (startupDeterminismContext) {
+        qtPhysicsStepConfig.set_determinism(*startupDeterminismContext);
+      }
       bool qtPhysicsCollisionDetectionEnabled = true;
       float qtPhysicsAccumulatorSeconds = 0.0f;
       auto qtPhysicsPrevTime = std::chrono::steady_clock::now();
@@ -633,7 +636,7 @@
         if (stepped) {
           bool sceneChanged = false;
           const auto extractStart = std::chrono::steady_clock::now();
-          physicsWrites = qtPhysics->extract_transform_writes();
+          physicsWrites = qtPhysics->step_snapshot().transform_writes;
           physicsExtractMs = std::chrono::duration<double, std::milli>(
                                  std::chrono::steady_clock::now() - extractStart)
                                  .count();
@@ -739,7 +742,7 @@
                        "physics",
                        "slow qt physics simulation slice",
                        {
-                           {"stack", "qtApplyPhysicsSimulation -> ThreadedPhysicsWorld::step_fixed/extract_transform_writes -> qtPublishInstanceTransformUpdates"},
+                           {"stack", "qtApplyPhysicsSimulation -> ThreadedPhysicsWorld::step_fixed/step_snapshot -> qtPublishInstanceTransformUpdates"},
                            {"steps", std::to_string(steps)},
                            {"step_ms", std::to_string(physicsStepMs)},
                            {"extract_ms", std::to_string(physicsExtractMs)},

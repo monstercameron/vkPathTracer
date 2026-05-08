@@ -41,6 +41,13 @@
 #include "core/Config.h"
 #include "core/ExecutionTrace.h"
 #include "core/Logging.h"
+#include "core/contracts/Determinism.h"
+#include "core/contracts/SubsystemStatus.h"
+#include "core/health/Health.h"
+#include "core/log/Log.h"
+#include "core/metrics/Metrics.h"
+#include "core/metrics/UiInputLatency.h"
+#include "core/repl/Repl.h"
 #include "benchmark/BenchmarkSchema.h"
 #include "app/AppBenchmarkActions.h"
 #include "app/AppEditorWorldSupport.h"
@@ -83,6 +90,7 @@
 #include "physics/PhysicsWorld.h"
 #include "scene/Scene.h"
 #include "scene/SceneScriptBootstrap.h"
+#include "scene/SnapshotRing.h"
 #include "scripting/ScriptRuntime.h"
 #include "render/backends/BackendFactory.h"
 #include "render/backends/D3D12Backend.h"
@@ -168,6 +176,43 @@ std::uint64_t NowMs() {
   using namespace std::chrono;
   return static_cast<std::uint64_t>(
       duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
+}
+
+std::optional<std::string> ReadEnvironmentString(const char* name) {
+#if defined(_WIN32) && defined(_MSC_VER)
+  char* raw = nullptr;
+  std::size_t rawSize = 0u;
+  if (_dupenv_s(&raw, &rawSize, name) != 0 || raw == nullptr) {
+    return std::nullopt;
+  }
+  std::string value(raw);
+  std::free(raw);
+  if (value.empty()) {
+    return std::nullopt;
+  }
+  return value;
+#else
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return std::nullopt;
+  }
+  return std::string(raw);
+#endif
+}
+
+std::chrono::milliseconds ResolveStatusFilePeriod() {
+  constexpr std::chrono::milliseconds kDefaultPeriod{5000};
+  const auto value = ReadEnvironmentString("PTAPP_STATUS_FILE_PERIOD_SECONDS");
+  if (!value) {
+    return kDefaultPeriod;
+  }
+  char* end = nullptr;
+  const char* begin = value->c_str();
+  const unsigned long seconds = std::strtoul(begin, &end, 10);
+  if (end == begin || (end != nullptr && *end != '\0') || seconds == 0ul) {
+    return kDefaultPeriod;
+  }
+  return std::chrono::seconds(seconds);
 }
 
 constexpr std::string_view kDefaultSceneAssetPath = "assets/scenes/cornell_native.json";
@@ -440,6 +485,47 @@ void UpdateCrashArtifactsFromUiState(
       vkpt::editor::SerializeEditorCommandsJsonl(command_history.history(), 256));
 }
 
+void RegisterDiagnosticsHealthProbe() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    vkpt::core::health::HealthRegistry::instance().register_probe(
+        std::make_shared<vkpt::core::health::FunctionProbe>(
+            "diagnostics.crash_recorder",
+            [] {
+              const auto status = vkpt::diagnostics::CrashRecorder::instance().status();
+              if (status.health == vkpt::core::contracts::SubsystemHealth::Failed) {
+                return vkpt::core::health::Report{
+                    vkpt::core::health::Status::Failed,
+                    status.last_error.empty() ? "crash recorder failed" : status.last_error};
+              }
+              const bool unflushed = status.has_unflushed_record;
+              return vkpt::core::health::Report{
+                  unflushed ? vkpt::core::health::Status::Degraded
+                            : vkpt::core::health::Status::Ok,
+                  unflushed ? "crash recorder has unflushed state" : "ok"};
+            }));
+  });
+}
+
+std::pair<std::string, std::uint64_t> DumpGracefulCrashRings() {
+  const auto events = vkpt::core::log::Logger::instance().dump_crash_rings();
+  const std::filesystem::path path = "artifacts/status/latest_crash_rings.jsonl";
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream out(path);
+  if (!out) {
+    return {{}, 0u};
+  }
+  for (const auto& event : events) {
+    out << "{\"ts\":" << event.ts_ns
+        << ",\"comp\":\"" << event.component
+        << "\",\"ev\":\"" << event.event
+        << "\",\"level\":" << static_cast<int>(event.level)
+        << "}\n";
+  }
+  return {path.generic_string(), static_cast<std::uint64_t>(events.size())};
+}
+
 }  // namespace
 
 namespace vkpt::app {
@@ -449,6 +535,7 @@ int RunApp(int argc, char** argv) {
   EnableOptionalConsole(ShouldEnableOptionalConsole(argc, argv));
   InitializeLogging();
   InitializeCrashRecorder();
+  RegisterDiagnosticsHealthProbe();
   vkpt::diagnostics::install_crash_hooks("artifacts/crashes");
   vkpt::diagnostics::CrashRecorder::instance().update_frame_stage("startup", 0);
 
@@ -482,7 +569,11 @@ int RunApp(int argc, char** argv) {
   const bool uiReleaseGate = parsedOptions.ui_release_gate;
   const bool dynamicPhysicsGate = parsedOptions.dynamic_physics_gate;
   const bool thirdPersonScriptGate = parsedOptions.third_person_script_gate;
-  const bool openWindow = parsedOptions.open_window;
+  const bool qtStressGate = parsedOptions.qt_stress_gate;
+  const std::string qtStressOutput = parsedOptions.qt_stress_output;
+  const std::string qtStressSceneOverride = parsedOptions.qt_stress_scene;
+  const std::uint32_t qtStressPhaseSeconds = parsedOptions.qt_stress_phase_seconds;
+  const bool openWindow = parsedOptions.open_window || qtStressGate;
   const bool listGpus = parsedOptions.list_gpus;
   const bool autoExitWindow = parsedOptions.auto_exit_window;
   const std::string configFilePath = parsedOptions.config_file_path;
@@ -510,6 +601,8 @@ int RunApp(int argc, char** argv) {
   const bool gpuDenoiser = parsedOptions.gpu_denoiser;
   const bool temporalAa = parsedOptions.temporal_aa;
   const bool audioMute = parsedOptions.audio_mute;
+  const bool deterministic = parsedOptions.deterministic;
+  const bool snapshotBus = parsedOptions.snapshot_bus;
   const std::optional<uint32_t> uiPresentHz = parsedOptions.ui_present_hz;
   if (envFileEnabled) {
     std::error_code envFileEc;
@@ -530,6 +623,9 @@ int RunApp(int argc, char** argv) {
   if (!backend.empty())   { config.backend    = {std::string(backend),    vkpt::config::ConfigSource::CliFlag}; }
   if (!platformName.empty())  { config.platform   = {std::string(platformName),   vkpt::config::ConfigSource::CliFlag}; }
   if (!scenePath.empty()) { config.scene_path = {std::string(scenePath),  vkpt::config::ConfigSource::CliFlag}; }
+  if (qtStressGate && !qtStressSceneOverride.empty()) {
+    config.scene_path = {qtStressSceneOverride, vkpt::config::ConfigSource::CliFlag};
+  }
   if (!logLevel.empty())  { config.log_level  = {std::string(logLevel),   vkpt::config::ConfigSource::CliFlag}; }
   if (headless)           { config.headless   = {true,                    vkpt::config::ConfigSource::CliFlag}; }
   if (width != 320)       { config.render_width  = {width,  vkpt::config::ConfigSource::CliFlag}; }
@@ -600,6 +696,7 @@ int RunApp(int argc, char** argv) {
                      config.ui_present_hz.value);
   const std::string executionMode = [&]() {
     if (doRender) return std::string("render");
+    if (qtStressGate) return std::string("qt_stress_gate");
     if (openWindow) return std::string("window");
     if (doctorMode) return std::string("doctor");
     if (dynamicPhysicsGate) return std::string("dynamic_physics_gate");
@@ -611,6 +708,14 @@ int RunApp(int argc, char** argv) {
     if (dumpConfig) return std::string("dump_config");
     return std::string("headless_shell");
   }();
+  std::optional<vkpt::core::DeterminismContext> startupDeterminismContext;
+  if (deterministic) {
+    startupDeterminismContext = vkpt::core::MakeDeterminismContext(
+        true, 0xD37E'0001ull, 0u, "ptapp." + executionMode);
+    vkpt::core::EmitDeterminismChanged("app", *startupDeterminismContext);
+    vkpt::core::EmitDeterminismChanged("jobs", *startupDeterminismContext);
+    vkpt::core::EmitDeterminismChanged("scripts", *startupDeterminismContext);
+  }
   vkpt::core::TraceExecution("app_route_resolved", {
     {"mode", executionMode},
     {"requested_backend", config.backend.value},
@@ -620,6 +725,7 @@ int RunApp(int argc, char** argv) {
                        std::to_string(config.render_height.value)},
     {"spp", std::to_string(config.spp.value)},
     {"headless", config.headless.value ? "true" : "false"},
+    {"snapshot_bus", snapshotBus ? "true" : "false"},
     {"qt_built", IsQtPlatformBuilt() ? "true" : "false"},
     {"raw_built", IsRawPlatformBuilt() ? "true" : "false"}
   });
@@ -628,17 +734,47 @@ int RunApp(int argc, char** argv) {
   // ---- Status tracking (A13) ------------------------------------------------
   vkpt::diagnostics::StatusFileData status;
   status.build_status           = "ok";
+  status.last_run_status        = "running";
   status.enabled_backend        = config.backend.value;
   status.selected_scene         = config.scene_path.value.empty() ? "none" : config.scene_path.value;
   status.selected_renderer_path = "cpu_scalar";
+  std::mutex statusFileMutex;
+  auto snapshotStatusFile = [&]() {
+    std::scoped_lock lock(statusFileMutex);
+    return status;
+  };
+  auto updateStatusFile = [&](auto&& update) {
+    std::scoped_lock lock(statusFileMutex);
+    update(status);
+  };
+  std::unique_ptr<vkpt::diagnostics::PeriodicStatusFile> periodicStatusFile;
   const auto writeStatus = [&](const std::string& runStatus, const std::string& error = "") {
-    status.last_run_status = runStatus;
-    status.last_error      = error;
+    const auto crashRingDump = DumpGracefulCrashRings();
+    updateStatusFile([&](auto& fileStatus) {
+      fileStatus.last_run_status = runStatus;
+      fileStatus.last_error = error;
+      fileStatus.crash_ring_dump = crashRingDump.first;
+      fileStatus.crash_ring_events = crashRingDump.second;
+    });
+    if (!config.write_status_file.value) {
+      return;
+    }
     std::string writeErr;
-    if (!vkpt::diagnostics::WriteStatusFile(status, config.status_file_path.value, &writeErr)) {
+    const bool wrote = periodicStatusFile
+        ? periodicStatusFile->write_now(&writeErr)
+        : vkpt::diagnostics::WriteStatusFile(snapshotStatusFile(), config.status_file_path.value, &writeErr);
+    if (!wrote) {
       logger.log(vkpt::log::Severity::Warning, "app", "status file write failed: " + writeErr);
     }
   };
+  periodicStatusFile = std::make_unique<vkpt::diagnostics::PeriodicStatusFile>(
+      vkpt::diagnostics::PeriodicStatusFileConfig{
+          config.write_status_file.value,
+          config.status_file_path.value,
+          ResolveStatusFilePeriod()},
+      snapshotStatusFile);
+  periodicStatusFile->start();
+  (void)periodicStatusFile->write_now();
   const auto recordUiAction = [&](std::string_view action_id,
                                  std::string_view event_widget,
                                  const std::string& action_status,
@@ -981,14 +1117,16 @@ int RunApp(int argc, char** argv) {
       }
       qtTracer = std::move(qtInitialTracer.tracer);
       qtRendererPath = qtInitialTracer.renderer_path;
-      status.selected_renderer_path = qtRendererPath;
+      updateStatusFile([&](auto& fileStatus) {
+        fileStatus.selected_renderer_path = qtRendererPath;
+      });
       config.backend = {qtInitialTracer.requested_backend, config.backend.source};
       if (qtInitialTracer.background) {
         std::cout << "[cpu] Using TiledCpuPathTracer workers="
                   << InteractiveCpuWorkerCount() << " (interactive)\n";
       }
       // ---- Scene loading ----
-      vkpt::pathtracer::RTSceneData qtScene;
+      vkpt::pathtracer::PathTracerSceneSnapshot qtScene;
       vkpt::scene::SceneDocument qtSceneDocument;
       qtStartupStep("loading scene snapshot");
       {
@@ -1025,15 +1163,77 @@ int RunApp(int argc, char** argv) {
         }
       }
       qtStartupStep("scene loaded");
-      auto qtAudioSystem = vkpt::audio::CreateAudioSystem(vkpt::audio::AudioSystemConfig{
-          audioBackend,
-          audioMute,
-          44100u,
-          2u,
-          1024u,
-          3u});
+      vkpt::scene::SnapshotRing qtSnapshotRing;
+      vkpt::scene::RenderSceneSnapshotRevisions qtSnapshotRevisions{};
+      qtSnapshotRevisions.generation = 1u;
+      qtSnapshotRevisions.topology_revision = 1u;
+      qtSnapshotRevisions.transform_revision = 1u;
+      qtSnapshotRevisions.camera_revision = 1u;
+      qtSnapshotRevisions.material_revision = 1u;
+      auto qtPublishRenderSnapshot =
+          [&](bool topology_changed,
+              bool transform_changed,
+              bool camera_changed,
+              bool material_changed) -> std::uint64_t {
+        const auto _vkp_publish_t0_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+        const auto pending_input_ns =
+            vkpt::core::metrics::ConsumePendingInputForPublish();
+        auto previous = qtSnapshotRing.current();
+        qtSnapshotRevisions.generation =
+            std::max<std::uint64_t>(qtSnapshotRevisions.generation + 1u,
+                                    previous ? previous->generation + 1u : 1u);
+        if (topology_changed) {
+          ++qtSnapshotRevisions.topology_revision;
+          VKP_METRIC_INC("vkp.scene.publish_by_source.topology_total");
+        }
+        if (transform_changed) {
+          ++qtSnapshotRevisions.transform_revision;
+          VKP_METRIC_INC("vkp.scene.publish_by_source.transform_total");
+        }
+        if (camera_changed) {
+          ++qtSnapshotRevisions.camera_revision;
+          VKP_METRIC_INC("vkp.scene.publish_by_source.camera_total");
+        }
+        if (material_changed) {
+          ++qtSnapshotRevisions.material_revision;
+          VKP_METRIC_INC("vkp.scene.publish_by_source.material_total");
+        }
+        auto snapshot = vkpt::scene::BuildRenderSceneSnapshot(
+            qtScene,
+            previous.get(),
+            qtSnapshotRevisions);
+        const auto generation = snapshot ? snapshot->generation : 0u;
+        if (generation != 0u) {
+          vkpt::core::metrics::RegisterPublishInput(generation, pending_input_ns);
+        }
+        qtSnapshotRing.publish(std::move(snapshot));
+        const auto _vkp_publish_t1_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+        VKP_METRIC_OBSERVE("vkp.scene.publish_us",
+                           (_vkp_publish_t1_ns - _vkp_publish_t0_ns) / 1000u);
+        return generation;
+      };
+      auto qtPublishInitialRenderSnapshot = [&]() {
+        auto snapshot = vkpt::scene::BuildRenderSceneSnapshot(
+            qtScene,
+            nullptr,
+            qtSnapshotRevisions);
+        qtSnapshotRing.publish(std::move(snapshot));
+      };
+      qtPublishInitialRenderSnapshot();
+      vkpt::audio::AudioSystemConfig qtAudioConfig{};
+      qtAudioConfig.backend = audioBackend;
+      qtAudioConfig.muted = audioMute;
+      qtAudioConfig.sample_rate = 44100u;
+      qtAudioConfig.channels = 2u;
+      qtAudioConfig.buffer_frames = 1024u;
+      qtAudioConfig.queued_buffers = 3u;
+      if (startupDeterminismContext) {
+        qtAudioConfig.set_determinism(*startupDeterminismContext);
+      }
+      auto qtAudioSystem = vkpt::audio::CreateAudioSystem(qtAudioConfig);
       if (qtAudioSystem && qtAudioSystem->initialize()) {
         vkpt::audio::SetGlobalAudioSystem(qtAudioSystem.get());
+        qtAudioSystem->set_snapshot_ring(&qtSnapshotRing);
         qtAudioSystem->load_scene_audio(qtSceneDocument, RuntimeSceneDisplayName(config.scene_path.value));
       }
       std::unordered_map<vkpt::core::StableId, uint32_t> qtRtInstanceIndexByEntity;
@@ -1048,6 +1248,11 @@ int RunApp(int argc, char** argv) {
         }
       };
       qtRebuildRtInstanceIndexCache();
+      const std::uint32_t qtUiSnapshotReader = qtSnapshotRing.register_reader("ui");
+      auto qtCurrentUiSnapshot = [&]() -> vkpt::scene::RenderSceneSnapshot::Ptr {
+        return qtSnapshotRing.current(qtUiSnapshotReader);
+      };
+      (void)qtCurrentUiSnapshot;
       vkpt::core::TraceExecution("qt_scene_ready", {
         {"renderer_path", qtRendererPath},
         {"scene", RuntimeSceneDisplayName(config.scene_path.value)},
@@ -1074,6 +1279,9 @@ int RunApp(int argc, char** argv) {
       // quality work, but defaulting them on adds latency and ghosting while dragging.
       qtSettings.enable_denoiser = false;
       qtSettings.enable_temporal_aa = false;
+      if (startupDeterminismContext) {
+        qtSettings.set_determinism(*startupDeterminismContext);
+      }
 
       qtStartupStep("configuring renderer and acceleration");
       bool qtTracerReady = (qtTracer->configure(qtSettings) &&
@@ -1099,8 +1307,16 @@ int RunApp(int argc, char** argv) {
       });
 
 #ifdef PT_ENABLE_QT
-      std::vector<ViewportPickable> qtPickables =
-          BuildViewportPickables(qtSceneDocument, qtScene);
+      auto qtViewportPickablesSnapshot = qtCurrentUiSnapshot();
+      std::uint64_t qtViewportPickablesSnapshotGeneration =
+          qtViewportPickablesSnapshot ? qtViewportPickablesSnapshot->generation : 0u;
+      std::uint64_t qtViewportPickablesTopologyRevision =
+          qtViewportPickablesSnapshot ? qtViewportPickablesSnapshot->topology_revision : 0u;
+      std::uint64_t qtViewportPickablesTransformRevision =
+          qtViewportPickablesSnapshot ? qtViewportPickablesSnapshot->transform_revision : 0u;
+      std::vector<ViewportPickable> qtPickables = qtViewportPickablesSnapshot
+          ? BuildViewportPickables(qtSceneDocument, *qtViewportPickablesSnapshot)
+          : BuildViewportPickables(qtSceneDocument, qtScene);
       FpsCollisionWorker qtFpsCollisionWorker;
       qtFpsCollisionWorker.set_pickables(qtPickables);
 #endif
@@ -1212,6 +1428,7 @@ int RunApp(int argc, char** argv) {
         vkpt::render::RenderCoordinatorConfig coordinatorConfig{};
         coordinatorConfig.publish_hz = qtPreviewPublishHz;
         coordinatorConfig.immediate_publish_count = kQtPreviewImmediatePublishes;
+        coordinatorConfig.snapshot_ring = &qtSnapshotRing;
         qtRenderCoordinator = std::make_unique<vkpt::render::RenderCoordinator>(
             std::move(qtTracer),
             qtSettings,
@@ -1229,7 +1446,7 @@ int RunApp(int argc, char** argv) {
           : (qtTracerReady ? "rendering" : "tracer init failed");
 
       // ---- Orbit camera setup ----
-      bool qtEnableAutoOrbit = (windowFrameLimit == 0u) && !qtUseBg && !qtPhysicsRuntimeEnabled;
+      bool qtEnableAutoOrbit = (windowFrameLimit == 0u) && !qtUseBg && !qtPhysicsRuntimeEnabled && !qtStressGate;
       const float kQtOrbitDegPerSec = 7.5f;
       const float kQtOrbitMinStepDeg = 0.1f;
       vkpt::pathtracer::Vec3 qtOrbitCenter{};
@@ -1296,10 +1513,14 @@ int RunApp(int argc, char** argv) {
       std::uint64_t qtOverlayRequiredRenderGeneration = 0u;
       std::uint64_t qtOverlayStaleSkips = 0u;
       auto qtLatestPaintedRenderGeneration = [&]() -> std::uint64_t {
+#ifdef PT_ENABLE_QT
         if (qtWindow == nullptr) {
           return 0u;
         }
         return qtWindow->framebuffer_stats().latestPaintedGeneration;
+#else
+        return 0u;
+#endif
       };
       auto qtMarkOverlayRequiresRenderCatchup = [&]() {
         if (!qtUseBg || !qtRenderCoordinator) {
@@ -1310,6 +1531,21 @@ int RunApp(int argc, char** argv) {
         qtOverlayRequiredRenderGeneration =
             std::max<std::uint64_t>(qtOverlayRequiredRenderGeneration,
                                     renderStats.generation + 1u);
+      };
+      auto qtPublishRenderSnapshotForBackground =
+          [&](bool topology_changed,
+              bool transform_changed,
+              bool camera_changed,
+              bool material_changed) -> std::uint64_t {
+        const auto generation = qtPublishRenderSnapshot(topology_changed,
+                                                        transform_changed,
+                                                        camera_changed,
+                                                        material_changed);
+        if (qtUseBg && qtRenderCoordinator && generation != 0u) {
+          qtOverlayRequiredRenderGeneration =
+              std::max(qtOverlayRequiredRenderGeneration, generation);
+        }
+        return generation;
       };
       auto qtRenderImageCaughtUpForOverlay = [&]() -> bool {
         if (qtOverlayRequiredRenderGeneration == 0u) {
@@ -1359,6 +1595,7 @@ int RunApp(int argc, char** argv) {
       (void)qtOverlayStaleSkips;
       (void)qtLatestPaintedRenderGeneration;
       (void)qtMarkOverlayRequiresRenderCatchup;
+      (void)qtPublishRenderSnapshotForBackground;
       (void)qtRenderImageCaughtUpForOverlay;
 #endif
 #ifdef PT_ENABLE_QT
@@ -1370,6 +1607,7 @@ int RunApp(int argc, char** argv) {
 #include "AppRuntimeQtViewportInteraction.inc"
 #include "AppRuntimeQtDockSyncAndPhysics.inc"
 #endif
+#include "AppRuntimeQtStressGate.inc"
 #ifdef PT_ENABLE_QT
 #include "AppRuntimeQtRenderLoop.inc"
 #else

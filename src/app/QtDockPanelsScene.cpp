@@ -775,7 +775,7 @@ QtDockPanelContent BuildQtInspectorDock(const vkpt::scene::SceneDocument& docume
 }
 
 QtDockPanelContent BuildQtMaterialsDock(const vkpt::scene::SceneDocument& document,
-                                        const vkpt::pathtracer::RTSceneData& scene,
+                                        const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                         const vkpt::editor::UiLayoutDocument& layout) {
   auto panel = MakeQtDockPanel(layout, "materials", "Materials", true, 520.0f, 420.0f);
   QtDockAddProperty(panel, "authored materials", std::to_string(document.materials.size()));
@@ -806,7 +806,7 @@ QtDockPanelContent BuildQtMaterialsDock(const vkpt::scene::SceneDocument& docume
 }
 
 QtDockPanelContent BuildQtLightsDock(const vkpt::scene::SceneDocument& document,
-                                     const vkpt::pathtracer::RTSceneData& scene,
+                                     const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                      const vkpt::editor::UiLayoutDocument& layout) {
   auto panel = MakeQtDockPanel(layout, "lights", "Lights", true, 360.0f, 360.0f);
   const auto lightObjectCount = static_cast<std::size_t>(std::count_if(
@@ -846,7 +846,7 @@ QtDockPanelContent BuildQtLightsDock(const vkpt::scene::SceneDocument& document,
 }
 
 QtDockPanelContent BuildQtCameraDock(const vkpt::scene::SceneDocument& document,
-                                     const vkpt::pathtracer::RTSceneData& scene,
+                                     const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                      const vkpt::editor::UiRuntimeState& runtime,
                                      const vkpt::editor::UiLayoutDocument& layout,
                                      const QtDockFrameStats& frame_stats,

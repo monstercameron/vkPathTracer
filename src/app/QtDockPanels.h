@@ -216,24 +216,24 @@ QtDockPanelContent BuildQtSceneTreeDock(const vkpt::scene::SceneDocument& docume
                                         const vkpt::editor::SelectionState& selection,
                                         const vkpt::editor::UiRuntimeState& runtime,
                                         const vkpt::editor::UiLayoutDocument& layout);
-QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::RTSceneData& scene,
+QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                              const vkpt::pathtracer::RenderSettings& settings,
                                              const vkpt::editor::UiRuntimeState& runtime,
                                              const vkpt::editor::UiLayoutDocument& layout,
                                              const QtDockFrameStats& frame_stats,
                                              const QtDockDeviceStats& device_stats);
-QtDockPanelContent BuildQtDeviceDock(const vkpt::pathtracer::RTSceneData& scene,
+QtDockPanelContent BuildQtDeviceDock(const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                      const vkpt::editor::UiRuntimeState& runtime,
                                      const vkpt::editor::UiLayoutDocument& layout,
                                      const QtDockFrameStats& frame_stats,
                                      const QtDockDeviceStats& device_stats);
 QtDockPanelContent BuildQtAssetBrowserDock(const vkpt::scene::SceneDocument& document,
-                                           const vkpt::pathtracer::RTSceneData& scene,
+                                           const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                            const vkpt::editor::UiRuntimeState& runtime,
                                            const vkpt::editor::UiLayoutDocument& layout);
 std::vector<QtDockPanelContent> BuildQtDockPanels(
     const vkpt::scene::SceneDocument& document,
-    const vkpt::pathtracer::RTSceneData& scene,
+    const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
     const vkpt::pathtracer::RenderSettings& settings,
     const vkpt::editor::UiRuntimeState& runtime,
     const vkpt::editor::SelectionState& selection,

@@ -41,21 +41,19 @@
         qtPublishedSample.store(0u, std::memory_order_relaxed);
         qtPublishedRays.store(0u, std::memory_order_relaxed);
         if (qtUseBg && qtRenderCoordinator) {
-          qtMarkOverlayRequiresRenderCatchup();
-          qtRenderCoordinator->post_camera(vkpt::render::RenderCameraCommand{
-              qtScene.camera_position,
-              qtScene.camera_target,
-              qtScene.camera_up,
-              qtScene.camera_fov_deg});
+          qtPublishRenderSnapshotForBackground(false, false, true, false);
         } else if (!qtUseBg && qtTracerReady) {
-          const bool camOk = qtTracer->update_camera(
+          bool camOk = qtTracer->update_camera(
               qtScene.camera_position, qtScene.camera_target,
               qtScene.camera_up, qtScene.camera_fov_deg);
           if (!camOk) {
-            qtTracer->load_scene_snapshot(qtScene);
-            qtTracer->build_or_update_acceleration();
+            camOk = qtTracer->load_scene_snapshot(qtScene) &&
+                    qtTracer->build_or_update_acceleration();
           }
-          qtTracer->reset_accumulation();
+          const bool resetOk = camOk && qtTracer->reset_accumulation();
+          if (camOk && resetOk) {
+            (void)qtPublishRenderSnapshot(false, false, true, false);
+          }
           qtSampleIndex = 0u;
         }
         ui_runtime_state.status_message = std::string("camera ") + std::string(reason);
@@ -507,7 +505,16 @@
       qtPromoteSceneObjectCamerasAndLights();
       qtEnsureRuntimeLightObject();
       qtSyncActiveCameraObjectFromPose();
-      auto qtScriptRuntime = vkpt::scripting::CreateScriptRuntime();
+      std::shared_ptr<vkpt::scripting::IScriptRuntime> qtScriptRuntime(
+          vkpt::scripting::CreateScriptRuntime());
+      vkpt::core::repl::Repl::instance().set_script_list_provider(
+          [runtime = std::weak_ptr<vkpt::scripting::IScriptRuntime>(qtScriptRuntime)] {
+            const auto locked = runtime.lock();
+            if (!locked) {
+              return std::string("script list unavailable: script runtime expired\n");
+            }
+            return vkpt::scripting::FormatScriptList(*locked);
+          });
       QtDockScriptRuntimeState qtScriptState;
       qtScriptState.mode = std::string(kRuntimeModeEditName);
       auto qtRuntimeModeName = [&]() -> std::string_view {

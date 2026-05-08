@@ -2,8 +2,11 @@
 
 #ifdef PT_ENABLE_QT
 
+#include "scene/SceneSnapshot.h"
+
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
@@ -102,9 +105,58 @@ void AddSdfPickable(std::vector<ViewportPickable> &pickables,
                  shape, primitive.transform, primitive.primitive);
 }
 
+namespace {
+
+template <typename RenderSceneT>
+std::uint32_t CountSnapshotBvhTrianglesForInstance(
+    const RenderSceneT &scene,
+    const vkpt::pathtracer::RTInstance &instance) {
+  std::uint32_t count = 0u;
+  const bool useLocalDynamicGeometry =
+      instance.has_flag(vkpt::pathtracer::kRTInstanceFlagDynamicTransform) &&
+      instance.local_vertex_count > 0u && instance.local_index_count > 0u;
+  for (std::uint32_t triangle = 0u; triangle < instance.triangle_count; ++triangle) {
+    if (useLocalDynamicGeometry) {
+      const std::uint32_t localBase = instance.local_first_index + triangle * 3u;
+      const std::uint32_t localEnd =
+          instance.local_first_vertex + instance.local_vertex_count;
+      if (localBase + 2u >= scene.local_indices.size()) {
+        continue;
+      }
+      const std::uint32_t li0 = scene.local_indices[localBase + 0u];
+      const std::uint32_t li1 = scene.local_indices[localBase + 1u];
+      const std::uint32_t li2 = scene.local_indices[localBase + 2u];
+      if (instance.local_first_vertex + li0 < localEnd &&
+          instance.local_first_vertex + li1 < localEnd &&
+          instance.local_first_vertex + li2 < localEnd &&
+          instance.local_first_vertex + li0 < scene.local_vertices.size() &&
+          instance.local_first_vertex + li1 < scene.local_vertices.size() &&
+          instance.local_first_vertex + li2 < scene.local_vertices.size()) {
+        ++count;
+      }
+      continue;
+    }
+
+    const std::uint32_t base = (instance.first_triangle + triangle) * 3u;
+    if (base + 2u >= scene.indices.size()) {
+      continue;
+    }
+    const std::uint32_t i0 = scene.indices[base + 0u];
+    const std::uint32_t i1 = scene.indices[base + 1u];
+    const std::uint32_t i2 = scene.indices[base + 2u];
+    if (i0 < scene.vertices.size() && i1 < scene.vertices.size() &&
+        i2 < scene.vertices.size()) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+template <typename RenderSceneT>
 std::vector<ViewportPickable>
-BuildViewportPickables(const vkpt::scene::SceneDocument &document,
-                       const vkpt::pathtracer::RTSceneData &scene) {
+BuildViewportPickablesForRenderScene(
+    const vkpt::scene::SceneDocument &document,
+    const RenderSceneT &scene) {
   std::vector<ViewportPickable> pickables;
   pickables.reserve(document.entities.size() +
                     document.sdf_primitives.size() +
@@ -203,10 +255,15 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
   // document pass is a fallback for partial or failed RT conversion paths.
   if (!meshRefs.empty() && !scene.instances.empty()) {
     const std::size_t count = std::min(meshRefs.size(), scene.instances.size());
+    std::uint32_t bvhPrimitiveCursor = 0u;
     for (std::size_t instanceIndex = 0; instanceIndex < count;
          ++instanceIndex) {
       const auto &instance = scene.instances[instanceIndex];
       const auto &meshRef = meshRefs[instanceIndex];
+      const std::uint32_t instancePrimitiveFirst = bvhPrimitiveCursor;
+      const std::uint32_t instancePrimitiveCount =
+          CountSnapshotBvhTrianglesForInstance(scene, instance);
+      bvhPrimitiveCursor += instancePrimitiveCount;
       if (instance.has_flag(
               vkpt::pathtracer::kRTInstanceFlagDynamicTransform)) {
         // Dynamic RT instances keep local mesh vertices in the document, so
@@ -230,6 +287,8 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
         pickable.bounds = bounds;
         pickable.label = meshRef.label;
         pickable.require_triangle_hit = true;
+        pickable.rt_primitive_first = instancePrimitiveFirst;
+        pickable.rt_primitive_count = instancePrimitiveCount;
         pickable.triangles.reserve(geometry->indices.size() / 3u);
         for (std::size_t index = 0; index + 2u < geometry->indices.size();
              index += 3u) {
@@ -274,6 +333,8 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
       pickable.bounds = bounds;
       pickable.label = meshRef.label;
       pickable.require_triangle_hit = true;
+      pickable.rt_primitive_first = instancePrimitiveFirst;
+      pickable.rt_primitive_count = instancePrimitiveCount;
       pickable.triangles.reserve(instance.triangle_count);
       for (uint32_t triangle = 0; triangle < instance.triangle_count;
            ++triangle) {
@@ -362,9 +423,14 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
 
   // Last resort for generated scenes without document entity ids: expose
   // stable synthetic ids so viewport selection and labels still work.
+  std::uint32_t bvhPrimitiveCursor = 0u;
   for (std::size_t instanceIndex = 0; instanceIndex < scene.instances.size();
        ++instanceIndex) {
     const auto &instance = scene.instances[instanceIndex];
+    const std::uint32_t instancePrimitiveFirst = bvhPrimitiveCursor;
+    const std::uint32_t instancePrimitiveCount =
+        CountSnapshotBvhTrianglesForInstance(scene, instance);
+    bvhPrimitiveCursor += instancePrimitiveCount;
     vkpt::editor::Bounds bounds{};
     for (uint32_t triangle = 0; triangle < instance.triangle_count;
          ++triangle) {
@@ -386,6 +452,8 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
       pickable.bounds = bounds;
       pickable.label = "instance " + std::to_string(id);
       pickable.require_triangle_hit = true;
+      pickable.rt_primitive_first = instancePrimitiveFirst;
+      pickable.rt_primitive_count = instancePrimitiveCount;
       pickable.triangles.reserve(instance.triangle_count);
       for (uint32_t triangle = 0; triangle < instance.triangle_count;
            ++triangle) {
@@ -433,6 +501,20 @@ BuildViewportPickables(const vkpt::scene::SceneDocument &document,
   }
 
   return pickables;
+}
+
+}  // namespace
+
+std::vector<ViewportPickable>
+BuildViewportPickables(const vkpt::scene::SceneDocument &document,
+                       const vkpt::pathtracer::PathTracerSceneSnapshot &scene) {
+  return BuildViewportPickablesForRenderScene(document, scene);
+}
+
+std::vector<ViewportPickable>
+BuildViewportPickables(const vkpt::scene::SceneDocument &document,
+                       const vkpt::scene::RenderSceneSnapshot &snapshot) {
+  return BuildViewportPickablesForRenderScene(document, snapshot);
 }
 
 ViewportRay BuildViewportRay(const ViewportCameraPose &camera, float x, float y,
@@ -649,6 +731,55 @@ PickViewportObject(const std::vector<ViewportPickable> &pickables,
     }
   }
   return best;
+}
+
+std::optional<ViewportPickResult> PickViewportObject(
+    const std::vector<ViewportPickable> &pickables,
+    const vkpt::scene::RenderSceneSnapshot &snapshot,
+    const ViewportCameraPose &camera,
+    float x,
+    float y,
+    float width,
+    float height,
+    float renderAspect) {
+  const auto trianglePick =
+      PickViewportObject(pickables, camera, x, y, width, height, renderAspect);
+  if (!trianglePick) {
+    return std::nullopt;
+  }
+  if (!snapshot.acceleration.valid() || !snapshot.acceleration.cpu_bvh) {
+    return trianglePick;
+  }
+
+  const auto viewportRay = BuildViewportRay(camera, x, y, width, height, renderAspect);
+  vkpt::pathtracer::RayQueryHit hit{};
+  if (!snapshot.acceleration.cpu_bvh->intersect({viewportRay.origin, viewportRay.direction}, hit) ||
+      !hit.hit) {
+    return trianglePick;
+  }
+
+  const auto pickableIt =
+      std::find_if(pickables.begin(),
+                   pickables.end(),
+                   [&](const ViewportPickable &pickable) {
+                     return pickable.rt_primitive_count > 0u &&
+                            hit.primitive_index >= pickable.rt_primitive_first &&
+                            hit.primitive_index <
+                                pickable.rt_primitive_first + pickable.rt_primitive_count;
+                   });
+  if (pickableIt == pickables.end()) {
+    return trianglePick;
+  }
+
+  ViewportPickResult bvhPick{pickableIt->entity_id,
+                             pickableIt->bounds,
+                             pickableIt->label,
+                             hit.t};
+  if (trianglePick->entity_id == bvhPick.entity_id &&
+      bvhPick.distance <= trianglePick->distance + 1.0e-3f) {
+    return bvhPick;
+  }
+  return trianglePick;
 }
 
 } // namespace vkpt::app

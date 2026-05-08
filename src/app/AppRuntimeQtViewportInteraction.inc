@@ -606,16 +606,27 @@
           updateQtSelectionOverlay();
           return;
         }
+        qtRefreshViewportPickablesIfSnapshotChanged();
         const auto frameRect = qtViewportImageRect();
         const auto localPoint = qtViewportLocalPoint(x, y);
+        const auto pickSnapshot = qtCurrentUiSnapshot();
         const auto picked = localPoint
-            ? PickViewportObject(qtPickables,
-                                 qtCameraPose,
-                                 localPoint->first,
-                                 localPoint->second,
-                                 frameRect.width,
-                                 frameRect.height,
-                                 qtRenderAspect())
+            ? (pickSnapshot
+                   ? PickViewportObject(qtPickables,
+                                        *pickSnapshot,
+                                        qtCameraPose,
+                                        localPoint->first,
+                                        localPoint->second,
+                                        frameRect.width,
+                                        frameRect.height,
+                                        qtRenderAspect())
+                   : PickViewportObject(qtPickables,
+                                        qtCameraPose,
+                                        localPoint->first,
+                                        localPoint->second,
+                                        frameRect.width,
+                                        frameRect.height,
+                                        qtRenderAspect()))
             : std::optional<ViewportPickResult>{};
         vkpt::editor::EditorCommand command;
         command.command_id = picked ? "viewport.pick" : "viewport.clear_selection";
@@ -691,6 +702,7 @@
           return;
         }
 
+        qtRefreshViewportPickablesIfSnapshotChanged();
         vkpt::editor::EditorCommand command;
         command.command_id = "scene_tree.select";
         command.kind = vkpt::editor::EditorCommandKind::kSelectEntity;
@@ -794,6 +806,7 @@
         return false;
       };
       auto qtFocusSelected = [&](vkpt::core::FrameIndex frameIndex, std::string_view source) {
+        qtRefreshViewportPickablesIfSnapshotChanged();
         const auto bounds = qtActiveSelectionBounds();
         if (!bounds) {
           ui_runtime_state.status_message = "focus selected: no active selection";
@@ -828,16 +841,27 @@
                                vkpt::core::FrameIndex frameIndex,
                                std::string_view source,
                                bool reportMiss) {
+        qtRefreshViewportPickablesIfSnapshotChanged();
         const auto frameRect = qtViewportImageRect();
         const auto localPoint = qtViewportLocalPoint(x, y);
+        const auto pickSnapshot = qtCurrentUiSnapshot();
         const auto picked = localPoint
-            ? PickViewportObject(qtPickables,
-                                 qtCameraPose,
-                                 localPoint->first,
-                                 localPoint->second,
-                                 frameRect.width,
-                                 frameRect.height,
-                                 qtRenderAspect())
+            ? (pickSnapshot
+                   ? PickViewportObject(qtPickables,
+                                        *pickSnapshot,
+                                        qtCameraPose,
+                                        localPoint->first,
+                                        localPoint->second,
+                                        frameRect.width,
+                                        frameRect.height,
+                                        qtRenderAspect())
+                   : PickViewportObject(qtPickables,
+                                        qtCameraPose,
+                                        localPoint->first,
+                                        localPoint->second,
+                                        frameRect.width,
+                                        frameRect.height,
+                                        qtRenderAspect()))
             : std::optional<ViewportPickResult>{};
         if (!picked || picked->distance <= 0.0f) {
           if (reportMiss) {

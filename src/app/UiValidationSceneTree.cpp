@@ -159,7 +159,7 @@ bool CheckEcsSceneTreeContracts(std::string* detail) {
   if (!physics->step_fixed(physicsStep)) {
     return fail("physics fixed step rejected a valid timestep");
   }
-  if (physicsInfo.available && physics->extract_transform_writes().empty()) {
+  if (physicsInfo.available && physics->step_snapshot().transform_writes.empty()) {
     return fail("Jolt physics backend did not publish transform writes");
   }
 

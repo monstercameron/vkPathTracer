@@ -64,7 +64,7 @@ struct QtPanelBuildContext {
   const vkpt::scene::SceneSnapshot* snapshot = nullptr;
   const vkpt::scene::RenderSceneProxy* render_proxy = nullptr;
   const vkpt::scene::SceneWorld* world = nullptr;
-  const vkpt::pathtracer::RTSceneData* rt_scene = nullptr;
+  const vkpt::pathtracer::PathTracerSceneSnapshot* rt_scene = nullptr;
   const vkpt::pathtracer::RenderSettings* render_settings = nullptr;
   const UiRuntimeState* runtime = nullptr;
   const SelectionState* selection = nullptr;

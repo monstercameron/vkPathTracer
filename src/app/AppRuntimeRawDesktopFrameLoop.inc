@@ -62,11 +62,7 @@
           // Camera always looks at the orbit center.
           previewScene.camera_target = orbitCenter;
           if (useBgRender && bgRenderCoordinator) {
-            bgRenderCoordinator->post_camera(vkpt::render::RenderCameraCommand{
-                previewScene.camera_position,
-                previewScene.camera_target,
-                previewScene.camera_up,
-                previewScene.camera_fov_deg});
+            publishPreviewSnapshot(false, false, true, false);
           } else {
             // Use lightweight camera update so geometry upload state is preserved.
             // Fall back to full load_scene_snapshot only if update_camera is unsupported.
@@ -170,7 +166,13 @@
               }
             }
           } else {
-            render_ok = previewTracer->render_sample_batch(0, previewSettings.height, previewSampleIndex, frame);
+            vkpt::pathtracer::RenderTile tile;
+            tile.x = 0u;
+            tile.y = 0u;
+            tile.width = previewSettings.width;
+            tile.height = previewSettings.height;
+            tile.sample_index = previewSampleIndex;
+            render_ok = previewTracer->render_tile(tile, frame);
             if (render_ok) {
               tracedAnyPixelsThisFrame = true;
               ++previewSampleIndex;

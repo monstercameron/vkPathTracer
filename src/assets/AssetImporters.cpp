@@ -1,13 +1,200 @@
 #include "assets/AssetImporters.h"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <mutex>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
+#include "core/Logging.h"
+#include "core/health/Health.h"
+#include "core/metrics/Metrics.h"
+
 namespace vkpt::assets {
+
+namespace {
+
+struct AssetTelemetryState {
+  std::atomic<std::uint64_t> load_started_total{0};
+  std::atomic<std::uint64_t> load_completed_total{0};
+  std::atomic<std::uint64_t> load_failed_total{0};
+  std::atomic<std::uint64_t> cache_hit_total{0};
+  std::atomic<std::uint64_t> cache_miss_total{0};
+  std::atomic<std::uint64_t> load_us_count{0};
+  std::atomic<std::uint64_t> load_us_sum{0};
+  std::atomic<std::uint64_t> last_load_us{0};
+  std::atomic<std::uint64_t> last_load_bytes{0};
+  std::atomic<std::uint64_t> total_bytes_loaded{0};
+  std::atomic<std::uint64_t> in_flight{0};
+  std::atomic<std::uint64_t> last_tick_ns{0};
+  std::atomic<std::uint64_t> current_flow_id{0};
+  std::atomic<bool> health_probe_registered{false};
+  std::mutex mutex;
+  std::unordered_set<std::string> seen_sources;
+  std::string last_asset_id;
+  std::string last_kind;
+  std::string last_error;
+};
+
+AssetTelemetryState& Telemetry() {
+  static AssetTelemetryState state;
+  return state;
+}
+
+double CacheHitRate(const AssetTelemetryState& telemetry) {
+  const auto hits = telemetry.cache_hit_total.load(std::memory_order_relaxed);
+  const auto misses = telemetry.cache_miss_total.load(std::memory_order_relaxed);
+  const auto total = hits + misses;
+  return total == 0u ? 0.0 : static_cast<double>(hits) / static_cast<double>(total);
+}
+
+void UpdateAssetTelemetryGauges(const AssetTelemetryState& telemetry) {
+  auto& registry = vkpt::core::metrics::MetricsRegistry::instance();
+  registry.gauge("vkp.assets.in_flight")
+      .set(static_cast<double>(telemetry.in_flight.load(std::memory_order_relaxed)));
+  registry.gauge("vkp.assets.cache_hit_rate").set(CacheHitRate(telemetry));
+  registry.gauge("vkp.assets.total_bytes_loaded")
+      .set(static_cast<double>(telemetry.total_bytes_loaded.load(std::memory_order_relaxed)));
+}
+
+std::uint64_t EstimateSourceBytes(const AssetImportSource& source) {
+  if (!source.bytes.empty()) {
+    return static_cast<std::uint64_t>(source.bytes.size());
+  }
+  if (!source.uri.empty()) {
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(source.uri, ec);
+    if (!ec) {
+      return static_cast<std::uint64_t>(size);
+    }
+  }
+  return 0;
+}
+
+std::uint64_t SteadyNowNs() {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+std::string AssetKindFromSource(const AssetImportSource& source) {
+  auto ext = detail::ExtensionOf(source.uri);
+  if (!ext.empty() && ext.front() == '.') {
+    ext.erase(ext.begin());
+  }
+  return ext.empty() ? "unknown" : ext;
+}
+
+bool RecordAssetLoadStarted(const AssetImportSource& source) {
+  RegisterAssetHealthProbeForProcess();
+  auto& telemetry = Telemetry();
+  telemetry.load_started_total.fetch_add(1u, std::memory_order_relaxed);
+  telemetry.in_flight.fetch_add(1u, std::memory_order_relaxed);
+  telemetry.last_tick_ns.store(SteadyNowNs(), std::memory_order_relaxed);
+  telemetry.current_flow_id.store(source.flow_id, std::memory_order_relaxed);
+  bool cacheHit = false;
+  {
+    std::scoped_lock lock(telemetry.mutex);
+    cacheHit = !source.uri.empty() && telemetry.seen_sources.contains(source.uri);
+    if (!source.uri.empty()) {
+      telemetry.seen_sources.insert(source.uri);
+    }
+    telemetry.last_kind = AssetKindFromSource(source);
+    telemetry.last_error.clear();
+  }
+  if (cacheHit) {
+    telemetry.cache_hit_total.fetch_add(1u, std::memory_order_relaxed);
+    VKP_METRIC_INC("vkp.assets.cache_hit_total");
+  } else {
+    telemetry.cache_miss_total.fetch_add(1u, std::memory_order_relaxed);
+    VKP_METRIC_INC("vkp.assets.cache_miss_total");
+  }
+  UpdateAssetTelemetryGauges(telemetry);
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Debug,
+      "assets",
+      "assets.load_started",
+      {{"asset_id", source.uri.empty() ? "inline" : source.uri},
+       {"kind", AssetKindFromSource(source)},
+       {"cache_hit", cacheHit ? "true" : "false"},
+       {"flow_id", std::to_string(source.flow_id)}});
+  return cacheHit;
+}
+
+void RecordAssetLoadCompleted(const AssetImportSource& source,
+                              const AssetImportResult& result,
+                              std::uint64_t loadUs,
+                              bool cacheHit) {
+  auto& telemetry = Telemetry();
+  telemetry.load_completed_total.fetch_add(1u, std::memory_order_relaxed);
+  telemetry.load_us_count.fetch_add(1u, std::memory_order_relaxed);
+  telemetry.load_us_sum.fetch_add(loadUs, std::memory_order_relaxed);
+  telemetry.last_load_us.store(loadUs, std::memory_order_relaxed);
+  telemetry.last_tick_ns.store(SteadyNowNs(), std::memory_order_relaxed);
+  telemetry.current_flow_id.store(source.flow_id, std::memory_order_relaxed);
+  VKP_METRIC_OBSERVE("vkp.assets.load_us", loadUs);
+  const auto bytes = EstimateSourceBytes(source);
+  telemetry.last_load_bytes.store(bytes, std::memory_order_relaxed);
+  telemetry.total_bytes_loaded.fetch_add(bytes, std::memory_order_relaxed);
+  telemetry.in_flight.fetch_sub(1u, std::memory_order_relaxed);
+  UpdateAssetTelemetryGauges(telemetry);
+  const std::string assetId =
+      !result.assets.empty() ? result.assets.front().id.urn
+                             : (source.uri.empty() ? "inline" : source.uri);
+  {
+    std::scoped_lock lock(telemetry.mutex);
+    telemetry.last_asset_id = assetId;
+    telemetry.last_kind = AssetKindFromSource(source);
+    telemetry.last_error.clear();
+  }
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Debug,
+      "assets",
+      "assets.load_completed",
+      {{"asset_id", assetId},
+       {"kind", AssetKindFromSource(source)},
+       {"bytes", std::to_string(bytes)},
+       {"load_us", std::to_string(loadUs)},
+       {"cache_hit", cacheHit ? "true" : "false"},
+       {"flow_id", std::to_string(source.flow_id)}});
+}
+
+void RecordAssetLoadFailed(const AssetImportSource& source,
+                           std::string_view reason,
+                           std::uint64_t loadUs) {
+  auto& telemetry = Telemetry();
+  telemetry.load_failed_total.fetch_add(1u, std::memory_order_relaxed);
+  telemetry.last_load_us.store(loadUs, std::memory_order_relaxed);
+  telemetry.last_tick_ns.store(SteadyNowNs(), std::memory_order_relaxed);
+  telemetry.current_flow_id.store(source.flow_id, std::memory_order_relaxed);
+  VKP_METRIC_OBSERVE("vkp.assets.load_us", loadUs);
+  telemetry.in_flight.fetch_sub(1u, std::memory_order_relaxed);
+  UpdateAssetTelemetryGauges(telemetry);
+  {
+    std::scoped_lock lock(telemetry.mutex);
+    telemetry.last_asset_id = source.uri.empty() ? "inline" : source.uri;
+    telemetry.last_kind = AssetKindFromSource(source);
+    telemetry.last_error = std::string(reason);
+  }
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Error,
+      "assets",
+      "assets.load_failed",
+      {{"asset_id", source.uri.empty() ? "inline" : source.uri},
+       {"path_or_urn", source.uri},
+       {"reason", std::string(reason)},
+       {"requesting_asset_id", source.binding_context.empty() ? "direct" : source.binding_context},
+       {"flow_id", std::to_string(source.flow_id)}});
+}
+
+}  // namespace
+
 namespace detail {
 
 std::string ToLower(std::string_view text) {
@@ -393,6 +580,14 @@ AssetValidationResult ImporterRegistry::validate_source(const AssetImportSource&
 
 AssetImportResult ImporterRegistry::import_source(const AssetImportSource& source,
                                                   const AssetImportOptions& options) const {
+  const auto start = std::chrono::steady_clock::now();
+  const bool cacheHit = RecordAssetLoadStarted(source);
+  auto elapsedUs = [&]() -> std::uint64_t {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - start)
+            .count());
+  };
   const auto* importer = importer_for_source(source);
   if (!importer) {
     AssetImportResult result;
@@ -401,9 +596,30 @@ AssetImportResult ImporterRegistry::import_source(const AssetImportSource& sourc
                                                     "asset.no_importer",
                                                     "no importer registered for extension " +
                                                         detail::ExtensionOf(source.uri)));
+    result.status = vkpt::core::Status::error(vkpt::core::StatusCode::Unsupported,
+                                              result.diagnostics.back().message,
+                                              "register an importer for this extension or convert the asset");
+    RecordAssetLoadFailed(source,
+                          result.diagnostics.back().message,
+                          elapsedUs());
     return result;
   }
-  return importer->import_source(source, options);
+  auto result = importer->import_source(source, options);
+  if (result.success) {
+    if (result.status.is_error()) {
+      result.status = vkpt::core::Status::ok("asset import completed");
+    }
+    RecordAssetLoadCompleted(source, result, elapsedUs(), cacheHit);
+  } else {
+    const std::string reason = result.diagnostics.empty()
+        ? "importer returned failure"
+        : result.diagnostics.back().message;
+    if (result.status.is_ok()) {
+      result.status = vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument, reason);
+    }
+    RecordAssetLoadFailed(source, reason, elapsedUs());
+  }
+  return result;
 }
 
 std::vector<std::string_view> ImporterRegistry::supported_extensions() const {
@@ -419,6 +635,106 @@ std::vector<std::string_view> ImporterRegistry::supported_extensions() const {
 
 const std::vector<std::shared_ptr<IAssetImporter>>& ImporterRegistry::importers() const {
   return m_importers;
+}
+
+AssetTelemetryStatus GetAssetTelemetryStatus() {
+  auto& telemetry = Telemetry();
+  AssetTelemetryStatus out;
+  out.load_started_total = telemetry.load_started_total.load(std::memory_order_relaxed);
+  out.load_completed_total = telemetry.load_completed_total.load(std::memory_order_relaxed);
+  out.load_failed_total = telemetry.load_failed_total.load(std::memory_order_relaxed);
+  out.cache_hit_total = telemetry.cache_hit_total.load(std::memory_order_relaxed);
+  out.cache_miss_total = telemetry.cache_miss_total.load(std::memory_order_relaxed);
+  out.load_us_count = telemetry.load_us_count.load(std::memory_order_relaxed);
+  out.load_us_sum = telemetry.load_us_sum.load(std::memory_order_relaxed);
+  out.last_load_us = telemetry.last_load_us.load(std::memory_order_relaxed);
+  out.last_load_bytes = telemetry.last_load_bytes.load(std::memory_order_relaxed);
+  out.total_bytes_loaded = telemetry.total_bytes_loaded.load(std::memory_order_relaxed);
+  out.in_flight = telemetry.in_flight.load(std::memory_order_relaxed);
+  out.last_tick_ns = telemetry.last_tick_ns.load(std::memory_order_relaxed);
+  out.ticks_total = out.load_started_total;
+  out.errors_total = out.load_failed_total;
+  out.current_flow_id = telemetry.current_flow_id.load(std::memory_order_relaxed);
+  if (out.in_flight > 0u) {
+    out.lifecycle = vkpt::core::contracts::ComponentLifecycle::Busy;
+  } else if (out.load_started_total == 0u) {
+    out.lifecycle = vkpt::core::contracts::ComponentLifecycle::Uninitialized;
+  } else if (out.load_failed_total > 0u) {
+    out.lifecycle = vkpt::core::contracts::ComponentLifecycle::Degraded;
+  } else {
+    out.lifecycle = vkpt::core::contracts::ComponentLifecycle::Ready;
+  }
+  const auto hits = out.cache_hit_total;
+  const auto misses = out.cache_miss_total;
+  const auto totalCacheLookups = hits + misses;
+  out.cache_hit_rate = totalCacheLookups == 0u
+      ? 0.0
+      : static_cast<double>(hits) / static_cast<double>(totalCacheLookups);
+  {
+    std::scoped_lock lock(telemetry.mutex);
+    out.last_asset_id = telemetry.last_asset_id;
+    out.last_kind = telemetry.last_kind;
+    out.last_error = telemetry.last_error;
+    out.last_failure = telemetry.last_error;
+  }
+  return out;
+}
+
+AssetsStatus GetAssetsStatus() {
+  AssetsStatus out;
+  static_cast<AssetTelemetryStatus&>(out) = GetAssetTelemetryStatus();
+  return out;
+}
+
+void RegisterAssetHealthProbeForProcess() {
+  auto& telemetry = Telemetry();
+  bool expected = false;
+  if (!telemetry.health_probe_registered.compare_exchange_strong(expected,
+                                                                  true,
+                                                                  std::memory_order_acq_rel)) {
+    return;
+  }
+  VKP_LIFECYCLE_STARTED("assets");
+  vkpt::core::health::HealthRegistry::instance().register_probe(
+      std::make_shared<vkpt::core::health::FunctionProbe>(
+          "assets",
+          [] {
+            const auto status = GetAssetsStatus();
+            if (status.in_flight > 0u) {
+              return vkpt::core::health::Report{
+                  vkpt::core::health::Status::Degraded,
+                  "asset imports in flight: " + std::to_string(status.in_flight)};
+            }
+            if (status.errors_total > 0u) {
+              return vkpt::core::health::Report{
+                  vkpt::core::health::Status::Degraded,
+                  status.last_failure.empty() ? "asset import failures observed" : status.last_failure};
+            }
+            return vkpt::core::health::Report{vkpt::core::health::Status::Ok, "assets ready"};
+          }));
+}
+
+void ResetAssetTelemetryForTest() {
+  auto& telemetry = Telemetry();
+  telemetry.load_started_total.store(0u, std::memory_order_relaxed);
+  telemetry.load_completed_total.store(0u, std::memory_order_relaxed);
+  telemetry.load_failed_total.store(0u, std::memory_order_relaxed);
+  telemetry.cache_hit_total.store(0u, std::memory_order_relaxed);
+  telemetry.cache_miss_total.store(0u, std::memory_order_relaxed);
+  telemetry.load_us_count.store(0u, std::memory_order_relaxed);
+  telemetry.load_us_sum.store(0u, std::memory_order_relaxed);
+  telemetry.last_load_us.store(0u, std::memory_order_relaxed);
+  telemetry.last_load_bytes.store(0u, std::memory_order_relaxed);
+  telemetry.total_bytes_loaded.store(0u, std::memory_order_relaxed);
+  telemetry.in_flight.store(0u, std::memory_order_relaxed);
+  telemetry.last_tick_ns.store(0u, std::memory_order_relaxed);
+  telemetry.current_flow_id.store(0u, std::memory_order_relaxed);
+  vkpt::core::metrics::MetricsRegistry::instance().reset("vkp.assets.");
+  std::scoped_lock lock(telemetry.mutex);
+  telemetry.seen_sources.clear();
+  telemetry.last_asset_id.clear();
+  telemetry.last_kind.clear();
+  telemetry.last_error.clear();
 }
 
 std::string_view FakeAssetImporter::importer_id() const {
@@ -453,6 +769,8 @@ AssetImportResult FakeAssetImporter::import_source(const AssetImportSource& sour
     result.diagnostics.push_back(detail::Diagnostic(ImportDiagnosticSeverity::Error,
                                                     "fake.invalid",
                                                     validation.reason));
+    result.status = vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument,
+                                              validation.reason);
     return result;
   }
   const auto bytes = detail::ResolveSourceBytes(source);
@@ -468,6 +786,7 @@ AssetImportResult FakeAssetImporter::import_source(const AssetImportSource& sour
   result.assets.push_back(std::move(record));
   result.deterministic_import_hash = HashTextHex(std::string("fake:") + source.uri + ":" + source_hash);
   result.success = true;
+  result.status = vkpt::core::Status::ok("fake asset import completed");
   return result;
 }
 
@@ -533,6 +852,8 @@ AssetImportResult GltfGlbImporter::import_source(const AssetImportSource& source
     result.diagnostics.push_back(detail::Diagnostic(ImportDiagnosticSeverity::Error,
                                                     "gltf.invalid",
                                                     validation.reason));
+    result.status = vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument,
+                                              validation.reason);
     return result;
   }
 
@@ -622,6 +943,7 @@ AssetImportResult GltfGlbImporter::import_source(const AssetImportSource& source
   result.deterministic_import_hash = HashTextHex(std::string("gltf:") + source.uri + ":" + source_hash + ":" +
                                                  std::to_string(result.assets.size()));
   result.success = true;
+  result.status = vkpt::core::Status::ok("glTF asset import completed");
   return result;
 }
 
@@ -686,6 +1008,8 @@ AssetImportResult ObjMtlImporter::import_source(const AssetImportSource& source,
     result.diagnostics.push_back(detail::Diagnostic(ImportDiagnosticSeverity::Error,
                                                     "obj.invalid",
                                                     validation.reason));
+    result.status = vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument,
+                                              validation.reason);
     return result;
   }
 
@@ -795,6 +1119,7 @@ AssetImportResult ObjMtlImporter::import_source(const AssetImportSource& source,
   result.deterministic_import_hash = HashTextHex(std::string("obj:") + source.uri + ":" + source_hash + ":" +
                                                  std::to_string(result.assets.size()));
   result.success = true;
+  result.status = vkpt::core::Status::ok("OBJ asset import completed");
   return result;
 }
 

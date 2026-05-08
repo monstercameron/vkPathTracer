@@ -394,7 +394,7 @@ void QtDockAddRuntimeVariableProperty(QtDockPanelContent& panel,
 }  // namespace
 
 QtDockPanelContent BuildQtAssetBrowserDock(const vkpt::scene::SceneDocument& document,
-                                           const vkpt::pathtracer::RTSceneData& scene,
+                                           const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                            const vkpt::editor::UiRuntimeState& runtime,
                                            const vkpt::editor::UiLayoutDocument& layout) {
   auto panel = MakeQtDockPanel(layout, "asset_browser", "Asset Browser", true, 720.0f, 360.0f);

@@ -3,11 +3,19 @@
 #include "app/QtDockPanelsInternal.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
+#include "core/health/Health.h"
+#include "core/log/Log.h"
+#include "core/metrics/Metrics.h"
 #include "render/backends/BackendFactory.h"
 
 namespace vkpt::app {
@@ -41,9 +49,49 @@ std::vector<std::string> QtRenderSettingsBackendOptions(const QtDockDeviceStats&
   return options;
 }
 
+struct QtMetricHistoryPoint {
+  double value = 0.0;
+  std::chrono::steady_clock::time_point time{};
+  std::vector<double> samples;
+};
+
+double QtMetricNumericValue(const vkpt::core::metrics::MetricSnapshot& metric) {
+  switch (metric.kind) {
+    case vkpt::core::metrics::Kind::CounterKind:
+      return static_cast<double>(metric.counter_value);
+    case vkpt::core::metrics::Kind::GaugeKind:
+      return metric.gauge_value;
+    case vkpt::core::metrics::Kind::HistogramKind:
+      return static_cast<double>(metric.hist.p95);
+  }
+  return 0.0;
+}
+
+std::string QtMetricSparkline(const std::vector<double>& samples) {
+  if (samples.empty()) {
+    return "........";
+  }
+  const auto [minIt, maxIt] = std::minmax_element(samples.begin(), samples.end());
+  const double minValue = *minIt;
+  const double maxValue = *maxIt;
+  constexpr std::string_view ramp = ".:-=+*#%@";
+  std::string out;
+  out.reserve(samples.size());
+  for (double sample : samples) {
+    std::size_t index = 0u;
+    if (maxValue > minValue) {
+      const double normalized = std::clamp((sample - minValue) / (maxValue - minValue), 0.0, 1.0);
+      index = static_cast<std::size_t>(
+          std::round(normalized * static_cast<double>(ramp.size() - 1u)));
+    }
+    out.push_back(ramp[index]);
+  }
+  return out;
+}
+
 }  // namespace
 
-QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::RTSceneData& scene,
+QtDockPanelContent BuildQtRenderSettingsDock(const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                              const vkpt::pathtracer::RenderSettings& settings,
                                              const vkpt::editor::UiRuntimeState& runtime,
                                              const vkpt::editor::UiLayoutDocument& layout,
@@ -229,7 +277,103 @@ QtDockPanelContent BuildQtPerformanceDock(const vkpt::editor::UiRuntimeState& ru
   return panel;
 }
 
-QtDockPanelContent BuildQtDeviceDock(const vkpt::pathtracer::RTSceneData& scene,
+QtDockPanelContent BuildQtMetricsDock(const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "metrics", "Metrics", true, 560.0f, 360.0f);
+  const auto metrics = vkpt::core::metrics::MetricsRegistry::instance().snapshot_all();
+  static std::unordered_map<std::string, QtMetricHistoryPoint> history;
+  const auto now = std::chrono::steady_clock::now();
+  bool added = false;
+  for (const auto& metric : metrics) {
+    if (!std::string_view(metric.name).starts_with("vkp.")) {
+      continue;
+    }
+    const double numericValue = QtMetricNumericValue(metric);
+    auto& metricHistory = history[metric.name];
+    double ratePerSec = 0.0;
+    if (metric.kind == vkpt::core::metrics::Kind::CounterKind &&
+        metricHistory.time != std::chrono::steady_clock::time_point{}) {
+      const double dt = std::chrono::duration<double>(now - metricHistory.time).count();
+      if (dt > 0.0) {
+        ratePerSec = std::max(0.0, (numericValue - metricHistory.value) / dt);
+      }
+    }
+    metricHistory.value = numericValue;
+    metricHistory.time = now;
+    metricHistory.samples.push_back(numericValue);
+    if (metricHistory.samples.size() > 24u) {
+      metricHistory.samples.erase(metricHistory.samples.begin(),
+                                  metricHistory.samples.begin() +
+                                      static_cast<std::ptrdiff_t>(metricHistory.samples.size() - 24u));
+    }
+
+    std::string value;
+    switch (metric.kind) {
+      case vkpt::core::metrics::Kind::CounterKind:
+        value = "value " + std::to_string(metric.counter_value) +
+                " | rate " + QtDockNumber(ratePerSec, 2) + "/s";
+        break;
+      case vkpt::core::metrics::Kind::GaugeKind:
+        value = "value " + QtDockNumber(metric.gauge_value, 3) + " | rate --";
+        break;
+      case vkpt::core::metrics::Kind::HistogramKind:
+        value = "count " + std::to_string(metric.hist.count) +
+                " | rate --" +
+                " p95 " + std::to_string(metric.hist.p95) +
+                " p99 " + std::to_string(metric.hist.p99);
+        break;
+    }
+    value += " | spark " + QtMetricSparkline(metricHistory.samples);
+    QtDockAddProperty(panel, metric.name, value);
+    added = true;
+  }
+  if (!added) {
+    QtDockAddProperty(panel, "registry", "empty");
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtEventsDock(const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "events", "Events", true, 520.0f, 280.0f);
+  auto& logger = vkpt::core::log::Logger::instance();
+  const auto emitted = logger.total_emitted();
+  const auto dropped = logger.total_drop_count();
+  static std::chrono::steady_clock::time_point lastSample{};
+  static std::uint64_t lastEmitted = 0u;
+  static double emittedRate = 0.0;
+  const auto now = std::chrono::steady_clock::now();
+  if (lastSample != std::chrono::steady_clock::time_point{}) {
+    const double dt = std::chrono::duration<double>(now - lastSample).count();
+    if (dt > 0.0) {
+      emittedRate = std::max(0.0, static_cast<double>(emitted - lastEmitted) / dt);
+    }
+  }
+  lastSample = now;
+  lastEmitted = emitted;
+  QtDockAddProperty(panel, "emitted", std::to_string(emitted));
+  QtDockAddProperty(panel, "dropped", std::to_string(dropped));
+  QtDockAddProperty(panel, "rate", QtDockNumber(emittedRate, 2) + "/s");
+  QtDockAddProperty(panel, "min_level", vkpt::core::log::LevelName(logger.min_level()));
+  return panel;
+}
+
+QtDockPanelContent BuildQtHealthDock(const vkpt::editor::UiLayoutDocument& layout) {
+  auto panel = MakeQtDockPanel(layout, "health", "Health", true, 420.0f, 280.0f);
+  const auto reports = vkpt::core::health::HealthRegistry::instance().scrape();
+  if (reports.empty()) {
+    QtDockAddProperty(panel, "registry", "no probes registered");
+    return panel;
+  }
+  for (const auto& [name, report] : reports) {
+    std::string value = vkpt::core::health::StatusName(report.status);
+    if (!report.reason.empty()) {
+      value += " | " + report.reason;
+    }
+    QtDockAddProperty(panel, name, value);
+  }
+  return panel;
+}
+
+QtDockPanelContent BuildQtDeviceDock(const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                      const vkpt::editor::UiRuntimeState& runtime,
                                      const vkpt::editor::UiLayoutDocument& layout,
                                      const QtDockFrameStats& frame_stats,

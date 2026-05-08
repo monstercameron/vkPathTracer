@@ -122,7 +122,7 @@ int QtDockPreferredPixels(float value) {
   return static_cast<int>(std::round(std::clamp(value, 1.0f, 4096.0f)));
 }
 
-std::uint64_t EstimateQtSceneMemoryBytes(const vkpt::pathtracer::RTSceneData& scene) {
+std::uint64_t EstimateQtSceneMemoryBytes(const vkpt::pathtracer::PathTracerSceneSnapshot& scene) {
   return static_cast<std::uint64_t>(scene.vertices.size() * sizeof(vkpt::pathtracer::Vec3)) +
          static_cast<std::uint64_t>(scene.indices.size() * sizeof(std::uint32_t)) +
          static_cast<std::uint64_t>(scene.materials.size() * sizeof(vkpt::pathtracer::RTMaterial)) +

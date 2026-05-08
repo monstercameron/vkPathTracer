@@ -6,7 +6,7 @@ namespace vkpt::app {
 
 std::vector<QtDockPanelContent> BuildQtDockPanels(
     const vkpt::scene::SceneDocument& document,
-    const vkpt::pathtracer::RTSceneData& scene,
+    const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
     const vkpt::pathtracer::RenderSettings& settings,
     const vkpt::editor::UiRuntimeState& runtime,
     const vkpt::editor::SelectionState& selection,
@@ -18,7 +18,7 @@ std::vector<QtDockPanelContent> BuildQtDockPanels(
     const std::array<bool, 4>& saved_camera_shot_slots,
     const QtDockScriptRuntimeState* script_runtime) {
   std::vector<QtDockPanelContent> panels;
-  panels.reserve(15u);
+  panels.reserve(18u);
   // The shell consumes this fixed order for deterministic dock placement and
   // stable UI validation snapshots.
   panels.push_back(BuildQtSceneTreeDock(document, selection, runtime, layout));
@@ -36,6 +36,9 @@ std::vector<QtDockPanelContent> BuildQtDockPanels(
   panels.push_back(BuildQtBenchmarkDock(benchmark, layout));
   panels.push_back(BuildQtDiagnosticsDock(runtime, selection, layout, frame_stats));
   panels.push_back(BuildQtPerformanceDock(runtime, layout, frame_stats));
+  panels.push_back(BuildQtMetricsDock(layout));
+  panels.push_back(BuildQtEventsDock(layout));
+  panels.push_back(BuildQtHealthDock(layout));
   panels.push_back(BuildQtDeviceDock(scene, runtime, layout, frame_stats, device_stats));
   panels.push_back(BuildQtDebugViewsDock(runtime, layout));
   panels.push_back(BuildQtAssetBrowserDock(document, scene, runtime, layout));

@@ -18,6 +18,10 @@
 #include <thread>
 #include <vector>
 
+namespace vkpt::scene {
+struct RenderSceneSnapshot;
+}
+
 namespace vkpt::app {
 
 struct ViewportCameraPose {
@@ -42,6 +46,8 @@ struct ViewportPickable {
   std::string label;
   std::vector<Triangle> triangles;
   bool require_triangle_hit = false;
+  uint32_t rt_primitive_first = 0;
+  uint32_t rt_primitive_count = 0;
 };
 
 struct ViewportRay {
@@ -257,7 +263,10 @@ vkpt::scene::TransformComponent ConvertWorldTransformToDocumentLocal(
     const vkpt::scene::TransformComponent& worldTransform);
 
 std::vector<ViewportPickable> BuildViewportPickables(const vkpt::scene::SceneDocument& document,
-                                                     const vkpt::pathtracer::RTSceneData& scene);
+                                                     const vkpt::pathtracer::PathTracerSceneSnapshot& scene);
+std::vector<ViewportPickable> BuildViewportPickables(
+    const vkpt::scene::SceneDocument& document,
+    const vkpt::scene::RenderSceneSnapshot& snapshot);
 ViewportRay BuildViewportRay(const ViewportCameraPose& camera,
                              float x,
                              float y,
@@ -296,6 +305,15 @@ std::optional<ViewportPickResult> PickViewportObject(const std::vector<ViewportP
                                                      float width,
                                                      float height,
                                                      float renderAspect = 0.0f);
+std::optional<ViewportPickResult> PickViewportObject(
+    const std::vector<ViewportPickable>& pickables,
+    const vkpt::scene::RenderSceneSnapshot& snapshot,
+    const ViewportCameraPose& camera,
+    float x,
+    float y,
+    float width,
+    float height,
+    float renderAspect = 0.0f);
 void ResetViewportMouseClick(ViewportMouseClickState& state);
 void BeginViewportMouseClick(ViewportMouseClickState& state,
                              ViewportMouseInputMode mode,

@@ -2,7 +2,7 @@
         std::string display_path;
         std::string error;
         vkpt::scene::SceneDocument document;
-        vkpt::pathtracer::RTSceneData scene;
+        vkpt::pathtracer::PathTracerSceneSnapshot scene;
         bool ok = false;
         double parse_ms = 0.0;
         double convert_ms = 0.0;
@@ -102,7 +102,10 @@
                 : PtLength(PtSub(qtCameraPose.target, qtCameraPose.position)));
         qtCameraFocusPoint =
             PtAdd(qtCameraPose.position, PtMul(qtCameraForward(), qtCameraFocusDistance));
-        qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
+        if (!qtUseBg) {
+          (void)qtPublishRenderSnapshot(true, true, true, true);
+        }
+        qtSetViewportPickablesFromSnapshot(qtCurrentUiSnapshot());
         qtViewportPickablesRefreshPending = false;
         qtLastViewportPickablesRefresh = std::chrono::steady_clock::now();
         qtFpsCollisionWorker.set_pickables(qtPickables);
@@ -113,9 +116,8 @@
         bool loaded = false;
         bool waitingForBackgroundPaint = false;
         if (qtUseBg && qtRenderCoordinator) {
-          const auto renderStats = qtRenderCoordinator->stats();
-          qtOverlayRequiredRenderGeneration = renderStats.generation + 1u;
-          qtRenderCoordinator->post_scene(qtScene);
+          qtOverlayRequiredRenderGeneration =
+              qtPublishRenderSnapshotForBackground(true, true, true, true);
           loaded = qtTracerReady;
           waitingForBackgroundPaint = loaded && qtOverlayRequiredRenderGeneration != 0u;
           qtSceneLoadWaitingForPaintGeneration =
@@ -678,7 +680,7 @@
         qtPublishedHeight.store(qtSettings.height, std::memory_order_relaxed);
         if (qtUseBg && qtRenderCoordinator) {
           qtMarkOverlayRequiresRenderCatchup();
-          qtRenderCoordinator->post_settings(qtSettings);
+          qtRenderCoordinator->set_render_settings(qtSettings);
         } else if (!qtUseBg && qtTracerReady) {
           qtTracerReady = qtTracer->update_render_settings(qtSettings) &&
                           qtTracer->reset_accumulation();
@@ -778,7 +780,13 @@
 
         bool rendered = true;
         for (std::uint32_t sample = 0u; sample < renderSamples; ++sample) {
-          if (!qtTracer->render_sample_batch(0, renderSettings.height, sample, frame)) {
+          vkpt::pathtracer::RenderTile tile;
+          tile.x = 0u;
+          tile.y = 0u;
+          tile.width = renderSettings.width;
+          tile.height = renderSettings.height;
+          tile.sample_index = sample;
+          if (!qtTracer->render_tile(tile, frame)) {
             rendered = false;
             qtLastRenderMenuStatus = "still render sample failed";
             break;
@@ -886,8 +894,7 @@
 
         const auto cameraState = vkpt::pathtracer::ExtractCameraState(qtScene);
         if (qtUseBg && qtRenderCoordinator) {
-          qtMarkOverlayRequiresRenderCatchup();
-          qtRenderCoordinator->post_camera_state(cameraState);
+          qtPublishRenderSnapshotForBackground(false, false, true, false);
         } else if (!qtUseBg && qtTracerReady) {
           bool cameraOk = qtTracer->update_camera_state(cameraState);
           if (!cameraOk) {
@@ -896,6 +903,9 @@
           }
           qtTracerReady = cameraOk && qtTracer->reset_accumulation();
           qtSampleIndex = 0u;
+          if (qtTracerReady) {
+            (void)qtPublishRenderSnapshot(false, false, true, false);
+          }
         }
 
         qtDockPanelsDirty = true;
@@ -922,13 +932,15 @@
         qtPublishedSample.store(0u, std::memory_order_relaxed);
         qtPublishedRays.store(0u, std::memory_order_relaxed);
         if (qtUseBg && qtRenderCoordinator) {
-          qtMarkOverlayRequiresRenderCatchup();
-          qtRenderCoordinator->post_scene(qtScene);
+          qtPublishRenderSnapshotForBackground(false, false, true, false);
         } else if (!qtUseBg && qtTracerReady) {
           qtTracerReady = qtTracer->load_scene_snapshot(qtScene) &&
                           qtTracer->build_or_update_acceleration() &&
                           qtTracer->reset_accumulation();
           qtSampleIndex = 0u;
+          if (qtTracerReady) {
+            (void)qtPublishRenderSnapshot(false, false, true, false);
+          }
         }
         qtDockPanelsDirty = true;
         updateQtSelectionOverlay();

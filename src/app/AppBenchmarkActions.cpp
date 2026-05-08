@@ -119,10 +119,10 @@ void PrintBackendDiagnostics() {
     std::cout << "  " << vkpt::render::BackendKindToString(backend->kind()) << " -> " << capabilities.backend_name << "\n";
     std::cout << "    " << vkpt::render::SerializeBackendCapabilities(capabilities) << "\n";
   }
-  const auto manifest = vkpt::pathtracer::BuildRTSceneDataLayoutManifest();
+  const auto manifest = vkpt::pathtracer::BuildPathTracerSceneSnapshotLayoutManifest();
   if (manifest) {
     std::cout << "rt layout:\n";
-    std::cout << "  " << vkpt::pathtracer::SerializeRTSceneDataLayoutManifest(manifest.value()) << "\n";
+    std::cout << "  " << vkpt::pathtracer::SerializePathTracerSceneSnapshotLayoutManifest(manifest.value()) << "\n";
   }
 }
 
