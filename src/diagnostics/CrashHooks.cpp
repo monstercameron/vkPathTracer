@@ -1,7 +1,9 @@
 #include "diagnostics/CrashHooks.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
@@ -9,6 +11,8 @@
 #include <string>
 
 #include "core/Logging.h"
+#include "core/log/Log.h"
+#include "core/metrics/Metrics.h"
 #include "diagnostics/ICrashReporter.h"
 
 // Keep the crash artifact directory in a static buffer so signal handlers can
@@ -17,6 +21,13 @@ namespace {
 static char g_crashDir[512] = "artifacts/crashes";
 static std::atomic_bool g_crashHandling{false};
 static std::terminate_handler g_previousTerminateHandler = nullptr;
+
+static std::uint64_t SteadyNowNs() noexcept {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
 }
 
 namespace vkpt::diagnostics {
@@ -33,6 +44,9 @@ static void handle_crash_signal(const char* signal_name) noexcept {
 
   // Attempt to log via the structured logger; may fail if heap is corrupt.
   try {
+    VKP_METRIC_INC("vkp.diagnostics.crashes_total");
+    VKP_METRIC_SET("vkp.diagnostics.last_crash_ns", SteadyNowNs());
+    VKP_LOG(Fatal, "diagnostics", "crash_signal", "signal", signal_name);
     vkpt::log::Logger::instance().log(
         vkpt::log::Severity::Fatal, "crash-hooks",
         std::string("crash signal: ") + signal_name);

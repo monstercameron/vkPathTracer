@@ -52,6 +52,7 @@ class [[nodiscard]] Result {
   static Result error(ErrorCode error) { return Result(InnerError{error}); }
 
   bool has_value() const { return m_state.index() == 0; }
+  bool is_error() const { return !has_value(); }
   explicit operator bool() const { return has_value(); }
 
   T& value() { return std::get<0>(m_state).value; }
@@ -74,6 +75,7 @@ class [[nodiscard]] Result<void> {
   static Result error(ErrorCode code) { return Result(false, code); }
 
   bool has_value() const { return m_ok; }
+  bool is_error() const { return !has_value(); }
   explicit operator bool() const { return m_ok; }
   ErrorCode error() const { return m_ok ? ErrorCode::Ok : m_error; }
 

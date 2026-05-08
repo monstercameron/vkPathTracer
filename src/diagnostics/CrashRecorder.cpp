@@ -194,13 +194,29 @@ static std::string SerializeSubsystemStatesFile(const CrashStateSnapshot& s) {
 }
 }  // namespace detail
 
+vkpt::core::contracts::SubsystemStatus DiagnosticsStatus::to_subsystem_status() const {
+  auto out = vkpt::core::contracts::MakeSubsystemStatus(name, health);
+  out.last_error = last_error;
+  out.ticks_total = flushes_total;
+  out.errors_total = flush_errors_total;
+  out.set_custom("lifecycle",
+                 vkpt::core::contracts::ComponentLifecycleName(lifecycle));
+  out.set_custom("has_unflushed_record", has_unflushed_record ? "true" : "false");
+  out.set_custom("checkpoints_total", std::to_string(checkpoints_total));
+  out.set_custom("live_resources", std::to_string(live_resources));
+  out.set_custom("subsystem_states", std::to_string(subsystem_states));
+  out.set_custom("current_flow_id", std::to_string(current_flow_id));
+  out.set_custom("last_flush_artifact", last_flush_artifact);
+  return out;
+}
+
 // ---- CrashRecorder ----------------------------------------------------------
 
 static std::mutex g_crashMutex;
 
 CrashRecorder& CrashRecorder::instance() {
-  static CrashRecorder singleton;
-  return singleton;
+  static CrashRecorder* singleton = new CrashRecorder();
+  return *singleton;
 }
 
 void CrashRecorder::set_build_info(std::string version,
@@ -245,92 +261,140 @@ void CrashRecorder::set_build_info(std::string version,
   m_snapshot.backend_compile_options =
       detail::StringOr(std::move(backend_compile_options), build.backend_compile_options);
   m_snapshot.platform_shells = detail::StringOr(std::move(platform_shells), build.platform_shells);
+  m_unflushed_record = true;
+  VKP_LIFECYCLE_STARTED("diagnostics",
+                        "build_version",
+                        m_snapshot.build_version,
+                        "flow_id",
+                        m_snapshot.last_frame_index,
+                        "sanitizer",
+                        m_snapshot.sanitizer_flavor);
+  VKP_LIFECYCLE_CONFIG("diagnostics",
+                       "platform_shells",
+                       m_snapshot.platform_shells,
+                       "flow_id",
+                       m_snapshot.last_frame_index,
+                       "features",
+                       m_snapshot.enabled_features);
 }
 
 void CrashRecorder::update_backend(std::string_view backend_name) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.selected_backend = std::string(backend_name);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_frame_stage(std::string_view stage, uint64_t frame_index) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.last_frame_stage = std::string(stage);
   m_snapshot.last_frame_index = frame_index;
+  m_unflushed_record = true;
+  VKP_LOG(Debug,
+          "diagnostics",
+          "frame_stage_updated",
+          "stage",
+          stage,
+          "flow_id",
+          frame_index);
 }
 
 void CrashRecorder::update_pass(std::string_view pass_name) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.last_pass_name = std::string(pass_name);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_shader(std::string_view shader_variant) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.last_shader_variant = std::string(shader_variant);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_scene(std::string_view scene_name) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.active_scene = std::string(scene_name);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::set_last_error(std::string_view error) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.last_error = std::string(error);
+  m_unflushed_record = true;
+  VKP_LOG(Warn,
+          "diagnostics",
+          "operation_failed",
+          "operation",
+          "set_last_error",
+          "reason",
+          error,
+          "flow_id",
+          m_snapshot.last_frame_index);
 }
 
 void CrashRecorder::update_ui_state_json(std::string_view json) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.ui_state_json = json.empty() ? "{}" : std::string(json);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_selection_state_json(std::string_view json) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.selection_state_json = json.empty() ? "{}" : std::string(json);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_layout_state_json(std::string_view json) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.layout_state_json = json.empty() ? "{}" : std::string(json);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_ui_events_jsonl(std::string_view jsonl) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.ui_events_jsonl = std::string(jsonl);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_editor_commands_jsonl(std::string_view jsonl) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.editor_commands_jsonl = std::string(jsonl);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_renderer_state_json(std::string_view json) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.renderer_state_json = json.empty() ? "{}" : std::string(json);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_runtime_config_json(std::string_view json) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.runtime_config_json = json.empty() ? "{}" : std::string(json);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_frame_state_json(std::string_view json) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.frame_state_json = json.empty() ? "{}" : std::string(json);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_resource_state_json(std::string_view json) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.resource_state_json = json.empty() ? "{}" : std::string(json);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_backend_state_json(std::string_view json) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.backend_state_json = json.empty() ? "{}" : std::string(json);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_scene_state_json(std::string_view json) {
   std::scoped_lock lock(g_crashMutex);
   m_snapshot.scene_state_json = json.empty() ? "{}" : std::string(json);
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::update_subsystem_state_json(std::string_view subsystem, std::string_view json) {
@@ -373,6 +437,7 @@ void CrashRecorder::update_subsystem_state_json(std::string_view subsystem, std:
     it->state_json = state;
     it->timestamp_utc = detail::TimestampNow();
   }
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::record_checkpoint(std::string_view name,
@@ -399,6 +464,28 @@ void CrashRecorder::record_checkpoint(std::string_view name,
                                  m_snapshot.checkpoints.begin() +
                                      (m_snapshot.checkpoints.size() - kMaxCheckpoints));
   }
+  m_unflushed_record = true;
+  if (successful) {
+    VKP_LOG(Info,
+            "diagnostics",
+            "checkpoint_recorded",
+            "operation",
+            "record_checkpoint",
+            "name",
+            name,
+            "flow_id",
+            frame_index);
+  } else {
+    VKP_LOG(Warn,
+            "diagnostics",
+            "operation_failed",
+            "operation",
+            "record_checkpoint",
+            "name",
+            name,
+            "flow_id",
+            frame_index);
+  }
 }
 
 void CrashRecorder::track_resource(std::string_view label,
@@ -412,6 +499,7 @@ void CrashRecorder::track_resource(std::string_view label,
     it->kind = std::string(kind);
     it->size_bytes = size_bytes;
     ++it->version;
+    m_unflushed_record = true;
     return;
   }
 
@@ -421,6 +509,7 @@ void CrashRecorder::track_resource(std::string_view label,
   info.size_bytes = size_bytes;
   info.version    = 0;
   m_snapshot.live_resources.push_back(std::move(info));
+  m_unflushed_record = true;
 }
 
 void CrashRecorder::release_resource(std::string_view label) {
@@ -430,13 +519,20 @@ void CrashRecorder::release_resource(std::string_view label) {
                           [&](const LiveResourceInfo& r) { return r.label == label; });
   if (it != m_snapshot.live_resources.end()) {
     m_snapshot.live_resources.erase(it);
+    m_unflushed_record = true;
   }
 }
 
 std::string CrashRecorder::flush(const std::string& base_dir) {
+  auto result = flush_result(base_dir);
+  return result ? result.value() : std::string{};
+}
+
+vkpt::core::Result<std::string> CrashRecorder::flush_result(const std::string& base_dir) {
   CrashStateSnapshot snap;
   {
     std::scoped_lock lock(g_crashMutex);
+    m_lifecycle = vkpt::core::contracts::ComponentLifecycle::Busy;
     snap = m_snapshot;
   }
 
@@ -504,11 +600,67 @@ std::string CrashRecorder::flush(const std::string& base_dir) {
     detail::WriteTextFile(dir + "/renderer_state.json",
                           detail::JsonDocumentOr(snap.renderer_state_json, "{}"));
 
-    return dir;
+    {
+      std::scoped_lock lock(g_crashMutex);
+      m_unflushed_record = false;
+      m_lifecycle = vkpt::core::contracts::ComponentLifecycle::Ready;
+      ++m_flushes_total;
+      m_last_flush_artifact = dir;
+    }
+    VKP_LIFECYCLE_STOPPED("diagnostics",
+                          "reason",
+                          "flush_completed",
+                          "flow_id",
+                          snap.last_frame_index);
+    return vkpt::core::Result<std::string>::ok(dir);
   } catch (const std::exception& ex) {
     std::fprintf(stderr, "[crash-recorder] flush failed: %s\n", ex.what());
-    return {};
+    {
+      std::scoped_lock lock(g_crashMutex);
+      m_lifecycle = vkpt::core::contracts::ComponentLifecycle::Failed;
+      m_snapshot.last_error = ex.what();
+      ++m_flush_errors_total;
+      m_last_flush_artifact.clear();
+    }
+    VKP_LOG(Warn,
+            "diagnostics",
+            "operation_failed",
+            "operation",
+            "flush",
+            "reason",
+            ex.what(),
+            "flow_id",
+            snap.last_frame_index);
+    return vkpt::core::Result<std::string>::error(vkpt::core::ErrorCode::IOError);
   }
+}
+
+bool CrashRecorder::has_unflushed_record() const {
+  std::scoped_lock lock(g_crashMutex);
+  return m_unflushed_record;
+}
+
+DiagnosticsStatus CrashRecorder::status() const {
+  std::scoped_lock lock(g_crashMutex);
+  DiagnosticsStatus out;
+  out.lifecycle = m_lifecycle;
+  if (m_lifecycle == vkpt::core::contracts::ComponentLifecycle::Failed) {
+    out.health = vkpt::core::contracts::SubsystemHealth::Failed;
+  } else if (m_unflushed_record) {
+    out.health = vkpt::core::contracts::SubsystemHealth::Degraded;
+  } else {
+    out.health = vkpt::core::contracts::SubsystemHealth::Ok;
+  }
+  out.has_unflushed_record = m_unflushed_record;
+  out.checkpoints_total = m_snapshot.checkpoints.size();
+  out.live_resources = m_snapshot.live_resources.size();
+  out.subsystem_states = m_snapshot.subsystem_states.size();
+  out.flushes_total = m_flushes_total;
+  out.flush_errors_total = m_flush_errors_total;
+  out.current_flow_id = m_snapshot.last_frame_index;
+  out.last_error = m_snapshot.last_error;
+  out.last_flush_artifact = m_last_flush_artifact;
+  return out;
 }
 
 // ---- SerializeCrashState ----------------------------------------------------

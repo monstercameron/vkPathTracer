@@ -7,8 +7,32 @@
 #include <vector>
 
 #include "core/Logging.h"
+#include "core/contracts/Lifecycle.h"
+#include "core/contracts/Result.h"
+#include "core/contracts/SubsystemStatus.h"
 
 namespace vkpt::diagnostics {
+
+inline constexpr std::string_view kDiagnosticsSubsystemName = "diagnostics";
+inline constexpr std::string_view kDiagnosticsStatusTypeName = "DiagnosticsStatus";
+inline constexpr std::string_view kCrashRecorderContractName =
+    "diagnostics.crash_recorder.v1";
+
+struct DiagnosticsNamingContract {
+  std::string_view subsystem_name = kDiagnosticsSubsystemName;
+  std::string_view status_type_name = kDiagnosticsStatusTypeName;
+  std::string_view crash_recorder_contract = kCrashRecorderContractName;
+  std::string_view health_probe_name = kDiagnosticsSubsystemName;
+  std::string_view lifecycle_field_name = "lifecycle";
+  std::string_view last_error_field_name = "last_error";
+  std::string_view flow_field_name = "current_flow_id";
+};
+
+inline constexpr DiagnosticsNamingContract kDiagnosticsNamingContract{};
+
+[[nodiscard]] inline constexpr std::string_view DiagnosticsSubsystemName() noexcept {
+  return kDiagnosticsSubsystemName;
+}
 
 // ---- CrashStateSnapshot ----------------------------------------------------
 // Snapshot of the entire application state at crash time.  Every subsystem
@@ -89,6 +113,27 @@ struct CrashStateSnapshot {
   std::string renderer_state_json = "{}";
 };
 
+struct DiagnosticsStatus {
+  std::string name = std::string(kDiagnosticsSubsystemName);
+  vkpt::core::contracts::ComponentLifecycle lifecycle =
+      vkpt::core::contracts::ComponentLifecycle::Ready;
+  vkpt::core::contracts::SubsystemHealth health =
+      vkpt::core::contracts::SubsystemHealth::Ok;
+  bool has_unflushed_record = false;
+  std::uint64_t checkpoints_total = 0;
+  std::uint64_t live_resources = 0;
+  std::uint64_t subsystem_states = 0;
+  std::uint64_t flushes_total = 0;
+  std::uint64_t flush_errors_total = 0;
+  std::uint64_t current_flow_id = 0;
+  std::string last_error;
+  std::string last_flush_artifact;
+
+  vkpt::core::contracts::SubsystemStatus to_subsystem_status() const;
+};
+
+using CrashRecorderStatus = DiagnosticsStatus;
+
 // ---- CrashRecorder ---------------------------------------------------------
 // Singleton that keeps the latest crash snapshot in memory and writes it
 // to the artifact directory on demand (crash or orderly shutdown).
@@ -147,9 +192,22 @@ class CrashRecorder {
                       uint64_t size_bytes);
   void release_resource(std::string_view label);
 
+  // State contract:
+  // state\method      update_*  status  flush_result
+  // Ready             ok        ok      ->Busy -> Ready/Failed
+  // Busy              ok        ok      Busy
+  // Degraded          ok        ok      ->Busy -> Ready/Failed
+  // Failed            ok        ok      retry allowed
+  //
   // Write all crash artifacts to a timestamped subdirectory under base_dir.
-  // Returns the directory path on success.
+  // Returns the directory path on success. Prefer flush_result() for new code
+  // that needs a typed failure signal; flush() is kept for existing callers.
   std::string flush(const std::string& base_dir = "artifacts/crashes");
+  vkpt::core::Result<std::string> flush_result(
+      const std::string& base_dir = "artifacts/crashes");
+
+  bool has_unflushed_record() const;
+  DiagnosticsStatus status() const;
 
   // Expose the current snapshot for embedding in other outputs.
   const CrashStateSnapshot& snapshot() const { return m_snapshot; }
@@ -158,6 +216,12 @@ class CrashRecorder {
   CrashRecorder() = default;
 
   CrashStateSnapshot m_snapshot;
+  bool m_unflushed_record = false;
+  vkpt::core::contracts::ComponentLifecycle m_lifecycle =
+      vkpt::core::contracts::ComponentLifecycle::Ready;
+  std::uint64_t m_flushes_total = 0;
+  std::uint64_t m_flush_errors_total = 0;
+  std::string m_last_flush_artifact;
 };
 
 // ---- Helpers ----------------------------------------------------------------

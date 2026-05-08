@@ -4,8 +4,61 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <utility>
 
 namespace vkpt::diagnostics {
+
+PeriodicStatusFile::PeriodicStatusFile(PeriodicStatusFileConfig config, SnapshotFn snapshot)
+    : m_config(std::move(config)), m_snapshot(std::move(snapshot)) {}
+
+PeriodicStatusFile::~PeriodicStatusFile() {
+  stop();
+}
+
+void PeriodicStatusFile::start() {
+  if (!m_config.enabled || !m_snapshot || m_config.period.count() <= 0 || m_thread.joinable()) {
+    return;
+  }
+  {
+    std::scoped_lock lock(m_mutex);
+    m_stop = false;
+  }
+  m_thread = std::jthread([this](std::stop_token stop) {
+    std::unique_lock lock(m_mutex);
+    while (!m_stop && !stop.stop_requested()) {
+      const bool stopping = m_cv.wait_for(lock, m_config.period, [&] {
+        return m_stop || stop.stop_requested();
+      });
+      if (stopping) {
+        break;
+      }
+      lock.unlock();
+      (void)write_now();
+      lock.lock();
+    }
+  });
+}
+
+void PeriodicStatusFile::stop() {
+  {
+    std::scoped_lock lock(m_mutex);
+    m_stop = true;
+  }
+  m_cv.notify_all();
+  if (m_thread.joinable()) {
+    m_thread.request_stop();
+    m_thread.join();
+  }
+}
+
+bool PeriodicStatusFile::write_now(std::string* error) {
+  if (!m_config.enabled || !m_snapshot) {
+    return true;
+  }
+  const auto snapshot = m_snapshot();
+  std::scoped_lock lock(m_write_mutex);
+  return WriteStatusFile(snapshot, m_config.path, error);
+}
 
 std::string StatusTimestampNow() {
   const auto now = std::time(nullptr);
@@ -61,6 +114,8 @@ bool WriteStatusFile(const StatusFileData& data,
          << "  \"selected_renderer_path\": \""  << EscJson(data.selected_renderer_path)  << "\",\n"
          << "  \"last_error\": \""              << EscJson(data.last_error)              << "\",\n"
          << "  \"last_crash_artifact\": \""     << EscJson(data.last_crash_artifact)     << "\",\n"
+         << "  \"crash_ring_dump\": \""         << EscJson(data.crash_ring_dump)         << "\",\n"
+         << "  \"crash_ring_events\": "         << data.crash_ring_events                 << ",\n"
          << "  \"performance_summary\": \""     << EscJson(data.performance_summary)     << "\",\n"
          << "  \"timestamp\": \""               << EscJson(ts)                           << "\"\n"
          << "}\n";

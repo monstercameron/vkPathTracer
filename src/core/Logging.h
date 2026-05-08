@@ -196,8 +196,8 @@ class JsonlFileSink final : public ILogSink {
 class Logger final {
  public:
   static Logger& instance() {
-    static Logger singleton;
-    return singleton;
+    static Logger* singleton = new Logger();
+    return *singleton;
   }
 
   void set_min_severity(Severity severity) { m_minSeverity = severity; }
