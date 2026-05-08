@@ -12366,6 +12366,16 @@
       }
     }
   ],
+  "performance_culling": {
+    "enabled": true,
+    "frustum": true,
+    "distance": true,
+    "cull_dynamic": true,
+    "max_distance": 180.0,
+    "frustum_padding": 1.15,
+    "aspect_ratio": 1.7777778,
+    "min_instance_radius": 0.05
+  },
   "benchmark": {
     "enabled": true,
     "frame_target": 120,
