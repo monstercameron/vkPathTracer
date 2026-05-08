@@ -186,6 +186,41 @@ Vec3 transform_point(const Vec3& point,
   return {rotated.x + translation.x, rotated.y + translation.y, rotated.z + translation.z};
 }
 
+float max_abs_component(const vkpt::scene::Vec3& value) {
+  return std::max(std::fabs(value.x), std::max(std::fabs(value.y), std::fabs(value.z)));
+}
+
+struct MeshCullBounds {
+  Vec3 center{};
+  float radius = 0.0f;
+  bool valid = false;
+};
+
+MeshCullBounds compute_mesh_cull_bounds(const vkpt::scene::SceneGeometryDefinition& geometry) {
+  if (geometry.vertices.empty()) {
+    return {};
+  }
+  Vec3 bmin{geometry.vertices.front().x, geometry.vertices.front().y, geometry.vertices.front().z};
+  Vec3 bmax = bmin;
+  for (const auto& vertex : geometry.vertices) {
+    bmin.x = std::min(bmin.x, vertex.x);
+    bmin.y = std::min(bmin.y, vertex.y);
+    bmin.z = std::min(bmin.z, vertex.z);
+    bmax.x = std::max(bmax.x, vertex.x);
+    bmax.y = std::max(bmax.y, vertex.y);
+    bmax.z = std::max(bmax.z, vertex.z);
+  }
+  MeshCullBounds out;
+  out.center = (bmin + bmax) * 0.5f;
+  out.valid = true;
+  for (const auto& vertex : geometry.vertices) {
+    out.radius = std::max(
+        out.radius,
+        std::sqrt(length_sq(Vec3{vertex.x, vertex.y, vertex.z} - out.center)));
+  }
+  return out;
+}
+
 Vec3 parse_shape_position(const vkpt::scene::Vec3& pos) {
   return {pos.x, pos.y, pos.z};
 }
@@ -771,11 +806,172 @@ vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
     return vkpt::scene::TransformComponent{};
   };
 
+  float sceneCameraNearPlane = 0.01f;
+  auto apply_camera = [&](vkpt::core::StableId id,
+                          const vkpt::scene::CameraComponent& camera,
+                          bool* has_transform) {
+    bool cameraTransform = false;
+    const auto entityIt = entityById.find(id);
+    const auto* entity = entityIt != entityById.end() ? entityIt->second : nullptr;
+    const auto transform = resolve_entity_transform(
+        id,
+        entity != nullptr && entity->has_transform ? &entity->transform : nullptr,
+        &cameraTransform);
+    scene.camera_fov_deg = camera.fov;
+    scene.camera_focal_length_mm = camera.focal_length_mm;
+    scene.camera_sensor_width_mm = camera.sensor_width_mm;
+    scene.camera_sensor_height_mm = camera.sensor_height_mm;
+    scene.camera_aperture_radius = camera.aperture_radius;
+    scene.camera_focus_distance = camera.focus_distance;
+    scene.camera_f_stop = camera.f_stop;
+    scene.camera_shutter_seconds = camera.shutter_seconds;
+    scene.camera_iso = camera.iso;
+    scene.camera_exposure_compensation = camera.exposure_compensation;
+    scene.camera_white_balance_kelvin = camera.white_balance_kelvin;
+    scene.camera_iris_blade_count = camera.iris_blade_count;
+    scene.camera_iris_rotation_degrees = camera.iris_rotation_degrees;
+    scene.camera_iris_roundness = camera.iris_roundness;
+    scene.camera_anamorphic_squeeze = camera.anamorphic_squeeze;
+    sceneCameraNearPlane = std::max(0.0001f, camera.near_plane);
+    if (cameraTransform) {
+      scene.camera_position = {transform.translation.x, transform.translation.y, transform.translation.z};
+      const auto forward = normalize(rotate_quat(Vec3{0.0f, 0.0f, -1.0f}, transform.rotation));
+      const auto up = normalize(rotate_quat(Vec3{0.0f, 1.0f, 0.0f}, transform.rotation));
+      scene.camera_target = scene.camera_position + forward;
+      if (length_sq(up) > kEpsilon * kEpsilon) {
+        scene.camera_up = up;
+      }
+    }
+    if (has_transform) {
+      *has_transform = cameraTransform;
+    }
+  };
+
+  bool hasCameraEntity = false;
+  bool hasCameraTransform = false;
+  for (const auto& entity : doc.entities) {
+    if (entity.has_camera && entity_visible_path(entity)) {
+      hasCameraEntity = true;
+      apply_camera(entity.id, entity.camera, &hasCameraTransform);
+      break;
+    }
+  }
+
+  if (!hasCameraEntity && !doc.cameras.empty()) {
+    const auto& camera = doc.cameras.front();
+    hasCameraEntity = true;
+    apply_camera(camera.id, camera.camera, &hasCameraTransform);
+  }
+
   std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneGeometryDefinition*> geometryById;
   geometryById.reserve(doc.geometry.size());
   for (const auto& geometry : doc.geometry) {
     geometryById[geometry.id] = &geometry;
   }
+  std::unordered_map<vkpt::core::StableId, MeshCullBounds> meshCullBoundsByGeometry;
+  meshCullBoundsByGeometry.reserve(doc.geometry.size());
+  auto mesh_cull_bounds = [&](const vkpt::scene::SceneGeometryDefinition& geometry)
+      -> const MeshCullBounds& {
+    const auto existing = meshCullBoundsByGeometry.find(geometry.id);
+    if (existing != meshCullBoundsByGeometry.end()) {
+      return existing->second;
+    }
+    const auto [inserted, _] =
+        meshCullBoundsByGeometry.emplace(geometry.id, compute_mesh_cull_bounds(geometry));
+    return inserted->second;
+  };
+
+  struct MeshCullingContext {
+    bool enabled = false;
+    Vec3 camera_position{};
+    Vec3 forward{0.0f, 0.0f, -1.0f};
+    Vec3 right{1.0f, 0.0f, 0.0f};
+    Vec3 up{0.0f, 1.0f, 0.0f};
+    float near_plane = 0.01f;
+    float tan_half_fov_y = 1.0f;
+    float tan_half_fov_x = 1.0f;
+  };
+
+  MeshCullingContext meshCulling;
+  if (doc.performance_culling.enabled && hasCameraTransform &&
+      (doc.performance_culling.frustum ||
+       (doc.performance_culling.distance && doc.performance_culling.max_distance > 0.0f))) {
+    const Vec3 forwardRaw = scene.camera_target - scene.camera_position;
+    if (length_sq(forwardRaw) > kEpsilon * kEpsilon) {
+      const Vec3 forward = normalize(forwardRaw);
+      Vec3 rightRaw = cross(forward, scene.camera_up);
+      if (length_sq(rightRaw) <= kEpsilon * kEpsilon) {
+        rightRaw = cross(forward, Vec3{0.0f, 1.0f, 0.0f});
+      }
+      if (length_sq(rightRaw) <= kEpsilon * kEpsilon) {
+        rightRaw = cross(forward, Vec3{1.0f, 0.0f, 0.0f});
+      }
+      if (length_sq(rightRaw) > kEpsilon * kEpsilon) {
+        const float fovDeg = std::clamp(scene.camera_fov_deg, 1.0f, 175.0f);
+        const float padding = std::max(0.01f, doc.performance_culling.frustum_padding);
+        const float aspect = std::max(0.01f, doc.performance_culling.aspect_ratio);
+        meshCulling.enabled = true;
+        meshCulling.camera_position = scene.camera_position;
+        meshCulling.forward = forward;
+        meshCulling.right = normalize(rightRaw);
+        meshCulling.up = normalize(cross(meshCulling.right, forward));
+        meshCulling.near_plane = sceneCameraNearPlane;
+        meshCulling.tan_half_fov_y = std::tan(fovDeg * kPi / 360.0f) * padding;
+        meshCulling.tan_half_fov_x = meshCulling.tan_half_fov_y * aspect;
+      }
+    }
+  }
+
+  auto should_include_mesh =
+      [&](const vkpt::scene::SceneEntityDefinition& entity,
+          const vkpt::scene::SceneGeometryDefinition& geometry,
+          const vkpt::scene::TransformComponent& transform,
+          bool runtime_dynamic) {
+    (void)entity;
+    if (!meshCulling.enabled) {
+      return true;
+    }
+    if (runtime_dynamic && !doc.performance_culling.cull_dynamic) {
+      return true;
+    }
+    const auto& localBounds = mesh_cull_bounds(geometry);
+    if (!localBounds.valid) {
+      return true;
+    }
+    const Vec3 center = transform_point(
+        localBounds.center,
+        Vec3{transform.translation.x, transform.translation.y, transform.translation.z},
+        transform.rotation,
+        Vec3{transform.scale.x, transform.scale.y, transform.scale.z});
+    const float worldRadius = std::max(
+        doc.performance_culling.min_instance_radius,
+        localBounds.radius * std::max(0.001f, max_abs_component(transform.scale)));
+    const Vec3 rel = center - meshCulling.camera_position;
+    if (doc.performance_culling.distance && doc.performance_culling.max_distance > 0.0f) {
+      const float maxDistance = doc.performance_culling.max_distance + worldRadius;
+      if (length_sq(rel) > maxDistance * maxDistance) {
+        return false;
+      }
+    }
+    if (!doc.performance_culling.frustum) {
+      return true;
+    }
+    const float z = dot(rel, meshCulling.forward);
+    if (z + worldRadius < meshCulling.near_plane) {
+      return false;
+    }
+    const float planeZ = std::max(z, meshCulling.near_plane);
+    const float x = dot(rel, meshCulling.right);
+    if (std::fabs(x) > planeZ * meshCulling.tan_half_fov_x + worldRadius) {
+      return false;
+    }
+    const float y = dot(rel, meshCulling.up);
+    if (std::fabs(y) > planeZ * meshCulling.tan_half_fov_y + worldRadius) {
+      return false;
+    }
+    return true;
+  };
+
   auto add_capacity = [](std::size_t& target, std::size_t amount) {
     const std::size_t maxValue = std::numeric_limits<std::size_t>::max();
     target = amount > maxValue - target ? maxValue : target + amount;
@@ -802,12 +998,17 @@ vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
     if (geometry->vertices.empty() || geometry->indices.empty() || geometry->indices.size() % 3u != 0u) {
       continue;
     }
-    add_capacity(meshVertexCapacity, geometry->vertices.size());
-    add_capacity(meshIndexCapacity, geometry->indices.size());
+    const auto transform = resolve_entity_transform(
+        entity.id, entity.has_transform ? &entity.transform : nullptr, nullptr);
     const bool physicsDynamic =
         entity.has_physics_body && entity.physics_body.enabled && entity.physics_body.dynamic;
-    if (physicsDynamic ||
-        entity_has_scripted_transform_path(entity)) {
+    const bool scriptedDynamic = entity_has_scripted_transform_path(entity);
+    if (!should_include_mesh(entity, *geometry, transform, physicsDynamic || scriptedDynamic)) {
+      continue;
+    }
+    add_capacity(meshVertexCapacity, geometry->vertices.size());
+    add_capacity(meshIndexCapacity, geometry->indices.size());
+    if (physicsDynamic || scriptedDynamic || entity.has_transform) {
       add_capacity(dynamicVertexCapacity, geometry->vertices.size());
       add_capacity(dynamicIndexCapacity, geometry->indices.size());
     }
@@ -818,6 +1019,10 @@ vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
   reserve_capacity(scene.local_vertices, dynamicVertexCapacity);
   reserve_capacity(scene.local_indices, dynamicIndexCapacity);
 
+  std::size_t meshCullCandidates = 0u;
+  std::size_t meshCulledInstances = 0u;
+  std::size_t meshCulledVertices = 0u;
+  std::size_t meshCulledTriangles = 0u;
   for (const auto& entity : doc.entities) {
     if (!entity.has_mesh || !entity_visible_path(entity)) {
       continue;
@@ -831,12 +1036,6 @@ vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
       continue;
     }
 
-    const vkpt::core::StableId materialId = entity.mesh.material_id != 0 ? entity.mesh.material_id : geometry->material_id;
-    uint32_t materialIndex = 0;
-    if (auto mi = materialLookup.find(materialId); mi != materialLookup.end()) {
-      materialIndex = mi->second;
-    }
-
     const auto transform = resolve_entity_transform(
         entity.id, entity.has_transform ? &entity.transform : nullptr, nullptr);
     const auto translation = transform.translation;
@@ -848,6 +1047,20 @@ vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
     const bool editor_transformable = entity.has_transform;
     const bool dynamic_transform =
         physics_dynamic || scripted_dynamic || editor_transformable;
+    ++meshCullCandidates;
+    if (!should_include_mesh(entity, *geometry, transform, physics_dynamic || scripted_dynamic)) {
+      ++meshCulledInstances;
+      meshCulledVertices += geometry->vertices.size();
+      meshCulledTriangles += geometry->indices.size() / 3u;
+      continue;
+    }
+
+    const vkpt::core::StableId materialId = entity.mesh.material_id != 0 ? entity.mesh.material_id : geometry->material_id;
+    uint32_t materialIndex = 0;
+    if (auto mi = materialLookup.find(materialId); mi != materialLookup.end()) {
+      materialIndex = mi->second;
+    }
+
     // Dynamic instances keep local geometry alongside world-space triangles for later refits.
     if (scene.vertices.size() >
         static_cast<std::size_t>(std::numeric_limits<uint32_t>::max()) -
@@ -1419,61 +1632,6 @@ vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
     scene.environment_map_scale = {1.0f, 1.0f, 1.0f};
   }
 
-  auto apply_camera = [&](vkpt::core::StableId id,
-                          const vkpt::scene::CameraComponent& camera,
-                          bool* has_transform) {
-    bool cameraTransform = false;
-    const auto entityIt = entityById.find(id);
-    const auto* entity = entityIt != entityById.end() ? entityIt->second : nullptr;
-    const auto transform = resolve_entity_transform(
-        id,
-        entity != nullptr && entity->has_transform ? &entity->transform : nullptr,
-        &cameraTransform);
-    scene.camera_fov_deg = camera.fov;
-    scene.camera_focal_length_mm = camera.focal_length_mm;
-    scene.camera_sensor_width_mm = camera.sensor_width_mm;
-    scene.camera_sensor_height_mm = camera.sensor_height_mm;
-    scene.camera_aperture_radius = camera.aperture_radius;
-    scene.camera_focus_distance = camera.focus_distance;
-    scene.camera_f_stop = camera.f_stop;
-    scene.camera_shutter_seconds = camera.shutter_seconds;
-    scene.camera_iso = camera.iso;
-    scene.camera_exposure_compensation = camera.exposure_compensation;
-    scene.camera_white_balance_kelvin = camera.white_balance_kelvin;
-    scene.camera_iris_blade_count = camera.iris_blade_count;
-    scene.camera_iris_rotation_degrees = camera.iris_rotation_degrees;
-    scene.camera_iris_roundness = camera.iris_roundness;
-    scene.camera_anamorphic_squeeze = camera.anamorphic_squeeze;
-    if (cameraTransform) {
-      scene.camera_position = {transform.translation.x, transform.translation.y, transform.translation.z};
-      const auto forward = normalize(rotate_quat(Vec3{0.0f, 0.0f, -1.0f}, transform.rotation));
-      const auto up = normalize(rotate_quat(Vec3{0.0f, 1.0f, 0.0f}, transform.rotation));
-      scene.camera_target = scene.camera_position + forward;
-      if (length_sq(up) > kEpsilon * kEpsilon) {
-        scene.camera_up = up;
-      }
-    }
-    if (has_transform) {
-      *has_transform = cameraTransform;
-    }
-  };
-
-  bool hasCameraEntity = false;
-  bool hasCameraTransform = false;
-  for (const auto& entity : doc.entities) {
-    if (entity.has_camera && entity_visible_path(entity)) {
-      hasCameraEntity = true;
-      apply_camera(entity.id, entity.camera, &hasCameraTransform);
-      break;
-    }
-  }
-
-  if (!hasCameraEntity && !doc.cameras.empty()) {
-    const auto& camera = doc.cameras.front();
-    hasCameraEntity = true;
-    apply_camera(camera.id, camera.camera, &hasCameraTransform);
-  }
-
   if (hasCameraEntity && !hasCameraTransform && !scene.vertices.empty()) {
     Vec3 bmin = scene.vertices.front();
     Vec3 bmax = scene.vertices.front();
@@ -1509,6 +1667,11 @@ vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
                                       {"indices", std::to_string(scene.indices.size())},
                                       {"texcoords", std::to_string(scene.texcoords.size())},
                                       {"instances", std::to_string(scene.instances.size())},
+                                      {"performance_culling", meshCulling.enabled ? "true" : "false"},
+                                      {"mesh_cull_candidates", std::to_string(meshCullCandidates)},
+                                      {"mesh_culled_instances", std::to_string(meshCulledInstances)},
+                                      {"mesh_culled_vertices", std::to_string(meshCulledVertices)},
+                                      {"mesh_culled_triangles", std::to_string(meshCulledTriangles)},
                                       {"tessellation_requests", std::to_string(scene.tessellation_requests.size())},
                                       {"sdf_primitives", std::to_string(scene.sdf_primitives.size())},
                                       {"materials", std::to_string(scene.materials.size())},
