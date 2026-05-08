@@ -41,6 +41,13 @@ protopt_log.txt
 /cpu_err.txt
 /cpu_out.txt
 
+# Local smoke/render scratch output
+/*.err
+/*.out
+/*_smoke_log.json
+/*_render.png
+/smoke_*.txt
+
 # Local environment and IDE state
 .env
 !.env.example
