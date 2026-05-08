@@ -454,6 +454,21 @@ std::string SceneDocument::to_json(bool pretty) const {
   benchmarkNode.object["warmup_frames"] = number_value(static_cast<double>(benchmark.warmup_frames));
   root.object["benchmark"] = benchmarkNode;
 
+  JsonValue performanceCullingNode = object_value();
+  performanceCullingNode.object["enabled"] = bool_value(performance_culling.enabled);
+  performanceCullingNode.object["frustum"] = bool_value(performance_culling.frustum);
+  performanceCullingNode.object["distance"] = bool_value(performance_culling.distance);
+  performanceCullingNode.object["cull_dynamic"] = bool_value(performance_culling.cull_dynamic);
+  performanceCullingNode.object["max_distance"] =
+      number_value(static_cast<double>(performance_culling.max_distance));
+  performanceCullingNode.object["frustum_padding"] =
+      number_value(static_cast<double>(performance_culling.frustum_padding));
+  performanceCullingNode.object["aspect_ratio"] =
+      number_value(static_cast<double>(performance_culling.aspect_ratio));
+  performanceCullingNode.object["min_instance_radius"] =
+      number_value(static_cast<double>(performance_culling.min_instance_radius));
+  root.object["performance_culling"] = performanceCullingNode;
+
   return stringify(root, pretty);
 }
 
@@ -637,6 +652,18 @@ SceneSnapshot SceneDocument::snapshot() const {
     blob += std::to_string(out.benchmark.frame_target);
     blob += std::to_string(out.benchmark.warmup_frames);
   }
+  blob += "pc";
+  blob += performance_culling.enabled ? "1" : "0";
+  blob += performance_culling.frustum ? "f1" : "f0";
+  blob += performance_culling.distance ? "d1" : "d0";
+  blob += performance_culling.cull_dynamic ? "c1" : "c0";
+  blob += std::to_string(performance_culling.max_distance);
+  blob += ":";
+  blob += std::to_string(performance_culling.frustum_padding);
+  blob += ":";
+  blob += std::to_string(performance_culling.aspect_ratio);
+  blob += ":";
+  blob += std::to_string(performance_culling.min_instance_radius);
   out.scene_hash = hash_scene_blob(blob);
   return out;
 }

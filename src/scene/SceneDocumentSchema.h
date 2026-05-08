@@ -169,4 +169,15 @@ struct SceneBenchmarkMetadata {
   bool enabled = false;
 };
 
+struct ScenePerformanceCullingSettings {
+  bool enabled = false;
+  bool frustum = true;
+  bool distance = true;
+  bool cull_dynamic = true;
+  float max_distance = 0.0f;
+  float frustum_padding = 1.15f;
+  float aspect_ratio = 16.0f / 9.0f;
+  float min_instance_radius = 0.05f;
+};
+
 }  // namespace vkpt::scene

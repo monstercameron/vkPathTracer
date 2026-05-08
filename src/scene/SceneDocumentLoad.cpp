@@ -140,6 +140,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       !require_kind_if_present("cameras", JsonValue::Kind::Array) ||
       !require_kind_if_present("lights", JsonValue::Kind::Array) ||
       !require_kind_if_present("scene_script", JsonValue::Kind::Object) ||
+      !require_kind_if_present("performance_culling", JsonValue::Kind::Object) ||
       !require_kind_if_present("benchmark", JsonValue::Kind::Object)) {
     return vkpt::core::Result<SceneDocument>::error(vkpt::core::ErrorCode::InvalidArgument);
   }
@@ -477,6 +478,19 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
     read_bool(benchmarkNode->second, "enabled", doc.benchmark.enabled);
     read_u32(benchmarkNode->second, "frame_target", doc.benchmark.frame_target);
     read_u32(benchmarkNode->second, "warmup_frames", doc.benchmark.warmup_frames);
+  }
+
+  if (const auto cullingNode = rootObj.object.find("performance_culling");
+      cullingNode != rootObj.object.end()) {
+    read_bool(cullingNode->second, "enabled", doc.performance_culling.enabled);
+    read_bool(cullingNode->second, "frustum", doc.performance_culling.frustum);
+    read_bool(cullingNode->second, "distance", doc.performance_culling.distance);
+    read_bool(cullingNode->second, "cull_dynamic", doc.performance_culling.cull_dynamic);
+    read_float(cullingNode->second, "max_distance", doc.performance_culling.max_distance);
+    read_float(cullingNode->second, "frustum_padding", doc.performance_culling.frustum_padding);
+    read_float(cullingNode->second, "aspect_ratio", doc.performance_culling.aspect_ratio);
+    read_float(cullingNode->second, "min_instance_radius",
+               doc.performance_culling.min_instance_radius);
   }
 
   if (!doc.validate(nullptr)) {
@@ -906,6 +920,22 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
   if (benchmark.enabled && benchmark.frame_target != 0 && benchmark.warmup_frames > benchmark.frame_target) {
     report("benchmark warmup_frames exceeds frame_target");
   }
+  if (!std::isfinite(performance_culling.max_distance) ||
+      performance_culling.max_distance < 0.0f) {
+    report("performance_culling max_distance is invalid");
+  }
+  if (!std::isfinite(performance_culling.frustum_padding) ||
+      performance_culling.frustum_padding <= 0.0f) {
+    report("performance_culling frustum_padding is invalid");
+  }
+  if (!std::isfinite(performance_culling.aspect_ratio) ||
+      performance_culling.aspect_ratio <= 0.0f) {
+    report("performance_culling aspect_ratio is invalid");
+  }
+  if (!std::isfinite(performance_culling.min_instance_radius) ||
+      performance_culling.min_instance_radius < 0.0f) {
+    report("performance_culling min_instance_radius is invalid");
+  }
   return ok;
 }
 
@@ -913,7 +943,7 @@ bool SceneDocument::has_section(std::string_view name) const {
   return name == "schema" || name == "metadata" || name == "assets" || name == "materials" ||
       name == "geometry" || name == "sdf_primitives" || name == "particle_emitters" || name == "entities" ||
       name == "transforms" || name == "cameras" || name == "lights" || name == "scene_script" ||
-      name == "benchmark";
+      name == "benchmark" || name == "performance_culling";
 }
 
 }  // namespace vkpt::scene

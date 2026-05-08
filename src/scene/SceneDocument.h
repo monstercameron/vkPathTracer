@@ -31,6 +31,7 @@ class SceneDocument {
   std::vector<SceneCameraDefinition> cameras;
   std::vector<SceneLightDefinition> lights;
   SceneBenchmarkMetadata benchmark;
+  ScenePerformanceCullingSettings performance_culling;
 
   /// Last parse/schema result for callers that keep a partially populated document.
   SceneSchemaError parse_result = SceneSchemaError::Ok;
