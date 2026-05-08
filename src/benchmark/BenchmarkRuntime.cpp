@@ -698,7 +698,23 @@ int RunCommand(const std::vector<std::string_view>& args) {
   const auto resolveProfile = profiler.begin_event(vkpt::benchmark::ProfilerEventKind::CpuZone, "resolve_and_write", "io", 0u);
 
   const auto ldr = tracer->resolve_ldr();
-  const auto hdr = tracer->resolve_hdr();
+  auto hdr = tracer->resolve_hdr();
+  if ((isD3D12ComputePath || isD3D12DxrPath) &&
+      (hdr.width == 0u || hdr.height == 0u || hdr.rgbf.empty()) &&
+      ldr.width > 0u && ldr.height > 0u && !ldr.rgba8.empty()) {
+    hdr.width = ldr.width;
+    hdr.height = ldr.height;
+    hdr.rgbf.assign(static_cast<std::size_t>(ldr.width) * ldr.height * 3u, 0.0f);
+    const std::size_t pixelCount = static_cast<std::size_t>(ldr.width) * ldr.height;
+    for (std::size_t i = 0; i < pixelCount; ++i) {
+      const std::size_t ldrBase = i * 4u;
+      const std::size_t hdrBase = i * 3u;
+      hdr.rgbf[hdrBase + 0u] = static_cast<float>(ldr.rgba8[ldrBase + 0u]) / 255.0f;
+      hdr.rgbf[hdrBase + 1u] = static_cast<float>(ldr.rgba8[ldrBase + 1u]) / 255.0f;
+      hdr.rgbf[hdrBase + 2u] = static_cast<float>(ldr.rgba8[ldrBase + 2u]) / 255.0f;
+    }
+    result.diagnostics.push_back("hdr_artifact_source=ldr_fallback");
+  }
   std::string writeError;
   if (!vkpt::pathtracer::SavePngCompat(result.beauty_png, ldr, &writeError)) {
     std::cerr << "failed to save beauty png: " << writeError << "\n";
