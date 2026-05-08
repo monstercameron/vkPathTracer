@@ -308,3 +308,4 @@ Important directories:
 - `docs/qt_threading.md`: Qt/render-thread rules.
 - `docs/optimization_guide.md`: performance guidance and benchmark context.
 - `docs/ci-smoke-plan.md`: smoke targets and expected checks.
+- `docs/lua_scripting.md`: Lua script components, lifecycle hooks, params, sandbox limits, and Qt scripting panel behavior.

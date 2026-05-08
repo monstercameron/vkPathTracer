@@ -8,8 +8,9 @@
 - Added scriptable ECS UI panels with Lua spawn/update support and Qt canvas rendering for gameplay controls in the third-person and audio demo scenes.
 - Hardened Qt editor/playable boundaries so canvas drops and gizmo edits stay in C++ editor mode, playable Lua owns mouse-look input, selection overlays follow current transforms, and the provisional raster polygon preview path was removed.
 - Expanded transform-update diagnostics and frame-update handling across Qt, RenderCoordinator, D3D12/DXR/compute paths, and GPU buffer uploads.
+- Fixed D3D12 denoiser and temporal AA setting toggles so they update render constants, reset accumulation, and invalidate temporal history without forcing a full scene/acceleration rebuild when resources are already compatible.
 - Added meshoptimizer-backed game LOD tooling and generation scripts; generated `game/models/lods/` outputs are ignored as build artifacts instead of tracked source.
-- Refined the lowest-LOD showcase generator and scene output with display turntables, tile/warehouse staging, HDRI window lighting, and a Lua-controlled sun script.
+- Refined the lowest-LOD showcase generator and scene output with display turntables, tile/warehouse staging, HDRI window lighting, a Lua-controlled sun script, and a generic Lua FPS camera controller attached to the warehouse walkthrough camera.
 - Updated setup, Qt, audio-authoring, TODO, and motion/FPS notes for the current audio/UI/render work.
 
 ## 2026-05-07 (session 38)

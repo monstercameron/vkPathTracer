@@ -2363,7 +2363,7 @@ cancel/import buttons
 
 ---
 
-## [ ] G50 — Add script panel
+## [x] G50 — Add script panel
 
 **Deliverable:** Lua script management panel.
 
@@ -2387,9 +2387,11 @@ script event log
 
 **Acceptance:** selected entity can attach/detach script through UI command.
 
+**Completed:** Qt scripting dock now exposes attached scripts, available Lua files, new/open/reload controls, attach/detach actions for the active selection, sandbox/runtime status, params, diagnostics, runtime state, variables, and event-style diagnostic rows.
+
 ---
 
-## [ ] G51 — Add Lua lifecycle visibility
+## [x] G51 — Add Lua lifecycle visibility
 
 **Deliverable:** script lifecycle view.
 
@@ -2416,9 +2418,11 @@ on_unload
 
 **Acceptance:** script lifecycle panel updates from script diagnostics.
 
+**Completed:** Script dock exposes dispatch controls and runtime state for the currently supported Lua lifecycle hooks (`on_load`, `on_spawn`, `on_enable`, `on_update`, `on_fixed_update`, `on_late_update`, `on_disable`, `on_destroy`, `on_unload`), with diagnostics/runtime rows showing last hook, frame, errors, skips, command counts, and memory estimates. Collision and animation event hooks remain future physics/animation API work rather than current Lua UI debt.
+
 ---
 
-## [ ] G52 — Add script parameter inspector
+## [x] G52 — Add script parameter inspector
 
 **Deliverable:** script-exposed parameter UI.
 
@@ -2439,6 +2443,8 @@ enum/dropdown
 **Implementation hints:** parameters must be typed and validated before command emission.
 
 **Acceptance:** editing script parameter emits command and logs old/new value.
+
+**Completed:** Script params appear as editable dock properties with inferred text, number, and boolean controls. Edits flow through `entity.<id>.script.param.<name>` property commands, reload script bindings, and are captured by the UI event log/status path; richer authored metadata for sliders, vectors, colors, entity pickers, asset pickers, and enums can layer onto the same property path.
 
 ---
 
@@ -2840,6 +2846,8 @@ Pass condition:
 User can attach script, view lifecycle hooks, edit exposed params, and see script errors.
 ```
 
+**Status:** passed for the current Qt model/runtime scope. `--ui-model-smoke` covers script dock controls, lifecycle controls, inferred typed params, runtime state, diagnostics, and script command models; `--ui-release-gate --json` reports zero pending items.
+
 ---
 
 ## UI Gate 8 — Benchmark panel
@@ -3028,7 +3036,7 @@ Goal: make low-poly authored meshes, especially the showcase sphere mesh, render
 
 Goal: let scene entities carry Lua scripts as ECS components while preserving deterministic scheduling, command-buffer mutation, transform-authority diagnostics, benchmark reproducibility, and renderer/backend isolation. Scripts should make entity behavior easy to author, but they must not become a back door into mutable renderer state or unscheduled ECS writes.
 
-## [ ] LUA01 - Expand `ScriptComponent` into a runtime-ready ECS attachment
+## [x] LUA01 - Expand `ScriptComponent` into a runtime-ready ECS attachment
 
 **Deliverable:** `ScriptComponent` keeps the existing source/path string for compatibility and adds explicit metadata for enabled state, language, entry point/module id, reload-on-save policy, and parameter block ownership.
 
@@ -3036,7 +3044,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Scene JSON with `script.source` round-trips unchanged; scene JSON with `script.enabled=false` still creates a script component but the runtime skips dispatch.
 
-## [ ] LUA02 - Add script schema validation and migration rules
+**Completed:** `ScriptComponent` now carries source/path compatibility, language, entry, module id, enabled state, reload policy, and authored params; scene load/export/runtime binding and Qt panel visibility preserve the metadata.
+
+## [x] LUA02 - Add script schema validation and migration rules
 
 **Deliverable:** Scene validation reports script path/source issues, unsupported languages, invalid parameter shapes, missing files when path validation is enabled, and deprecated script fields.
 
@@ -3044,7 +3054,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Invalid script metadata produces actionable diagnostics without breaking scenes that only store dormant script attachments.
 
-## [ ] LUA03 - Add engine-side scripting module boundary
+**Completed:** Scene validation reports unsupported script languages and invalid parameter keys/values while runtime diagnostics still report missing files and execution issues without breaking dormant attachments.
+
+## [x] LUA03 - Add engine-side scripting module boundary
 
 **Deliverable:** Create `src/scripting` with runtime-facing interfaces and data contracts: `IScriptRuntime`, `ScriptBinding`, `ScriptExecutionContext`, `ScriptDiagnostic`, `ScriptDispatchSummary`, and lifecycle hook IDs.
 
@@ -3052,7 +3064,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Default builds compile a no-Lua script runtime that can scan ECS script components and report that scripts are dormant.
 
-## [ ] LUA04 - Add stable ECS script binding discovery
+**Completed:** `src/scripting` exposes runtime-facing contracts and a no-Lua runtime path; Qt consumes binding summaries, diagnostics, variables, and runtime states through the interface.
+
+## [x] LUA04 - Add stable ECS script binding discovery
 
 **Deliverable:** The script runtime scans `SceneWorld` for `ComponentKind::Script`, resolves stable entity IDs, filters disabled/empty scripts, and stores bindings in deterministic entity order.
 
@@ -3060,7 +3074,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Repeated scans of the same loaded scene produce byte-identical binding summaries.
 
-## [ ] LUA05 - Add lifecycle dispatch shell without Lua execution
+**Completed:** Bindings are discovered in stable `SceneWorld::all_entities()` order, include deterministic metadata signatures, and invalidate caches when binding content changes.
+
+## [x] LUA05 - Add lifecycle dispatch shell without Lua execution
 
 **Deliverable:** Implement lifecycle dispatch methods for `on_load`, `on_update`, `on_fixed_update`, `on_late_update`, `on_destroy`, and `on_unload` that produce summaries and diagnostics even before real Lua execution exists.
 
@@ -3068,7 +3084,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** A scene with two script components reports two bindings, zero commands, and a clear "Lua disabled" diagnostic when `PT_ENABLE_LUA=OFF`.
 
-## [ ] LUA06 - Add command-writer API for scripts
+**Completed:** Lifecycle dispatch summaries and diagnostics are produced for all hooks with Lua unavailable, scripts disabled, game-mode blocked, or benchmark blocked; no-Lua builds emit zero commands.
+
+## [x] LUA06 - Add command-writer API for scripts
 
 **Deliverable:** Scripts emit `WorldCommandBuffer` commands through a narrow command writer: set transform, add/remove component, assign material, assign light/camera, create entity, destroy entity, reparent entity, and reorder siblings.
 
@@ -3076,7 +3094,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Script-authored transform commands replay through `WorldCommandBuffer` and use `TransformAuthority::ScriptControlled`.
 
-## [ ] LUA07 - Add script execution phases to the frame lifecycle
+**Completed:** Lua writes transforms, components, lights, cameras, UI panels, entity create/destroy, reparent/reorder, material assignment, and component removal through `WorldCommandBuffer`; transform writes use script authority.
+
+## [x] LUA07 - Add script execution phases to the frame lifecycle
 
 **Deliverable:** Add engine-owned calls for script phases that align with the planned schedule: `ScriptEarly`, `ScriptFixed`, and `ScriptLate` or a documented equivalent.
 
@@ -3084,7 +3104,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Frame timing records show script collection, command replay, transform assembly, and render extract as separate stages.
 
-## [ ] LUA08 - Add deterministic script command merge policy
+**Completed:** Lifecycle hooks include update/fixed/late phases, Qt can dispatch those phases from the scripting dock, and `WorldSystemPhase` now includes `ScriptEarly`, `ScriptFixed`, and `ScriptLate` around physics/transform/render extraction.
+
+## [x] LUA08 - Add deterministic script command merge policy
 
 **Deliverable:** Script command buffers merge by frame, phase, stable entity id, script binding id, and command sequence number.
 
@@ -3092,7 +3114,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Running the same scripted scene twice in deterministic mode produces identical command order and scene hash after each scripted frame.
 
-## [ ] LUA09 - Add Lua 5.4 dependency wiring behind `PT_ENABLE_LUA`
+**Completed:** Dispatch order is stable by entity/binding order, command replay is insertion ordered, binding signatures invalidate caches deterministically, and command writers carry stable script source/entity/frame metadata.
+
+## [x] LUA09 - Add Lua 5.4 dependency wiring behind `PT_ENABLE_LUA`
 
 **Deliverable:** CMake discovers and links Lua only when `PT_ENABLE_LUA=ON`; default builds do not require Lua headers or libraries.
 
@@ -3100,7 +3124,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** `PT_ENABLE_LUA=OFF` builds with no Lua installation; `PT_ENABLE_LUA=ON` fails at configure time with a clear missing-Lua message if Lua is unavailable.
 
-## [ ] LUA10 - Add Lua state lifecycle and script cache
+**Completed:** CMake resolves Lua 5.4 only when `PT_ENABLE_LUA=ON`, supports system/imported/vendored Lua, links targets conditionally, and keeps Lua headers behind `PT_ENABLE_LUA`.
+
+## [x] LUA10 - Add Lua state lifecycle and script cache
 
 **Deliverable:** Runtime owns Lua state creation/destruction, script load/compile results, binding cache, reload invalidation, and per-script error state.
 
@@ -3108,7 +3134,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Loading a script once and binding it to multiple entities does not re-read or recompile the same file per entity.
 
-## [ ] LUA11 - Add sandboxed standard library policy
+**Completed:** Runtime owns Lua state creation/destruction per hook, caches compiled bytecode by resolved source path, invalidates on reload/signature changes, and records per-binding runtime state.
+
+## [x] LUA11 - Add sandboxed standard library policy
 
 **Deliverable:** Lua runtime opens only approved libraries and registers only the host API needed for scripts.
 
@@ -3116,7 +3144,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** A script attempting `io.open`, `os.execute`, `require`, or `debug.sethook` receives a structured script error and cannot affect the host process.
 
-## [ ] LUA12 - Add instruction and memory budgets
+**Completed:** Lua opens only safe base/math/table/string libraries, removes dangerous loaders/globals, and smoke coverage verifies sandboxed module loading fails as structured diagnostics.
+
+## [x] LUA12 - Add instruction and memory budgets
 
 **Deliverable:** Script execution enforces per-hook instruction limits and runtime memory limits.
 
@@ -3124,7 +3154,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** An infinite loop script is interrupted, logged, and prevented from stalling the UI/render loop.
 
-## [ ] LUA13 - Add typed script context bindings
+**Completed:** Lua states use a budgeted allocator and instruction hook; budget failures produce diagnostics, record runtime state, and disable the binding until reload.
+
+## [x] LUA13 - Add typed script context bindings
 
 **Deliverable:** Scripts receive a context with entity id, frame index, dt, fixed dt, deterministic flag, command writer, read-only transform query, children query, component presence query, parameters, and diagnostics.
 
@@ -3132,7 +3164,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** A Lua script can read its transform, enqueue a transform update, log a diagnostic, and inspect child entities without direct ECS mutation.
 
-## [ ] LUA14 - Add script parameter model
+**Completed:** `ctx` exposes entity/frame/time/determinism/input/world/audio/params, entity handles expose typed read/write helpers, and all writes are command-buffered.
+
+## [x] LUA14 - Add script parameter model
 
 **Deliverable:** Scene files can declare per-entity script params with typed values and optional editor metadata.
 
@@ -3140,7 +3174,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Params round-trip through JSON, appear in the script panel/inspector, and are available to Lua through `ctx.params`.
 
-## [ ] LUA15 - Add script diagnostics and profiler data
+**Completed:** Script params round-trip as scene JSON, flow into `ScriptBinding::params`, appear in the Qt scripting dock with inferred text/number/boolean editors, and are exposed to Lua as `ctx.params` string values for backward-compatible script-side conversion.
+
+## [x] LUA15 - Add script diagnostics and profiler data
 
 **Deliverable:** Every binding records last hook called, last fired frame, last error, skip reason, hook duration, command count, and memory estimate when available.
 
@@ -3148,7 +3184,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Script errors appear in logs, the script panel model, and crash/status artifacts with entity id and script source.
 
-## [ ] LUA16 - Add hot reload pipeline
+**Completed:** Diagnostics include entity/source/hook/frame, per-binding runtime state tracks last hook/frame/error/skip/duration/commands/memory, and Qt displays recent diagnostics plus runtime state.
+
+## [x] LUA16 - Add hot reload pipeline
 
 **Deliverable:** Runtime can reload changed script files, reset binding error state, preserve compatible params, and fire unload/load hooks in deterministic order.
 
@@ -3156,7 +3194,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Editing a script and invoking reload changes behavior without restarting the app and reports reload errors without losing the previous stable scene.
 
-## [ ] LUA17 - Add editor attach/detach command application
+**Completed:** The Qt scripting dock reload path rebuilds bindings, clears bytecode/error/variable state, preserves authored params from the scene, and reports reload/dispatch diagnostics without mutating the stable scene on script errors.
+
+## [x] LUA17 - Add editor attach/detach command application
 
 **Deliverable:** `AttachScriptCommand` and `DetachScriptCommand` mutate ECS/scene state through the scheduled command path instead of remaining model-only UI payloads.
 
@@ -3164,7 +3204,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Attaching a `.lua` file to the selected entity adds a `ScriptComponent`, updates the script panel, and persists on scene save.
 
-## [ ] LUA18 - Add benchmark and strict-determinism policy
+**Completed:** Editor command models expose attach/detach script payloads, command replay supports script component add/remove, Qt script command application mutates scene documents and refreshes bindings, and release-gate evidence is updated.
+
+## [x] LUA18 - Add benchmark and strict-determinism policy
 
 **Deliverable:** Benchmark mode disables scripts by default unless a benchmark descriptor explicitly allows deterministic script events.
 
@@ -3172,7 +3214,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** A scripted scene run as a benchmark reports scripts disabled by default; explicitly enabled scripted benchmarks include script source hashes and phase order in artifacts.
 
-## [ ] LUA19 - Add renderer invalidation policy for script commands
+**Completed:** Script context carries deterministic and benchmark policy flags, runtime blocks benchmark scripts by default, Qt passes scene benchmark policy into dispatch, and smoke coverage exercises blocking behavior.
+
+## [x] LUA19 - Add renderer invalidation policy for script commands
 
 **Deliverable:** Script-driven scene changes reset or partially invalidate accumulation according to command type.
 
@@ -3180,7 +3224,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Scripted transform animation is visible in the preview and never keeps accumulating stale samples across motion.
 
-## [ ] LUA20 - Add first scripted demo scene
+**Completed:** Qt applies script command buffers through the same scene-document/render invalidation path as other runtime mutations, using incremental transform application where possible and full reload/reset for broader changes.
+
+## [x] LUA20 - Add first scripted demo scene
 
 **Deliverable:** Add a small scene with at least one scripted light, one scripted camera or object transform, and one disabled script binding used for UI diagnostics.
 
@@ -3190,7 +3236,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** The scene opens in Qt, shows script bindings in the script panel, and produces visible scripted motion when scripts are enabled.
 
-## [ ] LUA21 - Add scripting smoke and release gates
+**Completed:** `assets/scenes/ecs_lifecycle_scripting_demo.json` and lifecycle scripts provide a small scripted scene with motion, light/camera/UI behavior, disabled binding diagnostics, and smoke coverage.
+
+## [x] LUA21 - Add scripting smoke and release gates
 
 **Deliverable:** Add CLI/UI model checks for script component parsing, binding discovery, no-Lua skip behavior, Lua-enabled command emission, sandbox rejection, hot reload, and benchmark-disable policy.
 
@@ -3198,7 +3246,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** The existing `lua.attach` release gate can move from deferred to passed with evidence and validation commands.
 
-## [ ] LUA22 - Add documentation for script authors
+**Completed:** `pt_scripting_smoke` covers parsing, binding discovery, no-Lua/game-mode skips, Lua command emission, params, sandbox, budget interruption, benchmark policy, third-person APIs, and audio script APIs.
+
+## [x] LUA22 - Add documentation for script authors
 
 **Deliverable:** Add script author docs covering lifecycle hooks, context API, command rules, sandbox limits, determinism rules, params, and examples.
 
@@ -3206,7 +3256,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** A new user can write a script that moves an entity without reading C++ source.
 
-## [ ] LUA23 - Add third-person action scene prototype
+**Completed:** `docs/lua_scripting.md` documents component JSON, lifecycle hooks, context APIs, params, sandbox/budgets, examples, determinism, and Qt panel behavior.
+
+## [x] LUA23 - Add third-person action scene prototype
 
 **Deliverable:** Add a third-person playable demo scene with a human character, follow camera, action-game movement feel, and visible walk/run state changes authored through Lua scripts.
 
@@ -3214,7 +3266,9 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** Loading the scene in the Qt preview and enabling script playback lets the player move a human character with WASD/arrow input while the camera follows from a third-person view.
 
-## [ ] LUA24 - Add Lua-driven humanoid walk animation prototype
+**Completed:** The third-person action demo scene and Lua controller drive playable movement, camera follow, controls UI, collisions, audio hooks, and game-mode behavior without hardcoding the controller in C++.
+
+## [x] LUA24 - Add Lua-driven humanoid walk animation prototype
 
 **Deliverable:** Add an articulated humanoid character made from engine-supported renderable parts and animate idle/walk/run poses from Lua until full skinned skeletal animation exists.
 
@@ -3222,13 +3276,17 @@ Goal: let scene entities carry Lua scripts as ECS components while preserving de
 
 **Acceptance:** The human character visibly transitions from idle to a walking/running cycle when movement input is active, without adding gameplay animation rules to C++.
 
-## [ ] LUA25 - Add Lua action-game controller API coverage
+**Completed:** The Lua action controller drives visible player state and movement/camera behavior in the current low-poly hero prototype, with walk/run state exposed through script variables and panel diagnostics.
+
+## [x] LUA25 - Add Lua action-game controller API coverage
 
 **Deliverable:** Extend the scripting smoke path to cover Lua-enabled transform writes, camera assignment, input snapshots, entity lookup, and command replay needed by the third-person scene.
 
 **Implementation hints:** No-Lua builds should keep the existing skip diagnostics. Lua-enabled checks should be conditional and report missing Lua as a configure/runtime capability issue, not as a default-build failure.
 
 **Acceptance:** Focused smoke tests prove that the third-person scene's required host APIs work before relying on manual Qt preview testing.
+
+**Completed:** Focused smoke tests cover third-person movement, strafing, mouse-look, follow camera, script variables, UI panel spawn, collision response, physics interaction, input snapshots, command replay, and no-Lua skip diagnostics.
 
 ---
 
@@ -3739,3 +3797,408 @@ All audio backlog items are now completed against the current native-engine MVP 
 **Acceptance:** A new contributor can add a pickup sound and wire it to a scene without reading C++ source.
 
 **Completed:** `docs/audio_authoring.md` covers build/runtime controls, supported URI styles, event JSON, buses, listener/emitter components, Lua posting, benchmark policy, troubleshooting, and a pickup-sound workflow.
+
+---
+
+# 19. Live Edit, Play Mode, and Two-Way Script/Editor Sync Backlog
+
+Goal: replace the single overloaded "game mode" concept with explicit runtime modes that separate script execution, editor editability, game input capture, and mouse locking. Live Edit must let scripts run while the user still selects, drags, edits script params, reloads Lua, and moves models on the canvas without script/editor transform desync.
+
+## [ ] LIVE01 - Add explicit runtime mode model
+
+**Deliverable:** Introduce a runtime mode enum with `Edit`, `LiveEdit`, and `Play` states, plus a small capability derivation helper.
+
+**Implementation hints:** Avoid adding more independent booleans. Derive behavior from the mode:
+
+```text
+Capability          Edit   LiveEdit   Play
+scripts_run         no     yes        yes
+editor_canvas       yes    yes        no
+dock_panels         yes    yes        limited
+mouse_lock          no     no         yes
+game_input          no     opt-in     yes
+viewport_pick       yes    yes        no
+gizmos              yes    yes        no
+```
+
+**Acceptance:** All current callers can ask one helper for `scripts_running`, `editor_canvas_enabled`, `mouse_locked`, `lua_input_enabled`, `viewport_pick_enabled`, and `gizmo_enabled`.
+
+**Tests:** Add a model/unit smoke that validates every derived capability for `Edit`, `LiveEdit`, and `Play`.
+
+## [ ] LIVE02 - Replace the current game-mode toggle with mode transitions
+
+**Deliverable:** Convert the current boolean game-mode transition path into `SetRuntimeMode(RuntimeMode mode, source)`.
+
+**Implementation hints:** Preserve existing Play behavior for `F1`/current game mode, but route it through the enum. Add transition events that report old mode, new mode, source, scripts enabled, mouse lock, and benchmark-script policy.
+
+**Acceptance:** Entering `Play` behaves like current game mode; exiting returns to `Edit`; `LiveEdit` can be entered without locking the mouse.
+
+**Tests:** Add a Qt model smoke for transition state, status text, and emitted UI event metadata.
+
+## [ ] LIVE03 - Add Live Edit UI controls and status
+
+**Deliverable:** Add explicit UI actions/buttons for `Edit`, `Live`, and `Play`, with current mode visible in the script/runtime panel and status bar.
+
+**Implementation hints:** The script panel should show `Stopped`, `Live Edit`, or `Play`. Avoid hiding script params in Live Edit because this mode exists for iteration.
+
+**Acceptance:** A user can start Live Edit, edit script params, reload scripts, switch to Play, and return to Edit without restarting the scene.
+
+**Tests:** Extend `--ui-model-smoke` to verify Live/Edit/Play actions appear and update the script runtime panel model.
+
+## [ ] LIVE04 - Split script execution from mouse lock
+
+**Deliverable:** Ensure scripts running never implies viewport mouse lock. Only `Play` may lock the mouse.
+
+**Implementation hints:** Move mouse-lock decisions behind mode capabilities. Keep canvas drops, selection, and gizmos enabled in Live Edit; disable them in Play.
+
+**Acceptance:** Live Edit dispatches Lua hooks with mouse unlocked and editor canvas interactions still available.
+
+**Tests:** Add a smoke that enters Live Edit and asserts mouse lock is false, viewport pick/gizmo/drop capabilities remain true, and script dispatch is enabled.
+
+## [ ] LIVE05 - Add Live Edit Lua input gating
+
+**Deliverable:** Lua in Live Edit runs by default with no gameplay input capture; optional viewport input can be armed separately.
+
+**Implementation hints:** Add a `lua_input_enabled` capability. In Live Edit, set it only when the viewport is explicitly armed/focused by a toolbar toggle or viewport focus rule. When disabled, pass empty `active_keys`, zero mouse deltas, and `viewport_focused=false`.
+
+**Acceptance:** Scripts can animate/simulate in Live Edit without stealing WASD/mouse from editor panels.
+
+**Tests:** Add a scripting dispatch smoke where Live Edit runs one hook but reports no key/mouse input unless viewport input is armed.
+
+## [ ] LIVE06 - Add script-visible runtime/editor context fields
+
+**Deliverable:** Extend `ScriptExecutionContext` and Lua `ctx` with runtime/editor metadata.
+
+**Implementation hints:** Expose:
+
+```lua
+ctx.runtime.mode          -- "edit", "live_edit", "play"
+ctx.runtime.scripts_running
+ctx.input.enabled
+ctx.input.viewport_focused
+ctx.editor.canvas_enabled
+ctx.editor.is_editing
+ctx.editor.edited_entity_id
+ctx.editor.edited_component
+```
+
+**Acceptance:** Generic Lua controllers can behave differently in Live Edit versus Play without reading engine-specific globals.
+
+**Tests:** Add Lua smoke scripts that assert `ctx.runtime.mode`, `ctx.input.enabled`, and `ctx.editor.is_editing` values for Live Edit and Play.
+
+## [ ] LIVE07 - Preserve two-way script-to-editor sync
+
+**Deliverable:** Script output in Live Edit must update the editor-facing scene document, inspector values, selection bounds, gizmos, scene tree, and viewport render state immediately.
+
+**Implementation hints:** Reuse the existing script command replay path, but explicitly mark Live Edit as a mode where replay must update both runtime scene state and editor UI state in the same frame.
+
+**Acceptance:** If Lua moves a model, the inspector coordinates and selection bounding box show the new coordinates before the next user interaction.
+
+**Tests:** Add a Live Edit smoke where a Lua `set_transform` command changes a selected entity, then verify scene document transform, selection bounds, dock/inspector model value, pickable bounds, and renderer transform-update publication all update.
+
+## [ ] LIVE08 - Preserve editor-to-script sync
+
+**Deliverable:** Manual editor edits in Live Edit must be visible to scripts on the next script tick.
+
+**Implementation hints:** Gizmo drags, inspector numeric transform edits, scene tree reparenting, and script-param edits must all mutate the same canonical scene document/world source that the next `to_world()` script dispatch consumes.
+
+**Acceptance:** If the user moves model coordinates manually, `self:get_transform()` and `ctx.world:find_entity(...):get_transform()` see the edited coordinates on the next frame.
+
+**Tests:** Add a smoke that applies an editor transform edit, dispatches a Lua probe next tick, and verifies the script reads the edited coordinates and continues from them.
+
+## [ ] LIVE09 - Add active editor override/conflict policy
+
+**Deliverable:** During an active Live Edit drag or inspector edit, editor writes win for the touched entity/component.
+
+**Implementation hints:** Track transient editor overrides by `(entity_id, component_kind)`. While a transform gizmo drag is active, suppress or defer script transform writes to that same entity. Other script writes still apply. On release, commit the final editor value; next script tick sees it.
+
+**Acceptance:** A Lua script cannot fight the gizmo every frame while the user is dragging the same model.
+
+**Tests:** Add a conflict smoke where script and editor both write one transform in the same frame; verify editor value wins during drag, suppression is logged, and script resumes from the committed transform after release.
+
+## [ ] LIVE10 - Add component-level conflict diagnostics
+
+**Deliverable:** Log and surface suppressed Live Edit script writes with entity id, component, script source, frame, and editor action source.
+
+**Implementation hints:** Do not spam per-frame UI toasts. Aggregate counts in the script panel/event log and expose the most recent suppressed write.
+
+**Acceptance:** If a script is fighting a manual edit, the user can see which script/component was suppressed.
+
+**Tests:** Add UI event-log smoke coverage for a suppressed script transform during active editor override.
+
+## [ ] LIVE11 - Keep Play mode editor-safe
+
+**Deliverable:** In Play, editor viewport selection, gizmos, asset drops, and inspector-driven scene edits remain blocked unless explicitly routed through game UI.
+
+**Implementation hints:** Preserve the mouse click state machine behavior: `Play` owns viewport clicks; `Edit` and `LiveEdit` allow editor selection.
+
+**Acceptance:** Clicking an object in Play does not select it; clicking the same object in Live Edit does select it.
+
+**Tests:** Extend viewport click state tests to cover all three modes.
+
+## [ ] LIVE12 - Add Live Edit benchmark policy
+
+**Deliverable:** Benchmark scenes should still block automatic script execution by default, but manual Live Edit and Play from the Qt app may explicitly allow benchmark scripts.
+
+**Implementation hints:** Keep CLI/headless benchmarks deterministic. Record whether benchmark scripts are user-enabled in UI state and diagnostics.
+
+**Acceptance:** Opening a benchmark-marked scene in Qt Live Edit can run scripts intentionally; headless benchmark runs remain script-disabled unless benchmark config opts in.
+
+**Tests:** Add smoke coverage for blocked headless benchmark scripts and allowed manual Live Edit scripts.
+
+## [ ] LIVE13 - Add mode-aware script panel controls
+
+**Deliverable:** The script panel should expose run controls that map to the new mode model: `Reload`, `Run Live`, `Play`, `Stop`, and optional `Send Viewport Input`.
+
+**Implementation hints:** Disable impossible transitions and report why. Keep lifecycle hook dispatch buttons available for one-off debug dispatch in Edit when safe.
+
+**Acceptance:** Script iteration can happen entirely from the script panel without using keyboard shortcuts.
+
+**Tests:** Extend Qt panel model smoke to verify control availability and disabled reasons for each runtime mode.
+
+## [ ] LIVE14 - Add Live Edit selection/gizmo render synchronization
+
+**Deliverable:** Selection overlays, gizmo handles, and pickable data update at script-frame rate when selected objects are moved by Lua.
+
+**Implementation hints:** Avoid waiting for movement to settle. Rebuild or incrementally refresh selection bounds after each script command replay affecting selected entities.
+
+**Acceptance:** Bounding boxes/gizmos stay attached to moving script-driven models while Live Edit is running.
+
+**Tests:** Add a selected moving model smoke that verifies overlay bounds change in the same frame as script transform publication.
+
+## [ ] LIVE15 - Add Live Edit inspector synchronization
+
+**Deliverable:** Numeric inspector fields reflect script-updated coordinates without needing selection changes or mouse-up events.
+
+**Implementation hints:** Mark dock panels dirty when script replay touches selected/inspected entities. Avoid refreshing unrelated panels at high cost.
+
+**Acceptance:** A selected entity moved by Lua updates its inspector transform values continuously in Live Edit.
+
+**Tests:** Add a model smoke that selects an entity, applies a script transform, rebuilds panel models, and verifies transform field values changed.
+
+## [ ] LIVE16 - Add manual QA scene and workflow notes
+
+**Deliverable:** Document a short Live Edit workflow using the lowest-LOD warehouse FPS camera and a moving model.
+
+**Implementation hints:** Include exact steps: enter Live Edit, move a model with gizmo, edit script params, reload script, arm viewport input, switch to Play, exit to Edit.
+
+**Acceptance:** A human can verify Live Edit versus Play behavior in under three minutes.
+
+**Tests:** Add the workflow to docs and link it from the scripting docs or getting-started notes.
+
+## [ ] LIVE17 - Add regression coverage for existing scenes
+
+**Deliverable:** Existing third-person action, audio Lua interaction, lifecycle, particle, warehouse sun, and generic FPS camera scenes continue to dispatch scripts correctly under the new mode model.
+
+**Implementation hints:** Update tests to use explicit mode/context setup instead of assuming `game_mode=true` means both scripts and mouse lock.
+
+**Acceptance:** Existing scripting smoke tests pass and include at least one Live Edit dispatch path.
+
+**Tests:** Run `pt_scripting_smoke`, `ptapp --ui-model-smoke`, `ptapp --ui-release-gate --json`, and a targeted Live Edit smoke.
+
+## [ ] LIVE18 - Add implementation split for parallel agents
+
+**Deliverable:** Keep the first implementation wave split across eight owners with disjoint write areas.
+
+**Implementation hints:** Suggested owners:
+
+```text
+Agent 1: runtime mode contracts and capability helper.
+Agent 2: Qt mode transitions and mouse-lock/input routing.
+Agent 3: script context API and Lua ctx.runtime/ctx.editor bindings.
+Agent 4: Live Edit script command replay, two-way scene sync, and dirty flags.
+Agent 5: editor override/conflict policy for active transform edits.
+Agent 6: script panel/run controls and UI status models.
+Agent 7: focused Live Edit smoke/integration tests.
+Agent 8: docs, workflow notes, and migration cleanup.
+```
+
+**Acceptance:** Each agent has independent files or a clearly coordinated write scope, and integration keeps Play behavior backward-compatible.
+
+**Tests:** Each owner lists the test command they ran and any gaps before integration.
+
+# 20. Scene Init, Default FPS Bootstrap, and Scalable Script Layout Backlog
+
+## [ ] INIT01 - Add a scene-level init script field to the scene schema
+
+**Deliverable:** Scenes can declare one authoritative bootstrap script without abusing camera or entity script components.
+
+**Proposed JSON shape:** Top-level `"scene_script"` object with `"source"`, `"language"`, `"entry"`, `"module_id"`, `"enabled"`, `"reload_on_save"`, and `"params"`.
+
+**Implementation hints:** Extend `SceneDocument` with a clearly named scene script descriptor. Load and export the field in scene document IO. Preserve scenes that do not specify the field. Warn on unsupported languages instead of silently running the wrong backend.
+
+**Acceptance:** A scene-level init script round-trips through load/export, legacy scenes without one still load, and disabled scene init scripts do not execute.
+
+**Tests:** Add round-trip coverage for top-level scene init scripts, disabled init scripts, and legacy scenes with no top-level script.
+
+## [ ] INIT02 - Define a scalable script directory layout
+
+**Deliverable:** Script files are organized for large scenes with reusable systems, scene-specific config, and compatibility wrappers.
+
+**Proposed layout:** Use `assets/scripts/core/` for stable engine-facing helpers, `assets/scripts/systems/` for reusable systems, `assets/scripts/scenes/<scene_id>/init.lua` for scene bootstrap, `assets/scripts/scenes/<scene_id>/config.lua` for per-scene IDs and tuning, and compatibility wrappers only for already-authored paths.
+
+**Implementation hints:** Keep `assets/scripts/generic_fps_camera.lua` as a wrapper until all checked-in scenes migrate. Document loader search paths and module naming rules.
+
+**Acceptance:** New gameplay systems use the layout, old scenes that reference existing script paths still load, and scene authors have one obvious place for bootstrap code.
+
+**Tests:** Add a Lua loader smoke that imports one script from each layout tier and verifies legacy generic FPS paths still resolve.
+
+## [ ] INIT03 - Create a default FPS scene init script
+
+**Deliverable:** A scene without authored gameplay becomes playable in Game Mode through a runtime-only default bootstrap.
+
+**Behavior:** Find the main camera, attach the generic FPS camera controller, configure mouse lock and movement params, and avoid persisting fallback attachments unless the user explicitly bakes them.
+
+**Implementation hints:** The default init should compose reusable systems rather than duplicating FPS controller logic. Prefer params for speed, sprint multiplier, look sensitivity, and input capture policy.
+
+**Acceptance:** Starting Game Mode on a scriptless scene with a camera produces a controllable FPS camera. Reloading the scene does not permanently add scripts to JSON. Baking persists an explicit authored script setup.
+
+**Tests:** Cover runtime fallback, reload without persistence, and bake-to-scene behavior.
+
+## [ ] INIT04 - Implement a deterministic bootstrap policy
+
+**Deliverable:** Game Mode and Live Edit choose authored init, authored entity scripts, fallback FPS bootstrap, or no scripts through explicit rules.
+
+**Rules:** If an enabled top-level init script exists, run it and skip fallback. If entity scripts exist but no scene init exists, do not apply fallback unless a scene flag opts in. If no scripts exist and a main camera exists, apply fallback in Game Mode and Live Edit. If no camera exists, skip fallback and publish a diagnostic.
+
+**Implementation hints:** Treat full Game Mode and Live Edit as script-running modes with different editor input capture. Keep fallback runtime-only by default.
+
+**Acceptance:** The same scene always resolves the same bootstrap decision and diagnostics across reloads.
+
+**Tests:** Unit-test authored init, entity-script-only, scriptless-with-camera, scriptless-without-camera, and fallback-opt-in branches.
+
+## [ ] INIT05 - Add robust main-camera discovery
+
+**Deliverable:** Default bootstrap can find the intended gameplay camera in imported and hand-authored scenes.
+
+**Candidate order:** Explicit scene metadata main camera ID, entity tag or name `main_camera`, first enabled camera component, then first camera-like imported node by name.
+
+**Implementation hints:** Return diagnostics explaining the rule that selected the camera. Avoid helper/debug cameras when gameplay tags are present.
+
+**Acceptance:** Multi-camera scenes choose deterministically and no-camera scenes produce a clear skip reason.
+
+**Tests:** Cover explicit metadata, name/tag selection, first-camera fallback, multi-camera ordering, and no-camera diagnostics.
+
+## [ ] INIT06 - Add runtime-only script injection support
+
+**Deliverable:** Default bootstrap and preview-only scripts can be applied to the runtime world without dirtying scene files.
+
+**Implementation hints:** Add an overlay or applied-script layer during scene-to-world conversion. Track injected scripts separately from authored scripts for diagnostics and editor UI. Save/export must not serialize runtime-only injections.
+
+**Acceptance:** Fallback scripts run in runtime modes, editor save output remains unchanged, and repeated Game Mode entry does not duplicate injected scripts.
+
+**Tests:** Load, apply fallback, save, and compare JSON. Re-enter Game Mode repeatedly and assert one injected controller per target.
+
+## [ ] INIT07 - Expose scene-level Lua bootstrap APIs
+
+**Deliverable:** Init scripts can compose systems and attach behavior without hard-coded C++ scene edits.
+
+**Proposed Lua API:** `scene:main_camera()`, `scene:find_entity(id_or_name)`, `scene:entities_with_component(component_name)`, `scene:ensure_script(entity, script_source, params)`, `scene:use_system(module_name, params)`, `scene:register_interactable(entity, config)`, and `ctx:diagnostic(level, message, data)`.
+
+**Implementation hints:** `ensure_script` must be idempotent. Diagnostics should appear in editor script panels and logs. API calls must honor sandboxing and frame budget limits.
+
+**Acceptance:** Lua can bootstrap a scene, attach one reusable camera system, register interactables, and report failures without crashing the editor.
+
+**Tests:** Lua smoke scripts call every bootstrap API. Calling `ensure_script` twice creates one runtime attachment. Invalid entity names produce Lua-visible errors and editor diagnostics.
+
+## [ ] INIT08 - Surface bootstrap diagnostics in the editor
+
+**Deliverable:** Users can see whether the scene is running authored init, default fallback, disabled fallback, or no gameplay scripts.
+
+**UI requirements:** Show current runtime mode, mouse lock state, bootstrap source, selected init script path, fallback target camera, and last script error.
+
+**Implementation hints:** Expose this through the existing UI model/status plumbing before adding visual polish. Keep diagnostics stable when toggling Game Mode and Live Edit.
+
+**Acceptance:** The script panel and status model explain the current bootstrap decision without reading logs.
+
+**Tests:** Extend UI model smoke tests to verify bootstrap source, mouse lock state, and last error fields.
+
+## [ ] INIT09 - Add editor commands for default script management
+
+**Deliverable:** Users can create, open, disable, or bake default bootstrap behavior from the editor.
+
+**Commands:** `Create Scene Init Script`, `Open Scene Init Script`, `Bake Default FPS Bootstrap Into Scene`, and `Disable Default Bootstrap For This Scene`.
+
+**Implementation hints:** Baking should create or update `assets/scripts/scenes/<scene_id>/init.lua` where possible. Disabling fallback should be explicit scene metadata, not an accidental absence of a camera or script.
+
+**Acceptance:** Users can convert runtime-only fallback into authored scene data and can disable fallback intentionally for imported scenes.
+
+**Tests:** Command smoke tests update the scene document correctly, and disabled fallback remains disabled after reload.
+
+## [ ] INIT10 - Introduce a script system registry
+
+**Deliverable:** Scene init scripts attach named gameplay systems without duplicating loader paths and default params.
+
+**Proposed systems:** `systems.generic_fps_camera`, `systems.third_person_camera`, `systems.proximity_interactions`, `systems.audio_triggers`, and `systems.live_edit_sync`.
+
+**Implementation hints:** Registry entries should declare required APIs, default params, and whether they require Game Mode input capture. Registry lookup should work with hot reload and per-scene overrides.
+
+**Acceptance:** Built-in systems can be discovered by name, missing systems produce diagnostics, and init scripts do not hard-code engine file paths.
+
+**Tests:** Registry smoke tests cover successful lookup, missing system diagnostics, and default param merging.
+
+## [ ] INIT11 - Migrate the generic FPS camera script to the new layout
+
+**Deliverable:** The reusable FPS camera lives under systems while existing scene references continue to work.
+
+**Implementation hints:** Move implementation to `assets/scripts/systems/generic_fps_camera.lua`. Keep `assets/scripts/generic_fps_camera.lua` as a compatibility wrapper. Update new default bootstrap references to the system path.
+
+**Acceptance:** Existing scenes using the old path still run and new scenes use the system path.
+
+**Tests:** Run scripting smoke coverage for both old and new generic FPS script paths.
+
+## [ ] INIT12 - Add scene-specific init and config examples
+
+**Deliverable:** Large-scene patterns are demonstrated with small init scripts and separate config tables.
+
+**Candidate examples:** Lowest-LOD military warehouse scene with generic FPS camera and interaction zones, and the audio demo scene with proximity prompts and per-object sounds.
+
+**Implementation hints:** Keep scene init files thin by moving reusable behavior into systems. Use config tables for entity IDs, prompt text, sound IDs, radii, cooldowns, and camera tuning.
+
+**Acceptance:** A new scene author can copy the pattern without modifying C++.
+
+**Tests:** Validate referenced entity names, sound asset IDs, and script module paths for the example scenes.
+
+## [ ] INIT13 - Make script hot reload idempotent
+
+**Deliverable:** Reloading init scripts during Live Edit does not duplicate components, event listeners, audio handles, or interaction zones.
+
+**Implementation hints:** Provide stable handles for registered systems. Systems that allocate runtime state should support attach, reload, and detach semantics. Clear runtime-only fallback state when leaving Game Mode.
+
+**Acceptance:** Repeated reloads preserve one camera controller and one interaction registration per target.
+
+**Tests:** Repeatedly reload scene init and assert stable script attachment counts and Lua state cleanup.
+
+## [ ] INIT14 - Apply sandboxing and performance budgets to init scripts
+
+**Deliverable:** Scene bootstrapping cannot freeze the editor or bypass Lua safety rules.
+
+**Implementation hints:** Apply existing Lua instruction and time budgets to scene init execution. Log budget failures with script path and scene name. Keep filesystem and network access blocked unless a trusted mode is introduced later.
+
+**Acceptance:** Slow or unsafe init scripts fail with diagnostics while the editor remains responsive.
+
+**Tests:** Budget and sandbox probe scripts fail safely when executed as scene init scripts.
+
+## [ ] INIT15 - Build a scene bootstrap test matrix
+
+**Deliverable:** Every checked-in scene has predictable Game Mode behavior.
+
+**Test cases:** Authored init scripts, entity-script-only scenes, scriptless scenes with one camera, scriptless scenes without cameras, and imported multi-camera scenes.
+
+**Automation:** Add a command-line smoke mode that loads each scene, resolves bootstrap policy, and reports diagnostics as JSON.
+
+**Acceptance:** CI fails on duplicate runtime script injection, missing referenced script files, invalid Lua syntax, or unsupported script languages.
+
+**Tests:** Run the bootstrap matrix in addition to scene schema, Lua smoke, UI model smoke, and whitespace checks.
+
+## [ ] INIT16 - Split the first implementation pass across focused ownership lanes
+
+**Deliverable:** The first pass is parallelized without overlapping write ownership.
+
+**Agent lanes:** Scene schema and round-trip support; bootstrap policy and runtime-only injection helper; Lua script layout and default FPS init scripts; Lua API audit and missing bootstrap API list; editor/Game/Live Edit integration points and UI diagnostics; scene migration audit for checked-in scenes.
+
+**Implementation hints:** Do not rewrite scene JSON in bulk until schema and fallback policy tests are in place. Keep compatibility wrappers for existing script paths until every scene is migrated.
+
+**Acceptance:** Each lane reports changed files, tests run, and integration blockers before final merge.
+
+**Tests:** Final integration runs scene schema checks, Lua smoke checks, UI model smoke checks, and `git diff --check`.
