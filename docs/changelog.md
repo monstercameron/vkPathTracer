@@ -9,7 +9,9 @@
 - Wired Qt Play/Live Edit script reload and dispatch through the same bootstrap-resolved runtime world, dispatching `on_load` when script-running modes start.
 - Added script dock bootstrap diagnostics and scene-init management commands for create/open, default FPS bake, and fallback disable flows.
 - Expanded Lua editor annotations with `-- [editor]` alias support, optional metadata-only params, generated Qt controls for missing annotated params, and converted tunable sample scripts to `ctx.params`.
-- Expanded bootstrap and scripting smoke coverage for runtime overlays, generic FPS fallback, safe include, and `ctx.scene` APIs.
+- Tightened Lua editor annotation parsing with real marker boundaries, source-level annotation caching, parser diagnostics, and slider fallback handling for annotation-only numeric params.
+- Added `assets/scenes/live_edit_model_lab.json` and `assets/scripts/live_edit_model_lab.lua`, a gameplay-character Live Edit test scene with annotated controls for model scale, color cycling, lights, camera focus, orbiters, UI panels, and animation.
+- Expanded bootstrap and scripting smoke coverage for runtime overlays, generic FPS fallback, safe include, `ctx.scene` APIs, annotation parser edge cases, and the Live Edit model lab scene.
 
 ## 2026-05-07 (session 39)
 

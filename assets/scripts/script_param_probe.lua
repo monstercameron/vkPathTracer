@@ -1,5 +1,6 @@
 -- @editor offset_x number default=1.25 min=-10 max=10 step=0.25 label="Offset X"
 -- [editor] offset_y number default=0.5 min=-10 max=10 step=0.25 label="Offset Y"
+-- @editorial should_not_parse number default=9
 local script = {}
 
 function script.on_update(self, ctx)

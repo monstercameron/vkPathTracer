@@ -3976,7 +3976,7 @@ ctx.editor.edited_component
 
 **Tests:** Add a model smoke that selects an entity, applies a script transform, rebuilds panel models, and verifies transform field values changed.
 
-## [ ] LIVE16 - Add manual QA scene and workflow notes
+## [x] LIVE16 - Add manual QA scene and workflow notes
 
 **Deliverable:** Document a short Live Edit workflow using the lowest-LOD warehouse FPS camera and a moving model.
 
@@ -3985,6 +3985,8 @@ ctx.editor.edited_component
 **Acceptance:** A human can verify Live Edit versus Play behavior in under three minutes.
 
 **Tests:** Add the workflow to docs and link it from the scripting docs or getting-started notes.
+
+**Completed:** Added `assets/scenes/live_edit_model_lab.json` with a gameplay character, annotated Lua controls, lighting/camera/orbiter/UI animation knobs, scripting smoke coverage, and a linked manual workflow in `docs/lua_scripting.md`.
 
 ## [ ] LIVE17 - Add regression coverage for existing scenes
 

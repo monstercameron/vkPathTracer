@@ -30,6 +30,12 @@ bool Check(bool condition, const std::string& message) {
   return true;
 }
 
+bool HasText(const std::vector<std::string>& values, const std::string& needle) {
+  return std::any_of(values.begin(), values.end(), [&](const std::string& value) {
+    return value.find(needle) != std::string::npos;
+  });
+}
+
 bool PathExists(const std::filesystem::path& path) {
   std::error_code ec;
   return std::filesystem::exists(path, ec) && !ec;
@@ -533,8 +539,16 @@ int RunScriptingRuntimeSmoke() {
       [](const vkpt::scripting::ScriptEditorParam& param) {
         return param.name == "offset_y";
       });
+  const auto invalid_editor_param = std::find_if(
+      param_binding.editor_params.begin(),
+      param_binding.editor_params.end(),
+      [](const vkpt::scripting::ScriptEditorParam& param) {
+        return param.name == "ial" || param.name == "should_not_parse";
+      });
   if (!Check(param_binding_summary.binding_count == 1u,
              "param probe should expose one binding") ||
+      !Check(param_binding.editor_params.size() == 2u,
+             "script @editor marker should require a real marker boundary") ||
       !Check(param_binding.params.at("offset_x") == "2.5",
              "script params should carry into runtime bindings") ||
       !Check(offset_editor_param != param_binding.editor_params.end() &&
@@ -550,9 +564,35 @@ int RunScriptingRuntimeSmoke() {
       !Check(offset_y_editor_param != param_binding.editor_params.end() &&
                  offset_y_editor_param->type == "number" &&
                  offset_y_editor_param->default_value == "0.5",
-             "script [editor] annotations should be accepted as an alias")) {
+             "script [editor] annotations should be accepted as an alias") ||
+      !Check(invalid_editor_param == param_binding.editor_params.end(),
+             "script @editorial comments should not be parsed as editor params")) {
     return 1;
   }
+
+  vkpt::scene::SceneWorld annotation_cache_world;
+  for (vkpt::core::StableEntityId id : {vkpt::core::StableEntityId{122},
+                                        vkpt::core::StableEntityId{123}}) {
+    const auto entity = annotation_cache_world.create_entity("annotation_cache_probe", id);
+    vkpt::scene::ScriptComponent cache_script;
+    cache_script.script = "assets/scripts/script_param_probe.lua";
+    if (!annotation_cache_world.set_component(entity, vkpt::scene::ComponentKind::Script, cache_script)) {
+      return 1;
+    }
+  }
+  auto annotation_cache_runtime = vkpt::scripting::CreateScriptRuntime();
+  const auto annotation_cache_summary = annotation_cache_runtime->reload_bindings(annotation_cache_world);
+  if (!Check(annotation_cache_summary.binding_count == 2u,
+             "annotation cache probe should create duplicate-source bindings") ||
+      !Check(std::all_of(annotation_cache_runtime->bindings().begin(),
+                         annotation_cache_runtime->bindings().end(),
+                         [](const vkpt::scripting::ScriptBinding& binding) {
+                           return binding.editor_params.size() == 2u;
+                         }),
+             "duplicate-source bindings should receive cached editor annotations")) {
+    return 1;
+  }
+
   vkpt::scripting::ScriptExecutionContext param_context;
   param_context.game_mode = true;
   param_context.frame = 8;
@@ -1964,6 +2004,149 @@ return script
   if (!Check(third_person_dispatch.command_count_after == 0u, "no-Lua third-person dispatch should emit no commands") ||
       !Check(third_person_dispatch.diagnostics.size() == 1u,
              "no-Lua third-person dispatch should diagnose the runnable player script")) {
+    return 1;
+  }
+#endif
+
+  const auto live_edit_scene_path = FindRepoFile("assets/scenes/live_edit_model_lab.json");
+  if (!Check(PathExists(live_edit_scene_path), "live edit model lab scene should exist")) {
+    return 1;
+  }
+  auto live_edit_document_result =
+      vkpt::scene::SceneDocument::load_from_file(live_edit_scene_path.string());
+  if (!Check(static_cast<bool>(live_edit_document_result),
+             "live edit model lab scene should load")) {
+    return 1;
+  }
+  std::vector<std::string> live_edit_issues;
+  if (!Check(live_edit_document_result.value().validate(&live_edit_issues),
+             "live edit model lab scene should validate")) {
+    for (const auto& issue : live_edit_issues) {
+      std::cerr << "  scene issue: " << issue << "\n";
+    }
+    return 1;
+  }
+  const auto live_edit_script_path = FindRepoFile("assets/scripts/live_edit_model_lab.lua");
+  if (!Check(PathExists(live_edit_script_path),
+             "live edit model lab script should exist")) {
+    return 1;
+  }
+  const bool live_edit_uses_game_model =
+      std::any_of(live_edit_document_result.value().assets.begin(),
+                  live_edit_document_result.value().assets.end(),
+                  [](const vkpt::scene::SceneAssetDefinition& asset) {
+                    return asset.name == "Live Edit Hero Game Model" &&
+                           asset.uri.find("low_poly_hero/character.gltf") != std::string::npos;
+                  });
+  if (!Check(live_edit_uses_game_model,
+             "live edit model lab should reference the tracked gameplay character model")) {
+    return 1;
+  }
+  auto live_edit_world_result = live_edit_document_result.value().to_world();
+  if (!Check(static_cast<bool>(live_edit_world_result),
+             "live edit model lab should convert to ECS world")) {
+    return 1;
+  }
+  auto live_edit_runtime = vkpt::scripting::CreateScriptRuntime();
+  const auto live_edit_summary = live_edit_runtime->reload_bindings(live_edit_world_result.value());
+  const auto live_edit_binding = std::find_if(
+      live_edit_runtime->bindings().begin(),
+      live_edit_runtime->bindings().end(),
+      [](const vkpt::scripting::ScriptBinding& binding) {
+        return binding.source == "assets/scripts/live_edit_model_lab.lua";
+      });
+  auto live_edit_has_param = [&](std::string_view name) {
+    return live_edit_binding != live_edit_runtime->bindings().end() &&
+           std::any_of(live_edit_binding->editor_params.begin(),
+                       live_edit_binding->editor_params.end(),
+                       [&](const vkpt::scripting::ScriptEditorParam& param) {
+                         return param.name == name;
+                       });
+  };
+  if (!Check(live_edit_summary.binding_count >= 2u,
+             "live edit model lab should expose camera and model script bindings") ||
+      !Check(live_edit_summary.runnable_count >= 2u,
+             "live edit model lab should expose runnable camera and model scripts") ||
+      !Check(live_edit_binding != live_edit_runtime->bindings().end(),
+             "live edit model lab binding should be present") ||
+      !Check(live_edit_has_param("model_scale") &&
+                 live_edit_has_param("target_material_id") &&
+                 live_edit_has_param("hue_degrees") &&
+                 live_edit_has_param("camera_focus_distance"),
+             "live edit model lab should expose annotated live-edit controls")) {
+    return 1;
+  }
+
+  vkpt::scene::WorldCommandBuffer live_edit_commands;
+  vkpt::scripting::ScriptExecutionContext live_edit_context;
+  live_edit_context.game_mode = true;
+  live_edit_context.runtime.mode = "live_edit";
+  live_edit_context.runtime.scripts_running = true;
+  live_edit_context.frame = 64u;
+  live_edit_context.elapsed_seconds = 2.25;
+  live_edit_context.delta_seconds = 1.0 / 60.0;
+  const auto live_edit_dispatch =
+      live_edit_runtime->dispatch_hook(live_edit_world_result.value(),
+                                       vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+                                       live_edit_context,
+                                       live_edit_commands);
+#ifdef PT_ENABLE_LUA
+  bool live_edit_assigned_material = false;
+  bool live_edit_updated_light = false;
+  bool live_edit_updated_camera = false;
+  bool live_edit_updated_panel = false;
+  for (const auto& command : live_edit_commands.commands()) {
+    if (const auto* assign_material =
+            std::get_if<vkpt::scene::WorldCommandBuffer::AssignMaterialCommand>(&command.payload);
+        assign_material != nullptr &&
+        assign_material->material_id >= 9810u &&
+        assign_material->material_id <= 9815u) {
+      live_edit_assigned_material = true;
+    }
+    if (const auto* assign_light =
+            std::get_if<vkpt::scene::WorldCommandBuffer::AssignLightCommand>(&command.payload);
+        assign_light != nullptr &&
+        (assign_light->id == 9920u || assign_light->id == 9921u) &&
+        assign_light->light.intensity > 0.0f) {
+      live_edit_updated_light = true;
+    }
+    if (const auto* assign_camera =
+            std::get_if<vkpt::scene::WorldCommandBuffer::AssignCameraCommand>(&command.payload);
+        assign_camera != nullptr &&
+        assign_camera->id == 9901u &&
+        std::abs(assign_camera->camera.focus_distance - 5.8f) < 0.01f) {
+      live_edit_updated_camera = true;
+    }
+    if (const auto* set_component =
+            std::get_if<vkpt::scene::WorldCommandBuffer::SetComponentCommand>(&command.payload);
+        set_component != nullptr &&
+        set_component->id == 9913u &&
+        set_component->kind == vkpt::scene::ComponentKind::UiPanel) {
+      live_edit_updated_panel = true;
+    }
+  }
+  const auto* live_edit_rig_transform = FindSetTransform(live_edit_commands, 9910u);
+  const auto* live_edit_orbiter_transform = FindSetTransform(live_edit_commands, 9911u);
+  if (!Check(live_edit_dispatch.hook_call_count >= 2u,
+             "live edit model lab should run camera and model update hooks") ||
+      !Check(live_edit_rig_transform != nullptr &&
+                 live_edit_rig_transform->transform.scale.x > 0.5f,
+             "live edit model lab should animate model scale") ||
+      !Check(live_edit_orbiter_transform != nullptr,
+             "live edit model lab should animate orbiting props") ||
+      !Check(live_edit_assigned_material,
+             "live edit model lab should assign script-controlled palette materials") ||
+      !Check(live_edit_updated_light,
+             "live edit model lab should update scripted light color/intensity") ||
+      !Check(live_edit_updated_camera,
+             "live edit model lab should update scripted camera focus") ||
+      !Check(live_edit_updated_panel,
+             "live edit model lab should update its in-scene control panel")) {
+    return 1;
+  }
+#else
+  if (!Check(live_edit_dispatch.command_count_after == 0u,
+             "no-Lua live edit model lab dispatch should emit no commands")) {
     return 1;
   }
 #endif

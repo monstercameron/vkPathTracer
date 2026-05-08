@@ -162,21 +162,22 @@ Two-way sync uses the scene command path in both directions. Lua writes such as 
 
 Conflict policy: while an editor drag or inspector edit is active, the editor value wins for the touched `(entity, component)`. Script writes to that same component are suppressed or deferred, logged with entity id, component, script source, frame, and editor action, then resume from the committed editor value after release.
 
-Manual QA scene: open `assets/scenes/lowest_lod_asset_showcase.json` or the mirrored game copy `game/scenes/relay_yard_lowest_lod_demo.json`. Use `FPS warehouse walkthrough camera` with `assets/scripts/generic_fps_camera.lua`, and `Lua time of day sun` with `assets/scripts/warehouse_time_of_day_sun.lua`.
+Manual QA scene: open `assets/scenes/live_edit_model_lab.json`. It uses the tracked low-poly hero gameplay model and `assets/scripts/live_edit_model_lab.lua`, which exposes annotated controls for color cycling, model scale, bob/spin/wobble animation, orbiters, camera focus, lights, and an in-scene UI panel.
 
 ```powershell
 .\build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe `
   --window --platform qt --backend d3d12 `
-  --scene assets\scenes\lowest_lod_asset_showcase.json
+  --scene assets\scenes\live_edit_model_lab.json
 ```
 
 Manual pass:
 
 1. Enter Live Edit from the script panel or mode controls. Confirm scripts tick, the mouse stays unlocked, and editor selection/gizmos still work.
-2. Select `Green 20 Foot Cargo C realistic lowest LOD` or `Nightfall AR 15 realistic lowest LOD`, move it with the gizmo, and confirm the viewport, inspector, and selection bounds update immediately.
-3. Edit `Lua time of day sun` param `time_of_day_hour`, reload scripts, and confirm lighting changes on the next tick.
-4. Arm Live Edit viewport input, focus the viewport, and use WASD/mouse to drive `FPS warehouse walkthrough camera`; disarm input and confirm scripts continue without consuming gameplay input.
-5. Switch to Play, confirm gameplay input and optional mouse lock are active while editor scene edits are blocked, then exit to Edit and confirm scripts stop.
+2. Select `Live Edit Scripted Model Rig`, move or scale it with the gizmo, and confirm the viewport, inspector, and selection bounds update immediately.
+3. In the scripting panel, edit params such as `model_scale`, `target_material_id`, `hue_degrees`, `orbiter_enabled`, `key_intensity`, and `camera_focus_distance`; confirm the model, props, lighting, and camera react on the next tick.
+4. Toggle `animation_enabled` and `color_cycle`, reload scripts, and confirm the scripted defaults and authored params remain stable.
+5. Arm Live Edit viewport input, focus the viewport, and use WASD/mouse to drive `Live Edit Camera`; disarm input and confirm scripts continue without consuming gameplay input.
+6. Switch to Play, confirm gameplay input and optional mouse lock are active while editor scene edits are blocked, then exit to Edit and confirm scripts stop.
 
 ## Sandbox And Budgets
 

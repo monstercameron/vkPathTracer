@@ -1,0 +1,452 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Live Edit Model Lab",
+    "author": "vkPathTracer",
+    "created": "2026-05-08",
+    "notes": "Live Edit/Game Mode test scene for Lua editor annotations. The rig drives a tracked gameplay character model plus material changes, scale pulses, orbiters, light hue, camera focus, and an in-scene UI panel from script params."
+  },
+  "assets": [
+    {
+      "id": 9890,
+      "type": "environment/hdri",
+      "uri": "../skies/kiara_1_dawn_1k.hdr",
+      "name": "Kiara dawn live edit sky"
+    },
+    {
+      "id": 9891,
+      "type": "model/gltf",
+      "uri": "../models/low_poly_hero/character.gltf",
+      "name": "Live Edit Hero Game Model",
+      "parent": 9910,
+      "sibling_order": 0,
+      "disable_imported_animation": true,
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.78, 0.78, 0.78]
+      }
+    }
+  ],
+  "materials": [
+    {
+      "id": 9801,
+      "name": "matte graphite floor",
+      "family": "concrete",
+      "albedo": [0.22, 0.24, 0.25],
+      "roughness": 0.88,
+      "metallic": 0.0
+    },
+    {
+      "id": 9802,
+      "name": "warm plaster backdrop",
+      "family": "plaster",
+      "albedo": [0.58, 0.55, 0.49],
+      "roughness": 0.86,
+      "metallic": 0.0
+    },
+    {
+      "id": 9803,
+      "name": "charcoal pedestal",
+      "family": "concrete",
+      "albedo": [0.10, 0.11, 0.12],
+      "roughness": 0.72,
+      "metallic": 0.0
+    },
+    {
+      "id": 9804,
+      "name": "softbox visible emitter",
+      "family": "emissive",
+      "albedo": [1.0, 0.93, 0.80],
+      "emission": [1.0, 0.88, 0.64],
+      "emission_intensity": 8.0,
+      "roughness": 1.0
+    },
+    {
+      "id": 9810,
+      "name": "script material red lacquer",
+      "family": "diffuse",
+      "albedo": [0.92, 0.18, 0.11],
+      "roughness": 0.36,
+      "metallic": 0.0
+    },
+    {
+      "id": 9811,
+      "name": "script material teal ceramic",
+      "family": "diffuse",
+      "albedo": [0.04, 0.65, 0.70],
+      "roughness": 0.44,
+      "metallic": 0.0
+    },
+    {
+      "id": 9812,
+      "name": "script material violet satin",
+      "family": "diffuse",
+      "albedo": [0.45, 0.18, 0.95],
+      "roughness": 0.52,
+      "metallic": 0.0
+    },
+    {
+      "id": 9813,
+      "name": "script material amber glass",
+      "family": "glass",
+      "albedo": [1.0, 0.58, 0.16],
+      "roughness": 0.04,
+      "metallic": 0.0,
+      "transmission": 0.38,
+      "ior": 1.45
+    },
+    {
+      "id": 9814,
+      "name": "script material brushed gold",
+      "family": "metallic",
+      "albedo": [0.98, 0.76, 0.28],
+      "roughness": 0.24,
+      "metallic": 0.86
+    },
+    {
+      "id": 9815,
+      "name": "script material cool chrome",
+      "family": "metallic",
+      "albedo": [0.78, 0.84, 0.92],
+      "roughness": 0.12,
+      "metallic": 1.0
+    }
+  ],
+  "geometry": [
+    {
+      "id": 9821,
+      "name": "lab_floor_quad",
+      "primitive": "triangle",
+      "material_id": 9801,
+      "vertices": [
+        [-5.5, 0.0, -4.5],
+        [5.5, 0.0, -4.5],
+        [5.5, 0.0, 5.5],
+        [-5.5, 0.0, 5.5]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 9822,
+      "name": "curved_style_backdrop_quad",
+      "primitive": "triangle",
+      "material_id": 9802,
+      "vertices": [
+        [-5.5, 0.0, -3.2],
+        [5.5, 0.0, -3.2],
+        [5.5, 4.4, -3.2],
+        [-5.5, 4.4, -3.2]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    },
+    {
+      "id": 9823,
+      "name": "unit_cube",
+      "primitive": "triangle",
+      "material_id": 9803,
+      "vertices": [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5]
+      ],
+      "indices": [
+        0, 1, 2, 0, 2, 3,
+        4, 6, 5, 4, 7, 6,
+        0, 4, 5, 0, 5, 1,
+        3, 2, 6, 3, 6, 7,
+        1, 5, 6, 1, 6, 2,
+        0, 3, 7, 0, 7, 4
+      ]
+    },
+    {
+      "id": 9824,
+      "name": "softbox_quad",
+      "primitive": "triangle",
+      "material_id": 9804,
+      "vertices": [
+        [-1.2, 0.0, -0.65],
+        [1.2, 0.0, -0.65],
+        [1.2, 0.0, 0.65],
+        [-1.2, 0.0, 0.65]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    }
+  ],
+  "entities": [
+    {
+      "id": 9900,
+      "name": "Live Edit Model Lab Root",
+      "hierarchy": {
+        "parent": 0,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 9901,
+      "name": "Live Edit Camera",
+      "transform": {
+        "translation": [3.8, 2.2, 5.1],
+        "rotation": [-0.112, 0.318, 0.038, 0.940],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "camera": {
+        "fov": 42.0,
+        "near_plane": 0.05,
+        "far_plane": 140.0,
+        "focus_distance": 5.8,
+        "f_stop": 4.0,
+        "iso": 120.0,
+        "exposure_compensation": 0.25
+      },
+      "script": {
+        "source": "assets/scripts/systems/generic_fps_camera.lua",
+        "language": "lua",
+        "entry": "default",
+        "module_id": "systems.generic_fps_camera",
+        "enabled": true,
+        "reload_on_save": true,
+        "params": {
+          "movement_mode": "walk",
+          "walk_speed": "3.2",
+          "run_multiplier": "1.6",
+          "mouse_yaw_sensitivity": "0.0016",
+          "mouse_pitch_sensitivity": "0.0013",
+          "show_controls": "true",
+          "controls_title": "Live Edit Lab Camera"
+        }
+      },
+      "hierarchy": {
+        "parent": 9900,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 9910,
+      "name": "Live Edit Scripted Model Rig",
+      "transform": {
+        "translation": [0.0, 0.72, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.05, 1.05, 1.05]
+      },
+      "script": {
+        "source": "assets/scripts/live_edit_model_lab.lua",
+        "language": "lua",
+        "entry": "default",
+        "module_id": "live_edit_model_lab",
+        "enabled": true,
+        "reload_on_save": true,
+        "params": {
+          "animation_enabled": "true",
+          "model_scale": "1.05",
+          "spin_speed_degrees": "24",
+          "bob_height": "0.16",
+          "bob_speed": "1.4",
+          "breathe_amount": "0.08",
+          "wobble_degrees": "5",
+          "color_cycle": "true",
+          "target_material_id": "9812",
+          "palette_start": "9810",
+          "palette_count": "6",
+          "color_cycle_speed": "0.45",
+          "hue_degrees": "205",
+          "key_intensity": "34",
+          "rim_intensity": "16",
+          "orbiter_enabled": "true",
+          "orbiter_radius": "1.75",
+          "orbiter_speed": "1.1",
+          "accent_material_id": "9814",
+          "camera_fov": "42",
+          "camera_focus_distance": "5.8",
+          "show_panel": "true"
+        }
+      },
+      "hierarchy": {
+        "parent": 9900,
+        "sibling_order": 1
+      }
+    },
+    {
+      "id": 9911,
+      "name": "Live Edit Orbiter A",
+      "transform": {
+        "translation": [1.75, 1.05, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.16, 0.16, 0.16]
+      },
+      "mesh": {
+        "mesh_id": 9823,
+        "material_id": 9814
+      },
+      "hierarchy": {
+        "parent": 9910,
+        "sibling_order": 1
+      }
+    },
+    {
+      "id": 9912,
+      "name": "Live Edit Orbiter B",
+      "transform": {
+        "translation": [-1.75, 1.05, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.16, 0.16, 0.16]
+      },
+      "mesh": {
+        "mesh_id": 9823,
+        "material_id": 9812
+      },
+      "hierarchy": {
+        "parent": 9910,
+        "sibling_order": 2
+      }
+    },
+    {
+      "id": 9913,
+      "name": "Live Edit Control Panel",
+      "ui_panel": {
+        "id": "live_edit_model_lab.controls",
+        "title": "Live Edit Model Lab",
+        "anchor": "top_left",
+        "enabled": true,
+        "visible": true,
+        "x": 16.0,
+        "y": 16.0,
+        "width": 340.0,
+        "opacity": 0.88,
+        "font_size": 13.0,
+        "background": [0.035, 0.045, 0.055],
+        "foreground": [0.92, 0.96, 1.0],
+        "accent": [0.12, 0.72, 0.95],
+        "lines": [
+          "Live Edit Model Lab",
+          "change script params in the Scripting panel",
+          "watch scale, material, lights, orbiters, and focus update"
+        ]
+      },
+      "hierarchy": {
+        "parent": 9900,
+        "sibling_order": 2
+      }
+    },
+    {
+      "id": 9920,
+      "name": "Live Edit Key Light",
+      "transform": {
+        "translation": [-3.0, 4.0, 3.2],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [1.0, 0.86, 0.66],
+        "intensity": 34.0,
+        "radius": 1.25
+      },
+      "hierarchy": {
+        "parent": 9900,
+        "sibling_order": 3
+      }
+    },
+    {
+      "id": 9921,
+      "name": "Live Edit Rim Light",
+      "transform": {
+        "translation": [3.4, 2.6, -2.5],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "light": {
+        "type": "point",
+        "color": [0.34, 0.70, 1.0],
+        "intensity": 16.0,
+        "radius": 0.75
+      },
+      "hierarchy": {
+        "parent": 9900,
+        "sibling_order": 4
+      }
+    },
+    {
+      "id": 9922,
+      "name": "Live Edit Floor Glow",
+      "transform": {
+        "translation": [0.0, 0.35, 2.8],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "light": {
+        "type": "point",
+        "color": [0.18, 0.42, 0.72],
+        "intensity": 5.0,
+        "radius": 1.6
+      },
+      "hierarchy": {
+        "parent": 9900,
+        "sibling_order": 5
+      }
+    },
+    {
+      "id": 9930,
+      "name": "Live Edit Floor",
+      "mesh": {
+        "mesh_id": 9821,
+        "material_id": 9801
+      },
+      "hierarchy": {
+        "parent": 9900,
+        "sibling_order": 6
+      }
+    },
+    {
+      "id": 9931,
+      "name": "Live Edit Backdrop",
+      "mesh": {
+        "mesh_id": 9822,
+        "material_id": 9802
+      },
+      "hierarchy": {
+        "parent": 9900,
+        "sibling_order": 7
+      }
+    },
+    {
+      "id": 9932,
+      "name": "Live Edit Pedestal",
+      "transform": {
+        "translation": [0.0, 0.30, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.7, 0.6, 1.7]
+      },
+      "mesh": {
+        "mesh_id": 9823,
+        "material_id": 9803
+      },
+      "hierarchy": {
+        "parent": 9900,
+        "sibling_order": 8
+      }
+    },
+    {
+      "id": 9933,
+      "name": "Live Edit Visible Softbox",
+      "transform": {
+        "translation": [-2.9, 3.9, 2.8],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "mesh": {
+        "mesh_id": 9824,
+        "material_id": 9804
+      },
+      "hierarchy": {
+        "parent": 9900,
+        "sibling_order": 9
+      }
+    }
+  ]
+}
