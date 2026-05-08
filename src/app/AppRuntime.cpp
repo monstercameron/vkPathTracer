@@ -1170,6 +1170,12 @@ int RunApp(int argc, char** argv) {
       qtSnapshotRevisions.transform_revision = 1u;
       qtSnapshotRevisions.camera_revision = 1u;
       qtSnapshotRevisions.material_revision = 1u;
+      // Timestamp of the most recent transform-bumping publish. Used by the
+      // dock panel sync to detect rapid scene mutation (gizmo drag, physics
+      // walk, Lua-driven motion) and skip its O(entities) rebuild while
+      // mutation is in flight. Cleared by elapsed time, not by an end event,
+      // so it covers all three sources uniformly.
+      std::uint64_t qtLastTransformPublishNs = 0u;
       auto qtPublishRenderSnapshot =
           [&](bool topology_changed,
               bool transform_changed,
@@ -1185,10 +1191,12 @@ int RunApp(int argc, char** argv) {
         if (topology_changed) {
           ++qtSnapshotRevisions.topology_revision;
           VKP_METRIC_INC("vkp.scene.publish_by_source.topology_total");
+          qtLastTransformPublishNs = _vkp_publish_t0_ns;
         }
         if (transform_changed) {
           ++qtSnapshotRevisions.transform_revision;
           VKP_METRIC_INC("vkp.scene.publish_by_source.transform_total");
+          qtLastTransformPublishNs = _vkp_publish_t0_ns;
         }
         if (camera_changed) {
           ++qtSnapshotRevisions.camera_revision;

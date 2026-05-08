@@ -236,6 +236,30 @@
           return;
         }
         const auto now = std::chrono::steady_clock::now();
+        // Skip dock panel rebuild during any rapid transform mutation —
+        // gizmo drag, physics-driven motion (game-mode walking), or Lua
+        // script motion. BuildQtDockPanels walks every entity in the scene
+        // document (1000+ in the louvre scene) to populate scene tree,
+        // properties, materials, lights, and diagnostics docks; that
+        // single rebuild costs hundreds of milliseconds to seconds. While
+        // mutation is in flight the rebuild's results are stale before
+        // they're presented anyway. The qtLastTransformPublishNs timestamp
+        // is bumped by qtPublishRenderSnapshot whenever transform_revision
+        // increments; we treat anything within kQtDockPanelMutationGraceNs
+        // as still-mutating and defer the sync. Status bar still refreshes
+        // because it is O(1).
+        constexpr std::uint64_t kQtDockPanelMutationGraceNs =
+            200u * 1000000ull;  // 200ms
+        const auto now_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+        const bool rapidMutationActive =
+            qtGizmoDrag.active ||
+            (qtLastTransformPublishNs != 0u &&
+             now_ns > qtLastTransformPublishNs &&
+             (now_ns - qtLastTransformPublishNs) < kQtDockPanelMutationGraceNs);
+        if (!force && rapidMutationActive) {
+          qtDockPanelsDirty = true;
+          return;
+        }
         if (!force && qtLastDockPanelSync != std::chrono::steady_clock::time_point{}) {
           auto minInterval = qtDockPanelsDirty
               ? kQtDockPanelDirtyRefreshInterval
