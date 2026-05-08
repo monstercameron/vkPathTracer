@@ -103,6 +103,7 @@ struct ScriptBinding {
   bool reload_on_save = true;
   std::unordered_map<std::string, std::string> params;
   std::vector<ScriptEditorParam> editor_params;
+  std::vector<std::string> editor_param_diagnostics;
 };
 
 struct ScriptBindingSummary {

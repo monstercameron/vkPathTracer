@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -71,8 +73,55 @@ std::string NormalizeEditorParamType(std::string_view type) {
   return "text";
 }
 
-std::vector<std::string> TokenizeAnnotation(std::string_view text) {
+bool IsKnownEditorParamType(std::string_view type) {
+  const auto lower = LowerCopy(type);
+  return lower == "bool" ||
+         lower == "boolean" ||
+         lower == "toggle" ||
+         lower == "number" ||
+         lower == "float" ||
+         lower == "double" ||
+         lower == "int" ||
+         lower == "integer" ||
+         lower == "slider" ||
+         lower == "text" ||
+         lower == "string";
+}
+
+bool IsValidAnnotationBool(std::string_view value) {
+  const auto lower = LowerCopy(value);
+  return lower == "true" ||
+         lower == "false" ||
+         lower == "1" ||
+         lower == "0" ||
+         lower == "yes" ||
+         lower == "no" ||
+         lower == "on" ||
+         lower == "off";
+}
+
+void AddEditorAnnotationDiagnostic(std::vector<std::string>* diagnostics,
+                                   std::size_t line_number,
+                                   std::string message) {
+  if (diagnostics == nullptr) {
+    return;
+  }
+  diagnostics->push_back(
+      "line " + std::to_string(line_number) + ": " + std::move(message));
+}
+
+struct AnnotationTokens {
   std::vector<std::string> tokens;
+  std::string error;
+};
+
+struct EditorAnnotationParseResult {
+  std::vector<ScriptEditorParam> params;
+  std::vector<std::string> diagnostics;
+};
+
+AnnotationTokens TokenizeAnnotation(std::string_view text) {
+  AnnotationTokens result;
   std::string token;
   char quote = '\0';
   bool escaped = false;
@@ -95,7 +144,7 @@ std::vector<std::string> TokenizeAnnotation(std::string_view text) {
     }
     if (std::isspace(static_cast<unsigned char>(c)) != 0) {
       if (!token.empty()) {
-        tokens.push_back(std::move(token));
+        result.tokens.push_back(std::move(token));
         token.clear();
       }
       continue;
@@ -103,9 +152,12 @@ std::vector<std::string> TokenizeAnnotation(std::string_view text) {
     token.push_back(c);
   }
   if (!token.empty()) {
-    tokens.push_back(std::move(token));
+    result.tokens.push_back(std::move(token));
   }
-  return tokens;
+  if (quote != '\0') {
+    result.error = "unterminated quoted value";
+  }
+  return result;
 }
 
 std::string UnquoteAnnotationValue(std::string value) {
@@ -136,10 +188,36 @@ std::optional<double> ParseAnnotationDouble(std::string_view value) {
   const std::string text(value);
   char* end = nullptr;
   const double parsed = std::strtod(text.c_str(), &end);
-  if (end == text.c_str() || end == nullptr || *end != '\0') {
+  if (end == text.c_str() || end == nullptr || *end != '\0' || !std::isfinite(parsed)) {
     return std::nullopt;
   }
   return parsed;
+}
+
+std::size_t EditorAnnotationMarkerLength(std::string_view trimmed) {
+  auto markerMatches = [](std::string_view text, std::string_view marker) {
+    if (!text.starts_with(marker)) {
+      return false;
+    }
+    return text.size() == marker.size() ||
+           std::isspace(static_cast<unsigned char>(text[marker.size()])) != 0;
+  };
+  if (markerMatches(trimmed, "@editor")) {
+    return 7u;
+  }
+  if (markerMatches(trimmed, "[editor]")) {
+    return 8u;
+  }
+  return 0u;
+}
+
+bool LooksLikeMalformedEditorAnnotation(std::string_view line) {
+  std::string trimmed = TrimCopy(line);
+  if (!trimmed.starts_with("--")) {
+    return false;
+  }
+  trimmed = TrimCopy(std::string_view(trimmed).substr(2u));
+  return EditorAnnotationMarkerLength(trimmed) != 0u;
 }
 
 std::filesystem::path ResolveScriptPath(std::string_view source) {
@@ -173,23 +251,33 @@ std::optional<std::string> ReadTextFile(const std::filesystem::path& path) {
   return buffer.str();
 }
 
-std::optional<ScriptEditorParam> ParseEditorAnnotationLine(std::string_view line) {
+std::optional<ScriptEditorParam> ParseEditorAnnotationLine(std::string_view line,
+                                                           std::size_t line_number,
+                                                           std::vector<std::string>* diagnostics) {
   std::string trimmed = TrimCopy(line);
   if (!trimmed.starts_with("--")) {
     return std::nullopt;
   }
   trimmed = TrimCopy(std::string_view(trimmed).substr(2u));
-  std::size_t markerLength = 0u;
-  if (trimmed.starts_with("@editor")) {
-    markerLength = 7u;
-  } else if (trimmed.starts_with("[editor]")) {
-    markerLength = 8u;
-  } else {
+  const std::size_t markerLength = EditorAnnotationMarkerLength(trimmed);
+  if (markerLength == 0u) {
     return std::nullopt;
   }
 
-  const auto tokens = TokenizeAnnotation(TrimCopy(std::string_view(trimmed).substr(markerLength)));
-  if (tokens.empty() || !ValidEditorParamName(tokens.front())) {
+  const auto token_result = TokenizeAnnotation(TrimCopy(std::string_view(trimmed).substr(markerLength)));
+  if (!token_result.error.empty()) {
+    AddEditorAnnotationDiagnostic(diagnostics, line_number, token_result.error);
+    return std::nullopt;
+  }
+  const auto& tokens = token_result.tokens;
+  if (tokens.empty()) {
+    AddEditorAnnotationDiagnostic(diagnostics, line_number, "missing editor parameter name");
+    return std::nullopt;
+  }
+  if (!ValidEditorParamName(tokens.front())) {
+    AddEditorAnnotationDiagnostic(diagnostics,
+                                  line_number,
+                                  "invalid editor parameter name '" + tokens.front() + "'");
     return std::nullopt;
   }
 
@@ -198,18 +286,47 @@ std::optional<ScriptEditorParam> ParseEditorAnnotationLine(std::string_view line
   param.label = param.name;
   std::size_t index = 1u;
   if (index < tokens.size() && tokens[index].find('=') == std::string::npos) {
+    if (!IsKnownEditorParamType(tokens[index])) {
+      AddEditorAnnotationDiagnostic(diagnostics,
+                                    line_number,
+                                    "unknown editor parameter type '" + tokens[index] +
+                                        "' for '" + param.name + "'");
+    }
     param.type = NormalizeEditorParamType(tokens[index]);
     ++index;
   }
 
+  std::unordered_set<std::string> seen_keys;
   for (; index < tokens.size(); ++index) {
     const auto equals = tokens[index].find('=');
-    if (equals == std::string::npos || equals == 0u) {
+    if (equals == std::string::npos) {
+      AddEditorAnnotationDiagnostic(diagnostics,
+                                    line_number,
+                                    "unexpected token '" + tokens[index] +
+                                        "' in decorator for '" + param.name + "'");
+      continue;
+    }
+    if (equals == 0u) {
+      AddEditorAnnotationDiagnostic(diagnostics,
+                                    line_number,
+                                    "empty decorator field name for '" + param.name + "'");
       continue;
     }
     const auto key = LowerCopy(std::string_view(tokens[index]).substr(0u, equals));
     const auto value = UnquoteAnnotationValue(tokens[index].substr(equals + 1u));
+    if (!seen_keys.insert(key).second) {
+      AddEditorAnnotationDiagnostic(diagnostics,
+                                    line_number,
+                                    "duplicate decorator field '" + key +
+                                        "' for '" + param.name + "'");
+    }
     if (key == "type") {
+      if (!IsKnownEditorParamType(value)) {
+        AddEditorAnnotationDiagnostic(diagnostics,
+                                      line_number,
+                                      "unknown editor parameter type '" + value +
+                                          "' for '" + param.name + "'");
+      }
       param.type = NormalizeEditorParamType(value);
     } else if (key == "default" || key == "value") {
       param.default_value = value;
@@ -219,41 +336,114 @@ std::optional<ScriptEditorParam> ParseEditorAnnotationLine(std::string_view line
       if (const auto parsed = ParseAnnotationDouble(value)) {
         param.minimum = *parsed;
         param.has_minimum = true;
+      } else {
+        AddEditorAnnotationDiagnostic(diagnostics,
+                                      line_number,
+                                      "invalid minimum value '" + value + "' for '" + param.name + "'");
       }
     } else if (key == "max" || key == "maximum") {
       if (const auto parsed = ParseAnnotationDouble(value)) {
         param.maximum = *parsed;
         param.has_maximum = true;
+      } else {
+        AddEditorAnnotationDiagnostic(diagnostics,
+                                      line_number,
+                                      "invalid maximum value '" + value + "' for '" + param.name + "'");
       }
     } else if (key == "step") {
-      if (const auto parsed = ParseAnnotationDouble(value)) {
+      if (const auto parsed = ParseAnnotationDouble(value); parsed && *parsed > 0.0) {
         param.step = *parsed;
         param.has_step = true;
+      } else {
+        AddEditorAnnotationDiagnostic(diagnostics,
+                                      line_number,
+                                      "invalid step value '" + value + "' for '" + param.name + "'");
       }
+    } else {
+      AddEditorAnnotationDiagnostic(diagnostics,
+                                    line_number,
+                                    "unknown decorator field '" + key + "' for '" + param.name + "'");
     }
+  }
+  if (!param.default_value.empty()) {
+    if (param.type == "number" && !ParseAnnotationDouble(param.default_value)) {
+      AddEditorAnnotationDiagnostic(diagnostics,
+                                    line_number,
+                                    "invalid numeric default '" + param.default_value +
+                                        "' for '" + param.name + "'");
+      param.default_value.clear();
+    } else if (param.type == "bool" && !IsValidAnnotationBool(param.default_value)) {
+      AddEditorAnnotationDiagnostic(diagnostics,
+                                    line_number,
+                                    "invalid boolean default '" + param.default_value +
+                                        "' for '" + param.name + "'");
+      param.default_value.clear();
+    }
+  }
+  if (param.type == "number" && param.has_minimum && param.has_maximum &&
+      param.minimum > param.maximum) {
+    AddEditorAnnotationDiagnostic(diagnostics,
+                                  line_number,
+                                  "minimum is greater than maximum for '" + param.name +
+                                      "'; range was swapped");
+    std::swap(param.minimum, param.maximum);
+  }
+  if (param.type == "bool" && (param.has_minimum || param.has_maximum || param.has_step)) {
+    AddEditorAnnotationDiagnostic(diagnostics,
+                                  line_number,
+                                  "numeric range fields are ignored for bool param '" + param.name + "'");
+    param.has_minimum = false;
+    param.has_maximum = false;
+    param.has_step = false;
+  } else if (param.type == "text" &&
+             (param.has_minimum || param.has_maximum || param.has_step)) {
+    AddEditorAnnotationDiagnostic(diagnostics,
+                                  line_number,
+                                  "numeric range fields are ignored for text param '" + param.name + "'");
+    param.has_minimum = false;
+    param.has_maximum = false;
+    param.has_step = false;
   }
   return param;
 }
 
-std::vector<ScriptEditorParam> ParseScriptEditorAnnotations(std::string_view source) {
-  std::vector<ScriptEditorParam> params;
+EditorAnnotationParseResult ParseScriptEditorAnnotations(std::string_view source,
+                                                         std::string_view source_name) {
+  EditorAnnotationParseResult result;
   std::unordered_set<std::string> seen;
   std::size_t offset = 0u;
+  std::size_t line_number = 1u;
   while (offset <= source.size()) {
     const auto newline = source.find('\n', offset);
     const auto count = newline == std::string_view::npos ? source.size() - offset : newline - offset;
     const auto line = source.substr(offset, count);
-    if (auto param = ParseEditorAnnotationLine(line)) {
+    if (auto param = ParseEditorAnnotationLine(line, line_number, &result.diagnostics)) {
       if (seen.insert(param->name).second) {
-        params.push_back(std::move(*param));
+        result.params.push_back(std::move(*param));
+      } else {
+        AddEditorAnnotationDiagnostic(&result.diagnostics,
+                                      line_number,
+                                      "duplicate editor param '" + param->name + "' ignored");
       }
+    } else if (LooksLikeMalformedEditorAnnotation(line)) {
+      AddEditorAnnotationDiagnostic(&result.diagnostics,
+                                    line_number,
+                                    "malformed script editor annotation ignored");
     }
     if (newline == std::string_view::npos) {
       break;
     }
     offset = newline + 1u;
+    ++line_number;
   }
-  return params;
+  for (const auto& diagnostic : result.diagnostics) {
+    vkpt::log::Logger::instance().log(
+        vkpt::log::Severity::Warning,
+        "scripts",
+        "script editor annotation diagnostic",
+        {{"source", std::string(source_name)}, {"diagnostic", diagnostic}});
+  }
+  return result;
 }
 
 std::string ScriptVariableOverrideKey(vkpt::core::StableEntityId entity,
@@ -336,17 +526,39 @@ std::vector<ScriptBinding> BuildScriptBindings(const vkpt::scene::SceneWorld& wo
 }
 
 void ApplyScriptEditorAnnotations(std::vector<ScriptBinding>& bindings) {
+  std::unordered_map<std::string, EditorAnnotationParseResult> annotation_cache;
+  std::unordered_set<std::string> unreadable_sources;
   for (auto& binding : bindings) {
     binding.editor_params.clear();
+    binding.editor_param_diagnostics.clear();
     if (!IsSupportedLanguage(binding.language) || binding.source.empty()) {
       continue;
     }
     const auto path = ResolveScriptPath(binding.source);
-    const auto source = ReadTextFile(path);
-    if (!source) {
+    const auto cache_key = path.generic_string();
+    if (const auto cached = annotation_cache.find(cache_key); cached != annotation_cache.end()) {
+      binding.editor_params = cached->second.params;
+      binding.editor_param_diagnostics = cached->second.diagnostics;
       continue;
     }
-    binding.editor_params = ParseScriptEditorAnnotations(*source);
+    if (unreadable_sources.contains(cache_key)) {
+      continue;
+    }
+    const auto source = ReadTextFile(path);
+    if (!source) {
+      unreadable_sources.insert(cache_key);
+      binding.editor_param_diagnostics.push_back("source could not be read: " + cache_key);
+      vkpt::log::Logger::instance().log(
+          vkpt::log::Severity::Warning,
+          "scripts",
+          "script editor annotations skipped because source could not be read",
+          {{"source", cache_key}});
+      continue;
+    }
+    auto parsed = ParseScriptEditorAnnotations(*source, cache_key);
+    binding.editor_params = parsed.params;
+    binding.editor_param_diagnostics = parsed.diagnostics;
+    annotation_cache.emplace(cache_key, std::move(parsed));
   }
 }
 

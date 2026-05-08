@@ -395,7 +395,7 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                  hasScriptProperty("entity.901.script.enabled", "toggle") &&
                  hasScriptProperty("entity.901.script.param.offset_x", "number") &&
                  hasScriptProperty("entity.901.script.param.annotated_gain", "slider") &&
-                 hasScriptProperty("entity.901.script.param.optional_focus", "number") &&
+                 hasScriptProperty("entity.901.script.param.optional_focus", "slider") &&
                  hasScriptProperty("entity.901.script.param.enabled", "toggle") &&
                  std::any_of(scriptDock->properties.begin(),
                              scriptDock->properties.end(),
@@ -405,6 +405,18 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                                       property.has_numeric_range &&
                                       property.minimum == 0.0 &&
                                       property.maximum == 8.0 &&
+                                      property.step == 0.5;
+                             }) &&
+                 std::any_of(scriptDock->properties.begin(),
+                             scriptDock->properties.end(),
+                             [](const QtDockProperty& property) {
+                               return property.id == "entity.901.script.param.optional_focus" &&
+                                      property.label == "Optional Focus" &&
+                                      property.editor == "slider" &&
+                                      property.has_numeric_range &&
+                                      !property.has_default &&
+                                      property.minimum == 0.0 &&
+                                      property.maximum == 100.0 &&
                                       property.step == 0.5;
                              }) &&
                  std::any_of(scriptDock->properties.begin(),

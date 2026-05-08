@@ -285,6 +285,20 @@ std::string QtDockScriptRuntimeMode(const QtDockScriptRuntimeState* runtime) {
   return runtime->playing ? "play" : "edit";
 }
 
+double QtDockAnnotatedNumberFallback(const vkpt::scripting::ScriptEditorParam& metadata,
+                                     double minimum,
+                                     double maximum) {
+  double fallback = 0.0;
+  if (metadata.has_minimum && metadata.has_maximum &&
+      !(minimum <= 0.0 && maximum >= 0.0)) {
+    fallback = (minimum + maximum) * 0.5;
+  }
+  if (maximum < minimum) {
+    std::swap(minimum, maximum);
+  }
+  return std::clamp(fallback, minimum, maximum);
+}
+
 bool QtDockScriptViewportInputForwarding(const QtDockScriptRuntimeState* runtime) {
   return runtime != nullptr &&
          (runtime->viewport_input_forwarding || runtime->playing);
@@ -316,31 +330,41 @@ void QtDockAddScriptParamProperty(QtDockPanelContent& panel,
       return;
     }
     if (type == "number") {
-      if (const auto parsed = QtDockParseNumber(value)) {
-        if (metadata->has_minimum || metadata->has_maximum || metadata->has_step) {
-          const double minimum = metadata->has_minimum ? metadata->minimum : std::min(0.0, *parsed);
-          const double maximum = metadata->has_maximum ? metadata->maximum : std::max(1.0, *parsed);
-          const double step = metadata->has_step ? metadata->step : 0.01;
-          const double default_value =
-              metadata->default_value.empty()
-                  ? *parsed
-                  : QtDockParseNumber(metadata->default_value).value_or(*parsed);
-          QtDockAddSliderGroupedProperty(panel,
-                                         id,
-                                         "Params",
-                                         label,
-                                         *parsed,
-                                         minimum,
-                                         maximum,
-                                         step,
-                                         default_value);
-        } else {
-          QtDockAddEditableGroupedProperty(panel, id, "Params", label, std::move(value));
-          panel.properties.back().editor = "number";
+      const auto parsed = QtDockParseNumber(value);
+      const auto annotatedDefault = QtDockParseNumber(metadata->default_value);
+      if (metadata->has_minimum || metadata->has_maximum || metadata->has_step) {
+        const double reference = parsed.value_or(annotatedDefault.value_or(0.0));
+        double minimum = metadata->has_minimum ? metadata->minimum : std::min(0.0, reference);
+        double maximum = metadata->has_maximum ? metadata->maximum : std::max(1.0, reference);
+        if (maximum < minimum) {
+          std::swap(minimum, maximum);
+        }
+        const double step = metadata->has_step && metadata->step > 0.0 ? metadata->step : 0.01;
+        const double fallback = QtDockAnnotatedNumberFallback(*metadata, minimum, maximum);
+        const double current = std::clamp(parsed.value_or(annotatedDefault.value_or(fallback)),
+                                          minimum,
+                                          maximum);
+        const double default_value = std::clamp(annotatedDefault.value_or(fallback), minimum, maximum);
+        QtDockAddSliderGroupedProperty(panel,
+                                       id,
+                                       "Params",
+                                       label,
+                                       current,
+                                       minimum,
+                                       maximum,
+                                       step,
+                                       default_value);
+        if (!annotatedDefault) {
+          panel.properties.back().has_default = false;
+          panel.properties.back().default_value = 0.0;
         }
         return;
       }
-      QtDockAddEditableGroupedProperty(panel, id, "Params", label, std::move(value));
+      QtDockAddEditableGroupedProperty(panel,
+                                       id,
+                                       "Params",
+                                       label,
+                                       parsed ? std::move(value) : metadata->default_value);
       panel.properties.back().editor = "number";
       return;
     }
@@ -737,6 +761,19 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
         QtDockAddProperty(panel,
                           "params " + std::to_string(index),
                           std::to_string(binding.params.size()) + " authored");
+      }
+      const std::size_t annotation_diagnostic_count =
+          std::min<std::size_t>(binding.editor_param_diagnostics.size(), 4u);
+      for (std::size_t diagnostic_index = 0u;
+           diagnostic_index < annotation_diagnostic_count;
+           ++diagnostic_index) {
+        QtDockAddReadOnlyGroupedProperty(
+            panel,
+            "script.annotation." + std::to_string(binding.entity) + "." +
+                std::to_string(diagnostic_index),
+            "Annotation Diagnostics",
+            "#" + std::to_string(binding.entity),
+            binding.editor_param_diagnostics[diagnostic_index]);
       }
     }
     const std::size_t runtime_state_count = std::min<std::size_t>(runtime->runtime_states.size(), 8u);
