@@ -593,6 +593,64 @@ int RunScriptingRuntimeSmoke() {
     return 1;
   }
 
+  const auto bad_annotation_path =
+      std::filesystem::temp_directory_path() / "vkpt_bad_editor_annotations.lua";
+  {
+    std::ofstream bad_annotation_file(bad_annotation_path, std::ios::binary);
+    if (!Check(static_cast<bool>(bad_annotation_file),
+               "bad annotation probe script should be writable")) {
+      return 1;
+    }
+    bad_annotation_file << R"lua(
+-- @editor
+-- @editor bad-name! number default=1
+-- @editor speed number default=fast min=10 max=2 step=0 stray token
+-- @editor speed number default=2
+-- @editor enabled bool default=maybe min=0
+-- @editor caption text min=0 unknown=1
+-- @editor title text min=0 unknown=1 label="unterminated
+return {}
+)lua";
+  }
+  vkpt::scene::SceneWorld bad_annotation_world;
+  const auto bad_annotation_entity =
+      bad_annotation_world.create_entity("bad_annotation_probe", 124);
+  vkpt::scene::ScriptComponent bad_annotation_script;
+  bad_annotation_script.script = bad_annotation_path.generic_string();
+  if (!bad_annotation_world.set_component(
+          bad_annotation_entity,
+          vkpt::scene::ComponentKind::Script,
+          bad_annotation_script)) {
+    return 1;
+  }
+  auto bad_annotation_runtime = vkpt::scripting::CreateScriptRuntime();
+  bad_annotation_runtime->reload_bindings(bad_annotation_world);
+  const auto& bad_annotation_binding = bad_annotation_runtime->bindings().front();
+  if (!Check(HasText(bad_annotation_binding.editor_param_diagnostics, "missing editor parameter name"),
+             "decorator parser should diagnose missing parameter names") ||
+      !Check(HasText(bad_annotation_binding.editor_param_diagnostics, "invalid editor parameter name"),
+             "decorator parser should diagnose invalid parameter names") ||
+      !Check(HasText(bad_annotation_binding.editor_param_diagnostics, "invalid numeric default"),
+             "decorator parser should diagnose number default mismatches") ||
+      !Check(HasText(bad_annotation_binding.editor_param_diagnostics, "minimum is greater than maximum"),
+             "decorator parser should diagnose inverted numeric ranges") ||
+      !Check(HasText(bad_annotation_binding.editor_param_diagnostics, "invalid step value"),
+             "decorator parser should diagnose non-positive steps") ||
+      !Check(HasText(bad_annotation_binding.editor_param_diagnostics, "unexpected token"),
+             "decorator parser should diagnose unexpected field syntax") ||
+      !Check(HasText(bad_annotation_binding.editor_param_diagnostics, "duplicate editor param"),
+             "decorator parser should diagnose duplicate params") ||
+      !Check(HasText(bad_annotation_binding.editor_param_diagnostics, "invalid boolean default"),
+             "decorator parser should diagnose bool default mismatches") ||
+      !Check(HasText(bad_annotation_binding.editor_param_diagnostics, "numeric range fields are ignored"),
+             "decorator parser should diagnose numeric metadata on non-number params") ||
+      !Check(HasText(bad_annotation_binding.editor_param_diagnostics, "unknown decorator field"),
+             "decorator parser should diagnose unknown fields") ||
+      !Check(HasText(bad_annotation_binding.editor_param_diagnostics, "unterminated quoted value"),
+             "decorator parser should diagnose unterminated quoted strings")) {
+    return 1;
+  }
+
   vkpt::scripting::ScriptExecutionContext param_context;
   param_context.game_mode = true;
   param_context.frame = 8;
