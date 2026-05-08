@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-05-08 (session 42)
+
+### Performance culling, snapshot COW fast-path, GPU delta uploads, FPS demo
+
+- `0bdaf98` scene: Added `ScenePerformanceCullingSettings` to scene schema and serialization (frustum/distance toggles, max distance, padding, aspect ratio, min instance radius); round-tripped through load/export/validation including snapshot hash.
+- `4cd8997` pathtracer: Frustum and distance culling in `BuildSceneDataFromDocumentAtFrame`; camera resolved before geometry iteration; per-mesh world bounding spheres computed; failing instances skipped with cull stats emitted to build log.
+- `94f512b` scene: COW topology-stable fast-path in `BuildRenderSceneSnapshot` reuses geometry arrays when topology is unchanged; `path_tracer_scene` changed to `mutable atomic<shared_ptr>` for lazy thread-safe init; BVH refit descriptor skips full rebuild when only transforms changed on large meshes.
+- `9dbd6c8` pathtracer: `RTInstanceMaterialUpdate` struct and `instance_materials` channel added to `RTSceneDeltaUpdate`; build/apply/merge all handle it; `same_instance_except_material` identity check routes material-only changes through delta instead of full rebuild.
+- `7bde67f` gpu: `upload_material_light_buffers` sets pending flags rather than submitting standalone command lists; `emit_pending_scene_delta_uploads` batches all four delta writes into the next render CL eliminating UI-thread GPU stalls; `update_scene_delta` gains instance-material path patching CPU mirrors and queuing pending uploads.
+- `3b0fc12` gpu: `PT_D3D12_DXR_SHADOW_RAYS` default changed from false to true so hardware shadow ray traversal is on unless overridden by env var.
+- `6cbf5a3` app/scripting: Play-mode startup and `qtDispatchScriptHook` wrapped in try/catch; hooks capped at 30 Hz; `active_mouse_buttons` and `mouse_left/right/middle_down` added to Lua input table; frame-level snapshot publish coalescing via `qtDeferBackgroundSnapshotPublishes`; 15 ms sleep target in play mode; transform BFS entity set replaces per-entity ancestor walk; `ScriptRuntime` exception guards disable failing bindings until reload.
+- `5b6954f` app: Offscreen culling ballast injection and mesh stat tracking under stress gate; `qtLastMutationPublishNs` now bumps on camera and material publishes to defer dock rebuilds during continuous camera motion.
+- `a579308` app: `GameModeWalk` and `GameModeReenter` stress-gate phases enter Play mode and synthesize W-key movement and pulsed fire; 51 metrics tracked (up from 18); JSON artifact gains `sum_delta` on histograms and culling stats.
+- `4b807b0` audio: `play_resolved_locked` detects existing voice on same event/bus/entity and updates params in place instead of spawning a duplicate; `VoiceStreamFillRequest` gains `start_frame`; `update()` syncs RT voice state before cleanup and gates `publish_rt_state_locked` on actual changes.
+- `6a48414` physics: `RecordPhysicsSyncTelemetry` now compares `enabled_bodies` against `backend_bodies`; telemetry fires on the worker side where backend count is known, suppressing spurious `sync_drift` warnings at enqueue time.
+- `b31d0f0` benchmark: When D3D12 compute/DXR produces empty HDR but valid LDR, synthesizes HDR buffer from LDR RGBA8 pixels so artifact file is always written; tags output with `hdr_artifact_source=ldr_fallback`.
+- `b7d7681` demo: Added `assets/scenes/fps_weapon_gameplay_demo.json` and `assets/scripts/fps_weapon_demo.lua` — shooting range scene with player camera, rifle, hero target zones, physics-sphere targets, spatial audio, and Kiara HDRI; Lua script implements FPS movement, ADS, pooled bullet tracers, muzzle/impact flash via `world:assign_material`, and audio dispatch. `docs/lua_scripting.md` updated for `input:mouse_down`.
+- `c280a35` assets: `material_shader_physics_showcase.json` opts into frustum and distance culling at 180 m, 16:9 aspect, 1.15 padding, 0.05 m min radius — first authored scene using the culling system.
+
 ## 2026-05-08 (session 41)
 
 ### Snapshot-bus architecture migration commit map
