@@ -236,26 +236,29 @@
           return;
         }
         const auto now = std::chrono::steady_clock::now();
-        // Skip dock panel rebuild during any rapid transform mutation —
-        // gizmo drag, physics-driven motion (game-mode walking), or Lua
-        // script motion. BuildQtDockPanels walks every entity in the scene
-        // document (1000+ in the louvre scene) to populate scene tree,
-        // properties, materials, lights, and diagnostics docks; that
-        // single rebuild costs hundreds of milliseconds to seconds. While
-        // mutation is in flight the rebuild's results are stale before
-        // they're presented anyway. The qtLastTransformPublishNs timestamp
-        // is bumped by qtPublishRenderSnapshot whenever transform_revision
-        // increments; we treat anything within kQtDockPanelMutationGraceNs
-        // as still-mutating and defer the sync. Status bar still refreshes
-        // because it is O(1).
+        // Skip dock panel rebuild during any rapid scene/camera mutation —
+        // gizmo drag, physics-driven transform changes, Lua script motion,
+        // or FPS/game-mode walking (camera updates every frame).
+        // BuildQtDockPanels walks every entity in the scene document
+        // (1000+ in the louvre scene) to populate scene tree, properties,
+        // materials, lights, and diagnostics docks; that single rebuild
+        // costs hundreds of milliseconds to seconds — long enough to drop
+        // game-mode FPS to single digits while the player is walking. The
+        // dock panel content is editor-facing and doesn't update its model
+        // on per-frame mutations anyway, so deferring is lossless. Status
+        // bar still refreshes inside the same updateQtPreviewOverlay tick
+        // (it's O(1) and useful in-mode for HUD/health/etc.).
         constexpr std::uint64_t kQtDockPanelMutationGraceNs =
             200u * 1000000ull;  // 200ms
         const auto now_ns = vkpt::core::metrics::UiInputLatencyNowNs();
         const bool rapidMutationActive =
+            qtFpsMode ||
+            qtIsPlayMode() ||
+            qtLiveEditViewportInputArmed() ||
             qtGizmoDrag.active ||
-            (qtLastTransformPublishNs != 0u &&
-             now_ns > qtLastTransformPublishNs &&
-             (now_ns - qtLastTransformPublishNs) < kQtDockPanelMutationGraceNs);
+            (qtLastMutationPublishNs != 0u &&
+             now_ns > qtLastMutationPublishNs &&
+             (now_ns - qtLastMutationPublishNs) < kQtDockPanelMutationGraceNs);
         if (!force && rapidMutationActive) {
           qtDockPanelsDirty = true;
           return;
@@ -398,17 +401,48 @@
         if (qtWindow == nullptr) {
           return;
         }
+        const auto _vkp_t0 = std::chrono::steady_clock::now();
         std::ostringstream overlay;
         overlay << "Accumulated: "
                 << qtPublishedSample.load(std::memory_order_relaxed)
                 << " spp\nFrame: " << qtFrameCount
                 << "\nRays: " << qtPublishedRays.load(std::memory_order_relaxed);
         qtWindow->set_overlay_text(overlay.str());
+        const auto _vkp_t_text = std::chrono::steady_clock::now();
         syncQtScriptOverlayPanels();
+        const auto _vkp_t_script = std::chrono::steady_clock::now();
         qtMaybeRefreshPendingViewportPickables(std::chrono::steady_clock::now());
+        const auto _vkp_t_pick = std::chrono::steady_clock::now();
         syncQtStatusBar(false);
+        const auto _vkp_t_status = std::chrono::steady_clock::now();
         syncQtDockPanels(false);
+        const auto _vkp_t_dock = std::chrono::steady_clock::now();
         updateQtWindowTitle();
+        const auto _vkp_t_title = std::chrono::steady_clock::now();
+        const auto _vkp_total_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_title - _vkp_t0).count();
+        if (_vkp_total_us > 5000) {
+          // Only log spikes (>5ms) to avoid flooding. Buckets help identify
+          // which sub-step actually costs the time when the user-visible
+          // ui_ms is high during a phase like FPS walking or gizmo drag.
+          logger.log(vkpt::log::Severity::Info, "app",
+                     "Qt preview overlay slow",
+                     {{"total_us", std::to_string(_vkp_total_us)},
+                      {"text_us", std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_text - _vkp_t0).count())},
+                      {"script_us", std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_script - _vkp_t_text).count())},
+                      {"pickables_us", std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_pick - _vkp_t_script).count())},
+                      {"status_us", std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_status - _vkp_t_pick).count())},
+                      {"dock_us", std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_dock - _vkp_t_status).count())},
+                      {"title_us", std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_title - _vkp_t_dock).count())},
+                      {"fps_mode", qtFpsMode ? "true" : "false"},
+                      {"gizmo_active", qtGizmoDrag.active ? "true" : "false"}});
+        }
+        VKP_METRIC_OBSERVE("vkp.ui.preview_text_us", std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_text - _vkp_t0).count());
+        VKP_METRIC_OBSERVE("vkp.ui.preview_script_us", std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_script - _vkp_t_text).count());
+        VKP_METRIC_OBSERVE("vkp.ui.preview_pickables_us", std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_pick - _vkp_t_script).count());
+        VKP_METRIC_OBSERVE("vkp.ui.preview_status_us", std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_status - _vkp_t_pick).count());
+        VKP_METRIC_OBSERVE("vkp.ui.preview_dock_us", std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_dock - _vkp_t_status).count());
+        VKP_METRIC_OBSERVE("vkp.ui.preview_title_us", std::chrono::duration_cast<std::chrono::microseconds>(_vkp_t_title - _vkp_t_dock).count());
       };
       vkpt::physics::PhysicsStepConfig qtPhysicsStepConfig;
       qtPhysicsStepConfig.fixed_dt = 1.0f / 60.0f;
@@ -584,6 +618,25 @@
         return true;
       };
       auto qtApplyPhysicsSimulation = [&](std::chrono::steady_clock::time_point now) {
+        const auto _vkp_phys_start = std::chrono::steady_clock::now();
+        struct PhysScopeMarker {
+          std::chrono::steady_clock::time_point start;
+          const char** exit_marker;
+          ~PhysScopeMarker() {
+            const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - start).count();
+            VKP_METRIC_OBSERVE("vkp.physics.qt_apply_us", elapsed_us);
+            if (elapsed_us > 4000) {
+              vkpt::log::Logger::instance().log(
+                  vkpt::log::Severity::Info, "physics",
+                  "qtApplyPhysicsSimulation slow",
+                  {{"total_us", std::to_string(elapsed_us)},
+                   {"exit_at", *exit_marker ? *exit_marker : "unknown"}});
+            }
+          }
+        };
+        const char* _vkp_phys_exit = "fall_through";
+        PhysScopeMarker _vkp_phys_marker{_vkp_phys_start, &_vkp_phys_exit};
         auto nearlyEqual = [](float lhs, float rhs, float epsilon) {
           return std::abs(lhs - rhs) <= epsilon;
         };
@@ -602,12 +655,14 @@
           qtPhysicsPrevTime = now;
           qtPendingPhysicsInstanceUpdates.clear();
           qtPhysicsScenePublishPending = false;
+          _vkp_phys_exit = "scripts_not_running";
           return;
         }
         const bool physicsOn =
             qtPhysicsSummary.enabled_bodies > 0u && qtPhysicsSummary.dynamic_bodies > 0u;
         if (!physicsOn || qtGizmoDrag.active) {
           qtPhysicsPrevTime = now;
+          _vkp_phys_exit = !physicsOn ? "physics_off" : "gizmo_active";
           return;
         }
 
@@ -675,8 +730,25 @@
             }
             return preWriteWorldSnapshot ? &preWriteWorldSnapshot.value() : nullptr;
           };
+          // Build an entity_id → entity* index ONCE per step instead of doing
+          // a linear scan inside the loop. With 102 physics writes against a
+          // 1054-entity Mona Lisa scene that was ~107k comparisons per step,
+          // ~80ms on the UI thread. The hashmap is ~50µs to build and gives
+          // O(1) lookups inside the loop. Pointers are valid for the duration
+          // of this loop because qtSceneDocument is not mutated until we
+          // assign into entity-> below (assigning to existing fields, not
+          // resizing the vector).
+          std::unordered_map<vkpt::core::StableId, vkpt::scene::SceneEntityDefinition*>
+              physicsEntityById;
+          physicsEntityById.reserve(qtSceneDocument.entities.size());
+          for (auto& docEntity : qtSceneDocument.entities) {
+            if (docEntity.id != 0u) {
+              physicsEntityById.emplace(docEntity.id, &docEntity);
+            }
+          }
           for (const auto& write : physicsWrites) {
-            auto* entity = qtFindEntity(write.entity);
+            const auto entityIt = physicsEntityById.find(write.entity);
+            auto* entity = entityIt == physicsEntityById.end() ? nullptr : entityIt->second;
             if (entity == nullptr) {
               continue;
             }

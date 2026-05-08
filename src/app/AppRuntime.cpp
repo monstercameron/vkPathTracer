@@ -170,6 +170,126 @@ void SleepUntilFrameTarget(std::chrono::steady_clock::time_point target) {
 }
 #endif
 
+struct RuntimeMeshStats {
+  std::size_t instances = 0u;
+  std::size_t vertices = 0u;
+  std::size_t triangles = 0u;
+};
+
+vkpt::core::StableId RuntimeMaxAuthoredSceneId(const vkpt::scene::SceneDocument& document) {
+  vkpt::core::StableId maxId = 0u;
+  for (const auto& material : document.materials) maxId = std::max(maxId, material.id);
+  for (const auto& geometry : document.geometry) maxId = std::max(maxId, geometry.id);
+  for (const auto& entity : document.entities) maxId = std::max(maxId, entity.id);
+  for (const auto& asset : document.assets) maxId = std::max(maxId, asset.id);
+  for (const auto& emitter : document.particle_emitters) maxId = std::max(maxId, emitter.id);
+  for (const auto& sdf : document.sdf_primitives) maxId = std::max(maxId, sdf.id);
+  for (const auto& camera : document.cameras) maxId = std::max(maxId, camera.id);
+  for (const auto& light : document.lights) maxId = std::max(maxId, light.id);
+  return maxId;
+}
+
+RuntimeMeshStats RuntimeCountAuthoredMeshStats(const vkpt::scene::SceneDocument& document) {
+  std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneGeometryDefinition*> geometryById;
+  geometryById.reserve(document.geometry.size());
+  for (const auto& geometry : document.geometry) {
+    geometryById[geometry.id] = &geometry;
+  }
+
+  RuntimeMeshStats stats;
+  for (const auto& entity : document.entities) {
+    if (!entity.visible || !entity.has_mesh) {
+      continue;
+    }
+    const auto found = geometryById.find(entity.mesh.mesh_id);
+    if (found == geometryById.end()) {
+      continue;
+    }
+    const auto& geometry = *found->second;
+    if (geometry.vertices.empty() || geometry.indices.empty() ||
+        geometry.indices.size() % 3u != 0u) {
+      continue;
+    }
+    ++stats.instances;
+    stats.vertices += geometry.vertices.size();
+    stats.triangles += geometry.indices.size() / 3u;
+  }
+  return stats;
+}
+
+RuntimeMeshStats RuntimeAppendOffscreenCullingBallast(vkpt::scene::SceneDocument& document) {
+  constexpr std::uint32_t kGrid = 64u;
+  constexpr std::uint32_t kInstances = 128u;
+  vkpt::core::StableId nextId =
+      std::max<vkpt::core::StableId>(900000000ull, RuntimeMaxAuthoredSceneId(document) + 1u);
+
+  vkpt::core::StableId materialId = 0u;
+  if (!document.materials.empty()) {
+    materialId = document.materials.front().id;
+  } else {
+    vkpt::scene::SceneMaterialDefinition material;
+    material.id = nextId++;
+    material.name = "Qt stress culling ballast";
+    material.family = "diffuse";
+    material.albedo = {0.45f, 0.48f, 0.52f};
+    document.materials.push_back(material);
+    materialId = material.id;
+  }
+
+  vkpt::scene::SceneGeometryDefinition geometry;
+  geometry.id = nextId++;
+  geometry.primitive = "triangle";
+  geometry.material_id = materialId;
+  geometry.tags.push_back("qt_stress_performance_culling_ballast");
+  geometry.vertices.reserve(static_cast<std::size_t>(kGrid + 1u) * (kGrid + 1u));
+  geometry.indices.reserve(static_cast<std::size_t>(kGrid) * kGrid * 6u);
+  for (std::uint32_t z = 0u; z <= kGrid; ++z) {
+    for (std::uint32_t x = 0u; x <= kGrid; ++x) {
+      geometry.vertices.push_back(vkpt::scene::Vec3{
+          (static_cast<float>(x) - static_cast<float>(kGrid) * 0.5f) * 0.5f,
+          0.0f,
+          (static_cast<float>(z) - static_cast<float>(kGrid) * 0.5f) * 0.5f});
+    }
+  }
+  for (std::uint32_t z = 0u; z < kGrid; ++z) {
+    for (std::uint32_t x = 0u; x < kGrid; ++x) {
+      const std::uint32_t row0 = z * (kGrid + 1u);
+      const std::uint32_t row1 = (z + 1u) * (kGrid + 1u);
+      const std::uint32_t i0 = row0 + x;
+      const std::uint32_t i1 = row0 + x + 1u;
+      const std::uint32_t i2 = row1 + x;
+      const std::uint32_t i3 = row1 + x + 1u;
+      geometry.indices.insert(geometry.indices.end(), {i0, i2, i1, i1, i2, i3});
+    }
+  }
+
+  const auto geometryId = geometry.id;
+  const std::size_t verticesPerInstance = geometry.vertices.size();
+  const std::size_t trianglesPerInstance = geometry.indices.size() / 3u;
+  document.geometry.push_back(std::move(geometry));
+
+  for (std::uint32_t i = 0u; i < kInstances; ++i) {
+    vkpt::scene::SceneEntityDefinition entity;
+    entity.id = nextId++;
+    entity.name = "Qt Stress Culling Ballast " + std::to_string(i);
+    entity.visible = true;
+    entity.has_transform = true;
+    entity.transform.translation = {
+        600.0f + static_cast<float>(i % 16u) * 28.0f,
+        -6.0f,
+        420.0f + static_cast<float>(i / 16u) * 28.0f};
+    entity.has_mesh = true;
+    entity.mesh.mesh_id = geometryId;
+    entity.mesh.material_id = materialId;
+    document.entities.push_back(std::move(entity));
+  }
+
+  return RuntimeMeshStats{
+      kInstances,
+      verticesPerInstance * static_cast<std::size_t>(kInstances),
+      trianglesPerInstance * static_cast<std::size_t>(kInstances)};
+}
+
 // ---- ptdoctor checks -------------------------------------------------------
 
 std::uint64_t NowMs() {
@@ -1128,6 +1248,9 @@ int RunApp(int argc, char** argv) {
       // ---- Scene loading ----
       vkpt::pathtracer::PathTracerSceneSnapshot qtScene;
       vkpt::scene::SceneDocument qtSceneDocument;
+      RuntimeMeshStats qtStressSourceMeshStats;
+      RuntimeMeshStats qtStressBallastMeshStats;
+      RuntimeMeshStats qtStressRtMeshStats;
       qtStartupStep("loading scene snapshot");
       {
         bool sceneOk = false;
@@ -1135,6 +1258,20 @@ int RunApp(int argc, char** argv) {
           auto parseResult = vkpt::scene::SceneDocument::load_from_file(config.scene_path.value);
           if (parseResult) {
             qtSceneDocument = parseResult.value();
+            if (qtStressGate) {
+              qtSceneDocument.performance_culling.enabled = true;
+              qtSceneDocument.performance_culling.frustum = true;
+              qtSceneDocument.performance_culling.distance = true;
+              qtSceneDocument.performance_culling.cull_dynamic = true;
+              qtSceneDocument.performance_culling.aspect_ratio =
+                  static_cast<float>(std::max<uint32_t>(1u, config.render_width.value)) /
+                  static_cast<float>(std::max<uint32_t>(1u, config.render_height.value));
+              if (qtSceneDocument.performance_culling.max_distance <= 0.0f) {
+                qtSceneDocument.performance_culling.max_distance = 180.0f;
+              }
+              qtStressBallastMeshStats = RuntimeAppendOffscreenCullingBallast(qtSceneDocument);
+              qtStressSourceMeshStats = RuntimeCountAuthoredMeshStats(qtSceneDocument);
+            }
 #ifdef PT_ENABLE_QT
             EnsureQtFallbackLightingEntities(qtSceneDocument);
 #endif
@@ -1146,6 +1283,20 @@ int RunApp(int argc, char** argv) {
           }
         } else {
           qtSceneDocument = LoadDefaultSceneDocument();
+          if (qtStressGate) {
+            qtSceneDocument.performance_culling.enabled = true;
+            qtSceneDocument.performance_culling.frustum = true;
+            qtSceneDocument.performance_culling.distance = true;
+            qtSceneDocument.performance_culling.cull_dynamic = true;
+            qtSceneDocument.performance_culling.aspect_ratio =
+                static_cast<float>(std::max<uint32_t>(1u, config.render_width.value)) /
+                static_cast<float>(std::max<uint32_t>(1u, config.render_height.value));
+            if (qtSceneDocument.performance_culling.max_distance <= 0.0f) {
+              qtSceneDocument.performance_culling.max_distance = 180.0f;
+            }
+            qtStressBallastMeshStats = RuntimeAppendOffscreenCullingBallast(qtSceneDocument);
+            qtStressSourceMeshStats = RuntimeCountAuthoredMeshStats(qtSceneDocument);
+          }
 #ifdef PT_ENABLE_QT
           EnsureQtFallbackLightingEntities(qtSceneDocument);
 #endif
@@ -1162,6 +1313,9 @@ int RunApp(int argc, char** argv) {
           return 1;
         }
       }
+      qtStressRtMeshStats.instances = qtScene.instances.size();
+      qtStressRtMeshStats.vertices = qtScene.vertices.size();
+      qtStressRtMeshStats.triangles = qtScene.indices.size() / 3u;
       qtStartupStep("scene loaded");
       vkpt::scene::SnapshotRing qtSnapshotRing;
       vkpt::scene::RenderSceneSnapshotRevisions qtSnapshotRevisions{};
@@ -1170,12 +1324,16 @@ int RunApp(int argc, char** argv) {
       qtSnapshotRevisions.transform_revision = 1u;
       qtSnapshotRevisions.camera_revision = 1u;
       qtSnapshotRevisions.material_revision = 1u;
-      // Timestamp of the most recent transform-bumping publish. Used by the
-      // dock panel sync to detect rapid scene mutation (gizmo drag, physics
-      // walk, Lua-driven motion) and skip its O(entities) rebuild while
-      // mutation is in flight. Cleared by elapsed time, not by an end event,
-      // so it covers all three sources uniformly.
-      std::uint64_t qtLastTransformPublishNs = 0u;
+      // Timestamp of the most recent publish that mutated scene OR camera
+      // state. Used by the dock panel sync to defer its O(entities)
+      // rebuild while mutation is in flight. Includes camera changes
+      // because the editor camera orbit, Qt orbit, FPS walk, and
+      // qtPublishRenderSnapshot lambda all bump camera_revision at 60Hz —
+      // letting the dock panel rebuild during continuous camera motion
+      // produces sub-second freezes on large scenes (Mona Lisa: 1054
+      // entities → ~1.5s per BuildQtDockPanels). The dock panel content
+      // is editor-facing and tolerates a 200ms post-stop delay.
+      std::uint64_t qtLastMutationPublishNs = 0u;
       auto qtPublishRenderSnapshot =
           [&](bool topology_changed,
               bool transform_changed,
@@ -1191,20 +1349,22 @@ int RunApp(int argc, char** argv) {
         if (topology_changed) {
           ++qtSnapshotRevisions.topology_revision;
           VKP_METRIC_INC("vkp.scene.publish_by_source.topology_total");
-          qtLastTransformPublishNs = _vkp_publish_t0_ns;
+          qtLastMutationPublishNs = _vkp_publish_t0_ns;
         }
         if (transform_changed) {
           ++qtSnapshotRevisions.transform_revision;
           VKP_METRIC_INC("vkp.scene.publish_by_source.transform_total");
-          qtLastTransformPublishNs = _vkp_publish_t0_ns;
+          qtLastMutationPublishNs = _vkp_publish_t0_ns;
         }
         if (camera_changed) {
           ++qtSnapshotRevisions.camera_revision;
           VKP_METRIC_INC("vkp.scene.publish_by_source.camera_total");
+          qtLastMutationPublishNs = _vkp_publish_t0_ns;
         }
         if (material_changed) {
           ++qtSnapshotRevisions.material_revision;
           VKP_METRIC_INC("vkp.scene.publish_by_source.material_total");
+          qtLastMutationPublishNs = _vkp_publish_t0_ns;
         }
         auto snapshot = vkpt::scene::BuildRenderSceneSnapshot(
             qtScene,
@@ -1496,9 +1656,17 @@ int RunApp(int argc, char** argv) {
       qtStartupStep("entering qt render loop");
       uint32_t qtFrameCount = 0u;
       bool qtUserCameraActive = false;
+      bool qtPlayModeFramePacingActive = false;
       auto qtInteractiveFrameTarget = [&]() {
+        const uint32_t publishHz = std::max<uint32_t>(1u, qtPreviewPublishHz);
+        if (qtPlayModeFramePacingActive && publishHz == 60u) {
+          // The framebuffer handoff remains capped at 60 Hz. Waking the app
+          // loop slightly ahead of the display interval keeps Play mode from
+          // missing handoff slots when Windows/Qt sleep granularity lands late.
+          return std::chrono::microseconds(15000u);
+        }
         return std::chrono::microseconds(
-            1000000u / std::max<uint32_t>(1u, qtPreviewPublishHz));
+            1000000u / publishHz);
       };
       double qtProfilePollMs = 0.0;
       double qtProfileInputMs = 0.0;
@@ -1540,11 +1708,53 @@ int RunApp(int argc, char** argv) {
             std::max<std::uint64_t>(qtOverlayRequiredRenderGeneration,
                                     renderStats.generation + 1u);
       };
+      bool qtDeferBackgroundSnapshotPublishes = false;
+      bool qtDeferredBackgroundSnapshotPending = false;
+      bool qtDeferredBackgroundTopologyChanged = false;
+      bool qtDeferredBackgroundTransformChanged = false;
+      bool qtDeferredBackgroundCameraChanged = false;
+      bool qtDeferredBackgroundMaterialChanged = false;
+      auto qtFlushDeferredBackgroundSnapshot = [&]() -> std::uint64_t {
+        if (!qtDeferredBackgroundSnapshotPending) {
+          return 0u;
+        }
+        const bool topologyChanged = qtDeferredBackgroundTopologyChanged;
+        const bool transformChanged = qtDeferredBackgroundTransformChanged;
+        const bool cameraChanged = qtDeferredBackgroundCameraChanged;
+        const bool materialChanged = qtDeferredBackgroundMaterialChanged;
+        qtDeferredBackgroundSnapshotPending = false;
+        qtDeferredBackgroundTopologyChanged = false;
+        qtDeferredBackgroundTransformChanged = false;
+        qtDeferredBackgroundCameraChanged = false;
+        qtDeferredBackgroundMaterialChanged = false;
+
+        const auto generation = qtPublishRenderSnapshot(topologyChanged,
+                                                        transformChanged,
+                                                        cameraChanged,
+                                                        materialChanged);
+        if (qtUseBg && qtRenderCoordinator && generation != 0u) {
+          qtOverlayRequiredRenderGeneration =
+              std::max(qtOverlayRequiredRenderGeneration, generation);
+        }
+        return generation;
+      };
       auto qtPublishRenderSnapshotForBackground =
           [&](bool topology_changed,
               bool transform_changed,
               bool camera_changed,
               bool material_changed) -> std::uint64_t {
+        if (qtDeferBackgroundSnapshotPublishes && qtUseBg && qtRenderCoordinator) {
+          qtDeferredBackgroundSnapshotPending = true;
+          qtDeferredBackgroundTopologyChanged =
+              qtDeferredBackgroundTopologyChanged || topology_changed;
+          qtDeferredBackgroundTransformChanged =
+              qtDeferredBackgroundTransformChanged || transform_changed;
+          qtDeferredBackgroundCameraChanged =
+              qtDeferredBackgroundCameraChanged || camera_changed;
+          qtDeferredBackgroundMaterialChanged =
+              qtDeferredBackgroundMaterialChanged || material_changed;
+          return 0u;
+        }
         const auto generation = qtPublishRenderSnapshot(topology_changed,
                                                         transform_changed,
                                                         camera_changed,
@@ -1603,6 +1813,7 @@ int RunApp(int argc, char** argv) {
       (void)qtOverlayStaleSkips;
       (void)qtLatestPaintedRenderGeneration;
       (void)qtMarkOverlayRequiresRenderCatchup;
+      (void)qtFlushDeferredBackgroundSnapshot;
       (void)qtPublishRenderSnapshotForBackground;
       (void)qtRenderImageCaughtUpForOverlay;
 #endif
