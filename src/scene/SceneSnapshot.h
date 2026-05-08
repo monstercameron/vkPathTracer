@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -110,7 +111,8 @@ struct RenderSceneSnapshot {
 
   RenderSceneSnapshotBuildStats build_stats{};
   SnapshotAccelerationHandle acceleration{};
-  std::shared_ptr<const vkpt::pathtracer::PathTracerSceneSnapshot> path_tracer_scene;
+  mutable std::atomic<std::shared_ptr<const vkpt::pathtracer::PathTracerSceneSnapshot>>
+      path_tracer_scene;
 
   bool geometry_storage_reused_from(const RenderSceneSnapshot& other) const;
   const vkpt::pathtracer::PathTracerSceneSnapshot& path_tracer_scene_snapshot() const;

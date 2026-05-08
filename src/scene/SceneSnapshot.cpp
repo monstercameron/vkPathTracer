@@ -207,6 +207,28 @@ vkpt::pathtracer::RTCameraState ExtractCamera(const vkpt::pathtracer::PathTracer
   return camera;
 }
 
+void ApplyCamera(vkpt::pathtracer::PathTracerSceneSnapshot& scene,
+                 const vkpt::pathtracer::RTCameraState& camera) {
+  scene.camera_position = camera.position;
+  scene.camera_target = camera.target;
+  scene.camera_up = camera.up;
+  scene.camera_fov_deg = camera.fov_deg;
+  scene.camera_focal_length_mm = camera.focal_length_mm;
+  scene.camera_sensor_width_mm = camera.sensor_width_mm;
+  scene.camera_sensor_height_mm = camera.sensor_height_mm;
+  scene.camera_aperture_radius = camera.aperture_radius;
+  scene.camera_focus_distance = camera.focus_distance;
+  scene.camera_f_stop = camera.f_stop;
+  scene.camera_shutter_seconds = camera.shutter_seconds;
+  scene.camera_iso = camera.iso;
+  scene.camera_exposure_compensation = camera.exposure_compensation;
+  scene.camera_white_balance_kelvin = camera.white_balance_kelvin;
+  scene.camera_iris_blade_count = camera.iris_blade_count;
+  scene.camera_iris_rotation_degrees = camera.iris_rotation_degrees;
+  scene.camera_iris_roundness = camera.iris_roundness;
+  scene.camera_anamorphic_squeeze = camera.anamorphic_squeeze;
+}
+
 const RTInstance* FindPreviousInstance(std::span<const RTInstance> previous,
                                        std::size_t current_index,
                                        const RTInstance& current) {
@@ -288,6 +310,11 @@ SnapshotAccelerationHandle BuildSnapshotAcceleration(
     RenderSceneSnapshotBuildStats& stats) {
   const auto start = std::chrono::steady_clock::now();
   SnapshotAccelerationHandle handle;
+  const auto refitUpdates = BuildRefitUpdatesFromMotion(current);
+  const bool canBuildViaRefit =
+      previous != nullptr &&
+      !refitUpdates.empty() &&
+      current.geometry_storage_reused_from(*previous);
   const bool canReusePrevious =
       previous != nullptr &&
       previous->acceleration.valid() &&
@@ -305,17 +332,27 @@ SnapshotAccelerationHandle BuildSnapshotAcceleration(
     return handle;
   }
 
+  constexpr std::size_t kSnapshotCpuBvhRefitTriangleBudget = 100'000u;
+  const bool largeTopologyStableRefit =
+      canBuildViaRefit &&
+      scene.indices.size() / 3u > kSnapshotCpuBvhRefitTriangleBudget;
+  if (largeTopologyStableRefit) {
+    handle.cpu_bvh_info = previous->acceleration.cpu_bvh_info;
+    handle.refit_updates = refitUpdates;
+    handle.transform_refit_descriptor = true;
+    stats.acceleration_refit_descriptor = true;
+    const auto end = std::chrono::steady_clock::now();
+    stats.acceleration_build_us =
+        std::chrono::duration<double, std::micro>(end - start).count();
+    return handle;
+  }
+
   auto accelerator = vkpt::pathtracer::CreateCpuBvhAccelerator();
   if (!accelerator) {
     return handle;
   }
 
   bool built = false;
-  const auto refitUpdates = BuildRefitUpdatesFromMotion(current);
-  const bool canBuildViaRefit =
-      previous != nullptr &&
-      !refitUpdates.empty() &&
-      current.geometry_storage_reused_from(*previous);
   if (canBuildViaRefit) {
     auto previousScene = previous->path_tracer_scene_snapshot();
     built = accelerator->build(previousScene, true);
@@ -390,7 +427,36 @@ bool RenderSceneSnapshot::geometry_storage_reused_from(
 const vkpt::pathtracer::PathTracerSceneSnapshot&
 RenderSceneSnapshot::path_tracer_scene_snapshot() const {
   static const vkpt::pathtracer::PathTracerSceneSnapshot kEmptyScene;
-  return path_tracer_scene ? *path_tracer_scene : kEmptyScene;
+  if (auto cached = path_tracer_scene.load(std::memory_order_acquire)) {
+    return *cached;
+  }
+  if (vertices.empty() && indices.empty() && instances.empty() &&
+      materials.empty() && lights.empty()) {
+    return kEmptyScene;
+  }
+
+  auto scene = std::make_shared<vkpt::pathtracer::PathTracerSceneSnapshot>();
+  scene->vertices = ToVector(vertices);
+  scene->texcoords = ToVector(texcoords);
+  scene->indices = ToVector(indices);
+  scene->local_vertices = ToVector(local_vertices);
+  scene->local_indices = ToVector(local_indices);
+  scene->instances = ToVector(instances);
+  scene->tessellation_requests = ToVector(tessellation_requests);
+  scene->sdf_primitives = ToVector(sdf_primitives);
+  scene->materials = ToVector(materials);
+  scene->textures = ToVector(textures);
+  scene->lights = ToVector(lights);
+  scene->environment_color = environment_color;
+  scene->environment_map = ToVector(environment_map);
+  scene->environment_map_scale = environment_map_scale;
+  scene->environment_map_width = environment_map_width;
+  scene->environment_map_height = environment_map_height;
+  ApplyCamera(*scene, camera);
+  path_tracer_scene.store(
+      std::shared_ptr<const vkpt::pathtracer::PathTracerSceneSnapshot>(scene),
+      std::memory_order_release);
+  return *scene;
 }
 
 const char* ToString(SnapshotTransitionAction action) {
@@ -454,6 +520,109 @@ RenderSceneSnapshot::Ptr BuildRenderSceneSnapshot(
   out->material_revision = revisions.material_revision;
   out->wall_time_ns = revisions.wall_time_ns;
 
+  const bool topologySame =
+      previous != nullptr &&
+      revisions.topology_revision == previous->topology_revision;
+  const bool transformSame =
+      previous != nullptr &&
+      revisions.transform_revision == previous->transform_revision;
+  const bool materialSame =
+      previous != nullptr &&
+      revisions.material_revision == previous->material_revision;
+  const bool cameraSame =
+      previous != nullptr &&
+      revisions.camera_revision == previous->camera_revision;
+  if (topologySame) {
+    auto reuseArray = [&](const auto& array) {
+      ++localStats.cow_total_arrays;
+      ++localStats.cow_reused_arrays;
+      return array;
+    };
+
+    out->vertices = reuseArray(previous->vertices);
+    out->texcoords = reuseArray(previous->texcoords);
+    out->indices = reuseArray(previous->indices);
+    out->local_vertices = reuseArray(previous->local_vertices);
+    out->local_indices = reuseArray(previous->local_indices);
+    out->tessellation_requests = reuseArray(previous->tessellation_requests);
+    out->sdf_primitives = reuseArray(previous->sdf_primitives);
+    out->environment_map = materialSame
+        ? reuseArray(previous->environment_map)
+        : BuildCowArray(scene.environment_map,
+                        &previous->environment_map,
+                        SameVec3,
+                        localStats);
+
+    out->instances = (transformSame && materialSame)
+        ? reuseArray(previous->instances)
+        : BuildCowArray(scene.instances,
+                        &previous->instances,
+                        SameInstance,
+                        localStats);
+    out->materials = materialSame
+        ? reuseArray(previous->materials)
+        : BuildCowArray(scene.materials,
+                        &previous->materials,
+                        SameMaterial,
+                        localStats);
+    out->textures = materialSame
+        ? reuseArray(previous->textures)
+        : BuildCowArray(scene.textures,
+                        &previous->textures,
+                        [](const std::string& lhs, const std::string& rhs) {
+                          return lhs == rhs;
+                        },
+                        localStats);
+    out->lights = materialSame
+        ? reuseArray(previous->lights)
+        : BuildCowArray(scene.lights,
+                        &previous->lights,
+                        SameLight,
+                        localStats);
+    if (transformSame) {
+      ++localStats.cow_total_arrays;
+      if (previous->instance_motion.empty()) {
+        ++localStats.cow_reused_arrays;
+      }
+      out->instance_motion = {};
+    } else {
+      const auto instanceMotion = BuildInstanceMotion(previous, scene.instances);
+      out->instance_motion = BuildCowArray(instanceMotion,
+                                           &previous->instance_motion,
+                                           SameInstanceMotion,
+                                           localStats);
+    }
+
+    out->environment_color = scene.environment_color;
+    out->environment_map_scale = scene.environment_map_scale;
+    out->environment_map_width = scene.environment_map_width;
+    out->environment_map_height = scene.environment_map_height;
+    out->camera = ExtractCamera(scene);
+    if (materialSame && cameraSame) {
+      out->path_tracer_scene.store(
+          previous->path_tracer_scene.load(std::memory_order_acquire),
+          std::memory_order_release);
+    }
+    if (transformSame) {
+      out->acceleration = previous->acceleration;
+      out->acceleration.reused_from_previous = out->acceleration.valid();
+      out->acceleration.transform_refit_descriptor = false;
+      out->acceleration.refit_updates.clear();
+      localStats.acceleration_built = out->acceleration.valid();
+      localStats.acceleration_reused = out->acceleration.valid();
+    } else {
+      out->acceleration = BuildSnapshotAcceleration(scene, previous, *out, localStats);
+    }
+
+    const auto end = std::chrono::steady_clock::now();
+    localStats.build_us = std::chrono::duration<double, std::micro>(end - start).count();
+    out->build_stats = localStats;
+    if (stats != nullptr) {
+      *stats = localStats;
+    }
+    return out;
+  }
+
   out->vertices = BuildCowArray(scene.vertices,
                                 previous ? &previous->vertices : nullptr,
                                 SameVec3,
@@ -515,8 +684,9 @@ RenderSceneSnapshot::Ptr BuildRenderSceneSnapshot(
   out->environment_map_width = scene.environment_map_width;
   out->environment_map_height = scene.environment_map_height;
   out->camera = ExtractCamera(scene);
-  out->path_tracer_scene =
-      std::make_shared<vkpt::pathtracer::PathTracerSceneSnapshot>(scene);
+  out->path_tracer_scene.store(
+      std::make_shared<vkpt::pathtracer::PathTracerSceneSnapshot>(scene),
+      std::memory_order_release);
   out->acceleration = BuildSnapshotAcceleration(scene, previous, *out, localStats);
 
   const auto end = std::chrono::steady_clock::now();
