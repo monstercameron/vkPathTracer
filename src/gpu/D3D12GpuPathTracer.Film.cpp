@@ -24,8 +24,21 @@ bool D3D12GpuPathTracer::reset_accumulation() {
   m_counters = {};
   m_temporalHistoryValid = false;
   m_lastSampleIdx = 0u;
+  m_latestFilmReadbackToken = {};
+  ++m_filmGeneration;
+  m_ldrResolveGeneration = 0u;
   LogDebug("reset_accumulation complete");
+  debug_check_state_contract("reset_accumulation");
   return true;
+}
+
+vkpt::core::Status D3D12GpuPathTracer::reset_accumulation_status() {
+  const bool ok = reset_accumulation();
+  return GpuBackendOperationStatus(
+      "d3d12.reset_accumulation",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
 }
 
 bool D3D12GpuPathTracer::should_readback_sample(uint32_t sample_idx) const {
@@ -44,7 +57,7 @@ bool D3D12GpuPathTracer::should_readback_sample(uint32_t sample_idx) const {
 }
 
 vkpt::pathtracer::FilmLdr D3D12GpuPathTracer::resolve_ldr() const {
-  // The GPU tonemap pass already produced an RGBA8 result during render_sample_batch().
+  // The GPU tonemap pass already produced an RGBA8 result during render_tile().
   // Return it directly — no CPU tonemapping, no box filter, no per-pixel work.
   if (!m_ldrResolve.rgba8.empty()) {
     return m_ldrResolve;
@@ -56,6 +69,52 @@ vkpt::pathtracer::FilmLdr D3D12GpuPathTracer::resolve_ldr() const {
   blank.rgba8.assign(static_cast<size_t>(m_filmPixels) * 4u, 0u);
   return blank;
 }
+
+vkpt::pathtracer::FilmReadbackToken D3D12GpuPathTracer::request_film_readback() {
+  if (!m_valid || !m_configured || m_ldrResolve.rgba8.empty() ||
+      m_ldrResolveGeneration != m_filmGeneration) {
+    return {};
+  }
+  vkpt::pathtracer::FilmReadbackToken token;
+  token.id = m_nextFilmReadbackId++;
+  token.fence_value = static_cast<std::uint64_t>(m_fenceValue);
+  token.width = m_ldrResolve.width;
+  token.height = m_ldrResolve.height;
+  m_latestFilmReadbackToken = token;
+  return token;
+}
+
+vkpt::pathtracer::FilmReadbackResult D3D12GpuPathTracer::poll_film(
+    vkpt::pathtracer::FilmReadbackToken token) {
+  if (!token || token.id != m_latestFilmReadbackToken.id ||
+      token.width != m_latestFilmReadbackToken.width ||
+      token.height != m_latestFilmReadbackToken.height) {
+    return {
+        vkpt::pathtracer::FilmReadbackState::Invalid,
+        {},
+        "invalid D3D12 film readback token"};
+  }
+  if (!m_valid || !m_configured) {
+    return {
+        vkpt::pathtracer::FilmReadbackState::Failed,
+        {},
+        "D3D12 film readback requested before backend is ready"};
+  }
+  if (m_fence && m_fence->GetCompletedValue() < token.fence_value) {
+    return {vkpt::pathtracer::FilmReadbackState::Pending, {}, {}};
+  }
+  if (m_ldrResolve.rgba8.empty()) {
+    return {
+        vkpt::pathtracer::FilmReadbackState::Failed,
+        {},
+        "D3D12 film readback has no completed LDR snapshot"};
+  }
+  return {
+      vkpt::pathtracer::FilmReadbackState::Ready,
+      m_ldrResolve,
+      {}};
+}
+
 vkpt::pathtracer::FilmHdr D3D12GpuPathTracer::resolve_hdr() const {
   return m_film.resolve_hdr();
 }
@@ -243,6 +302,9 @@ void D3D12GpuPathTracer::destroy_film_buffer() {
   m_temporalHistoryBuf.Reset();
   m_prevGuideBuf.Reset();
   m_temporalHistoryValid = false;
+  m_latestFilmReadbackToken = {};
+  ++m_filmGeneration;
+  m_ldrResolveGeneration = 0u;
   m_clearHeap.Reset();
   m_clearCpuHeap.Reset();
   m_srvUavHeap.Reset();

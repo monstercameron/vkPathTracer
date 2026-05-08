@@ -1,6 +1,9 @@
 #include "cpu/CpuFeatures.h"
 
+#include <mutex>
 #include <sstream>
+
+#include "core/log/Log.h"
 
 // Architecture detection
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -25,6 +28,8 @@ namespace vkpt::cpu {
 
 namespace {
 
+std::once_flag g_simdSelectedLogOnce;
+
 #if defined(VKPT_ARCH_X86)
 uint64_t xgetbv0() {
 #if defined(_MSC_VER)
@@ -39,6 +44,45 @@ uint64_t xgetbv0() {
 #endif
 }
 #endif
+
+SimdBackend SelectCompiledTelemetryBackend(const CpuFeatureSet& features) {
+  (void)features;
+#if defined(VKPT_ARCH_ARM64)
+  if (features.neon) {
+    return SimdBackend::ArmNeon;
+  }
+#elif defined(VKPT_ARCH_X86)
+#if defined(__AVX512F__)
+  if (features.avx512f) {
+    return SimdBackend::X86Avx512;
+  }
+#endif
+#if defined(__AVX2__)
+  if (features.avx2) {
+    return SimdBackend::X86Avx2;
+  }
+#endif
+#endif
+  return SimdBackend::Scalar;
+}
+
+const char* TelemetryKernelName(SimdBackend backend) {
+  switch (backend) {
+    case SimdBackend::ArmNeon:
+      return "neon";
+    case SimdBackend::X86Avx2:
+      return "avx2";
+    case SimdBackend::X86Avx512:
+      return "avx512";
+    case SimdBackend::Scalar:
+    default:
+      return "scalar";
+  }
+}
+
+const char* SimdSelectionReason(SimdBackend backend) {
+  return backend == SimdBackend::Scalar ? "fallback" : "cpu_feature";
+}
 
 }  // namespace
 
@@ -143,7 +187,22 @@ CpuFeatureSet QueryCpuFeatures() {
   return f;
 }
 
+std::string SelectedSimdKernelName(const CpuFeatureSet& features) {
+  return TelemetryKernelName(SelectCompiledTelemetryBackend(features));
+}
+
 SimdDispatchInfo BuildSimdDispatchInfo(const CpuFeatureSet& f) {
+  const SimdBackend selectedBackend = SelectCompiledTelemetryBackend(f);
+  std::call_once(g_simdSelectedLogOnce, [&]() {
+    VKP_LOG(Info,
+            "cpu",
+            "simd_selected",
+            "kernel",
+            TelemetryKernelName(selectedBackend),
+            "reason",
+            SimdSelectionReason(selectedBackend));
+  });
+
   SimdDispatchInfo out;
   out.available.push_back(SimdBackend::Scalar);
 

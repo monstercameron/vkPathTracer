@@ -60,6 +60,9 @@ struct CpuFeatureSet {
 /// Query CPU features at runtime. Result is stable for the process lifetime.
 CpuFeatureSet QueryCpuFeatures();
 
+/// Return the compact kernel name used by CPU telemetry/status.
+std::string SelectedSimdKernelName(const CpuFeatureSet& features);
+
 /// Build a preferred/available backend list from detected CPU features.
 SimdDispatchInfo BuildSimdDispatchInfo(const CpuFeatureSet& features);
 

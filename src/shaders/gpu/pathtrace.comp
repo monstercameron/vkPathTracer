@@ -1,29 +1,22 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
 // GPU path tracer compute shader.
 // One invocation per pixel; accumulates into a persistent RGBA32F film buffer.
 // Push constants carry all per-dispatch state (camera, scene counts, sample index).
-// Layout mirrors RTSceneData on the CPU side.
+// Layout mirrors PathTracerSceneSnapshot on the CPU side.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 // ---- push constants ---------------------------------------------------------
+#define VKPT_PC_FLOAT3(name) vec3 name;
+#define VKPT_PC_FLOAT(name) float name;
+#define VKPT_PC_UINT(name) uint name;
 layout(push_constant) uniform PC {
-    vec3  camera_pos;     float fov_tan_half;   // 16
-    vec3  cam_forward;    float aspect;         // 32
-    vec3  cam_right;      uint  num_sdfs;       // 48
-    vec3  cam_up;         uint  sample_index;   // 64
-    uint  num_insts;      uint  num_mats;       // 72
-    uint  num_lights;     uint  width;          // 80
-    uint  height;         uint  base_seed;      // 88
-    // NOTE: vec3 would require 16-byte alignment here (GLSL std430), creating
-    // an 8-byte gap vs the C++ struct.  Use four separate floats instead so
-    // the layout is identical on both sides (4-byte aligned scalars, no gap).
-    float env_r;          float env_g;          // 88 / 92
-    float env_b;          float max_depth_f;    // 96 / 100  (total 104 bytes)
-    float aperture_radius; float focus_distance; // 104 / 108
-    uint  iris_blade_count; float iris_rotation_radians; // 112 / 116
-    float iris_roundness; float anamorphic_squeeze; // 120 / 124
+#include "gpu/PathTracePushConstants.inc"
 } pc;
+#undef VKPT_PC_UINT
+#undef VKPT_PC_FLOAT
+#undef VKPT_PC_FLOAT3
 
 // ---- storage buffers --------------------------------------------------------
 // Binding 0: vertex positions, 3 floats per vertex

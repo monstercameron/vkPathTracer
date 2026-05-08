@@ -1,4 +1,5 @@
 #include "pathtracer/PathTracer.h"
+#include "pathtracer/PathTracerObservability.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,6 +11,21 @@
 namespace {
 
 constexpr float kEpsilon = 1e-4f;
+
+vkpt::pathtracer::PathTracerLifecycle lifecycle_from_state(bool configured,
+                                                           bool scene_loaded,
+                                                           bool accel_valid) {
+  if (!configured) {
+    return vkpt::pathtracer::PathTracerLifecycle::Uninitialized;
+  }
+  if (!scene_loaded) {
+    return vkpt::pathtracer::PathTracerLifecycle::Configured;
+  }
+  if (!accel_valid) {
+    return vkpt::pathtracer::PathTracerLifecycle::SceneLoaded;
+  }
+  return vkpt::pathtracer::PathTracerLifecycle::Ready;
+}
 
 vkpt::pathtracer::Vec3 operator+(const vkpt::pathtracer::Vec3& lhs, const vkpt::pathtracer::Vec3& rhs) {
   return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
@@ -161,16 +177,16 @@ bool same_light(const vkpt::pathtracer::RTHitLight& lhs,
          lhs.spot_outer_cos == rhs.spot_outer_cos;
 }
 
-bool same_environment_map(const vkpt::pathtracer::RTSceneData& lhs,
-                          const vkpt::pathtracer::RTSceneData& rhs) {
+bool same_environment_map(const vkpt::pathtracer::PathTracerSceneSnapshot& lhs,
+                          const vkpt::pathtracer::PathTracerSceneSnapshot& rhs) {
   return lhs.environment_map_width == rhs.environment_map_width &&
          lhs.environment_map_height == rhs.environment_map_height &&
          same_vec3(lhs.environment_map_scale, rhs.environment_map_scale) &&
          same_vector(lhs.environment_map, rhs.environment_map, same_vec3);
 }
 
-bool same_camera_scene_fields(const vkpt::pathtracer::RTSceneData& lhs,
-                              const vkpt::pathtracer::RTSceneData& rhs) {
+bool same_camera_scene_fields(const vkpt::pathtracer::PathTracerSceneSnapshot& lhs,
+                              const vkpt::pathtracer::PathTracerSceneSnapshot& rhs) {
   return same_vec3(lhs.camera_position, rhs.camera_position) &&
          same_vec3(lhs.camera_target, rhs.camera_target) &&
          same_vec3(lhs.camera_up, rhs.camera_up) &&
@@ -195,7 +211,7 @@ bool same_camera_scene_fields(const vkpt::pathtracer::RTSceneData& lhs,
 
 namespace vkpt::pathtracer {
 
-Vec3 SampleSceneEnvironment(const RTSceneData& scene, const Vec3& direction) {
+Vec3 SampleSceneEnvironment(const PathTracerSceneSnapshot& scene, const Vec3& direction) {
   const auto width = scene.environment_map_width;
   const auto height = scene.environment_map_height;
   if (width == 0u || height == 0u ||
@@ -263,6 +279,8 @@ PathTraceSettings MakePathTraceSettings(const RenderSettings& settings) {
   out.spp = settings.spp;
   out.seed = settings.seed;
   out.deterministic = settings.deterministic;
+  out.determinism_frame_index = settings.determinism_frame_index;
+  out.determinism_scenario_id = settings.determinism_scenario_id;
   out.integrator.max_depth = std::max(1u, settings.max_depth);
   out.integrator.enable_nee = settings.enable_nee;
   out.integrator.enable_mis = settings.enable_mis;
@@ -284,6 +302,8 @@ RenderSettings MakeRenderSettings(const PathTraceSettings& settings) {
   out.spp = settings.spp;
   out.seed = settings.seed;
   out.deterministic = settings.deterministic;
+  out.determinism_frame_index = settings.determinism_frame_index;
+  out.determinism_scenario_id = settings.determinism_scenario_id;
   out.max_depth = std::max(1u, settings.integrator.max_depth);
   out.enable_nee = settings.integrator.enable_nee;
   out.enable_mis = settings.integrator.enable_mis;
@@ -298,7 +318,7 @@ RenderSettings MakeRenderSettings(const PathTraceSettings& settings) {
   return out;
 }
 
-RTCameraState ExtractCameraState(const RTSceneData& scene) {
+RTCameraState ExtractCameraState(const PathTracerSceneSnapshot& scene) {
   RTCameraState out;
   out.position = scene.camera_position;
   out.target = scene.camera_target;
@@ -321,7 +341,7 @@ RTCameraState ExtractCameraState(const RTSceneData& scene) {
   return out;
 }
 
-void ApplyCameraState(RTSceneData& scene, const RTCameraState& camera) {
+void ApplyCameraState(PathTracerSceneSnapshot& scene, const RTCameraState& camera) {
   scene.camera_position = camera.position;
   scene.camera_target = camera.target;
   scene.camera_up = camera.up;
@@ -342,7 +362,7 @@ void ApplyCameraState(RTSceneData& scene, const RTCameraState& camera) {
   scene.camera_anamorphic_squeeze = camera.anamorphic_squeeze;
 }
 
-bool ApplyInstanceTransformUpdates(RTSceneData& scene,
+bool ApplyInstanceTransformUpdates(PathTracerSceneSnapshot& scene,
                                    const std::vector<RTInstanceTransformUpdate>& updates,
                                    RTInstanceTransformApplyMode mode) {
   bool changed = false;
@@ -405,7 +425,7 @@ bool ApplyInstanceTransformUpdates(RTSceneData& scene,
   return changed;
 }
 
-bool ApplySceneDeltaUpdate(RTSceneData& scene, const RTSceneDeltaUpdate& update) {
+bool ApplySceneDeltaUpdate(PathTracerSceneSnapshot& scene, const RTSceneDeltaUpdate& update) {
   for (const auto& material : update.materials) {
     if (material.material_index >= scene.materials.size()) {
       return false;
@@ -464,8 +484,8 @@ void MergeSceneDeltaUpdates(RTSceneDeltaUpdate& dst, const RTSceneDeltaUpdate& s
   }
 }
 
-std::optional<RTSceneDeltaUpdate> BuildSceneDeltaUpdate(const RTSceneData& before,
-                                                        const RTSceneData& after) {
+std::optional<RTSceneDeltaUpdate> BuildSceneDeltaUpdate(const PathTracerSceneSnapshot& before,
+                                                        const PathTracerSceneSnapshot& after) {
   const bool structural_same =
       same_vector(before.vertices, after.vertices, same_vec3) &&
       same_vector(before.texcoords, after.texcoords, same_vec2) &&
@@ -535,7 +555,7 @@ std::string SerializePathTraceSettings(const PathTraceSettings& settings) {
   return out.str();
 }
 
-bool NullPathTracer::configure(const RenderSettings& settings) {
+vkpt::core::Status NullPathTracer::configure(const RenderSettings& settings) {
   m_settings = MakeRenderSettings(MakePathTraceSettings(settings));
   m_film.resize(m_settings.width, m_settings.height);
   m_film.set_resolve_settings(m_settings.film_resolve);
@@ -543,31 +563,100 @@ bool NullPathTracer::configure(const RenderSettings& settings) {
   m_counters = {};
   m_configured = true;
   m_has_scene = false;
+  m_accel_valid = false;
+  m_current_sample = 0u;
+  m_last_sample_us = 0u;
+  m_accumulation_gen = 0u;
+  m_next_reset_reason = PathTracerAccumulationResetReason::External;
+  m_last_error.clear();
   m_scene = {};
-  return true;
+  observability::EmitPathTracerConfig("null",
+                                      m_settings.width,
+                                      m_settings.height,
+                                      m_settings.spp,
+                                      m_settings.deterministic);
+  return vkpt::core::Status::ok("null path tracer configured");
 }
 
-bool NullPathTracer::load_scene_snapshot(const RTSceneData& scene) {
+vkpt::core::Status NullPathTracer::load_scene_snapshot(const PathTracerSceneSnapshot& scene) {
   if (!m_configured) {
-    return false;
+    m_last_error = "load_scene_snapshot called before configure";
+    observability::EmitPathTracerAnomaly("null",
+                                         "load_scene_snapshot",
+                                         m_last_error,
+                                         m_accumulation_gen);
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_last_error);
   }
   m_scene = scene;
   m_film.set_resolve_settings(CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_scene));
   m_has_scene = true;
-  return true;
+  m_accel_valid = false;
+  m_next_reset_reason = PathTracerAccumulationResetReason::Topology;
+  m_last_error.clear();
+  return vkpt::core::Status::ok("null path tracer scene loaded");
 }
 
-bool NullPathTracer::build_or_update_acceleration() {
-  return m_configured;
+vkpt::core::Status NullPathTracer::build_or_update_acceleration() {
+  if (!m_configured) {
+    m_last_error = "build_or_update_acceleration called before configure";
+    observability::EmitPathTracerAnomaly("null",
+                                         "build_or_update_acceleration",
+                                         m_last_error,
+                                         m_accumulation_gen);
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_last_error);
+  }
+  m_accel_valid = m_has_scene;
+  if (!m_has_scene) {
+    m_last_error = "build_or_update_acceleration called before load_scene_snapshot";
+    observability::EmitPathTracerAnomaly("null",
+                                         "build_or_update_acceleration",
+                                         m_last_error,
+                                         m_accumulation_gen);
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_last_error);
+  } else {
+    m_last_error.clear();
+  }
+  observability::EmitPathTracerStarted(
+      "null",
+      m_accumulation_gen,
+      static_cast<std::uint64_t>(m_scene.indices.size() / 3u));
+  return vkpt::core::Status::ok("null path tracer acceleration ready");
 }
 
 bool NullPathTracer::reset_accumulation() {
   if (!m_configured) {
+    m_last_error = "reset_accumulation called before configure";
+    observability::EmitAccumulationReset(m_accumulation_gen,
+                                         m_next_reset_reason,
+                                         false,
+                                         m_accel_valid);
     return false;
   }
   m_film.clear();
   m_counters = {};
+  m_current_sample = 0u;
+  ++m_accumulation_gen;
+  observability::EmitAccumulationReset(m_accumulation_gen,
+                                       m_next_reset_reason,
+                                       true,
+                                       m_accel_valid);
+  m_next_reset_reason = PathTracerAccumulationResetReason::External;
+  m_last_error.clear();
   return true;
+}
+
+bool NullPathTracer::replace_film_history(const FilmBuffer& film) {
+  if (!m_configured) {
+    m_last_error = "replace_film_history called before configure";
+    return false;
+  }
+  const bool copied = m_film.copy_from(film);
+  if (!copied) {
+    m_last_error = "replace_film_history dimensions do not match";
+  } else {
+    m_last_error.clear();
+  }
+  return copied;
 }
 
 bool NullPathTracer::update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) {
@@ -584,23 +673,40 @@ bool NullPathTracer::update_camera(const Vec3& pos, const Vec3& target, const Ve
 
 bool NullPathTracer::update_camera_state(const RTCameraState& camera) {
   if (!m_configured) {
+    m_last_error = "update_camera_state called before configure";
     return false;
   }
   ApplyCameraState(m_scene, camera);
   m_film.set_resolve_settings(CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_scene));
   m_has_scene = true;
+  m_next_reset_reason = PathTracerAccumulationResetReason::Camera;
+  m_last_error.clear();
   return true;
 }
 
 bool NullPathTracer::update_instance_transforms(
     const std::vector<RTInstanceTransformUpdate>& updates) {
   if (!m_configured || !m_has_scene) {
+    m_last_error = "update_instance_transforms requires a configured tracer with a scene";
     return false;
   }
-  return ApplyInstanceTransformUpdates(m_scene, updates);
+  const bool applied = ApplyInstanceTransformUpdates(m_scene, updates);
+  if (!applied) {
+    m_last_error = "null tracer failed to apply instance transforms";
+    return false;
+  }
+  m_next_reset_reason = PathTracerAccumulationResetReason::Transform;
+  observability::EmitSceneDeltaApplied(m_accumulation_gen,
+                                       0u,
+                                       0u,
+                                       static_cast<std::uint64_t>(updates.size()),
+                                       false,
+                                       m_accel_valid);
+  m_last_error.clear();
+  return true;
 }
 
-InstanceTransformUpdatePlan NullPathTracer::plan_instance_transform_update(
+InstanceTransformPlan NullPathTracer::plan_instance_transform_update(
     std::span<const RTInstanceTransformUpdate> updates,
     const InstanceTransformUpdateOptions& /*options*/) const {
   if (!m_configured || !m_has_scene) {
@@ -635,6 +741,7 @@ InstanceTransformUpdateResult NullPathTracer::apply_instance_transform_update(
 
   const std::vector<RTInstanceTransformUpdate> update_vec(updates.begin(), updates.end());
   if (!ApplyInstanceTransformUpdates(m_scene, update_vec, RTInstanceTransformApplyMode::MetadataOnly)) {
+    m_last_error = "null tracer failed to apply transform metadata";
     return {
         InstanceTransformUpdateStatus::Failed,
         static_cast<std::uint32_t>(updates.size()),
@@ -645,6 +752,14 @@ InstanceTransformUpdateResult NullPathTracer::apply_instance_transform_update(
         0.0,
         "null tracer failed to apply transform metadata"};
   }
+  m_next_reset_reason = AccumulationResetReasonFromUpdateReason(options.reason);
+  observability::EmitSceneDeltaApplied(m_accumulation_gen,
+                                       0u,
+                                       0u,
+                                       static_cast<std::uint64_t>(updates.size()),
+                                       false,
+                                       m_accel_valid);
+  m_last_error.clear();
   return {
       InstanceTransformUpdateStatus::AppliedMetadataOnly,
       static_cast<std::uint32_t>(updates.size()),
@@ -658,29 +773,68 @@ InstanceTransformUpdateResult NullPathTracer::apply_instance_transform_update(
 
 bool NullPathTracer::update_scene_delta(const RTSceneDeltaUpdate& update) {
   if (!m_configured || !m_has_scene) {
+    m_last_error = "update_scene_delta requires a configured tracer with a scene";
     return false;
   }
-  return ApplySceneDeltaUpdate(m_scene, update);
+  const bool applied = ApplySceneDeltaUpdate(m_scene, update);
+  if (!applied) {
+    m_last_error = "null tracer scene delta did not apply";
+    return false;
+  }
+  m_next_reset_reason = PathTracerAccumulationResetReason::Material;
+  observability::EmitSceneDeltaApplied(m_accumulation_gen,
+                                       static_cast<std::uint64_t>(update.materials.size()),
+                                       static_cast<std::uint64_t>(update.lights.size()),
+                                       0u,
+                                       update.environment_color_changed,
+                                       m_accel_valid);
+  m_last_error.clear();
+  return true;
 }
 
-bool NullPathTracer::render_sample_batch(uint32_t start_y,
-                                         uint32_t end_y,
-                                         uint32_t sample_index,
-                                         uint32_t frame_index) {
-  (void)start_y;
-  (void)end_y;
-  (void)sample_index;
+bool NullPathTracer::render_tile(const RenderTile& tile, uint32_t frame_index) {
+  (void)tile;
   (void)frame_index;
-  return m_configured;
+  if (!m_configured) {
+    m_last_error = "render_tile called before configure";
+    return false;
+  }
+  m_current_sample = std::max(m_current_sample, tile.sample_index + 1u);
+  m_last_error.clear();
+  return true;
+}
+
+PathTracerStatus NullPathTracer::status() const {
+  PathTracerStatus out;
+  out.backend = "null";
+  out.lifecycle = lifecycle_from_state(m_configured, m_has_scene, m_accel_valid);
+  out.scene_loaded = m_has_scene;
+  out.accel_valid = m_accel_valid;
+  out.ready_to_render = m_configured && m_has_scene && m_accel_valid;
+  out.current_sample = m_current_sample;
+  out.last_sample_us = m_last_sample_us;
+  out.total_samples = m_counters.samples;
+  out.accumulation_gen = m_accumulation_gen;
+  out.last_error = m_last_error;
+  return out;
 }
 
 void NullPathTracer::shutdown() {
+  observability::EmitPathTracerStopped("null",
+                                       m_accumulation_gen,
+                                       m_counters.samples);
   m_settings = {};
   m_scene = {};
   m_film = FilmBuffer{};
   m_counters = {};
   m_configured = false;
   m_has_scene = false;
+  m_accel_valid = false;
+  m_current_sample = 0u;
+  m_last_sample_us = 0u;
+  m_accumulation_gen = 0u;
+  m_next_reset_reason = PathTracerAccumulationResetReason::External;
+  m_last_error.clear();
 }
 
 }  // namespace vkpt::pathtracer

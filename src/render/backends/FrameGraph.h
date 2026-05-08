@@ -29,12 +29,14 @@ class FrameGraph final : public IFrameGraph {
   /// Validate dependency ids, cycles, and resource read/write hazards.
   bool validate(std::vector<std::string>* diagnostics) const override;
   /// Execute the graph with an empty frame context.
-  bool execute(IRenderCommandContext& context,
-               const std::vector<std::uint32_t>* execution_order = nullptr) const override;
+  FrameGraphResult execute(
+      IRenderCommandContext& context,
+      const std::vector<std::uint32_t>* execution_order = nullptr) const override;
   /// Execute passes in topological order unless a checked explicit order is supplied.
-  bool execute(IRenderCommandContext& context,
-               const FrameContext& frame,
-               const std::vector<std::uint32_t>* execution_order = nullptr) const override;
+  FrameGraphResult execute(
+      IRenderCommandContext& context,
+      const FrameContext& frame,
+      const std::vector<std::uint32_t>* execution_order = nullptr) const override;
 
   const std::vector<Pass>& passes() const override { return m_passes; }
   const std::vector<std::pair<std::uint32_t, std::uint32_t>>& dependencies() const override { return m_dependencies; }

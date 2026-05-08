@@ -1,4 +1,5 @@
 #include "pathtracer/PathTracer.h"
+#include "pathtracer/PathTracerObservability.h"
 #include "pathtracer/ScalarCpuPathTracerJobs.h"
 #include "cpu/SimdKernelDispatch.h"
 #include <algorithm>
@@ -16,6 +17,21 @@ constexpr float kEpsilon = 1e-4f;
 constexpr float kMinMarchStep = 1.0e-3f;
 constexpr uint32_t kMaxMarchSteps = 192u;
 constexpr float kMaxMarchDistance = 10000.0f;
+
+vkpt::pathtracer::PathTracerLifecycle lifecycle_from_state(bool configured,
+                                                           bool scene_loaded,
+                                                           bool accel_valid) {
+  if (!configured) {
+    return vkpt::pathtracer::PathTracerLifecycle::Uninitialized;
+  }
+  if (!scene_loaded) {
+    return vkpt::pathtracer::PathTracerLifecycle::Configured;
+  }
+  if (!accel_valid) {
+    return vkpt::pathtracer::PathTracerLifecycle::SceneLoaded;
+  }
+  return vkpt::pathtracer::PathTracerLifecycle::Ready;
+}
 
 uint64_t splitmix64(uint64_t x) {
   x += 0x9e3779b97f4a7c15ULL;
@@ -120,7 +136,7 @@ vkpt::pathtracer::Vec3 rotate_euler(const vkpt::pathtracer::Vec3& value, const v
   return rotate_x(rotate_y(rotate_z(value, rotation.z), rotation.y), rotation.x);
 }
 
-void compute_camera_basis(const vkpt::pathtracer::RTSceneData& scene,
+void compute_camera_basis(const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                           vkpt::pathtracer::Vec3& forward,
                           vkpt::pathtracer::Vec3& right,
                           vkpt::pathtracer::Vec3& up) {
@@ -392,16 +408,22 @@ ScalarCpuPathTracer::~ScalarCpuPathTracer() = default;
 bool ScalarCpuPathTracer::set_accelerator(IRayAccelerator* accelerator) {
   m_external_accelerator = accelerator;
   m_accel_info = accelerator ? accelerator->build_info() : RayAcceleratorBuildInfo{};
+  m_accel_valid = m_accel_info.built;
   return true;
 }
 
-bool ScalarCpuPathTracer::configure(const RenderSettings& settings) {
+vkpt::core::Status ScalarCpuPathTracer::configure(const RenderSettings& settings) {
   m_trace_settings = MakePathTraceSettings(settings);
   m_settings = MakeRenderSettings(m_trace_settings);
   m_film = FilmBuffer{m_settings.width, m_settings.height};
   m_film.set_resolve_settings(m_settings.film_resolve);
   m_film.clear();
   m_counters = {};
+  m_current_sample = 0u;
+  m_last_sample_us = 0u;
+  m_accumulation_gen = 0u;
+  m_next_reset_reason = PathTracerAccumulationResetReason::External;
+  m_last_error.clear();
   m_worker_count = std::max<std::uint32_t>(
       1u,
       static_cast<std::uint32_t>(ScalarRenderJobs().worker_count()));
@@ -420,16 +442,27 @@ bool ScalarCpuPathTracer::configure(const RenderSettings& settings) {
                                     });
   m_configured = true;
   m_has_scene = false;
-  m_scene = RTSceneData{};
+  m_scene = PathTracerSceneSnapshot{};
   m_accelerator = CreateCpuBvhAccelerator();
   m_external_accelerator = nullptr;
   m_accel_info = {};
-  return true;
+  m_accel_valid = false;
+  observability::EmitPathTracerConfig("scalar-cpu",
+                                      m_settings.width,
+                                      m_settings.height,
+                                      m_settings.spp,
+                                      m_settings.deterministic);
+  return vkpt::core::Status::ok("scalar CPU path tracer configured");
 }
 
-bool ScalarCpuPathTracer::load_scene_snapshot(const RTSceneData& scene) {
+vkpt::core::Status ScalarCpuPathTracer::load_scene_snapshot(const PathTracerSceneSnapshot& scene) {
   if (!m_configured) {
-    return false;
+    m_last_error = "load_scene_snapshot called before configure";
+    observability::EmitPathTracerAnomaly("scalar-cpu",
+                                         "load_scene_snapshot",
+                                         m_last_error,
+                                         m_accumulation_gen);
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_last_error);
   }
   m_scene = scene;
   m_film.set_resolve_settings(CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_scene));
@@ -437,21 +470,37 @@ bool ScalarCpuPathTracer::load_scene_snapshot(const RTSceneData& scene) {
     m_scene.materials.push_back(RTMaterial{});
   }
   m_has_scene = true;
-  return true;
+  m_accel_valid = false;
+  m_next_reset_reason = PathTracerAccumulationResetReason::Topology;
+  m_last_error.clear();
+  return vkpt::core::Status::ok("scalar CPU scene loaded");
 }
 
-bool ScalarCpuPathTracer::build_or_update_acceleration() {
+vkpt::core::Status ScalarCpuPathTracer::build_or_update_acceleration() {
   if (!m_has_scene) {
-    return false;
+    m_accel_valid = false;
+    m_last_error = "build_or_update_acceleration called before load_scene_snapshot";
+    observability::EmitPathTracerAnomaly("scalar-cpu",
+                                         "build_or_update_acceleration",
+                                         m_last_error,
+                                         m_accumulation_gen);
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_last_error);
   }
   if (!m_accelerator) {
     m_accelerator = CreateCpuBvhAccelerator();
   }
   IRayAccelerator* accelerator = m_external_accelerator ? m_external_accelerator : m_accelerator.get();
   if (accelerator == nullptr || !accelerator->build(m_scene, m_settings.deterministic)) {
-    return false;
+    m_accel_valid = false;
+    m_last_error = "CPU accelerator build failed";
+    observability::EmitPathTracerAnomaly("scalar-cpu",
+                                         "build_or_update_acceleration",
+                                         m_last_error,
+                                         m_accumulation_gen);
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError, m_last_error);
   }
   m_accel_info = accelerator->build_info();
+  m_accel_valid = m_accel_info.built;
   vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,
                                     "pathtracer",
                                     "cpu bvh built",
@@ -463,11 +512,16 @@ bool ScalarCpuPathTracer::build_or_update_acceleration() {
                                       {"deterministic", m_accel_info.deterministic ? "true" : "false"}
                                     });
   compute_camera_basis(m_scene, m_camera_forward, m_camera_right, m_camera_up);
-  return true;
+  m_last_error.clear();
+  observability::EmitPathTracerStarted("scalar-cpu",
+                                       m_accumulation_gen,
+                                       m_accel_info.primitive_count);
+  return vkpt::core::Status::ok("scalar CPU acceleration ready");
 }
 
 bool ScalarCpuPathTracer::update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) {
   if (!m_configured || !m_has_scene) {
+    m_last_error = "update_camera requires a configured tracer with a scene";
     return false;
   }
   auto camera = ExtractCameraState(m_scene);
@@ -480,25 +534,31 @@ bool ScalarCpuPathTracer::update_camera(const Vec3& pos, const Vec3& target, con
 
 bool ScalarCpuPathTracer::update_camera_state(const RTCameraState& camera) {
   if (!m_configured || !m_has_scene) {
+    m_last_error = "update_camera_state requires a configured tracer with a scene";
     return false;
   }
   ApplyCameraState(m_scene, camera);
   m_film.set_resolve_settings(CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_scene));
   compute_camera_basis(m_scene, m_camera_forward, m_camera_right, m_camera_up);
+  m_next_reset_reason = PathTracerAccumulationResetReason::Camera;
+  m_last_error.clear();
   return true;
 }
 
 bool ScalarCpuPathTracer::update_instance_transforms(
     const std::vector<RTInstanceTransformUpdate>& updates) {
   if (!m_configured || !m_has_scene) {
+    m_last_error = "update_instance_transforms requires a configured tracer with a scene";
     return false;
   }
   if (m_external_accelerator != nullptr) {
+    m_last_error = "update_instance_transforms does not mutate an external accelerator";
     return false;
   }
 
   auto next_scene = m_scene;
   if (!ApplyInstanceTransformUpdates(next_scene, updates)) {
+    m_last_error = "scalar tracer failed to apply instance transforms";
     return false;
   }
 
@@ -507,12 +567,21 @@ bool ScalarCpuPathTracer::update_instance_transforms(
   if (!build_or_update_acceleration()) {
     m_scene = std::move(previous_scene);
     (void)build_or_update_acceleration();
+    m_last_error = "scalar tracer failed to rebuild acceleration after instance transforms";
     return false;
   }
+  m_next_reset_reason = PathTracerAccumulationResetReason::Transform;
+  observability::EmitSceneDeltaApplied(m_accumulation_gen,
+                                       0u,
+                                       0u,
+                                       static_cast<std::uint64_t>(updates.size()),
+                                       false,
+                                       m_accel_valid);
+  m_last_error.clear();
   return true;
 }
 
-InstanceTransformUpdatePlan ScalarCpuPathTracer::plan_instance_transform_update(
+InstanceTransformPlan ScalarCpuPathTracer::plan_instance_transform_update(
     std::span<const RTInstanceTransformUpdate> updates,
     const InstanceTransformUpdateOptions& options) const {
   if (!m_configured || !m_has_scene) {
@@ -567,6 +636,9 @@ InstanceTransformUpdateResult ScalarCpuPathTracer::apply_instance_transform_upda
     const InstanceTransformUpdateOptions& options) {
   const auto plan = plan_instance_transform_update(updates, options);
   if (!plan.can_apply_without_full_fallback()) {
+    m_last_error = plan.message != nullptr
+        ? plan.message
+        : "CPU tracer transform update cannot apply without fallback";
     return {
         plan.status,
         plan.requested_count,
@@ -580,6 +652,7 @@ InstanceTransformUpdateResult ScalarCpuPathTracer::apply_instance_transform_upda
 
   IRayAccelerator* accelerator = m_external_accelerator ? m_external_accelerator : m_accelerator.get();
   if (accelerator == nullptr) {
+    m_last_error = "no CPU accelerator available";
     return {
         InstanceTransformUpdateStatus::Unsupported,
         static_cast<std::uint32_t>(updates.size()),
@@ -593,11 +666,15 @@ InstanceTransformUpdateResult ScalarCpuPathTracer::apply_instance_transform_upda
 
   const auto result = accelerator->apply_instance_transform_update(m_scene, updates, options);
   if (!result.applied()) {
+    m_last_error = result.message != nullptr
+        ? result.message
+        : "CPU accelerator transform update failed";
     return result;
   }
 
   const std::vector<RTInstanceTransformUpdate> update_vec(updates.begin(), updates.end());
   if (!ApplyInstanceTransformUpdates(m_scene, update_vec, RTInstanceTransformApplyMode::MetadataOnly)) {
+    m_last_error = "CPU tracer failed to commit transform metadata after accelerator update";
     return {
         InstanceTransformUpdateStatus::Failed,
         static_cast<std::uint32_t>(updates.size()),
@@ -609,23 +686,89 @@ InstanceTransformUpdateResult ScalarCpuPathTracer::apply_instance_transform_upda
         "CPU tracer failed to commit transform metadata after accelerator update"};
   }
   m_accel_info = accelerator->build_info();
+  m_accel_valid = m_accel_info.built;
+  m_next_reset_reason = AccumulationResetReasonFromUpdateReason(options.reason);
+  observability::EmitSceneDeltaApplied(m_accumulation_gen,
+                                       0u,
+                                       0u,
+                                       static_cast<std::uint64_t>(updates.size()),
+                                       false,
+                                       m_accel_valid);
+  m_last_error.clear();
   return result;
 }
 
 bool ScalarCpuPathTracer::update_scene_delta(const RTSceneDeltaUpdate& update) {
   if (!m_configured || !m_has_scene) {
+    m_last_error = "update_scene_delta requires a configured tracer with a scene";
     return false;
   }
-  return ApplySceneDeltaUpdate(m_scene, update);
+  const bool applied = ApplySceneDeltaUpdate(m_scene, update);
+  if (!applied) {
+    m_last_error = "scalar tracer scene delta did not apply";
+    return false;
+  }
+  m_next_reset_reason = PathTracerAccumulationResetReason::Material;
+  observability::EmitSceneDeltaApplied(m_accumulation_gen,
+                                       static_cast<std::uint64_t>(update.materials.size()),
+                                       static_cast<std::uint64_t>(update.lights.size()),
+                                       0u,
+                                       update.environment_color_changed,
+                                       m_accel_valid);
+  m_last_error.clear();
+  return true;
 }
 
 bool ScalarCpuPathTracer::reset_accumulation() {
   if (!m_configured) {
+    m_last_error = "reset_accumulation called before configure";
+    observability::EmitAccumulationReset(m_accumulation_gen,
+                                         m_next_reset_reason,
+                                         false,
+                                         m_accel_valid);
     return false;
   }
   m_film.clear();
   m_counters = {};
+  m_current_sample = 0u;
+  ++m_accumulation_gen;
+  observability::EmitAccumulationReset(m_accumulation_gen,
+                                       m_next_reset_reason,
+                                       true,
+                                       m_accel_valid);
+  m_next_reset_reason = PathTracerAccumulationResetReason::External;
+  m_last_error.clear();
   return true;
+}
+
+bool ScalarCpuPathTracer::replace_film_history(const FilmBuffer& film) {
+  if (!m_configured) {
+    m_last_error = "replace_film_history called before configure";
+    return false;
+  }
+  const bool copied = m_film.copy_from(film);
+  if (!copied) {
+    m_last_error = "replace_film_history dimensions do not match";
+  } else {
+    m_last_error.clear();
+  }
+  return copied;
+}
+
+PathTracerStatus ScalarCpuPathTracer::status() const {
+  const auto counters = read_counters();
+  PathTracerStatus out;
+  out.backend = "scalar-cpu";
+  out.lifecycle = lifecycle_from_state(m_configured, m_has_scene, m_accel_valid);
+  out.scene_loaded = m_has_scene;
+  out.accel_valid = m_accel_valid;
+  out.ready_to_render = m_configured && m_has_scene && m_accel_valid;
+  out.current_sample = m_current_sample;
+  out.last_sample_us = m_last_sample_us;
+  out.total_samples = counters.samples;
+  out.accumulation_gen = m_accumulation_gen;
+  out.last_error = m_last_error;
+  return out;
 }
 
 bool ScalarCpuPathTracer::intersect_triangle(const RTTriangle& tri,

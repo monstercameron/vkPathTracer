@@ -5,6 +5,9 @@
 #include <limits>
 #include <numeric>
 
+#include "core/log/Log.h"
+#include "core/metrics/Metrics.h"
+
 namespace vkpt::cpu {
 
 // static
@@ -172,7 +175,24 @@ BvhBuildResult ParallelBvhBuilder::build(
   result.worker_count = jobs ? jobs->worker_count() : 0u;
 
   if (prim_aabbs.empty()) {
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    const auto build_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
     m_lastStats = BvhBuildStats{};
+    m_lastStats.build_ms = static_cast<double>(build_us) / 1000.0;
+    m_lastStats.worker_count = result.worker_count;
+    m_lastStats.deterministic = deterministic;
+    VKP_METRIC_OBSERVE("vkp.cpu.bvh_build_us",
+                       build_us < 0 ? 0u : static_cast<std::uint64_t>(build_us));
+    VKP_LOG(Info,
+            "bvh",
+            "build_completed",
+            "node_count",
+            static_cast<std::uint64_t>(m_lastStats.node_count),
+            "prim_count",
+            static_cast<std::uint64_t>(m_lastStats.prim_count),
+            "worker_count",
+            static_cast<std::uint64_t>(m_lastStats.worker_count));
     return result;
   }
 
@@ -205,6 +225,8 @@ BvhBuildResult ParallelBvhBuilder::build(
   const double build_ms =
       std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
   result.build_ms = build_ms;
+  VKP_METRIC_OBSERVE("vkp.cpu.bvh_build_us",
+                     static_cast<std::uint64_t>(build_ms * 1000.0));
 
   // Compute stats
   std::size_t leaf_count = 0;
@@ -220,6 +242,16 @@ BvhBuildResult ParallelBvhBuilder::build(
   m_lastStats.build_ms = build_ms;
   m_lastStats.worker_count = result.worker_count;
   m_lastStats.deterministic = deterministic;
+
+  VKP_LOG(Info,
+          "bvh",
+          "build_completed",
+          "node_count",
+          static_cast<std::uint64_t>(m_lastStats.node_count),
+          "prim_count",
+          static_cast<std::uint64_t>(m_lastStats.prim_count),
+          "worker_count",
+          static_cast<std::uint64_t>(m_lastStats.worker_count));
 
   return result;
 }

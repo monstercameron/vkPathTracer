@@ -19,10 +19,11 @@ class Avx2CpuPathTracer final : public vkpt::pathtracer::IPathTracer {
  public:
   using vkpt::pathtracer::IPathTracer::configure;
 
-  bool configure(const vkpt::pathtracer::RenderSettings& settings) override;
-  bool load_scene_snapshot(const vkpt::pathtracer::RTSceneData& scene) override;
-  bool build_or_update_acceleration() override;
+  vkpt::core::Status configure(const vkpt::pathtracer::RenderSettings& settings) override;
+  vkpt::core::Status load_scene_snapshot(const vkpt::pathtracer::PathTracerSceneSnapshot& scene) override;
+  vkpt::core::Status build_or_update_acceleration() override;
   bool reset_accumulation() override;
+  bool replace_film_history(const vkpt::pathtracer::FilmBuffer& film) override;
   bool update_camera(const vkpt::pathtracer::Vec3& pos,
                      const vkpt::pathtracer::Vec3& target,
                      const vkpt::pathtracer::Vec3& up,
@@ -31,8 +32,9 @@ class Avx2CpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool update_instance_transforms(
       const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) override;
   bool update_scene_delta(const vkpt::pathtracer::RTSceneDeltaUpdate& update) override;
-  bool render_sample_batch(uint32_t start_y, uint32_t end_y,
-                           uint32_t sample_index, uint32_t frame_index) override;
+  bool render_tile(const vkpt::pathtracer::RenderTile& tile,
+                   uint32_t frame_index) override;
+  bool supports_tile_rendering() const override { return true; }
   vkpt::pathtracer::FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }
   vkpt::pathtracer::FilmHdr resolve_hdr() const override { return m_film.resolve_hdr(); }
   vkpt::pathtracer::SampleCounters read_counters() const override;
@@ -45,7 +47,7 @@ class Avx2CpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool configured_ = false;
   bool has_scene_  = false;
   vkpt::pathtracer::RenderSettings settings_;
-  vkpt::pathtracer::RTSceneData    scene_;
+  vkpt::pathtracer::PathTracerSceneSnapshot    scene_;
   vkpt::pathtracer::FilmBuffer     m_film;
   mutable vkpt::pathtracer::SampleCounters counters_{};
 

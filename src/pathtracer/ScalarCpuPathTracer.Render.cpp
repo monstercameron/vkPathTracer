@@ -1,4 +1,5 @@
 #include "pathtracer/PathTracer.h"
+#include "pathtracer/PathTracerObservability.h"
 #include "pathtracer/ScalarCpuPathTracerJobs.h"
 
 #include <algorithm>
@@ -126,21 +127,102 @@ bool ScalarCpuPathTracer::render_sample_batch(uint32_t start_y,
   }
   const uint32_t maxY = std::min(end_y, m_settings.height);
   const uint32_t minY = std::min(start_y, maxY);
-  const uint64_t pixelCount64 = static_cast<uint64_t>(m_settings.width) * (maxY - minY);
-  if (pixelCount64 == 0u) {
-    return true;
+  RenderTile tile;
+  tile.x = 0u;
+  tile.y = minY;
+  tile.width = m_settings.width;
+  tile.height = maxY - minY;
+  tile.sample_index = sample_index;
+  tile.tile_id = m_settings.width == 0u ? 0u : minY;
+  return render_tile_cancellable(tile, frame_index, {});
+}
+
+bool ScalarCpuPathTracer::render_tile(const RenderTile& tile,
+                                      uint32_t frame_index) {
+  return render_tile_cancellable(tile, frame_index, {});
+}
+
+bool ScalarCpuPathTracer::render_tile_cancellable(const RenderTile& tile,
+                                                 uint32_t frame_index,
+                                                 std::stop_token stop) {
+  const auto countersBefore = read_counters();
+  const auto startUs = observability::NowUs();
+  auto finish = [&](bool result) {
+    const auto elapsedUs = observability::ElapsedUsSince(startUs);
+    m_last_sample_us = elapsedUs;
+    observability::ObservePathTracerSampleUs(elapsedUs);
+    if (result) {
+      observability::RecordSampleCounterDeltas(countersBefore, read_counters());
+      m_current_sample = std::max(m_current_sample, tile.sample_index + 1u);
+      m_last_error.clear();
+    }
+    return result;
+  };
+
+  if (!m_configured || !m_has_scene) {
+    m_last_error = "render_tile requires a configured tracer with a scene";
+    return finish(false);
   }
-  if (pixelCount64 > std::numeric_limits<uint32_t>::max()) {
-    return false;
+  if (stop.stop_requested()) {
+    m_last_error = "render_tile cancelled before work started";
+    return finish(false);
   }
-  const uint64_t firstPixel64 = static_cast<uint64_t>(minY) * m_settings.width;
-  if (firstPixel64 > std::numeric_limits<uint32_t>::max()) {
-    return false;
+  if (tile.width == 0u || tile.height == 0u) {
+    return finish(true);
   }
-  return render_sample_contiguous_pixels(static_cast<uint32_t>(firstPixel64),
-                                         static_cast<uint32_t>(pixelCount64),
-                                         sample_index,
-                                         frame_index);
+
+  const uint32_t x0 = std::min(tile.x, m_settings.width);
+  const uint32_t y0 = std::min(tile.y, m_settings.height);
+  const uint32_t x1 = std::min<std::uint32_t>(m_settings.width, x0 + tile.width);
+  const uint32_t y1 = std::min<std::uint32_t>(m_settings.height, y0 + tile.height);
+  if (x0 >= x1 || y0 >= y1) {
+    return finish(true);
+  }
+
+  if (x0 == 0u && x1 == m_settings.width) {
+    const uint64_t pixelCount64 = static_cast<uint64_t>(m_settings.width) * (y1 - y0);
+    if (pixelCount64 == 0u) {
+      return finish(true);
+    }
+    if (pixelCount64 > std::numeric_limits<uint32_t>::max()) {
+      return finish(false);
+    }
+    const uint64_t firstPixel64 = static_cast<uint64_t>(y0) * m_settings.width;
+    if (firstPixel64 > std::numeric_limits<uint32_t>::max()) {
+      return finish(false);
+    }
+    return finish(render_sample_contiguous_pixels(static_cast<uint32_t>(firstPixel64),
+                                                  static_cast<uint32_t>(pixelCount64),
+                                                  tile.sample_index,
+                                                  frame_index));
+  }
+
+  const std::uint64_t pixelCount64 =
+      static_cast<std::uint64_t>(x1 - x0) * static_cast<std::uint64_t>(y1 - y0);
+  if (pixelCount64 > std::numeric_limits<std::uint32_t>::max()) {
+    return finish(false);
+  }
+
+  std::vector<std::uint32_t> pixels;
+  pixels.reserve(static_cast<std::size_t>(pixelCount64));
+  for (std::uint32_t y = y0; y < y1; ++y) {
+    if (stop.stop_requested()) {
+      m_last_error = "render_tile cancelled";
+      return finish(false);
+    }
+    const std::uint64_t rowStart = static_cast<std::uint64_t>(y) * m_settings.width;
+    for (std::uint32_t x = x0; x < x1; ++x) {
+      const std::uint64_t pixel = rowStart + x;
+      if (pixel > std::numeric_limits<std::uint32_t>::max()) {
+        return finish(false);
+      }
+      pixels.push_back(static_cast<std::uint32_t>(pixel));
+    }
+  }
+  return finish(render_sample_pixels(pixels.data(),
+                                     static_cast<std::uint32_t>(pixels.size()),
+                                     tile.sample_index,
+                                     frame_index));
 }
 
 void ScalarCpuPathTracer::shade_pixel(uint32_t pixel,
@@ -379,13 +461,23 @@ SampleCounters ScalarCpuPathTracer::read_counters() const {
 }
 
 void ScalarCpuPathTracer::shutdown() {
+  const auto counters = read_counters();
+  observability::EmitPathTracerStopped("scalar-cpu",
+                                       m_accumulation_gen,
+                                       counters.samples);
   m_configured = false;
   m_has_scene = false;
+  m_accel_valid = false;
   m_film = FilmBuffer{};
-  m_scene = RTSceneData{};
+  m_scene = PathTracerSceneSnapshot{};
   m_accelerator.reset();
   m_external_accelerator = nullptr;
   m_accel_info = {};
+  m_current_sample = 0u;
+  m_last_sample_us = 0u;
+  m_accumulation_gen = 0u;
+  m_next_reset_reason = PathTracerAccumulationResetReason::External;
+  m_last_error.clear();
 }
 
 

@@ -42,6 +42,8 @@
 #include "pathtracer/SceneConversion.h"
 #include "render/RenderCoordinator.h"
 #include "scene/SceneDocument.h"
+#include "scene/SceneSnapshot.h"
+#include "scene/SnapshotRing.h"
 
 #include <thread>
 
@@ -175,6 +177,15 @@ int main(int argc, char** argv) {
     std::cerr << "tracer setup failed: " << tracer->last_error() << "\n";
     return 2;
   }
+  auto renderFullFrame = [&](std::uint32_t sample, std::uint32_t frame) {
+    vkpt::pathtracer::RenderTile tile;
+    tile.x = 0u;
+    tile.y = 0u;
+    tile.width = width;
+    tile.height = height;
+    tile.sample_index = sample;
+    return tracer->render_tile(tile, frame);
+  };
 
   // Exercise the editor toggle path before warm-up so timings stay comparable.
   auto toggledSettings = settings;
@@ -182,14 +193,14 @@ int main(int argc, char** argv) {
   toggledSettings.enable_temporal_aa = false;
   if (!tracer->update_render_settings(toggledSettings) ||
       !tracer->reset_accumulation() ||
-      !tracer->render_sample_batch(0u, height, 0u, 0u)) {
+      !renderFullFrame(0u, 0u)) {
     std::cerr << "toggle-off render settings smoke failed: "
               << tracer->last_error() << "\n";
     return 2;
   }
   if (!tracer->update_render_settings(settings) ||
       !tracer->reset_accumulation() ||
-      !tracer->render_sample_batch(0u, height, 0u, 0u)) {
+      !renderFullFrame(0u, 0u)) {
     std::cerr << "toggle-on render settings smoke failed: "
               << tracer->last_error() << "\n";
     return 2;
@@ -198,7 +209,7 @@ int main(int argc, char** argv) {
   // ---- Warm-up: render a couple of full samples so PSO/heap creation and any
   // first-call DXR setup don't skew the first measured frame.
   for (std::uint32_t i = 0; i < 2u; ++i) {
-    if (!tracer->render_sample_batch(0u, height, i, 0u)) {
+    if (!renderFullFrame(i, 0u)) {
       std::cerr << "warmup render failed: " << tracer->last_error() << "\n";
       return 2;
     }
@@ -210,7 +221,7 @@ int main(int argc, char** argv) {
   tracer->reset_accumulation();
   for (std::uint32_t i = 0; i < restFrames; ++i) {
     const auto t0 = Clock::now();
-    if (!tracer->render_sample_batch(0u, height, i, 0u)) {
+    if (!renderFullFrame(i, 0u)) {
       std::cerr << "rest render failed at sample " << i << ": "
                 << tracer->last_error() << "\n";
       return 2;
@@ -265,7 +276,7 @@ int main(int argc, char** argv) {
       return 2;
     }
     const auto t2 = Clock::now();
-    if (!tracer->render_sample_batch(0u, height, i, 0u)) {
+    if (!renderFullFrame(i, 0u)) {
       std::cerr << "drag render failed at frame " << i << ": "
                 << tracer->last_error() << "\n";
       return 2;
@@ -341,13 +352,28 @@ int main(int argc, char** argv) {
       return 2;
     }
 
+    vkpt::scene::SnapshotRing coordinatorSnapshots;
+    vkpt::scene::RenderSceneSnapshotRevisions coordinatorSnapshotRevisions{};
+    coordinatorSnapshotRevisions.generation = 1u;
+    coordinatorSnapshotRevisions.topology_revision = 1u;
+    coordinatorSnapshotRevisions.transform_revision = 1u;
+    coordinatorSnapshotRevisions.camera_revision = 1u;
+    coordinatorSnapshotRevisions.material_revision = 1u;
+    auto coordinatorScene = sceneData.value();
+    auto coordinatorSnapshot = vkpt::scene::BuildRenderSceneSnapshot(
+        coordinatorScene,
+        nullptr,
+        coordinatorSnapshotRevisions);
+    coordinatorSnapshots.publish(coordinatorSnapshot);
+
     vkpt::render::RenderCoordinatorConfig coordConfig{};
     coordConfig.publish_hz = orchHz;
     coordConfig.immediate_publish_count = 4u;
+    coordConfig.snapshot_ring = &coordinatorSnapshots;
 
     vkpt::render::RenderCoordinator coordinator(std::move(coordinatorTracer),
                                                 settings,
-                                                sceneData.value(),
+                                                coordinatorScene,
                                                 coordConfig);
     if (!coordinator.start()) {
       std::cerr << "coordinator start failed: " << coordinator.stats().error << "\n";
@@ -390,13 +416,19 @@ int main(int argc, char** argv) {
       update.rotation = target.rotation;
       update.scale = target.scale;
 
-      auto options = vkpt::pathtracer::MakeStandardTransformUpdateOptions(
-          vkpt::pathtracer::RenderUpdateReason::EditorGizmoMotion,
-          i + 1u,
-          "drag-throughput-coordinator");
-
       const auto tickStart = Clock::now();
-      coordinator.post_instance_transforms({update}, options);
+      if (vkpt::pathtracer::ApplyInstanceTransformUpdates(
+              coordinatorScene,
+              std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>{update},
+              vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly)) {
+        ++coordinatorSnapshotRevisions.generation;
+        ++coordinatorSnapshotRevisions.transform_revision;
+        coordinatorSnapshot = vkpt::scene::BuildRenderSceneSnapshot(
+            coordinatorScene,
+            coordinatorSnapshot.get(),
+            coordinatorSnapshotRevisions);
+        coordinatorSnapshots.publish(coordinatorSnapshot);
+      }
       const auto postEnd = Clock::now();
 
       auto frame = coordinator.acquire_latest_frame();

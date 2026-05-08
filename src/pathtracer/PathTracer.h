@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -9,11 +10,14 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "cpu/CpuFeatures.h"
 #include "core/Logging.h"
 #include "core/Types.h"
+#include "core/contracts/Determinism.h"
+#include "core/contracts/Result.h"
 #include "scene/Scene.h"
 
 namespace vkpt::pathtracer {
@@ -95,9 +99,36 @@ struct PathTraceSettings {
   uint32_t spp = 8;
   uint64_t seed = 0x12345678ULL;
   bool deterministic = true;
+  vkpt::core::FrameIndex determinism_frame_index = 0u;
+  std::string determinism_scenario_id;
   IntegratorSettings integrator{};
   CameraSettings camera{};
   FilmSettings film{};
+
+  void set_determinism(const vkpt::core::DeterminismContext& context) {
+    const auto previous = determinism_context();
+    deterministic = context.enabled;
+    seed = context.base_seed;
+    determinism_frame_index = context.frame_index;
+    determinism_scenario_id = context.scenario_id;
+    vkpt::core::EmitDeterminismChangedIfNeeded("pathtracer", previous, determinism_context());
+  }
+
+  vkpt::core::DeterminismContext determinism_context() const {
+    return vkpt::core::MakeDeterminismContext(deterministic,
+                                               seed,
+                                               determinism_frame_index,
+                                               determinism_scenario_id);
+  }
+
+  vkpt::core::DeterminismContext determinism_context(
+      vkpt::core::FrameIndex frame_index,
+      std::string_view scenario_id) const {
+    return vkpt::core::MakeDeterminismContext(deterministic,
+                                               seed,
+                                               frame_index,
+                                               scenario_id);
+  }
 };
 
 struct RenderSettings {
@@ -109,6 +140,8 @@ struct RenderSettings {
   bool enable_nee = false;
   bool enable_mis = false;
   bool deterministic = true;
+  vkpt::core::FrameIndex determinism_frame_index = 0u;
+  std::string determinism_scenario_id;
   uint32_t russian_roulette_start_depth = 3;
   float russian_roulette_min_survival = 0.1f;
   float russian_roulette_max_survival = 0.99f;
@@ -117,6 +150,31 @@ struct RenderSettings {
   bool enable_denoiser = false;
   bool enable_temporal_aa = false;
   FilmResolveSettings film_resolve{};
+
+  void set_determinism(const vkpt::core::DeterminismContext& context) {
+    const auto previous = determinism_context();
+    deterministic = context.enabled;
+    seed = context.base_seed;
+    determinism_frame_index = context.frame_index;
+    determinism_scenario_id = context.scenario_id;
+    vkpt::core::EmitDeterminismChangedIfNeeded("render", previous, determinism_context());
+  }
+
+  vkpt::core::DeterminismContext determinism_context() const {
+    return vkpt::core::MakeDeterminismContext(deterministic,
+                                               seed,
+                                               determinism_frame_index,
+                                               determinism_scenario_id);
+  }
+
+  vkpt::core::DeterminismContext determinism_context(
+      vkpt::core::FrameIndex frame_index,
+      std::string_view scenario_id) const {
+    return vkpt::core::MakeDeterminismContext(deterministic,
+                                               seed,
+                                               frame_index,
+                                               scenario_id);
+  }
 };
 
 PathTraceSettings MakePathTraceSettings(const RenderSettings& settings);
@@ -285,14 +343,14 @@ struct RTHitLight {
   float spot_outer_cos = -1.0f;
 };
 
-/// Flattened render-time scene consumed by CPU, Vulkan, and D3D12 backends.
+/// Flattened path-tracer scene snapshot consumed by CPU, Vulkan, and D3D12 backends.
 ///
 /// Scene extraction resolves the editor/ECS representation into packed arrays:
 /// triangle instances point into global index streams, dynamic instances also
 /// retain local ranges and transform state, and SDF/light/material tables are
 /// laid out so backends can upload them directly. Treat this as a snapshot; live
 /// ECS mutation should produce transform/material deltas or a new snapshot.
-struct RTSceneData {
+struct PathTracerSceneSnapshot {
   std::vector<Vec3> vertices;
   std::vector<Vec2> texcoords;
   std::vector<uint32_t> indices;  // triangle index stream in triples
@@ -391,6 +449,77 @@ enum class RenderUpdateReason : std::uint8_t {
   LegacyUnknown,
 };
 
+enum class PathTracerLifecycle : std::uint8_t {
+  Uninitialized,
+  Configured,
+  SceneLoaded,
+  Ready,
+  Failed,
+};
+
+inline const char* ToString(PathTracerLifecycle lifecycle) {
+  switch (lifecycle) {
+    case PathTracerLifecycle::Uninitialized:
+      return "uninitialized";
+    case PathTracerLifecycle::Configured:
+      return "configured";
+    case PathTracerLifecycle::SceneLoaded:
+      return "scene_loaded";
+    case PathTracerLifecycle::Ready:
+      return "ready";
+    case PathTracerLifecycle::Failed:
+      return "failed";
+  }
+  return "unknown";
+}
+
+enum class PathTracerAccumulationResetReason : std::uint8_t {
+  Topology,
+  Transform,
+  Camera,
+  Material,
+  External,
+};
+
+inline const char* ToString(PathTracerAccumulationResetReason reason) {
+  switch (reason) {
+    case PathTracerAccumulationResetReason::Topology:
+      return "topology";
+    case PathTracerAccumulationResetReason::Transform:
+      return "transform";
+    case PathTracerAccumulationResetReason::Camera:
+      return "camera";
+    case PathTracerAccumulationResetReason::Material:
+      return "material";
+    case PathTracerAccumulationResetReason::External:
+      return "external";
+  }
+  return "external";
+}
+
+inline PathTracerAccumulationResetReason AccumulationResetReasonFromUpdateReason(
+    RenderUpdateReason reason) {
+  switch (reason) {
+    case RenderUpdateReason::PhysicsMotion:
+    case RenderUpdateReason::EditorGizmoMotion:
+    case RenderUpdateReason::ScriptTransformMotion:
+      return PathTracerAccumulationResetReason::Transform;
+    case RenderUpdateReason::CameraMotion:
+      return PathTracerAccumulationResetReason::Camera;
+    case RenderUpdateReason::MaterialEdit:
+    case RenderUpdateReason::LightEdit:
+      return PathTracerAccumulationResetReason::Material;
+    case RenderUpdateReason::StructuralSceneEdit:
+    case RenderUpdateReason::SceneLoad:
+    case RenderUpdateReason::ExplicitUserReload:
+      return PathTracerAccumulationResetReason::Topology;
+    case RenderUpdateReason::Unknown:
+    case RenderUpdateReason::LegacyUnknown:
+      return PathTracerAccumulationResetReason::External;
+  }
+  return PathTracerAccumulationResetReason::External;
+}
+
 enum class TransformFallbackPolicy : std::uint8_t {
   NoFallback,
   AllowDynamicAcceleration,
@@ -420,7 +549,7 @@ enum class InstanceTransformUpdateStatus : std::uint8_t {
   Failed,
 };
 
-struct InstanceTransformUpdatePlan {
+struct InstanceTransformPlan {
   InstanceTransformUpdateStatus status = InstanceTransformUpdateStatus::Unsupported;
   std::uint32_t requested_count = 0u;
   std::uint32_t matched_count = 0u;
@@ -432,6 +561,20 @@ struct InstanceTransformUpdatePlan {
            status == InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate;
   }
 };
+
+inline std::string_view TransformPlanMessage(
+    const InstanceTransformPlan& plan) noexcept {
+  return plan.message != nullptr ? std::string_view(plan.message) : std::string_view{};
+}
+
+inline bool EquivalentInstanceTransformPlans(
+    const InstanceTransformPlan& lhs,
+    const InstanceTransformPlan& rhs) noexcept {
+  return lhs.status == rhs.status &&
+         lhs.requested_count == rhs.requested_count &&
+         lhs.matched_count == rhs.matched_count &&
+         TransformPlanMessage(lhs) == TransformPlanMessage(rhs);
+}
 
 struct InstanceTransformUpdateResult {
   InstanceTransformUpdateStatus status = InstanceTransformUpdateStatus::Unsupported;
@@ -578,16 +721,16 @@ enum class RTInstanceTransformApplyMode {
   RebakeCpuVertices,
 };
 
-RTCameraState ExtractCameraState(const RTSceneData& scene);
-void ApplyCameraState(RTSceneData& scene, const RTCameraState& camera);
-bool ApplyInstanceTransformUpdates(RTSceneData& scene,
+RTCameraState ExtractCameraState(const PathTracerSceneSnapshot& scene);
+void ApplyCameraState(PathTracerSceneSnapshot& scene, const RTCameraState& camera);
+bool ApplyInstanceTransformUpdates(PathTracerSceneSnapshot& scene,
                                    const std::vector<RTInstanceTransformUpdate>& updates,
                                    RTInstanceTransformApplyMode mode =
                                        RTInstanceTransformApplyMode::RebakeCpuVertices);
-bool ApplySceneDeltaUpdate(RTSceneData& scene, const RTSceneDeltaUpdate& update);
+bool ApplySceneDeltaUpdate(PathTracerSceneSnapshot& scene, const RTSceneDeltaUpdate& update);
 void MergeSceneDeltaUpdates(RTSceneDeltaUpdate& dst, const RTSceneDeltaUpdate& src);
-std::optional<RTSceneDeltaUpdate> BuildSceneDeltaUpdate(const RTSceneData& before,
-                                                        const RTSceneData& after);
+std::optional<RTSceneDeltaUpdate> BuildSceneDeltaUpdate(const PathTracerSceneSnapshot& before,
+                                                        const PathTracerSceneSnapshot& after);
 
 struct GpuLayoutField {
   std::string struct_name;
@@ -623,6 +766,9 @@ struct PathTracerLifecycleContract {
   bool configure_before_scene_load = true;
   bool load_scene_before_acceleration_build = true;
   bool reset_clears_accumulation_and_counters = true;
+  // reset_accumulation() is a film-only epoch reset. It must not invalidate
+  // scene buffers or a valid acceleration structure.
+  bool reset_preserves_acceleration = true;
   bool camera_update_preserves_scene_buffers = true;
   bool scene_delta_preserves_acceleration = true;
   bool resolve_is_available_after_render = true;
@@ -633,9 +779,22 @@ struct PathTracerTransformUpdateContract {
   TransformFallbackPolicy editor_default_fallback = TransformFallbackPolicy::AllowDynamicAcceleration;
   TransformFallbackPolicy script_default_fallback = TransformFallbackPolicy::AllowDynamicAcceleration;
   TransformFallbackPolicy structural_default_fallback = TransformFallbackPolicy::AllowFullSceneReload;
+  // plan_instance_transform_update() is a pure planning query. With the same
+  // tracer state, scene snapshot, updates, and options, repeated calls must
+  // return equivalent status/count/message plans and must not commit scene,
+  // film, acceleration, or counter changes.
+  bool plan_is_stable_for_same_inputs = true;
+  bool plan_is_commit_free = true;
   bool plan_before_apply = true;
   bool failed_apply_must_not_commit = true;
   bool applied_update_resets_accumulation_by_default = true;
+};
+
+struct PathTracerStateTransitionContract {
+  PathTracerLifecycle from = PathTracerLifecycle::Uninitialized;
+  const char* operation = "";
+  PathTracerLifecycle to = PathTracerLifecycle::Uninitialized;
+  const char* postcondition = "";
 };
 
 struct PathTracerStandardContract {
@@ -643,7 +802,57 @@ struct PathTracerStandardContract {
   PathTracerLifecycleContract lifecycle{};
   PathTracerTransformUpdateContract transforms{};
   GpuSceneBufferLayoutContract gpu_layout{};
+  std::array<PathTracerStateTransitionContract, 5> state_machine{{
+      {PathTracerLifecycle::Uninitialized,
+       "configure",
+       PathTracerLifecycle::Configured,
+       "settings and film storage are initialized; no scene or acceleration is valid"},
+      {PathTracerLifecycle::Configured,
+       "load_scene_snapshot",
+       PathTracerLifecycle::SceneLoaded,
+       "render-time scene data is loaded; acceleration must be rebuilt before rendering"},
+      {PathTracerLifecycle::SceneLoaded,
+       "build_or_update_acceleration",
+       PathTracerLifecycle::Ready,
+       "acceleration is valid and the tracer is ready to render"},
+      {PathTracerLifecycle::Ready,
+       "reset_accumulation",
+       PathTracerLifecycle::Ready,
+       "film accumulation and counters are cleared; acceleration remains valid"},
+      {PathTracerLifecycle::Ready,
+       "update_scene_delta",
+       PathTracerLifecycle::Ready,
+       "material/light/transform deltas preserve acceleration unless the call fails"},
+  }};
 };
+
+struct PathTracerStatus {
+  std::string backend;
+  PathTracerLifecycle lifecycle = PathTracerLifecycle::Uninitialized;
+  bool scene_loaded = false;
+  bool accel_valid = false;
+  bool ready_to_render = false;
+  std::uint32_t current_sample = 0u;
+  std::uint64_t last_sample_us = 0u;
+  std::uint64_t total_samples = 0u;
+  std::uint64_t accumulation_gen = 0u;
+  std::string last_error;
+};
+
+inline vkpt::core::Status PathTracerOperationStatus(
+    const char* operation,
+    bool succeeded,
+    const PathTracerStatus& after,
+    vkpt::core::Status::Code error_code = vkpt::core::Status::Code::InternalError) {
+  if (succeeded && after.last_error.empty()) {
+    return vkpt::core::Status::ok(std::string(operation) + " succeeded");
+  }
+  std::string message = after.last_error;
+  if (message.empty()) {
+    message = std::string(operation) + " failed";
+  }
+  return vkpt::core::Status::error(error_code, std::move(message));
+}
 
 struct FilmLdr {
   uint32_t width = 0;
@@ -657,11 +866,46 @@ struct FilmHdr {
   std::vector<float> rgbf;
 };
 
+struct FilmReadbackToken {
+  std::uint64_t id = 0u;
+  std::uint64_t fence_value = 0u;
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+
+  explicit operator bool() const noexcept { return id != 0u; }
+};
+
+enum class FilmReadbackState : std::uint8_t {
+  Invalid = 0,
+  Pending,
+  Ready,
+  Failed,
+  Unsupported,
+};
+
+struct FilmReadbackResult {
+  FilmReadbackState state = FilmReadbackState::Invalid;
+  FilmLdr ldr{};
+  std::string error;
+
+  bool ready() const noexcept { return state == FilmReadbackState::Ready; }
+};
+
+struct RenderTile {
+  uint32_t x = 0u;
+  uint32_t y = 0u;
+  uint32_t width = 0u;
+  uint32_t height = 0u;
+  uint32_t sample_index = 0u;
+  uint32_t tile_id = 0u;
+  uint32_t gpu_id = 0u;
+};
+
 // Apply resolve pipeline: exposure, tone map, gamma, clamp, LDR output.
 FilmLdr ApplyFilmResolve(const FilmHdr& hdr, const FilmResolveSettings& settings);
 FilmResolveSettings CameraAdjustedFilmResolveSettings(const FilmResolveSettings& base,
-                                                       const RTSceneData& scene);
-Vec3 SampleSceneEnvironment(const RTSceneData& scene, const Vec3& direction);
+                                                       const PathTracerSceneSnapshot& scene);
+Vec3 SampleSceneEnvironment(const PathTracerSceneSnapshot& scene, const Vec3& direction);
 Vec3 WhiteBalanceScale(float kelvin);
 std::string SerializeFilmResolveSettings(const FilmResolveSettings& settings);
 
@@ -673,6 +917,13 @@ class FilmBuffer {
   void resize(uint32_t width, uint32_t height);
   void clear();
   void add_sample(uint32_t x, uint32_t y, const Vec3& color);
+  void set_pixel_raw(uint32_t x,
+                     uint32_t y,
+                     const Vec3& accumulation,
+                     uint32_t sample_count,
+                     float invalid_samples = 0.0f);
+  void reset_pixel(uint32_t x, uint32_t y);
+  bool copy_from(const FilmBuffer& src);
   // Copy raw accumulation and sample counts from src for rows [start_y, end_y).
   // Overwrites any existing data in that row range.
   void import_tile(const FilmBuffer& src, uint32_t start_y, uint32_t end_y);
@@ -726,9 +977,12 @@ class IRayAccelerator {
  public:
   virtual ~IRayAccelerator() = default;
 
-  virtual bool build(const RTSceneData& scene, bool deterministic) = 0;
-  virtual InstanceTransformUpdatePlan plan_instance_transform_update(
-      const RTSceneData& /*scene*/,
+  virtual bool build(const PathTracerSceneSnapshot& scene, bool deterministic) = 0;
+  // Pure planning query. For the same built accelerator state, scene snapshot,
+  // updates, and options, repeated calls must return equivalent plans and must
+  // not mutate acceleration data.
+  virtual InstanceTransformPlan plan_instance_transform_update(
+      const PathTracerSceneSnapshot& /*scene*/,
       std::span<const RTInstanceTransformUpdate> updates,
       const InstanceTransformUpdateOptions& /*options*/) const {
     return {
@@ -738,7 +992,7 @@ class IRayAccelerator {
         "accelerator does not support instance transform updates"};
   }
   virtual InstanceTransformUpdateResult apply_instance_transform_update(
-      const RTSceneData& /*scene*/,
+      const PathTracerSceneSnapshot& /*scene*/,
       std::span<const RTInstanceTransformUpdate> updates,
       const InstanceTransformUpdateOptions& /*options*/) {
     return {
@@ -774,15 +1028,42 @@ class IPathTracer {
  public:
   virtual ~IPathTracer() = default;
 
-  virtual bool configure(const RenderSettings& settings) = 0;
-  virtual bool configure(const PathTraceSettings& settings) { return configure(MakeRenderSettings(settings)); }
+  // State contract:
+  // Uninitialized -> configure() -> Configured
+  // Configured -> load_scene_snapshot() -> SceneLoaded
+  // SceneLoaded -> build_or_update_acceleration() -> Ready
+  // Ready -> reset_accumulation() -> Ready
+  //
+  // reset_accumulation() is film-only: it clears accumulated radiance and
+  // counters, advances accumulation_gen, and preserves scene_loaded/accel_valid.
+  // BuildStandardPathTracerContract() exposes the same transition table for
+  // tests, scripting, and future backend conformance checks.
+  virtual vkpt::core::Status configure(const RenderSettings& settings) = 0;
+  virtual vkpt::core::Status configure(const PathTraceSettings& settings) {
+    return configure(MakeRenderSettings(settings));
+  }
+  vkpt::core::Status configure_status(const RenderSettings& settings) {
+    return configure(settings);
+  }
+  vkpt::core::Status configure_status(const PathTraceSettings& settings) {
+    return configure_status(MakeRenderSettings(settings));
+  }
   // Applies render settings without invalidating uploaded scene data when a
   // backend can do so. Callers should fall back to configure/load/build when
   // this returns false.
   virtual bool update_render_settings(const RenderSettings& /*settings*/) { return false; }
-  virtual bool load_scene_snapshot(const RTSceneData& scene) = 0;
-  virtual bool build_or_update_acceleration() = 0;
+  virtual vkpt::core::Status load_scene_snapshot(const PathTracerSceneSnapshot& scene) = 0;
+  vkpt::core::Status load_scene_snapshot_status(const PathTracerSceneSnapshot& scene) {
+    return load_scene_snapshot(scene);
+  }
+  virtual vkpt::core::Status build_or_update_acceleration() = 0;
+  vkpt::core::Status build_or_update_acceleration_status() {
+    return build_or_update_acceleration();
+  }
   virtual bool reset_accumulation() = 0;
+  // Replace accumulated film history without changing scene or acceleration data.
+  // CPU backends use this for camera reprojection and per-pixel history resets.
+  virtual bool replace_film_history(const FilmBuffer& /*film*/) { return false; }
   // Update only camera pose without re-uploading geometry. Returns false if
   // not supported (caller should fall back to load_scene_snapshot).
   virtual bool update_camera(const Vec3& /*pos*/, const Vec3& /*target*/,
@@ -793,7 +1074,12 @@ class IPathTracer {
   // needs a full scene snapshot/acceleration rebuild for moving objects.
   virtual bool update_instance_transforms(
       const std::vector<RTInstanceTransformUpdate>& /*updates*/) { return false; }
-  virtual InstanceTransformUpdatePlan plan_instance_transform_update(
+  // Pure planning query. With the same tracer state, scene snapshot, updates,
+  // and options, repeated calls must return EquivalentInstanceTransformPlans().
+  // The call must not mutate scene data, acceleration state, film contents, or
+  // sample/accumulation counters. apply_instance_transform_update() still
+  // revalidates and returns the authoritative commit result.
+  virtual InstanceTransformPlan plan_instance_transform_update(
       std::span<const RTInstanceTransformUpdate> updates,
       const InstanceTransformUpdateOptions& /*options*/) const {
     return {
@@ -820,20 +1106,27 @@ class IPathTracer {
   // acceleration structures. Returns false when the backend requires a full
   // scene upload for this delta.
   virtual bool update_scene_delta(const RTSceneDeltaUpdate& /*update*/) { return false; }
-  virtual bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) = 0;
-  virtual bool render_sample_batch_cancellable(uint32_t start_y,
-                                               uint32_t end_y,
-                                               uint32_t sample_index,
-                                               uint32_t frame_index,
-                                               std::stop_token stop) {
+  virtual bool render_tile(const RenderTile& tile, uint32_t frame_index) = 0;
+  virtual bool supports_tile_rendering() const { return false; }
+  virtual bool render_tile_cancellable(const RenderTile& tile,
+                                       uint32_t frame_index,
+                                       std::stop_token stop) {
     if (stop.stop_requested()) {
       return false;
     }
-    return render_sample_batch(start_y, end_y, sample_index, frame_index);
+    return render_tile(tile, frame_index);
   }
   virtual FilmLdr resolve_ldr() const = 0;
   virtual FilmHdr resolve_hdr() const = 0;
+  virtual FilmReadbackToken request_film_readback() { return {}; }
+  virtual FilmReadbackResult poll_film(FilmReadbackToken /*token*/) {
+    return {
+        FilmReadbackState::Unsupported,
+        {},
+        "backend does not support split film readback"};
+  }
   virtual SampleCounters read_counters() const = 0;
+  virtual PathTracerStatus status() const { return {}; }
   virtual void shutdown() = 0;
   virtual const FilmBuffer& film() const = 0;
 };
@@ -844,34 +1137,44 @@ class NullPathTracer final : public IPathTracer {
  public:
   using IPathTracer::configure;
 
-  bool configure(const RenderSettings& settings) override;
-  bool load_scene_snapshot(const RTSceneData& scene) override;
-  bool build_or_update_acceleration() override;
+  vkpt::core::Status configure(const RenderSettings& settings) override;
+  vkpt::core::Status load_scene_snapshot(const PathTracerSceneSnapshot& scene) override;
+  vkpt::core::Status build_or_update_acceleration() override;
   bool reset_accumulation() override;
+  bool replace_film_history(const FilmBuffer& film) override;
   bool update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) override;
   bool update_camera_state(const RTCameraState& camera) override;
   bool update_instance_transforms(const std::vector<RTInstanceTransformUpdate>& updates) override;
-  InstanceTransformUpdatePlan plan_instance_transform_update(
+  InstanceTransformPlan plan_instance_transform_update(
       std::span<const RTInstanceTransformUpdate> updates,
       const InstanceTransformUpdateOptions& options) const override;
   InstanceTransformUpdateResult apply_instance_transform_update(
       std::span<const RTInstanceTransformUpdate> updates,
       const InstanceTransformUpdateOptions& options) override;
   bool update_scene_delta(const RTSceneDeltaUpdate& update) override;
-  bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
+  bool render_tile(const RenderTile& tile, uint32_t frame_index) override;
+  bool supports_tile_rendering() const override { return true; }
   FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }
   FilmHdr resolve_hdr() const override { return m_film.resolve_hdr(); }
   SampleCounters read_counters() const override { return m_counters; }
+  PathTracerStatus status() const override;
   void shutdown() override;
   const FilmBuffer& film() const override { return m_film; }
 
  private:
   RenderSettings m_settings{};
-  RTSceneData m_scene{};
+  PathTracerSceneSnapshot m_scene{};
   FilmBuffer m_film{};
   SampleCounters m_counters{};
   bool m_configured = false;
   bool m_has_scene = false;
+  bool m_accel_valid = false;
+  std::uint32_t m_current_sample = 0u;
+  std::uint64_t m_last_sample_us = 0u;
+  std::uint64_t m_accumulation_gen = 0u;
+  PathTracerAccumulationResetReason m_next_reset_reason =
+      PathTracerAccumulationResetReason::External;
+  std::string m_last_error;
 };
 
 class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
@@ -880,14 +1183,15 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
 
   ~ScalarCpuPathTracer() override;
 
-  bool configure(const RenderSettings& settings) override;
-  bool load_scene_snapshot(const RTSceneData& scene) override;
-  bool build_or_update_acceleration() override;
+  vkpt::core::Status configure(const RenderSettings& settings) override;
+  vkpt::core::Status load_scene_snapshot(const PathTracerSceneSnapshot& scene) override;
+  vkpt::core::Status build_or_update_acceleration() override;
   bool reset_accumulation() override;
+  bool replace_film_history(const FilmBuffer& film) override;
   bool update_camera(const Vec3& pos, const Vec3& target, const Vec3& up, float fov_deg) override;
   bool update_camera_state(const RTCameraState& camera) override;
   bool update_instance_transforms(const std::vector<RTInstanceTransformUpdate>& updates) override;
-  InstanceTransformUpdatePlan plan_instance_transform_update(
+  InstanceTransformPlan plan_instance_transform_update(
       std::span<const RTInstanceTransformUpdate> updates,
       const InstanceTransformUpdateOptions& options) const override;
   InstanceTransformUpdateResult apply_instance_transform_update(
@@ -895,6 +1199,11 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
       const InstanceTransformUpdateOptions& options) override;
   bool update_scene_delta(const RTSceneDeltaUpdate& update) override;
   bool render_sample_batch(uint32_t start_y, uint32_t end_y, uint32_t sample_index, uint32_t frame_index) override;
+  bool render_tile(const RenderTile& tile, uint32_t frame_index) override;
+  bool render_tile_cancellable(const RenderTile& tile,
+                               uint32_t frame_index,
+                               std::stop_token stop) override;
+  bool supports_tile_rendering() const override { return true; }
   std::string_view name() const override { return "scalar-cpu"; }
   bool set_accelerator(IRayAccelerator* accelerator) override;
   bool render_sample_pixels(const uint32_t* pixel_indices,
@@ -904,6 +1213,7 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
   FilmLdr resolve_ldr() const override { return m_film.resolve_ldr(); }
   FilmHdr resolve_hdr() const override { return m_film.resolve_hdr(); }
   SampleCounters read_counters() const override;
+  PathTracerStatus status() const override;
   const FilmBuffer& film() const override { return m_film; }
   void shutdown() override;
 
@@ -1012,7 +1322,7 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
 
   RenderSettings m_settings;
   PathTraceSettings m_trace_settings;
-  RTSceneData m_scene;
+  PathTracerSceneSnapshot m_scene;
   FilmBuffer m_film;
   mutable SampleCounters m_counters{};
   std::unique_ptr<IRayAccelerator> m_accelerator;
@@ -1020,6 +1330,13 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
   RayAcceleratorBuildInfo m_accel_info{};
   bool m_configured = false;
   bool m_has_scene = false;
+  bool m_accel_valid = false;
+  std::uint32_t m_current_sample = 0u;
+  std::uint64_t m_last_sample_us = 0u;
+  std::uint64_t m_accumulation_gen = 0u;
+  PathTracerAccumulationResetReason m_next_reset_reason =
+      PathTracerAccumulationResetReason::External;
+  std::string m_last_error;
   uint32_t m_worker_count = 1;
   vkpt::cpu::SimdDispatchInfo m_simd_dispatch{};
   Vec3 m_camera_right{};
@@ -1027,14 +1344,14 @@ class ScalarCpuPathTracer final : public IPathTracer, public ICpuRayKernel {
   Vec3 m_camera_forward{};
 };
 
-vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::SceneDocument& doc);
-vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
+vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocument(const vkpt::scene::SceneDocument& doc);
+vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
     const vkpt::scene::SceneDocument& doc,
     const SceneParticleFrameState& frame_state);
 bool SavePngCompat(const std::string& path, const FilmLdr& image, std::string* error = nullptr);
 bool SaveExrCompat(const std::string& path, const FilmHdr& image, std::string* error = nullptr);
-vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(std::vector<std::string>* diagnostics = nullptr);
-std::string SerializeRTSceneDataLayoutManifest(const RTSceneLayoutManifest& manifest);
+vkpt::core::Result<RTSceneLayoutManifest> BuildPathTracerSceneSnapshotLayoutManifest(std::vector<std::string>* diagnostics = nullptr);
+std::string SerializePathTracerSceneSnapshotLayoutManifest(const RTSceneLayoutManifest& manifest);
 inline PathTracerStandardContract BuildStandardPathTracerContract() {
   return {};
 }
@@ -1062,10 +1379,34 @@ inline bool ValidateStandardPathTracerContract(const PathTracerStandardContract&
           "path tracers must load a scene snapshot before acceleration build/update");
   require(contract.lifecycle.reset_clears_accumulation_and_counters,
           "reset_accumulation must clear film accumulation and counters");
+  require(contract.lifecycle.reset_preserves_acceleration,
+          "reset_accumulation must preserve valid acceleration structures");
   require(contract.lifecycle.resolve_is_available_after_render,
           "resolve APIs must be available after render_sample_batch");
+  require(contract.state_machine.size() == 5u,
+          "path tracer state machine must publish five standard transitions");
+  require(contract.state_machine[0].from == PathTracerLifecycle::Uninitialized &&
+              std::string_view(contract.state_machine[0].operation) == "configure" &&
+              contract.state_machine[0].to == PathTracerLifecycle::Configured,
+          "path tracer state machine missing configure transition");
+  require(contract.state_machine[1].from == PathTracerLifecycle::Configured &&
+              std::string_view(contract.state_machine[1].operation) == "load_scene_snapshot" &&
+              contract.state_machine[1].to == PathTracerLifecycle::SceneLoaded,
+          "path tracer state machine missing scene load transition");
+  require(contract.state_machine[2].from == PathTracerLifecycle::SceneLoaded &&
+              std::string_view(contract.state_machine[2].operation) == "build_or_update_acceleration" &&
+              contract.state_machine[2].to == PathTracerLifecycle::Ready,
+          "path tracer state machine missing acceleration build transition");
+  require(contract.state_machine[3].from == PathTracerLifecycle::Ready &&
+              std::string_view(contract.state_machine[3].operation) == "reset_accumulation" &&
+              contract.state_machine[3].to == PathTracerLifecycle::Ready,
+          "path tracer state machine missing film-only reset transition");
   require(contract.transforms.plan_before_apply,
           "transform updates must be planned before transactional apply");
+  require(contract.transforms.plan_is_stable_for_same_inputs,
+          "transform update planning must be stable for unchanged inputs");
+  require(contract.transforms.plan_is_commit_free,
+          "transform update planning must not commit backend state");
   require(contract.transforms.failed_apply_must_not_commit,
           "failed transform applies must not commit partial backend state");
   require(contract.transforms.applied_update_resets_accumulation_by_default,

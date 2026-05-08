@@ -127,12 +127,13 @@ bool MaterialDeltaRequiresFullRebuild(const vkpt::pathtracer::RTMaterial& before
 
 }  // namespace
 
-bool D3D12GpuPathTracer::load_scene_snapshot(
-    const vkpt::pathtracer::RTSceneData& scene) {
+vkpt::core::Status D3D12GpuPathTracer::load_scene_snapshot(
+    const vkpt::pathtracer::PathTracerSceneSnapshot& scene) {
   if (!m_configured) {
     m_error = "load_scene_snapshot before configure";
     LogError("load_scene_snapshot rejected: " + m_error);
-    return false;
+    EmitGpuBackendAnomaly("d3d12", "load_scene_snapshot", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_error);
   }
   m_sceneData      = scene;
   m_film.set_resolve_settings(
@@ -148,7 +149,8 @@ bool D3D12GpuPathTracer::load_scene_snapshot(
      << " tess=" << scene.tessellation_requests.size()
      << " lights=" << scene.lights.size();
   LogDebug(ss.str());
-  return true;
+  debug_check_state_contract("load_scene_snapshot");
+  return vkpt::core::Status::ok("D3D12 scene loaded");
 }
 
 bool D3D12GpuPathTracer::update_camera(
@@ -173,6 +175,19 @@ bool D3D12GpuPathTracer::update_camera(
   return updated;
 }
 
+vkpt::core::Status D3D12GpuPathTracer::update_camera_status(
+    const vkpt::pathtracer::Vec3& pos,
+    const vkpt::pathtracer::Vec3& target,
+    const vkpt::pathtracer::Vec3& up,
+    float fov_deg) {
+  const bool ok = update_camera(pos, target, up, fov_deg);
+  return GpuBackendOperationStatus(
+      "d3d12.update_camera",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
+}
+
 bool D3D12GpuPathTracer::update_camera_state(
     const vkpt::pathtracer::RTCameraState& camera) {
   if (!m_sceneUploaded) {
@@ -189,7 +204,18 @@ bool D3D12GpuPathTracer::update_camera_state(
      << "," << camera.position.z << ") target=(" << camera.target.x << ","
      << camera.target.y << "," << camera.target.z << ")";
   LogDebug(ss.str());
+  debug_check_state_contract("update_camera_state");
   return true;
+}
+
+vkpt::core::Status D3D12GpuPathTracer::update_camera_state_status(
+    const vkpt::pathtracer::RTCameraState& camera) {
+  const bool ok = update_camera_state(camera);
+  return GpuBackendOperationStatus(
+      "d3d12.update_camera_state",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
 }
 
 bool D3D12GpuPathTracer::update_instance_transforms(
@@ -215,8 +241,19 @@ bool D3D12GpuPathTracer::update_instance_transforms(
     m_temporalHistoryValid = false;
     m_fastMotionSamplesRemaining =
         std::max(m_fastMotionSamplesRemaining, kD3D12FastMotionSampleWindow);
+    debug_check_state_contract("update_instance_transforms");
   }
   return uploaded;
+}
+
+vkpt::core::Status D3D12GpuPathTracer::update_instance_transforms_status(
+    const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) {
+  const bool ok = update_instance_transforms(updates);
+  return GpuBackendOperationStatus(
+      "d3d12.update_instance_transforms",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
 }
 
 bool D3D12GpuPathTracer::stage_dynamic_instance_transform_update(
@@ -315,7 +352,7 @@ bool D3D12GpuPathTracer::stage_dynamic_instance_transform_update(
   return out.dynamic_instance_count > 0u;
 }
 
-vkpt::pathtracer::InstanceTransformUpdatePlan D3D12GpuPathTracer::plan_instance_transform_update(
+vkpt::pathtracer::InstanceTransformPlan D3D12GpuPathTracer::plan_instance_transform_update(
     std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
     const vkpt::pathtracer::InstanceTransformUpdateOptions& options) const {
   if (!m_sceneUploaded || !m_instBuf || updates.empty()) {
@@ -468,6 +505,7 @@ vkpt::pathtracer::InstanceTransformUpdateResult D3D12GpuPathTracer::apply_instan
     m_dxrTlasUpdatePending = false;
   }
 
+  debug_check_state_contract("apply_instance_transform_update");
   return {
       vkpt::pathtracer::InstanceTransformUpdateStatus::AppliedDynamicAccelUpdate,
       static_cast<std::uint32_t>(updates.size()),
@@ -538,14 +576,26 @@ bool D3D12GpuPathTracer::update_scene_delta(
      << " lights=" << update.lights.size()
      << " environment=" << (update.environment_color_changed ? "true" : "false");
   LogDebug(ss.str());
+  debug_check_state_contract("update_scene_delta");
   return true;
 }
 
-bool D3D12GpuPathTracer::build_or_update_acceleration() {
+vkpt::core::Status D3D12GpuPathTracer::update_scene_delta_status(
+    const vkpt::pathtracer::RTSceneDeltaUpdate& update) {
+  const bool ok = update_scene_delta(update);
+  return GpuBackendOperationStatus(
+      "d3d12.update_scene_delta",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
+}
+
+vkpt::core::Status D3D12GpuPathTracer::build_or_update_acceleration() {
   if (!m_hasScene) {
     m_error = "build_or_update_acceleration before snapshot";
     LogError("build_or_update_acceleration rejected: " + m_error);
-    return false;
+    EmitGpuBackendAnomaly("d3d12", "build_or_update_acceleration", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_error);
   }
   m_gpuMats.clear();
   m_gpuMats.reserve(std::max<std::size_t>(16u, m_sceneData.materials.size() * 16u));
@@ -890,7 +940,7 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
   }
   if (m_gpuSdfs.empty()) m_gpuSdfs.assign(kGpuSdfStrideFloats, 0.0f);
   if (!build_texture_buffers()) {
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError, m_error);
   }
   m_gpuEnv.clear();
   m_gpuEnvMeta = {
@@ -1107,7 +1157,10 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
   }
 
   destroy_scene_buffers();
-  if (!upload_scene_buffers()) return false;
+  if (!upload_scene_buffers()) {
+    EmitGpuBackendAnomaly("d3d12", "build_or_update_acceleration", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError, m_error);
+  }
   m_sceneUploaded = true;
 
   // Build hardware acceleration structures for DXR if pipeline is ready
@@ -1120,7 +1173,9 @@ bool D3D12GpuPathTracer::build_or_update_acceleration() {
   }
 
   LogDebug("scene upload complete");
-  return true;
+  EmitGpuBackendStarted("d3d12", introspect());
+  debug_check_state_contract("build_or_update_acceleration");
+  return vkpt::core::Status::ok("D3D12 acceleration ready");
 }
 
 bool D3D12GpuPathTracer::build_texture_buffers() {

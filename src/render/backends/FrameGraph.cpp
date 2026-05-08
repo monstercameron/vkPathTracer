@@ -3,8 +3,18 @@
 #include <algorithm>
 #include <queue>
 #include <unordered_map>
+#include <utility>
 
 namespace vkpt::render {
+namespace {
+
+FrameGraphResult FrameGraphFailure(vkpt::core::StatusCode code, std::string message) {
+  FrameGraphResult result;
+  result.overall = vkpt::core::Status::error(code, std::move(message));
+  return result;
+}
+
+}  // namespace
 
 std::uint32_t FrameGraph::add_pass(std::string_view name,
                                    PassType type,
@@ -211,18 +221,22 @@ bool FrameGraph::validate(std::vector<std::string>* diagnostics) const {
   return true;
 }
 
-bool FrameGraph::execute(IRenderCommandContext& context,
-                         const std::vector<std::uint32_t>* execution_order) const {
+FrameGraphResult FrameGraph::execute(
+    IRenderCommandContext& context,
+    const std::vector<std::uint32_t>* execution_order) const {
   FrameContext frame;
   return execute(context, frame, execution_order);
 }
 
-bool FrameGraph::execute(IRenderCommandContext& context,
-                         const FrameContext& frame,
-                         const std::vector<std::uint32_t>* execution_order) const {
+FrameGraphResult FrameGraph::execute(
+    IRenderCommandContext& context,
+    const FrameContext& frame,
+    const std::vector<std::uint32_t>* execution_order) const {
   std::vector<std::string> diagnostics;
   if (!validate(&diagnostics)) {
-    return false;
+    return FrameGraphFailure(
+        vkpt::core::StatusCode::InvalidArgument,
+        diagnostics.empty() ? "frame graph validation failed" : diagnostics.front());
   }
 
   std::vector<std::uint32_t> order;
@@ -230,23 +244,37 @@ bool FrameGraph::execute(IRenderCommandContext& context,
     order.reserve(execution_order->size());
     for (const auto id : *execution_order) {
       if (id >= m_passes.size()) {
-        return false;
+        return FrameGraphFailure(vkpt::core::StatusCode::InvalidArgument,
+                                 "frame graph execution order references unknown pass");
       }
       order.push_back(id);
     }
   } else {
     if (!topo_sort(order, nullptr)) {
-      return false;
+      return FrameGraphFailure(vkpt::core::StatusCode::InvalidArgument,
+                               "frame graph topological sort failed");
     }
   }
 
+  FrameGraphResult result;
+  result.per_pass.reserve(order.size());
   if (!context.begin_frame()) {
-    return false;
+    result.overall = vkpt::core::Status::error(vkpt::core::StatusCode::InternalError,
+                                               "frame graph begin_frame failed");
+    return result;
   }
   for (const auto pass_id : order) {
     const auto& pass = m_passes[pass_id];
+    FrameGraphPassResult pass_result;
+    pass_result.pass_id = pass.id;
+    pass_result.pass_name = pass.name;
     if (!context.begin_pass(pass.type, pass.name)) {
-      return false;
+      pass_result.status = vkpt::core::Status::error(
+          vkpt::core::StatusCode::InternalError,
+          "frame graph begin_pass failed: " + pass.name);
+      result.per_pass.push_back(std::move(pass_result));
+      result.overall = result.per_pass.back().status;
+      return result;
     }
     if (pass.type == PassType::Compute) {
       // The interface-level executor uses an 8x8 workgroup convention for
@@ -254,14 +282,31 @@ bool FrameGraph::execute(IRenderCommandContext& context,
       const auto dispatchX = std::max<std::uint32_t>(1u, (frame.viewport_width + 7u) / 8u);
       const auto dispatchY = std::max<std::uint32_t>(1u, (frame.viewport_height + 7u) / 8u);
       if (!context.dispatch(dispatchX, dispatchY, 1)) {
-        return false;
+        pass_result.status = vkpt::core::Status::error(
+            vkpt::core::StatusCode::InternalError,
+            "frame graph dispatch failed: " + pass.name);
+        result.per_pass.push_back(std::move(pass_result));
+        result.overall = result.per_pass.back().status;
+        return result;
       }
     }
     if (!context.end_pass()) {
-      return false;
+      pass_result.status = vkpt::core::Status::error(
+          vkpt::core::StatusCode::InternalError,
+          "frame graph end_pass failed: " + pass.name);
+      result.per_pass.push_back(std::move(pass_result));
+      result.overall = result.per_pass.back().status;
+      return result;
     }
+    result.per_pass.push_back(std::move(pass_result));
   }
-  return context.end_frame();
+  if (!context.end_frame()) {
+    result.overall = vkpt::core::Status::error(vkpt::core::StatusCode::InternalError,
+                                               "frame graph end_frame failed");
+    return result;
+  }
+  result.overall = vkpt::core::Status::ok("frame graph executed");
+  return result;
 }
 
 }  // namespace vkpt::render

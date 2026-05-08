@@ -121,10 +121,14 @@ bool D3D12GpuPathTracer::ensure_compute_srv_uav_heap() {
   return true;
 }
 
-bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
-    uint32_t sample_idx, uint32_t frame_idx) {
+bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
+                                     uint32_t frame_idx) {
   // The D3D12 backend ignores the tile range and dispatches the whole film.
   // Sample batching is controlled by m_raysPerPixelPerDispatch in constants.
+  if (tile.width == 0u || tile.height == 0u) {
+    return true;
+  }
+  const uint32_t sample_idx = tile.sample_index;
   const uint64_t callIndex = ++g_d3d12RenderBatchCalls;
   const bool verbose = D3D12VerboseLoggingEnabled() &&
       ((sample_idx % 16u == 0u) || (frame_idx % 16u == 0u));
@@ -137,6 +141,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
        << " sceneUploaded=" << (m_sceneUploaded ? "true" : "false")
        << " filmPixels=" << m_filmPixels;
     LogError(st.str());
+    EmitGpuBackendAnomaly("d3d12", "render_tile", m_error, introspect());
     return false;
   }
   if (!m_filmBuf || !m_filmReadbackBuf || !m_filmReadbackPtr || !m_filmPixels) {
@@ -148,11 +153,13 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
        << " readbackPtr=" << (m_filmReadbackPtr ? "ok" : "null")
        << " filmPixels=" << m_filmPixels;
     LogError(st.str());
+    EmitGpuBackendAnomaly("d3d12", "render_tile", m_error, introspect());
     return false;
   }
   if (m_settings.width == 0u || m_settings.height == 0u) {
     m_error = "invalid film dimensions";
     LogError("render_sample_batch rejected: " + m_error);
+    EmitGpuBackendAnomaly("d3d12", "render_tile", m_error, introspect());
     return false;
   }
   if (verbose) {
@@ -603,6 +610,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     m_temporalHistoryValid = true;
     m_temporalPrevCamera = MakeTemporalCameraState(pc);
   }
+  ++m_filmGeneration;
   if (doReadback && m_ldrReadbackPtr && m_filmPixels > 0u) {
     m_ldrResolve.width  = m_settings.width;
     m_ldrResolve.height = m_settings.height;
@@ -611,6 +619,7 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
     // In little-endian memory that maps directly to RGBA8 byte layout.
     std::memcpy(m_ldrResolve.rgba8.data(), m_ldrReadbackPtr,
                 static_cast<size_t>(m_filmPixels) * 4u);
+    m_ldrResolveGeneration = m_filmGeneration;
     if (verbose) {
       // Quick non-black probe on byte data (very cheap)
       const auto* b = m_ldrResolve.rgba8.data();
@@ -620,6 +629,8 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
       LogDebug("render_sample_batch ldr readback frame=" + std::to_string(frame_idx)
                + " non_black=" + (nonBlack ? "yes" : "no"));
     }
+  } else {
+    m_latestFilmReadbackToken = {};
   }
   if (m_fastMotionSamplesRemaining > 0u) {
     --m_fastMotionSamplesRemaining;
@@ -638,7 +649,19 @@ bool D3D12GpuPathTracer::render_sample_batch(uint32_t /*sy*/, uint32_t /*ey*/,
        << " estimated_rays_per_sample=" << raysPerSample;
     LogDebug(en.str());
   }
+  debug_check_state_contract("render_tile");
   return true;
+}
+
+vkpt::core::Status D3D12GpuPathTracer::render_tile_status(
+    const vkpt::pathtracer::RenderTile& tile,
+    uint32_t frame_idx) {
+  const bool ok = render_tile(tile, frame_idx);
+  return GpuBackendOperationStatus(
+      "d3d12.render_tile",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
 }
 
 bool D3D12GpuPathTracer::create_root_sig_and_pso() {

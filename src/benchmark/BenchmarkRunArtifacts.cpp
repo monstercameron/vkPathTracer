@@ -153,7 +153,7 @@ bool WriteRunArtifacts(const vkpt::benchmark::BenchmarkResult& result,
   if (!WriteFile(snapshotPath, SerializeSceneSnapshot(scene.snapshot()), error)) {
     return false;
   }
-  if (!WriteFile(shaderManifestPath, vkpt::pathtracer::SerializeRTSceneDataLayoutManifest(manifest), error)) {
+  if (!WriteFile(shaderManifestPath, vkpt::pathtracer::SerializePathTracerSceneSnapshotLayoutManifest(manifest), error)) {
     return false;
   }
   std::vector<std::string> assetRefs;

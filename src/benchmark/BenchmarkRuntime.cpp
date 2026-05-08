@@ -561,12 +561,12 @@ int RunCommand(const std::vector<std::string_view>& args) {
   result.reference_error = 0.0;
   result.timing = {};
   result.timing_breakdown.clear();
-  const auto manifestResult = vkpt::pathtracer::BuildRTSceneDataLayoutManifest();
+  const auto manifestResult = vkpt::pathtracer::BuildPathTracerSceneSnapshotLayoutManifest();
   if (!manifestResult) {
     std::cerr << "failed to build shader manifest\n";
     return 2;
   }
-  result.shader_hash = HashText(SerializeRTSceneDataLayoutManifest(manifestResult.value()));
+  result.shader_hash = HashText(SerializePathTracerSceneSnapshotLayoutManifest(manifestResult.value()));
   result.memory = {};
   result.timing.build_ms = 0.0;
   result.timing.render_ms = 0.0;
@@ -680,7 +680,13 @@ int RunCommand(const std::vector<std::string_view>& args) {
   const auto renderStart = std::chrono::high_resolution_clock::now();
   const auto renderProfile = profiler.begin_event(vkpt::benchmark::ProfilerEventKind::RenderPass, "render_samples", "render", 0u);
   for (std::uint32_t sample = 0; sample < opts.spp; ++sample) {
-    if (!tracer->render_sample_batch(0, opts.height, sample, 0)) {
+    vkpt::pathtracer::RenderTile tile;
+    tile.x = 0u;
+    tile.y = 0u;
+    tile.width = opts.width;
+    tile.height = opts.height;
+    tile.sample_index = sample;
+    if (!tracer->render_tile(tile, 0u)) {
       std::cerr << "render failed\n";
       return 2;
     }

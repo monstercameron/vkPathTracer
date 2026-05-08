@@ -6,6 +6,7 @@
 
 #include "cpu/Avx2PathTracer.h"
 #include "cpu/Avx2SimdTypes.h"
+#include "pathtracer/PathTracerObservability.h"
 
 #include <algorithm>
 #include <atomic>
@@ -379,7 +380,7 @@ inline Vec3 sample_phong_lobe(Rng& rng, const Vec3& refl, float exponent,
 
 // ---- Avx2CpuPathTracer member functions ------------------------------------
 
-bool Avx2CpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
+vkpt::core::Status Avx2CpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   settings_ = vkpt::pathtracer::MakeRenderSettings(vkpt::pathtracer::MakePathTraceSettings(s));
   m_film.resize(settings_.width, settings_.height);
   m_film.set_resolve_settings(settings_.film_resolve);
@@ -387,10 +388,16 @@ bool Avx2CpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   counters_ = {};
   configured_ = true;
   has_scene_  = false;
-  return true;
+  return vkpt::core::Status::ok("AVX2 CPU path tracer configured");
 }
 
-bool Avx2CpuPathTracer::load_scene_snapshot(const vkpt::pathtracer::RTSceneData& scene) {
+vkpt::core::Status Avx2CpuPathTracer::load_scene_snapshot(
+    const vkpt::pathtracer::PathTracerSceneSnapshot& scene) {
+  if (!configured_) {
+    return vkpt::core::Status::error(
+        vkpt::core::StatusCode::NotReady,
+        "load_scene_snapshot called before configure");
+  }
   scene_      = scene;
   m_film.set_resolve_settings(
       vkpt::pathtracer::CameraAdjustedFilmResolveSettings(settings_.film_resolve, scene_));
@@ -399,13 +406,18 @@ bool Avx2CpuPathTracer::load_scene_snapshot(const vkpt::pathtracer::RTSceneData&
   }
   has_scene_  = true;
   set_camera_basis();
-  return true;
+  return vkpt::core::Status::ok("AVX2 CPU scene loaded");
 }
 
-bool Avx2CpuPathTracer::build_or_update_acceleration() {
+vkpt::core::Status Avx2CpuPathTracer::build_or_update_acceleration() {
+  if (!configured_ || !has_scene_) {
+    return vkpt::core::Status::error(
+        vkpt::core::StatusCode::NotReady,
+        "build_or_update_acceleration called before load_scene_snapshot");
+  }
   // Mirror scalar tracer: camera basis from scene data.
   set_camera_basis();
-  return true;
+  return vkpt::core::Status::ok("AVX2 CPU acceleration ready");
 }
 
 bool Avx2CpuPathTracer::update_camera(const vkpt::pathtracer::Vec3& pos,
@@ -456,6 +468,14 @@ bool Avx2CpuPathTracer::reset_accumulation() {
   return true;
 }
 
+bool Avx2CpuPathTracer::replace_film_history(
+    const vkpt::pathtracer::FilmBuffer& film) {
+  if (!configured_) {
+    return false;
+  }
+  return m_film.copy_from(film);
+}
+
 // Camera basis matching ScalarCpuPathTracer::build_or_update_acceleration()
 void Avx2CpuPathTracer::set_camera_basis() {
   cam_forward_ = normalize(scene_.camera_target - scene_.camera_position);
@@ -484,7 +504,7 @@ struct Hit8 {
 };
 
 static void intersect_scene8(const RaySoA& ray8,
-                             const vkpt::pathtracer::RTSceneData& scene,
+                             const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                              Hit8& out,
                              vkpt::pathtracer::SampleCounters* counters = nullptr) {
   // one __m256 per hit quantity
@@ -591,7 +611,7 @@ static void intersect_scene8(const RaySoA& ray8,
 // Returns the radiance for this path.
 
 static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
-                      const vkpt::pathtracer::RTSceneData& scene,
+                      const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                       const Vec3& cam_forward,
                       const Vec3& cam_right,
                       const Vec3& cam_up,
@@ -818,18 +838,30 @@ static Vec3 trace_one(const vkpt::pathtracer::Ray& input_ray,
   return radiance;
 }
 
-// ---- render_sample_batch: process pixels in 8-wide packets ------------------
+// ---- render_tile: process pixels in 8-wide packets --------------------------
 // Camera ray generation matches ScalarCpuPathTracer::camera_rays exactly.
 
-bool Avx2CpuPathTracer::render_sample_batch(uint32_t start_y,
-                                            uint32_t end_y,
-                                            uint32_t sample_index,
-                                            uint32_t frame_index) {
-  if (!configured_ || !has_scene_) return false;
+bool Avx2CpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
+                                    uint32_t frame_index) {
+  const auto counters_before = read_counters();
+  const auto start_us = vkpt::pathtracer::observability::NowUs();
+  auto finish = [&](bool result) {
+    const auto elapsed_us = vkpt::pathtracer::observability::ElapsedUsSince(start_us);
+    vkpt::pathtracer::observability::ObservePathTracerSampleUs(elapsed_us);
+    if (result) {
+      vkpt::pathtracer::observability::RecordSampleCounterDeltas(counters_before, read_counters());
+    }
+    return result;
+  };
 
-  const uint32_t max_y = std::min(end_y, settings_.height);
-  const uint32_t min_y = std::min(start_y, max_y);
-  if (min_y >= max_y) return true;
+  if (!configured_ || !has_scene_) return finish(false);
+
+  const uint32_t max_y = std::min(tile.y + tile.height, settings_.height);
+  const uint32_t min_y = std::min(tile.y, max_y);
+  const uint32_t max_x = std::min(tile.x + tile.width, settings_.width);
+  const uint32_t min_x = std::min(tile.x, max_x);
+  if (min_y >= max_y || min_x >= max_x) return finish(true);
+  const uint32_t sample_index = tile.sample_index;
 
   const float aspect  = static_cast<float>(settings_.width)
                       / std::max(1.0f, static_cast<float>(settings_.height));
@@ -849,8 +881,8 @@ bool Avx2CpuPathTracer::render_sample_batch(uint32_t start_y,
   uint64_t local_rays = 0;
 
   for (uint32_t y = min_y; y < max_y; ++y) {
-    for (uint32_t x_base = 0; x_base < settings_.width; x_base += 8) {
-      const uint32_t count = std::min(8u, settings_.width - x_base);
+    for (uint32_t x_base = min_x; x_base < max_x; x_base += 8) {
+      const uint32_t count = std::min(8u, max_x - x_base);
 
       // Build camera ray lanes for this pixel packet.
       alignas(32) float ox[8];
@@ -941,11 +973,11 @@ bool Avx2CpuPathTracer::render_sample_batch(uint32_t start_y,
   }
 
   std::atomic_ref<uint64_t>(counters_.samples).fetch_add(
-      static_cast<uint64_t>((max_y - min_y) * settings_.width),
+      static_cast<uint64_t>((max_y - min_y) * (max_x - min_x)),
       std::memory_order_relaxed);
   std::atomic_ref<uint64_t>(counters_.rays).fetch_add(local_rays,
       std::memory_order_relaxed);
-  return true;
+  return finish(true);
 }
 
 vkpt::pathtracer::SampleCounters Avx2CpuPathTracer::read_counters() const {
@@ -967,7 +999,7 @@ void Avx2CpuPathTracer::shutdown() {
   configured_ = false;
   has_scene_  = false;
   m_film      = vkpt::pathtracer::FilmBuffer{};
-  scene_      = vkpt::pathtracer::RTSceneData{};
+  scene_      = vkpt::pathtracer::PathTracerSceneSnapshot{};
   counters_   = {};
 }
 

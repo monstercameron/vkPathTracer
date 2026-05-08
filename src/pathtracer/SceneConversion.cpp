@@ -552,14 +552,14 @@ uint32_t material_effect_from_family(std::string_view family) {
 
 }  // namespace
 
-vkpt::core::Result<RTSceneData> BuildSceneDataFromDocument(const vkpt::scene::SceneDocument& doc) {
+vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocument(const vkpt::scene::SceneDocument& doc) {
   return BuildSceneDataFromDocumentAtFrame(doc, SceneParticleFrameState{});
 }
 
-vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
+vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
     const vkpt::scene::SceneDocument& doc,
     const SceneParticleFrameState& frame_state) {
-  RTSceneData scene;
+  PathTracerSceneSnapshot scene;
   scene.camera_position = {0.0f, 1.0f, 4.0f};
   scene.camera_target = {0.0f, 1.0f, 0.0f};
   scene.camera_up = {0.0f, 1.0f, 0.0f};
@@ -1503,7 +1503,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
 
   vkpt::log::Logger::instance().log(vkpt::log::Severity::Info,
                                     "traceprobe",
-                                    "scene converted to RTSceneData",
+                                    "scene converted to PathTracerSceneSnapshot",
                                     {
                                       {"vertices", std::to_string(scene.vertices.size())},
                                       {"indices", std::to_string(scene.indices.size())},
@@ -1520,7 +1520,7 @@ vkpt::core::Result<RTSceneData> BuildSceneDataFromDocumentAtFrame(
                                          std::to_string(scene.camera_target.y) + "," + std::to_string(scene.camera_target.z)}
                                     });
 
-  return vkpt::core::Result<RTSceneData>::ok(std::move(scene));
+  return vkpt::core::Result<PathTracerSceneSnapshot>::ok(std::move(scene));
 }
 
 }  // namespace vkpt::pathtracer

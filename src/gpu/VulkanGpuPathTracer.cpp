@@ -2,8 +2,13 @@
 
 #include "gpu/VulkanGpuPathTracer.h"
 #include "core/Logging.h"
+#include "core/log/Log.h"
+#include "core/metrics/Metrics.h"
+#include "pathtracer/PathTracerObservability.h"
 
 #include <algorithm>
+#include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -26,10 +31,25 @@
     }                                                                            \
   } while (0)
 
+#define VK_STATUS_CHK(expr)                                                     \
+  do {                                                                          \
+    VkResult _r = (expr);                                                       \
+    if (_r != VK_SUCCESS) {                                                     \
+      std::ostringstream _ss;                                                   \
+      _ss << #expr << " failed: VkResult=" << static_cast<int>(_r);            \
+      m_error = _ss.str();                                                      \
+      vkpt::log::Logger::instance().log(                                        \
+          vkpt::log::Severity::Error, "vulkan", m_error);                      \
+      return vkpt::core::Status::error(                                         \
+          vkpt::core::StatusCode::InternalError, m_error);                      \
+    }                                                                           \
+  } while (0)
+
 namespace vkpt::gpu {
 
 namespace {
 
+constexpr uint64_t kTelemetrySamplePeriodNs = 1000000000ull;
 constexpr std::size_t kVulkanMaterialStrideFloats =
     vkpt::pathtracer::kStandardGpuSceneBufferLayout.material_stride_floats;
 constexpr std::size_t kVulkanInstanceStrideU32 =
@@ -38,11 +58,46 @@ constexpr std::size_t kVulkanLightStrideFloats =
     vkpt::pathtracer::kStandardGpuSceneBufferLayout.light_stride_floats;
 constexpr std::size_t kVulkanSdfStrideFloats =
     vkpt::pathtracer::kStandardGpuSceneBufferLayout.sdf_stride_floats;
+constexpr uint32_t kVulkanWorkgroupSizeX = 8u;
+constexpr uint32_t kVulkanWorkgroupSizeY = 8u;
+constexpr uint32_t kVulkanCommandBufferCount = 3u;
+constexpr uint32_t kVulkanTileHeightRows = 16u;
+static_assert(kVulkanTileHeightRows % kVulkanWorkgroupSizeY == 0u,
+              "Vulkan row tiles must align to compute workgroups");
+static_assert(kVulkanCommandBufferCount >= 2u,
+              "Vulkan submission must keep multiple command buffers available");
 
 uint32_t VkFloatBits(float value) {
   uint32_t bits = 0u;
   std::memcpy(&bits, &value, sizeof(bits));
   return bits;
+}
+
+uint64_t ElapsedUs(std::chrono::steady_clock::time_point start) {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - start)
+          .count());
+}
+
+vkpt::pathtracer::PathTracerLifecycle LifecycleFromGpuState(bool valid,
+                                                            bool configured,
+                                                            bool scene_loaded,
+                                                            bool accel_valid,
+                                                            const std::string& error) {
+  if (!valid && !error.empty()) {
+    return vkpt::pathtracer::PathTracerLifecycle::Failed;
+  }
+  if (!configured) {
+    return vkpt::pathtracer::PathTracerLifecycle::Uninitialized;
+  }
+  if (!scene_loaded) {
+    return vkpt::pathtracer::PathTracerLifecycle::Configured;
+  }
+  if (!accel_valid) {
+    return vkpt::pathtracer::PathTracerLifecycle::SceneLoaded;
+  }
+  return vkpt::pathtracer::PathTracerLifecycle::Ready;
 }
 
 }  // namespace
@@ -53,11 +108,27 @@ uint32_t VkFloatBits(float value) {
 
 VulkanGpuPathTracer::VulkanGpuPathTracer(std::string spv_path)
     : m_spvPath(std::move(spv_path)) {
-  m_valid = init_device() && create_cmd_pool() && create_pipeline();
+  vkpt::core::Status initStatus = init_device();
+  if (initStatus) {
+    initStatus = create_cmd_pool();
+  }
+  if (initStatus) {
+    initStatus = create_pipeline();
+  }
+  m_valid = initStatus.is_ok();
+  if (!m_valid && m_error.empty()) {
+    m_error = initStatus.message;
+  }
   if (!m_valid) {
     vkpt::log::Logger::instance().log(
         vkpt::log::Severity::Error, "vulkan",
         "VulkanGpuPathTracer init failed: " + m_error);
+    EmitGpuBackendAnomaly("vulkan",
+                          "initialize",
+                          m_error.empty() ? "initialization failed" : m_error,
+                          introspect());
+  } else {
+    EmitGpuBackendStarted("vulkan", introspect());
   }
 }
 
@@ -65,32 +136,95 @@ VulkanGpuPathTracer::~VulkanGpuPathTracer() {
   shutdown();
 }
 
+VulkanGpuSubmissionContract VulkanGpuPathTracer::submission_contract() {
+  return VulkanGpuSubmissionContract{
+      kVulkanCommandBufferCount,
+      kVulkanCommandBufferCount,
+      kVulkanWorkgroupSizeX,
+      kVulkanWorkgroupSizeY,
+      kVulkanTileHeightRows,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true};
+}
+
+GpuBackendIntrospection VulkanGpuPathTracer::introspect() const {
+  GpuBackendIntrospection info;
+  info.adapter_name = m_gpuName;
+  info.vram_bytes_used = m_deviceMemoryBytes;
+  info.vram_bytes_total = m_deviceMemoryLimitBytes;
+  info.pending_dispatches = m_pendingDispatches;
+  info.last_present_us = 0u;
+  info.last_fence_wait_us = m_lastFenceWaitUs;
+  info.timeline_value = m_completedTimelineValue;
+  info.device_lost_recent = m_recentDeviceLost;
+  info.fence_timeout_recent = m_recentFenceTimeout;
+  info.lifecycle = vkpt::pathtracer::observability::ToComponentLifecycle(
+      LifecycleFromGpuState(m_valid,
+                            m_configured,
+                            m_hasScene,
+                            m_sceneUploaded,
+                            m_error));
+  info.current_flow_id = m_accumulationGeneration;
+  info.set_determinism(m_settings.determinism_context());
+  info.last_error = m_error;
+  return info;
+}
+
+vkpt::core::health::Report VulkanGpuPathTracer::health_report() const {
+  return GpuHealthReportFromIntrospection(introspect());
+}
+
 // ============================================================================
 // IPathTracer
 // ============================================================================
 
-bool VulkanGpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
-  if (!m_valid) return false;
+vkpt::core::Status VulkanGpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
+  if (!m_valid) {
+    EmitGpuBackendAnomaly("vulkan",
+                          "configure",
+                          m_error.empty() ? "Vulkan backend is not initialized" : m_error,
+                          introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady,
+                                     m_error.empty() ? "Vulkan backend is not initialized" : m_error);
+  }
+  const auto previousDeterminism = m_settings.determinism_context();
   m_settings    = s;
+  vkpt::core::EmitDeterminismChangedIfNeeded("gpu",
+                                             previousDeterminism,
+                                             m_settings.determinism_context());
   m_configured  = true;
   const uint64_t filmPixels = static_cast<uint64_t>(s.width) * s.height;
   if (filmPixels > std::numeric_limits<uint32_t>::max()) {
     m_error = "film dimensions exceed Vulkan backend limits";
-    return false;
+    EmitGpuBackendAnomaly("vulkan", "configure", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument, m_error);
   }
   m_filmPixels  = static_cast<uint32_t>(filmPixels);
 
   // The film buffer is host-visible and coherent, so resolve paths can read
   // accumulated RGBA32F data without staging copies or explicit invalidation.
   destroy_film_buffers();
+  m_latestFilmReadbackToken = {};
   const VkDeviceSize filmBytes =
       static_cast<VkDeviceSize>(m_filmPixels) * 4u * sizeof(float);
   if (!make_buffer(filmBytes,
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                   m_filmBuf, m_filmMem)) return false;
-  VK_CHK(vkMapMemory(m_device, m_filmMem, 0, filmBytes, 0, &m_filmPtr));
+                   m_filmBuf, m_filmMem)) {
+    return vkpt::core::Status::error(vkpt::core::StatusCode::AllocFailed, m_error);
+  }
+  VK_STATUS_CHK(vkMapMemory(m_device, m_filmMem, 0, filmBytes, 0, &m_filmPtr));
   std::memset(m_filmPtr, 0, static_cast<std::size_t>(filmBytes));
 
   m_film.resize(s.width, s.height);
@@ -100,34 +234,66 @@ bool VulkanGpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   m_counters      = {};
   m_hasScene      = false;
   m_sceneUploaded = false;
+  m_currentSample = 0u;
+  ++m_accumulationGeneration;
+  publish_device_memory_telemetry();
 
   // Descriptors depend on the film buffer — reset them
   if (m_ds != VK_NULL_HANDLE) {
     vkFreeDescriptorSets(m_device, m_dsPool, 1, &m_ds);
     m_ds = VK_NULL_HANDLE;
   }
-  return create_descriptors();
+  if (!create_descriptors()) {
+    EmitGpuBackendAnomaly("vulkan", "configure", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError, m_error);
+  }
+  EmitGpuBackendConfig("vulkan", introspect());
+  debug_check_state_contract("configure");
+  return vkpt::core::Status::ok("Vulkan path tracer configured");
 }
 
-bool VulkanGpuPathTracer::load_scene_snapshot(
-    const vkpt::pathtracer::RTSceneData& scene) {
-  if (!m_configured) return false;
+vkpt::core::Status VulkanGpuPathTracer::update_render_settings_status(
+    const vkpt::pathtracer::RenderSettings& s) {
+  (void)s;
+  return vkpt::core::Status::error(
+      vkpt::core::StatusCode::Unsupported,
+      "Vulkan backend requires configure/load/build for render setting changes");
+}
+
+vkpt::core::Status VulkanGpuPathTracer::load_scene_snapshot(
+    const vkpt::pathtracer::PathTracerSceneSnapshot& scene) {
+  if (!m_configured) {
+    m_error = "load_scene_snapshot before configure";
+    EmitGpuBackendAnomaly("vulkan", "load_scene_snapshot", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_error);
+  }
   m_sceneData     = scene;
   m_film.set_resolve_settings(
       vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
   m_cpuFilmDirty = false;
   m_hasScene      = true;
   m_sceneUploaded = false;
-  return true;
+  debug_check_state_contract("load_scene_snapshot");
+  return vkpt::core::Status::ok("Vulkan scene loaded");
 }
 
-bool VulkanGpuPathTracer::build_or_update_acceleration() {
-  if (!m_hasScene) return false;
-  return recreate_scene_buffers_from_snapshot();
+vkpt::core::Status VulkanGpuPathTracer::build_or_update_acceleration() {
+  if (!m_hasScene) {
+    m_error = "build_or_update_acceleration before load_scene_snapshot";
+    EmitGpuBackendAnomaly("vulkan", "build_or_update_acceleration", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_error);
+  }
+  if (!recreate_scene_buffers_from_snapshot()) {
+    EmitGpuBackendAnomaly("vulkan", "build_or_update_acceleration", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError, m_error);
+  }
+  EmitGpuBackendStarted("vulkan", introspect());
+  debug_check_state_contract("build_or_update_acceleration");
+  return vkpt::core::Status::ok("Vulkan scene buffers ready");
 }
 
 bool VulkanGpuPathTracer::recreate_scene_buffers_from_snapshot() {
-  // Pack RTSceneData into flat arrays matching pathtrace.comp storage-buffer
+  // Pack PathTracerSceneSnapshot into flat arrays matching pathtrace.comp storage-buffer
   // contracts. Dummy entries keep descriptor ranges non-empty for empty scenes.
   m_gpuVerts.clear();
   if (m_sceneData.vertices.empty()) {
@@ -310,6 +476,7 @@ bool VulkanGpuPathTracer::recreate_scene_buffers_from_snapshot() {
     vkUnmapMemory(m_device, *u.mem);
   }
   m_sceneUploaded = true;
+  publish_device_memory_telemetry();
 
   // Rebind descriptors
   if (m_ds != VK_NULL_HANDLE) {
@@ -326,7 +493,20 @@ bool VulkanGpuPathTracer::reset_accumulation() {
   m_film.clear();
   m_cpuFilmDirty = false;
   m_counters = {};
+  m_latestFilmReadbackToken = {};
+  m_currentSample = 0u;
+  ++m_accumulationGeneration;
+  debug_check_state_contract("reset_accumulation");
   return true;
+}
+
+vkpt::core::Status VulkanGpuPathTracer::reset_accumulation_status() {
+  const bool ok = reset_accumulation();
+  return GpuBackendOperationStatus(
+      "vulkan.reset_accumulation",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
 }
 
 bool VulkanGpuPathTracer::update_camera(const vkpt::pathtracer::Vec3& pos,
@@ -344,6 +524,19 @@ bool VulkanGpuPathTracer::update_camera(const vkpt::pathtracer::Vec3& pos,
   return update_camera_state(camera);
 }
 
+vkpt::core::Status VulkanGpuPathTracer::update_camera_status(
+    const vkpt::pathtracer::Vec3& pos,
+    const vkpt::pathtracer::Vec3& target,
+    const vkpt::pathtracer::Vec3& up,
+    float fov_deg) {
+  const bool ok = update_camera(pos, target, up, fov_deg);
+  return GpuBackendOperationStatus(
+      "vulkan.update_camera",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
+}
+
 bool VulkanGpuPathTracer::update_camera_state(
     const vkpt::pathtracer::RTCameraState& camera) {
   if (!m_sceneUploaded) {
@@ -353,7 +546,18 @@ bool VulkanGpuPathTracer::update_camera_state(
   m_film.set_resolve_settings(
       vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
   m_cpuFilmDirty = false;
+  debug_check_state_contract("update_camera_state");
   return true;
+}
+
+vkpt::core::Status VulkanGpuPathTracer::update_camera_state_status(
+    const vkpt::pathtracer::RTCameraState& camera) {
+  const bool ok = update_camera_state(camera);
+  return GpuBackendOperationStatus(
+      "vulkan.update_camera_state",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
 }
 
 bool VulkanGpuPathTracer::update_instance_transforms(
@@ -393,10 +597,21 @@ bool VulkanGpuPathTracer::update_instance_transforms(
     (void)recreate_scene_buffers_from_snapshot();
     return false;
   }
+  debug_check_state_contract("update_instance_transforms");
   return true;
 }
 
-vkpt::pathtracer::InstanceTransformUpdatePlan VulkanGpuPathTracer::plan_instance_transform_update(
+vkpt::core::Status VulkanGpuPathTracer::update_instance_transforms_status(
+    const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) {
+  const bool ok = update_instance_transforms(updates);
+  return GpuBackendOperationStatus(
+      "vulkan.update_instance_transforms",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
+}
+
+vkpt::pathtracer::InstanceTransformPlan VulkanGpuPathTracer::plan_instance_transform_update(
     std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
     const vkpt::pathtracer::InstanceTransformUpdateOptions& /*options*/) const {
   if (!m_sceneUploaded || updates.empty()) {
@@ -498,14 +713,43 @@ bool VulkanGpuPathTracer::update_scene_delta(
   }
   m_film.set_resolve_settings(
       vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
-  return recreate_scene_buffers_from_snapshot();
+  const bool ok = recreate_scene_buffers_from_snapshot();
+  if (ok) {
+    debug_check_state_contract("update_scene_delta");
+  }
+  return ok;
 }
 
-bool VulkanGpuPathTracer::render_sample_batch(
-    uint32_t /*sy*/, uint32_t /*ey*/,
-    uint32_t sample_idx, uint32_t frame_idx) {
-  if (!m_valid || !m_configured || !m_sceneUploaded || !m_filmPtr) return false;
-  if (m_pipeline == VK_NULL_HANDLE || m_ds == VK_NULL_HANDLE)       return false;
+vkpt::core::Status VulkanGpuPathTracer::update_scene_delta_status(
+    const vkpt::pathtracer::RTSceneDeltaUpdate& update) {
+  const bool ok = update_scene_delta(update);
+  return GpuBackendOperationStatus(
+      "vulkan.update_scene_delta",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
+}
+
+bool VulkanGpuPathTracer::render_tile(
+    const vkpt::pathtracer::RenderTile& tile,
+    uint32_t frame_idx) {
+  if (!m_valid || !m_configured || !m_sceneUploaded || !m_filmPtr) {
+    EmitGpuBackendAnomaly("vulkan", "render_tile", "backend not ready", introspect());
+    return false;
+  }
+  if (m_pipeline == VK_NULL_HANDLE || m_ds == VK_NULL_HANDLE) {
+    EmitGpuBackendAnomaly("vulkan", "render_tile", "pipeline or descriptor set missing", introspect());
+    return false;
+  }
+  if (tile.width == 0u || tile.height == 0u) {
+    return true;
+  }
+  if (tile.x != 0u || tile.width < m_settings.width) {
+    m_error = "Vulkan backend only supports full-width row tiles";
+    EmitGpuBackendAnomaly("vulkan", "render_tile", m_error, introspect());
+    return false;
+  }
+  const uint32_t sample_idx = tile.sample_index;
 
   const auto& sc = m_sceneData;
 
@@ -550,9 +794,9 @@ bool VulkanGpuPathTracer::render_sample_batch(
   pc.height        = m_settings.height;
   pc.base_seed     = static_cast<uint32_t>(m_settings.seed & 0xFFFFFFFFu)
                      ^ (frame_idx * 2654435761u);
-  pc.env_color[0]  = sc.environment_color.x;
-  pc.env_color[1]  = sc.environment_color.y;
-  pc.env_color[2]  = sc.environment_color.z;
+  pc.env_r         = sc.environment_color.x;
+  pc.env_g         = sc.environment_color.y;
+  pc.env_b         = sc.environment_color.z;
   pc.max_depth_f   = static_cast<float>(std::max(1u, m_settings.max_depth));
   pc.aperture_radius = sc.camera_aperture_radius > 0.0f
       ? sc.camera_aperture_radius
@@ -567,41 +811,84 @@ bool VulkanGpuPathTracer::render_sample_batch(
       ? std::max(0.01f, sc.camera_anamorphic_squeeze)
       : 1.0f;
 
-  // Record a one-shot command buffer per sample. The fence wait below makes the
-  // host-visible film immediately readable by resolve_ldr/resolve_hdr.
-  VK_CHK(vkResetCommandBuffer(m_cmdBuf, 0));
-  VkCommandBufferBeginInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  VK_CHK(vkBeginCommandBuffer(m_cmdBuf, &cbi));
+  const uint32_t maxY = std::min(tile.y + tile.height, m_settings.height);
+  const uint32_t minY = std::min(tile.y, maxY);
+  if (minY >= maxY) {
+    return true;
+  }
+  if ((minY % kVulkanWorkgroupSizeY) != 0u ||
+      ((maxY % kVulkanWorkgroupSizeY) != 0u && maxY != m_settings.height)) {
+    m_error = "Vulkan row tile dispatch requires 8-row alignment except at the image bottom";
+    EmitGpuBackendAnomaly("vulkan", "render_tile", m_error, introspect());
+    return false;
+  }
+  if (m_cmdBufs.empty() || m_timelineSemaphore == VK_NULL_HANDLE) {
+    m_error = "Vulkan timeline command ring is not initialized";
+    EmitGpuBackendAnomaly("vulkan", "render_tile", m_error, introspect());
+    return false;
+  }
 
-  vkCmdBindPipeline(m_cmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
-  vkCmdBindDescriptorSets(m_cmdBuf, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          m_pipeLayout, 0, 1, &m_ds, 0, nullptr);
-  vkCmdPushConstants(m_cmdBuf, m_pipeLayout,
-                     VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                     sizeof(PathTracePushConstants), &pc);
-  vkCmdDispatch(m_cmdBuf,
-                (m_settings.width + 7u) / 8u,
-                (m_settings.height + 7u) / 8u, 1u);
-  VK_CHK(vkEndCommandBuffer(m_cmdBuf));
+  // Queue row tiles through a reusable command-buffer ring. We only wait when a
+  // slot is about to be reused, then once more on the final timeline value so
+  // resolve_ldr/resolve_hdr keep the existing immediate-readback contract.
+  std::vector<uint64_t> slotTimeline(m_cmdBufs.size(), m_completedTimelineValue);
+  uint64_t lastSubmitted = m_completedTimelineValue;
+  std::size_t slot = 0u;
 
-  // Submit and wait synchronously because the public IPathTracer API exposes
-  // immediate CPU resolve/readback semantics.
-  VK_CHK(vkResetFences(m_device, 1, &m_fence));
-  VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  si.commandBufferCount = 1;
-  si.pCommandBuffers    = &m_cmdBuf;
-  VK_CHK(vkQueueSubmit(m_queue, 1, &si, m_fence));
-  VK_CHK(vkWaitForFences(m_device, 1, &m_fence, VK_TRUE,
-                          static_cast<uint64_t>(10e9)));
+  for (uint32_t tileY = minY; tileY < maxY;) {
+    const uint32_t tileRows = std::min<uint32_t>(kVulkanTileHeightRows, maxY - tileY);
+    const uint32_t tileEnd = tileY + tileRows;
+    if (!wait_for_timeline(slotTimeline[slot])) {
+      return false;
+    }
+    VkCommandBuffer cmdBuf = m_cmdBufs[slot];
+    if (!record_tile_dispatch(cmdBuf, pc, tileY, tileEnd)) {
+      if (lastSubmitted > m_completedTimelineValue) {
+        (void)wait_for_timeline(lastSubmitted);
+      }
+      return false;
+    }
+    const uint32_t groupsX =
+        (m_settings.width + kVulkanWorkgroupSizeX - 1u) / kVulkanWorkgroupSizeX;
+    const uint32_t groupsY =
+        (tileEnd - tileY + kVulkanWorkgroupSizeY - 1u) / kVulkanWorkgroupSizeY;
+    const uint64_t signalValue = ++m_timelineValue;
+    if (!submit_tile_dispatch(cmdBuf, signalValue, groupsX, groupsY)) {
+      if (lastSubmitted > m_completedTimelineValue) {
+        (void)wait_for_timeline(lastSubmitted);
+      }
+      return false;
+    }
+    slotTimeline[slot] = signalValue;
+    lastSubmitted = signalValue;
+    slot = (slot + 1u) % m_cmdBufs.size();
+    tileY = tileEnd;
+  }
+
+  if (!wait_for_timeline(lastSubmitted)) {
+    return false;
+  }
 
   m_cpuFilmDirty = true;
 
   const uint64_t sampleInc =
-      static_cast<uint64_t>(m_settings.width) * m_settings.height;
+      static_cast<uint64_t>(m_settings.width) * (maxY - minY);
   m_counters.samples += sampleInc;
   m_counters.rays    += sampleInc;
+  m_currentSample = std::max(m_currentSample, sample_idx + 1u);
+  debug_check_state_contract("render_tile");
   return true;
+}
+
+vkpt::core::Status VulkanGpuPathTracer::render_tile_status(
+    const vkpt::pathtracer::RenderTile& tile,
+    uint32_t frame_idx) {
+  const bool ok = render_tile(tile, frame_idx);
+  return GpuBackendOperationStatus(
+      "vulkan.render_tile",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
 }
 
 vkpt::pathtracer::FilmLdr VulkanGpuPathTracer::resolve_ldr() const {
@@ -612,12 +899,78 @@ vkpt::pathtracer::FilmHdr VulkanGpuPathTracer::resolve_hdr() const {
   rebuild_cpu_film_from_gpu();
   return m_film.resolve_hdr();
 }
+vkpt::pathtracer::FilmReadbackToken VulkanGpuPathTracer::request_film_readback() {
+  if (!m_valid || !m_configured || !m_sceneUploaded || !m_filmPtr) {
+    return {};
+  }
+  vkpt::pathtracer::FilmReadbackToken token;
+  token.id = m_nextFilmReadbackId++;
+  token.fence_value = m_timelineValue;
+  token.width = m_settings.width;
+  token.height = m_settings.height;
+  m_latestFilmReadbackToken = token;
+  return token;
+}
+vkpt::pathtracer::FilmReadbackResult VulkanGpuPathTracer::poll_film(
+    vkpt::pathtracer::FilmReadbackToken token) {
+  if (!token || token.id != m_latestFilmReadbackToken.id ||
+      token.width != m_settings.width || token.height != m_settings.height) {
+    return {
+        vkpt::pathtracer::FilmReadbackState::Invalid,
+        {},
+        "invalid Vulkan film readback token"};
+  }
+  if (!m_valid || !m_configured || !m_sceneUploaded || !m_filmPtr) {
+    return {
+        vkpt::pathtracer::FilmReadbackState::Failed,
+        {},
+        "Vulkan film readback requested before backend is ready"};
+  }
+  if (token.fence_value > m_completedTimelineValue) {
+    if (!refresh_completed_timeline()) {
+      return {
+          vkpt::pathtracer::FilmReadbackState::Failed,
+          {},
+          m_error};
+    }
+    if (token.fence_value > m_completedTimelineValue) {
+      return {vkpt::pathtracer::FilmReadbackState::Pending, {}, {}};
+    }
+  }
+  rebuild_cpu_film_from_gpu();
+  return {
+      vkpt::pathtracer::FilmReadbackState::Ready,
+      m_film.resolve_ldr(),
+      {}};
+}
 vkpt::pathtracer::SampleCounters VulkanGpuPathTracer::read_counters() const {
   return m_counters;
 }
 
+vkpt::pathtracer::PathTracerStatus VulkanGpuPathTracer::status() const {
+  vkpt::pathtracer::PathTracerStatus out;
+  out.backend = "vulkan";
+  out.lifecycle = LifecycleFromGpuState(m_valid,
+                                        m_configured,
+                                        m_hasScene,
+                                        m_sceneUploaded,
+                                        m_error);
+  out.scene_loaded = m_hasScene;
+  out.accel_valid = m_sceneUploaded;
+  out.ready_to_render = m_valid && m_configured && m_hasScene && m_sceneUploaded &&
+                        m_filmPtr != nullptr && m_pipeline != VK_NULL_HANDLE &&
+                        m_ds != VK_NULL_HANDLE;
+  out.current_sample = m_currentSample;
+  out.last_sample_us = m_lastSubmitUs + m_lastFenceWaitUs;
+  out.total_samples = m_counters.samples;
+  out.accumulation_gen = m_accumulationGeneration;
+  out.last_error = m_error;
+  return out;
+}
+
 void VulkanGpuPathTracer::shutdown() {
   if (m_device != VK_NULL_HANDLE) {
+    EmitGpuBackendStopped("vulkan", introspect());
     // Ensure no queued command buffer still references resources being torn down.
     vkDeviceWaitIdle(m_device);
 
@@ -630,21 +983,45 @@ void VulkanGpuPathTracer::shutdown() {
 
     if (m_dsPool   != VK_NULL_HANDLE) { vkDestroyDescriptorPool(m_device, m_dsPool, nullptr);             m_dsPool   = VK_NULL_HANDLE; }
     if (m_dsLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(m_device, m_dsLayout, nullptr);      m_dsLayout = VK_NULL_HANDLE; }
-    if (m_fence    != VK_NULL_HANDLE) { vkDestroyFence(m_device, m_fence, nullptr);                       m_fence    = VK_NULL_HANDLE; }
+    if (m_timelineSemaphore != VK_NULL_HANDLE) { vkDestroySemaphore(m_device, m_timelineSemaphore, nullptr); m_timelineSemaphore = VK_NULL_HANDLE; }
     if (m_cmdPool  != VK_NULL_HANDLE) { vkDestroyCommandPool(m_device, m_cmdPool, nullptr);               m_cmdPool  = VK_NULL_HANDLE; }
+    m_cmdBufs.clear();
+    m_timelineValue = 0u;
+    m_completedTimelineValue = 0u;
+    m_pendingDispatches = 0u;
+    m_dispatchesSubmitted = 0u;
+    m_dispatchesCompleted = 0u;
+    m_lastSubmitUs = 0u;
+    m_lastFenceWaitUs = 0u;
     vkDestroyDevice(m_device, nullptr);
     m_device = VK_NULL_HANDLE;
   }
   if (m_instance != VK_NULL_HANDLE) { vkDestroyInstance(m_instance, nullptr);                           m_instance = VK_NULL_HANDLE; }
   m_valid = false;
   m_cpuFilmDirty = false;
+  m_latestFilmReadbackToken = {};
 }
 
 // ============================================================================
 // Private helpers
 // ============================================================================
 
-bool VulkanGpuPathTracer::init_device() {
+void VulkanGpuPathTracer::debug_check_state_contract(const char* operation) const {
+  (void)operation;
+#ifndef NDEBUG
+  assert(!m_sceneUploaded || m_hasScene);
+  assert(!m_hasScene || m_configured);
+  assert(!m_configured || m_valid);
+  const bool ready = m_valid && m_configured && m_hasScene && m_sceneUploaded;
+  if (ready) {
+    assert(m_filmPtr != nullptr);
+    assert(m_pipeline != VK_NULL_HANDLE);
+    assert(m_ds != VK_NULL_HANDLE);
+  }
+#endif
+}
+
+vkpt::core::Status VulkanGpuPathTracer::init_device() {
   // Instance (no surface extensions needed for off-screen compute)
   VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
   ai.pApplicationName   = "vkPathTracer";
@@ -653,14 +1030,17 @@ bool VulkanGpuPathTracer::init_device() {
 
   VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
   ici.pApplicationInfo = &ai;
-  VK_CHK(vkCreateInstance(&ici, nullptr, &m_instance));
+  VK_STATUS_CHK(vkCreateInstance(&ici, nullptr, &m_instance));
 
   // Physical device — prefer discrete
   uint32_t cnt = 0;
-  VK_CHK(vkEnumeratePhysicalDevices(m_instance, &cnt, nullptr));
-  if (cnt == 0) { m_error = "No Vulkan physical devices"; return false; }
+  VK_STATUS_CHK(vkEnumeratePhysicalDevices(m_instance, &cnt, nullptr));
+  if (cnt == 0) {
+    m_error = "No Vulkan physical devices";
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_error);
+  }
   std::vector<VkPhysicalDevice> devs(cnt);
-  VK_CHK(vkEnumeratePhysicalDevices(m_instance, &cnt, devs.data()));
+  VK_STATUS_CHK(vkEnumeratePhysicalDevices(m_instance, &cnt, devs.data()));
 
   // Enumerate all physical devices and log them to help verify the right GPU
   // is selected.  We prefer DISCRETE_GPU over INTEGRATED_GPU.
@@ -715,6 +1095,7 @@ bool VulkanGpuPathTracer::init_device() {
 
     m_gpuName    = p.deviceName;
     m_vramMb     = static_cast<uint32_t>(vramBytes / (1024u * 1024u));
+    m_deviceMemoryLimitBytes = vramBytes;
     m_apiVersion = p.apiVersion;
     m_gpuType    = deviceTypeName(p.deviceType);
 
@@ -734,7 +1115,26 @@ bool VulkanGpuPathTracer::init_device() {
   m_qFam = UINT32_MAX;
   for (uint32_t i = 0; i < qfCnt; ++i)
     if (qf[i].queueFlags & VK_QUEUE_COMPUTE_BIT) { m_qFam = i; break; }
-  if (m_qFam == UINT32_MAX) { m_error = "No compute queue family"; return false; }
+  if (m_qFam == UINT32_MAX) {
+    m_error = "No compute queue family";
+    return vkpt::core::Status::error(vkpt::core::StatusCode::Unsupported, m_error);
+  }
+  if (m_apiVersion < VK_API_VERSION_1_2) {
+    m_error = "Selected Vulkan device must expose Vulkan 1.2 for timeline submissions";
+    return vkpt::core::Status::error(vkpt::core::StatusCode::Unsupported, m_error);
+  }
+
+  VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures{};
+  timelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+  VkPhysicalDeviceFeatures2 features2{};
+  features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features2.pNext = &timelineFeatures;
+  vkGetPhysicalDeviceFeatures2(m_physDev, &features2);
+  if (!timelineFeatures.timelineSemaphore) {
+    m_error = "Selected Vulkan device does not support timeline semaphores";
+    return vkpt::core::Status::error(vkpt::core::StatusCode::Unsupported, m_error);
+  }
+  timelineFeatures.timelineSemaphore = VK_TRUE;
 
   const float prio = 1.0f;
   VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -743,43 +1143,225 @@ bool VulkanGpuPathTracer::init_device() {
   qci.pQueuePriorities = &prio;
 
   VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+  dci.pNext = &timelineFeatures;
   dci.queueCreateInfoCount = 1;
   dci.pQueueCreateInfos    = &qci;
-  VK_CHK(vkCreateDevice(m_physDev, &dci, nullptr, &m_device));
+  VK_STATUS_CHK(vkCreateDevice(m_physDev, &dci, nullptr, &m_device));
   vkGetDeviceQueue(m_device, m_qFam, 0, &m_queue);
-  return true;
+  return vkpt::core::Status::ok("Vulkan device initialized");
 }
 
-bool VulkanGpuPathTracer::create_cmd_pool() {
+vkpt::core::Status VulkanGpuPathTracer::create_cmd_pool() {
   VkCommandPoolCreateInfo ci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   ci.flags            = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   ci.queueFamilyIndex = m_qFam;
-  VK_CHK(vkCreateCommandPool(m_device, &ci, nullptr, &m_cmdPool));
+  VK_STATUS_CHK(vkCreateCommandPool(m_device, &ci, nullptr, &m_cmdPool));
 
   VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
   ai.commandPool        = m_cmdPool;
   ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  ai.commandBufferCount = 1;
-  VK_CHK(vkAllocateCommandBuffers(m_device, &ai, &m_cmdBuf));
+  ai.commandBufferCount = kVulkanCommandBufferCount;
+  m_cmdBufs.assign(kVulkanCommandBufferCount, VK_NULL_HANDLE);
+  VK_STATUS_CHK(vkAllocateCommandBuffers(m_device, &ai, m_cmdBufs.data()));
 
-  VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  VK_CHK(vkCreateFence(m_device, &fi, nullptr, &m_fence));
+  VkSemaphoreTypeCreateInfo typeInfo{};
+  typeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+  typeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+  typeInfo.initialValue = 0u;
+  VkSemaphoreCreateInfo sci{};
+  sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+  sci.pNext = &typeInfo;
+  VK_STATUS_CHK(vkCreateSemaphore(m_device, &sci, nullptr, &m_timelineSemaphore));
+  m_timelineValue = 0u;
+  m_completedTimelineValue = 0u;
+  m_pendingDispatches = 0u;
+  m_dispatchesSubmitted = 0u;
+  m_dispatchesCompleted = 0u;
+  m_lastSubmitUs = 0u;
+  m_lastFenceWaitUs = 0u;
+  m_recentFenceTimeout = false;
+  m_recentDeviceLost = false;
+  return vkpt::core::Status::ok("Vulkan command pool initialized");
+}
+
+bool VulkanGpuPathTracer::record_tile_dispatch(
+    VkCommandBuffer cmd_buf,
+    const PathTracePushConstants& pc,
+    uint32_t start_y,
+    uint32_t end_y) {
+  if (cmd_buf == VK_NULL_HANDLE || start_y >= end_y) {
+    return false;
+  }
+  if ((start_y % kVulkanWorkgroupSizeY) != 0u ||
+      ((end_y % kVulkanWorkgroupSizeY) != 0u && end_y != m_settings.height)) {
+    m_error = "Vulkan row tile dispatch is not workgroup aligned";
+    return false;
+  }
+
+  const uint32_t dispatchX =
+      (m_settings.width + kVulkanWorkgroupSizeX - 1u) / kVulkanWorkgroupSizeX;
+  const uint32_t dispatchY =
+      (end_y - start_y + kVulkanWorkgroupSizeY - 1u) / kVulkanWorkgroupSizeY;
+  if (dispatchX == 0u || dispatchY == 0u) {
+    return false;
+  }
+
+  VK_CHK(vkResetCommandBuffer(cmd_buf, 0));
+  VkCommandBufferBeginInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  VK_CHK(vkBeginCommandBuffer(cmd_buf, &cbi));
+
+  vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
+  vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          m_pipeLayout, 0, 1, &m_ds, 0, nullptr);
+  vkCmdPushConstants(cmd_buf, m_pipeLayout,
+                     VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                     sizeof(PathTracePushConstants), &pc);
+  vkCmdDispatchBase(cmd_buf,
+                    0u, start_y / kVulkanWorkgroupSizeY, 0u,
+                    dispatchX, dispatchY, 1u);
+  VK_CHK(vkEndCommandBuffer(cmd_buf));
   return true;
 }
 
-bool VulkanGpuPathTracer::create_pipeline() {
+bool VulkanGpuPathTracer::submit_tile_dispatch(
+    VkCommandBuffer cmd_buf,
+    uint64_t signal_value,
+    uint32_t groups_x,
+    uint32_t groups_y) {
+  if (m_timelineSemaphore == VK_NULL_HANDLE || cmd_buf == VK_NULL_HANDLE) {
+    m_error = "Vulkan timeline submission is not initialized";
+    return false;
+  }
+
+  VkTimelineSemaphoreSubmitInfo timelineSubmit{};
+  timelineSubmit.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+  timelineSubmit.signalSemaphoreValueCount = 1u;
+  timelineSubmit.pSignalSemaphoreValues = &signal_value;
+
+  VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  si.pNext = &timelineSubmit;
+  si.commandBufferCount = 1u;
+  si.pCommandBuffers = &cmd_buf;
+  si.signalSemaphoreCount = 1u;
+  si.pSignalSemaphores = &m_timelineSemaphore;
+  const auto submitStart = std::chrono::steady_clock::now();
+  VK_CHK(vkQueueSubmit(m_queue, 1u, &si, VK_NULL_HANDLE));
+  m_lastSubmitUs = ElapsedUs(submitStart);
+  ++m_dispatchesSubmitted;
+  ++m_pendingDispatches;
+  VKP_LOG_SAMPLED(kTelemetrySamplePeriodNs,
+                  Info,
+                  "gpu",
+                  "dispatch_submitted",
+                  "backend",
+                  "vulkan",
+                  "groups_x",
+                  static_cast<uint64_t>(groups_x),
+                  "groups_y",
+                  static_cast<uint64_t>(groups_y),
+                  "timeline",
+                  signal_value,
+                  "submit_us",
+                  m_lastSubmitUs,
+                  "pending",
+                  static_cast<uint64_t>(m_pendingDispatches));
+  return true;
+}
+
+bool VulkanGpuPathTracer::wait_for_timeline(uint64_t value) {
+  if (value <= m_completedTimelineValue) {
+    return true;
+  }
+  if (m_timelineSemaphore == VK_NULL_HANDLE) {
+    m_error = "Vulkan timeline wait requested before semaphore creation";
+    return false;
+  }
+  VkSemaphoreWaitInfo waitInfo{};
+  waitInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+  waitInfo.semaphoreCount = 1u;
+  waitInfo.pSemaphores = &m_timelineSemaphore;
+  waitInfo.pValues = &value;
+  const uint64_t previousCompleted = m_completedTimelineValue;
+  const auto waitStart = std::chrono::steady_clock::now();
+  const VkResult waitResult =
+      vkWaitSemaphores(m_device, &waitInfo, static_cast<uint64_t>(10e9));
+  if (waitResult != VK_SUCCESS) {
+    m_recentFenceTimeout = waitResult == VK_TIMEOUT;
+    m_recentDeviceLost = waitResult == VK_ERROR_DEVICE_LOST;
+    std::ostringstream ss;
+    ss << "vkWaitSemaphores failed: VkResult=" << static_cast<int>(waitResult);
+    m_error = ss.str();
+    return false;
+  }
+  m_recentFenceTimeout = false;
+  m_lastFenceWaitUs = ElapsedUs(waitStart);
+  VKP_METRIC_OBSERVE("vkp.gpu.fence_wait_us", m_lastFenceWaitUs);
+  m_completedTimelineValue = value;
+  const uint64_t completedDelta = value > previousCompleted
+      ? value - previousCompleted
+      : 0u;
+  m_dispatchesCompleted += completedDelta;
+  const uint32_t completedPending = static_cast<uint32_t>(
+      std::min<uint64_t>(static_cast<uint64_t>(m_pendingDispatches), completedDelta));
+  m_pendingDispatches -= completedPending;
+  VKP_LOG_SAMPLED(kTelemetrySamplePeriodNs,
+                  Info,
+                  "gpu",
+                  "dispatch_completed",
+                  "backend",
+                  "vulkan",
+                  "timeline",
+                  value,
+                  "fence_wait_us",
+                  m_lastFenceWaitUs,
+                  "pending",
+                  static_cast<uint64_t>(m_pendingDispatches),
+                  "completed_total",
+                  m_dispatchesCompleted);
+  return true;
+}
+
+bool VulkanGpuPathTracer::refresh_completed_timeline() {
+  if (m_timelineSemaphore == VK_NULL_HANDLE) {
+    m_error = "Vulkan timeline refresh requested before semaphore creation";
+    return false;
+  }
+  uint64_t completedValue = 0u;
+  const VkResult result =
+      vkGetSemaphoreCounterValue(m_device, m_timelineSemaphore, &completedValue);
+  if (result != VK_SUCCESS) {
+    m_recentDeviceLost = result == VK_ERROR_DEVICE_LOST;
+    std::ostringstream ss;
+    ss << "vkGetSemaphoreCounterValue failed: VkResult=" << static_cast<int>(result);
+    m_error = ss.str();
+    return false;
+  }
+  if (completedValue <= m_completedTimelineValue) {
+    return true;
+  }
+  const uint64_t completedDelta = completedValue - m_completedTimelineValue;
+  m_completedTimelineValue = completedValue;
+  m_dispatchesCompleted += completedDelta;
+  const uint32_t completedPending = static_cast<uint32_t>(
+      std::min<uint64_t>(static_cast<uint64_t>(m_pendingDispatches), completedDelta));
+  m_pendingDispatches -= completedPending;
+  return true;
+}
+
+vkpt::core::Status VulkanGpuPathTracer::create_pipeline() {
   // Load SPIR-V from file
   std::ifstream f(m_spvPath, std::ios::binary | std::ios::ate);
   if (!f.is_open()) {
     m_error = "Cannot open SPIR-V: " + m_spvPath;
     vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument, m_error);
   }
   const auto spvSz = static_cast<std::size_t>(f.tellg());
   if (spvSz == 0u || (spvSz % sizeof(uint32_t)) != 0u) {
     m_error = "Invalid SPIR-V byte size: " + std::to_string(spvSz);
     vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument, m_error);
   }
   f.seekg(0);
   std::vector<uint32_t> spv(spvSz / 4u);
@@ -787,14 +1369,15 @@ bool VulkanGpuPathTracer::create_pipeline() {
   if (!f) {
     m_error = "Failed to read SPIR-V: " + m_spvPath;
     vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError, m_error);
   }
   f.close();
 
+  const auto compileStart = std::chrono::steady_clock::now();
   VkShaderModuleCreateInfo smci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
   smci.codeSize = spvSz;
   smci.pCode    = spv.data();
-  VK_CHK(vkCreateShaderModule(m_device, &smci, nullptr, &m_shaderMod));
+  VK_STATUS_CHK(vkCreateShaderModule(m_device, &smci, nullptr, &m_shaderMod));
 
   // Descriptor set layout: vertex, index, material, instance, light, film, SDF,
   // environment map, and environment metadata buffers. The binding order is
@@ -809,7 +1392,7 @@ bool VulkanGpuPathTracer::create_pipeline() {
   VkDescriptorSetLayoutCreateInfo dsli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
   dsli.bindingCount = 9;
   dsli.pBindings    = binds;
-  VK_CHK(vkCreateDescriptorSetLayout(m_device, &dsli, nullptr, &m_dsLayout));
+  VK_STATUS_CHK(vkCreateDescriptorSetLayout(m_device, &dsli, nullptr, &m_dsLayout));
 
   // Push constant range
   VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PathTracePushConstants)};
@@ -819,7 +1402,7 @@ bool VulkanGpuPathTracer::create_pipeline() {
   plci.pSetLayouts            = &m_dsLayout;
   plci.pushConstantRangeCount = 1;
   plci.pPushConstantRanges    = &pcr;
-  VK_CHK(vkCreatePipelineLayout(m_device, &plci, nullptr, &m_pipeLayout));
+  VK_STATUS_CHK(vkCreatePipelineLayout(m_device, &plci, nullptr, &m_pipeLayout));
 
   VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
   stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -829,12 +1412,25 @@ bool VulkanGpuPathTracer::create_pipeline() {
   VkComputePipelineCreateInfo cpci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
   cpci.stage  = stage;
   cpci.layout = m_pipeLayout;
-  VK_CHK(vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &cpci,
-                                   nullptr, &m_pipeline));
+  VK_STATUS_CHK(vkCreateComputePipelines(m_device, VK_NULL_HANDLE, 1, &cpci,
+                                         nullptr, &m_pipeline));
+  VKP_LOG(Info,
+          "gpu",
+          "shader_compiled",
+          "backend",
+          "vulkan",
+          "shader",
+          m_spvPath,
+          "bytes",
+          static_cast<uint64_t>(spvSz),
+          "compile_us",
+          ElapsedUs(compileStart),
+          "entry",
+          "main");
   vkpt::log::Logger::instance().log(
       vkpt::log::Severity::Info, "vulkan",
       "Compute pipeline created from " + m_spvPath);
-  return true;
+  return vkpt::core::Status::ok("Vulkan compute pipeline initialized");
 }
 
 bool VulkanGpuPathTracer::create_descriptors() {
@@ -927,6 +1523,7 @@ bool VulkanGpuPathTracer::make_buffer(VkDeviceSize size,
     std::ostringstream ss;
     ss << "vkCreateBuffer failed: VkResult=" << static_cast<int>(result);
     m_error = ss.str();
+    m_recentDeviceLost = result == VK_ERROR_DEVICE_LOST;
     vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
     return false;
   }
@@ -948,6 +1545,7 @@ bool VulkanGpuPathTracer::make_buffer(VkDeviceSize size,
     std::ostringstream ss;
     ss << "vkAllocateMemory failed: VkResult=" << static_cast<int>(result);
     m_error = ss.str();
+    m_recentDeviceLost = result == VK_ERROR_DEVICE_LOST;
     vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
     cleanup();
     return false;
@@ -957,6 +1555,7 @@ bool VulkanGpuPathTracer::make_buffer(VkDeviceSize size,
     std::ostringstream ss;
     ss << "vkBindBufferMemory failed: VkResult=" << static_cast<int>(result);
     m_error = ss.str();
+    m_recentDeviceLost = result == VK_ERROR_DEVICE_LOST;
     vkpt::log::Logger::instance().log(vkpt::log::Severity::Error, "vulkan", m_error);
     cleanup();
     return false;
@@ -964,6 +1563,45 @@ bool VulkanGpuPathTracer::make_buffer(VkDeviceSize size,
   buf = localBuf;
   mem = localMem;
   return true;
+}
+
+uint64_t VulkanGpuPathTracer::estimate_device_memory_bytes() const {
+  auto buffer_bytes = [](std::size_t bytes, bool live) -> uint64_t {
+    if (!live) {
+      return 0u;
+    }
+    return static_cast<uint64_t>(std::max<std::size_t>(bytes, 4u));
+  };
+
+  uint64_t total = 0u;
+  total += buffer_bytes(static_cast<std::size_t>(m_filmPixels) * 4u * sizeof(float),
+                        m_filmBuf != VK_NULL_HANDLE);
+  total += buffer_bytes(m_gpuVerts.size() * sizeof(float), m_vertBuf != VK_NULL_HANDLE);
+  total += buffer_bytes(m_gpuIdx.size() * sizeof(uint32_t), m_idxBuf != VK_NULL_HANDLE);
+  total += buffer_bytes(m_gpuMats.size() * sizeof(float), m_matBuf != VK_NULL_HANDLE);
+  total += buffer_bytes(m_gpuInsts.size() * sizeof(uint32_t), m_instBuf != VK_NULL_HANDLE);
+  total += buffer_bytes(m_gpuLights.size() * sizeof(float), m_ltBuf != VK_NULL_HANDLE);
+  total += buffer_bytes(m_gpuSdfs.size() * sizeof(float), m_sdfBuf != VK_NULL_HANDLE);
+  total += buffer_bytes(m_gpuEnv.size() * sizeof(float), m_envBuf != VK_NULL_HANDLE);
+  total += buffer_bytes(m_gpuEnvMeta.size() * sizeof(uint32_t), m_envMetaBuf != VK_NULL_HANDLE);
+  return total;
+}
+
+void VulkanGpuPathTracer::publish_device_memory_telemetry() {
+  m_deviceMemoryBytes = estimate_device_memory_bytes();
+  VKP_METRIC_SET("vkp.gpu.device_memory_bytes", m_deviceMemoryBytes);
+  if (m_deviceMemoryLimitBytes > 0u &&
+      m_deviceMemoryBytes * 10ull >= m_deviceMemoryLimitBytes * 9ull) {
+    VKP_LOG(Warn,
+            "gpu",
+            "device_memory_high",
+            "backend",
+            "vulkan",
+            "used_bytes",
+            m_deviceMemoryBytes,
+            "total_bytes",
+            m_deviceMemoryLimitBytes);
+  }
 }
 
 void VulkanGpuPathTracer::rebuild_cpu_film_from_gpu() const {
@@ -998,6 +1636,7 @@ void VulkanGpuPathTracer::destroy_film_buffers() {
   m_cpuFilmDirty = false;
   if (m_filmBuf != VK_NULL_HANDLE) { vkDestroyBuffer(m_device, m_filmBuf, nullptr); m_filmBuf = VK_NULL_HANDLE; }
   if (m_filmMem != VK_NULL_HANDLE) { vkFreeMemory(m_device, m_filmMem, nullptr);    m_filmMem = VK_NULL_HANDLE; }
+  publish_device_memory_telemetry();
 }
 
 void VulkanGpuPathTracer::destroy_scene_buffers() {
@@ -1011,6 +1650,7 @@ void VulkanGpuPathTracer::destroy_scene_buffers() {
   del(m_sdfBuf,  m_sdfMem);  del(m_envBuf,  m_envMem);
   del(m_envMetaBuf, m_envMetaMem);
   m_sceneUploaded = false;
+  publish_device_memory_telemetry();
 }
 
 void VulkanGpuPathTracer::destroy_pipeline() {

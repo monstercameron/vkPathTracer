@@ -5,6 +5,7 @@
 #include "core/Logging.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
@@ -23,6 +24,30 @@
 
 namespace vkpt::gpu {
 
+namespace {
+
+vkpt::pathtracer::PathTracerLifecycle LifecycleFromGpuState(bool valid,
+                                                            bool configured,
+                                                            bool scene_loaded,
+                                                            bool accel_valid,
+                                                            const std::string& error) {
+  if (!valid && !error.empty()) {
+    return vkpt::pathtracer::PathTracerLifecycle::Failed;
+  }
+  if (!configured) {
+    return vkpt::pathtracer::PathTracerLifecycle::Uninitialized;
+  }
+  if (!scene_loaded) {
+    return vkpt::pathtracer::PathTracerLifecycle::Configured;
+  }
+  if (!accel_valid) {
+    return vkpt::pathtracer::PathTracerLifecycle::SceneLoaded;
+  }
+  return vkpt::pathtracer::PathTracerLifecycle::Ready;
+}
+
+}  // namespace
+
 D3D12GpuPathTracer::D3D12GpuPathTracer(std::string hlsl_path, std::string entry_point)
     : m_hlslPath(std::move(hlsl_path)), m_entryPoint(std::move(entry_point)) {
   m_shaderTraversalMode = SelectShaderTraversalMode();
@@ -30,8 +55,20 @@ D3D12GpuPathTracer::D3D12GpuPathTracer(std::string hlsl_path, std::string entry_
   LogDebug("D3D12 tracer ctor hlsl=" + m_hlslPath + " entry=" + m_entryPoint +
            " shader_traversal=" + m_shaderTraversalMode +
            " packed_triangles=" + (m_packedTriangleBufferEnabled ? "true" : "false"));
-  m_valid = init_device() && create_root_sig_and_pso();
-  if (!m_valid) LogError("D3D12GpuPathTracer init failed: " + m_error);
+  vkpt::core::Status initStatus = init_device();
+  m_valid = initStatus.is_ok() && create_root_sig_and_pso();
+  if (!m_valid && m_error.empty()) {
+    m_error = initStatus.message;
+  }
+  if (!m_valid) {
+    LogError("D3D12GpuPathTracer init failed: " + m_error);
+    EmitGpuBackendAnomaly("d3d12",
+                          "initialize",
+                          m_error.empty() ? "initialization failed" : m_error,
+                          introspect());
+  } else {
+    EmitGpuBackendStarted("d3d12", introspect());
+  }
 }
 
 D3D12GpuPathTracer::~D3D12GpuPathTracer() { shutdown(); }
@@ -102,26 +139,34 @@ void D3D12GpuPathTracer::set_prefer_dxr(bool enabled) {
 // IPathTracer
 // ============================================================================
 
-bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
+vkpt::core::Status D3D12GpuPathTracer::configure(
+    const vkpt::pathtracer::RenderSettings& s) {
   if (!m_valid) {
     m_error = "configure before init";
     LogError("configure rejected: " + m_error);
-    return false;
+    EmitGpuBackendAnomaly("d3d12", "configure", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady, m_error);
   }
   if (s.width == 0u || s.height == 0u) {
     m_error = "configure invalid dimensions";
     LogError("configure rejected: " + m_error);
-    return false;
+    EmitGpuBackendAnomaly("d3d12", "configure", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument, m_error);
   }
   const uint64_t filmPixels = static_cast<uint64_t>(s.width) * s.height;
   if (filmPixels > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
     m_error = "film dimensions exceed D3D12 backend limits";
     LogError("configure rejected: " + m_error);
-    return false;
+    EmitGpuBackendAnomaly("d3d12", "configure", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument, m_error);
   }
   // Configuration invalidates all GPU scene state because film dimensions,
   // batching, and optional postprocess buffers are tied to RenderSettings.
+  const auto previousDeterminism = m_settings.determinism_context();
   m_settings   = s;
+  vkpt::core::EmitDeterminismChangedIfNeeded("gpu",
+                                             previousDeterminism,
+                                             m_settings.determinism_context());
   m_configured = true;
   m_filmPixels = static_cast<uint32_t>(filmPixels);
   // The D3D12 backend keeps accumulation in the GPU UAV (m_filmBuf) and
@@ -136,6 +181,9 @@ bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   m_ldrResolve.rgba8.clear();
   m_ldrResolve.width = 0u;
   m_ldrResolve.height = 0u;
+  m_latestFilmReadbackToken = {};
+  m_filmGeneration = 0u;
+  m_ldrResolveGeneration = 0u;
   m_raysPerPixelPerDispatch = SelectRaysPerPixelPerDispatch(s);
   m_readbackInterval = SelectReadbackInterval(s);
   const bool interactivePreview = s.spp == std::numeric_limits<uint32_t>::max();
@@ -165,7 +213,13 @@ bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
       << " packed_triangles=" << (m_packedTriangleBufferEnabled ? "true" : "false");
   LogDebug(cfg.str());
   destroy_film_buffer();
-  return create_film_buffer();
+  if (!create_film_buffer()) {
+    EmitGpuBackendAnomaly("d3d12", "configure", m_error, introspect());
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError, m_error);
+  }
+  EmitGpuBackendConfig("d3d12", introspect());
+  debug_check_state_contract("configure");
+  return vkpt::core::Status::ok("D3D12 path tracer configured");
 }
 
 bool D3D12GpuPathTracer::update_render_settings(const vkpt::pathtracer::RenderSettings& s) {
@@ -178,7 +232,11 @@ bool D3D12GpuPathTracer::update_render_settings(const vkpt::pathtracer::RenderSe
     return false;
   }
 
+  const auto previousDeterminism = m_settings.determinism_context();
   m_settings = s;
+  vkpt::core::EmitDeterminismChangedIfNeeded("gpu",
+                                             previousDeterminism,
+                                             m_settings.determinism_context());
   m_raysPerPixelPerDispatch = SelectRaysPerPixelPerDispatch(s);
   m_readbackInterval = SelectReadbackInterval(s);
   const bool interactivePreview = s.spp == std::numeric_limits<uint32_t>::max();
@@ -194,8 +252,56 @@ bool D3D12GpuPathTracer::update_render_settings(const vkpt::pathtracer::RenderSe
   m_ldrResolve.rgba8.clear();
   m_ldrResolve.width = 0u;
   m_ldrResolve.height = 0u;
+  m_latestFilmReadbackToken = {};
+  ++m_filmGeneration;
+  m_ldrResolveGeneration = 0u;
   LogDebug("D3D12 render settings updated without scene rebuild");
+  debug_check_state_contract("update_render_settings");
   return true;
+}
+
+vkpt::core::Status D3D12GpuPathTracer::update_render_settings_status(
+    const vkpt::pathtracer::RenderSettings& s) {
+  const bool ok = update_render_settings(s);
+  return GpuBackendOperationStatus(
+      "d3d12.update_render_settings",
+      ok,
+      m_error,
+      vkpt::core::StatusCode::NotReady);
+}
+
+vkpt::pathtracer::PathTracerStatus D3D12GpuPathTracer::status() const {
+  vkpt::pathtracer::PathTracerStatus out;
+  out.backend = m_usingDxrDispatch ? "d3d12-dxr" : "d3d12-compute";
+  out.lifecycle = LifecycleFromGpuState(m_valid,
+                                        m_configured,
+                                        m_hasScene,
+                                        m_sceneUploaded,
+                                        m_error);
+  out.scene_loaded = m_hasScene;
+  out.accel_valid = m_sceneUploaded;
+  out.ready_to_render = m_valid && m_configured && m_hasScene && m_sceneUploaded &&
+                        m_filmBuf && m_ldrBuf && m_cmdQueue;
+  out.current_sample = m_counters.samples == 0u ? 0u : (m_lastSampleIdx + 1u);
+  out.total_samples = m_counters.samples;
+  out.accumulation_gen = m_filmGeneration;
+  out.last_error = m_error;
+  return out;
+}
+
+void D3D12GpuPathTracer::debug_check_state_contract(const char* operation) const {
+  (void)operation;
+#ifndef NDEBUG
+  assert(!m_sceneUploaded || m_hasScene);
+  assert(!m_hasScene || m_configured);
+  assert(!m_configured || m_valid);
+  const bool ready = m_valid && m_configured && m_hasScene && m_sceneUploaded;
+  if (ready) {
+    assert(m_filmBuf.Get() != nullptr);
+    assert(m_ldrBuf.Get() != nullptr);
+    assert(m_cmdQueue.Get() != nullptr);
+  }
+#endif
 }
 
 }  // namespace vkpt::gpu

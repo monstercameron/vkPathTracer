@@ -2,13 +2,17 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "render/backends/FrameGraph.h"
 #include "render/interface/RenderContracts.h"
 #include "pathtracer/PathTracer.h"
+#include "scene/SceneSnapshot.h"
+#include "scene/SnapshotRing.h"
 
 namespace vkpt::render {
 
@@ -61,6 +65,9 @@ class VulkanResourceAllocator final : public IRenderResourceAllocator {
 /// Command context matching the Vulkan backend contract without native Vk objects.
 class VulkanCommandContext final : public IRenderCommandContext {
  public:
+  explicit VulkanCommandContext(std::uint32_t command_buffer_index = 0u,
+                                std::uint64_t wait_timeline_value = 0u,
+                                std::uint64_t signal_timeline_value = 0u);
   bool begin_frame() override;
   bool end_frame() override;
   bool begin_pass(PassType type, std::string_view label) override;
@@ -68,6 +75,19 @@ class VulkanCommandContext final : public IRenderCommandContext {
   bool dispatch(uint32_t x, uint32_t y, uint32_t z) override;
   bool copy_buffer_to_texture(ResourceHandle source_buffer, ResourceHandle target_texture) override;
   bool barrier(ResourceHandle resource, std::uint32_t usage_before, std::uint32_t usage_after) override;
+
+  std::uint32_t command_buffer_index() const { return m_commandBufferIndex; }
+  std::uint64_t wait_timeline_value() const { return m_waitTimelineValue; }
+  std::uint64_t signal_timeline_value() const { return m_signalTimelineValue; }
+  std::uint32_t dispatch_count() const { return m_dispatchCount; }
+
+ private:
+  std::uint32_t m_commandBufferIndex = 0u;
+  std::uint64_t m_waitTimelineValue = 0u;
+  std::uint64_t m_signalTimelineValue = 0u;
+  std::uint32_t m_dispatchCount = 0u;
+  bool m_frameOpen = false;
+  bool m_passOpen = false;
 };
 
 /// Headless Vulkan swapchain placeholder.
@@ -87,18 +107,97 @@ class VulkanSwapchain final : public IRenderSwapchain {
 /// Simulated Vulkan device; command contexts are only created while begun.
 class VulkanDevice final : public IRenderDevice {
  public:
-  explicit VulkanDevice(std::unique_ptr<VulkanResourceAllocator> allocator, std::unique_ptr<VulkanSwapchain> swapchain);
+  explicit VulkanDevice(std::unique_ptr<VulkanResourceAllocator> allocator,
+                        std::unique_ptr<VulkanSwapchain> swapchain,
+                        std::uint32_t command_buffer_count = 2u);
   bool begin() override;
   bool end() override;
   std::unique_ptr<IRenderCommandContext> create_command_context() override;
   IRenderSwapchain* swapchain() const override;
   IRenderResourceAllocator* allocator();
+  std::uint32_t command_buffer_count() const { return m_commandBufferCount; }
 
  private:
   std::unique_ptr<VulkanResourceAllocator> m_allocator;
   std::unique_ptr<VulkanSwapchain> m_swapchain;
+  std::uint32_t m_commandBufferCount = 2u;
+  std::uint32_t m_nextCommandBuffer = 0u;
   bool m_running = false;
 };
+
+enum class VulkanSnapshotTransitionKind : std::uint8_t {
+  None,
+  InitialUpload,
+  Continue,
+  ReprojectCamera,
+  RefitTransforms,
+  ReshadeMaterials,
+  RebuildScene
+};
+
+struct VulkanSnapshotBindingState {
+  bool snapshot_bound = false;
+  std::uint64_t generation = 0u;
+  std::uint64_t topology_revision = 0u;
+  std::uint64_t transform_revision = 0u;
+  std::uint64_t camera_revision = 0u;
+  std::uint64_t material_revision = 0u;
+  VulkanSnapshotTransitionKind last_transition = VulkanSnapshotTransitionKind::None;
+  bool geometry_storage_reused_from_previous = false;
+  bool acceleration_reused_from_previous = false;
+  bool transform_refit_descriptor = false;
+  bool reset_accumulation = false;
+  bool rebuild_tile_schedule = false;
+  std::uint64_t bind_count = 0u;
+};
+
+struct VulkanTileBatchConfig {
+  std::uint32_t max_tiles_in_flight = 2u;
+  std::uint32_t command_buffer_count = 2u;
+  std::uint64_t frame_index = 0u;
+  bool present_after_batch = true;
+};
+
+struct VulkanTileSubmissionRecord {
+  std::uint32_t tile_id = 0u;
+  std::uint32_t gpu_id = 0u;
+  std::uint32_t command_buffer_index = 0u;
+  std::uint32_t sample_index = 0u;
+  std::uint64_t frame_index = 0u;
+  std::uint64_t snapshot_generation = 0u;
+  std::uint64_t wait_timeline_value = 0u;
+  std::uint64_t signal_timeline_value = 0u;
+  std::uint32_t in_flight_after_submit = 0u;
+};
+
+struct VulkanTimelineDiagnostics {
+  bool timeline_semaphore = true;
+  bool double_buffered_command_buffers = true;
+  bool cpu_gpu_overlap_observed = false;
+  std::uint32_t command_buffer_count = 2u;
+  std::uint32_t max_tiles_in_flight = 2u;
+  std::uint32_t current_in_flight = 0u;
+  std::uint32_t max_observed_in_flight = 0u;
+  std::uint64_t last_submitted_value = 0u;
+  std::uint64_t last_completed_value = 0u;
+  std::uint64_t last_present_value = 0u;
+  std::uint64_t total_tile_submissions = 0u;
+  std::uint64_t total_presents = 0u;
+};
+
+struct VulkanTileBatchDiagnostics {
+  bool success = false;
+  std::uint32_t submitted_tiles = 0u;
+  std::uint32_t max_observed_in_flight = 0u;
+  std::uint64_t first_timeline_value = 0u;
+  std::uint64_t last_submitted_timeline_value = 0u;
+  std::uint64_t completed_timeline_value = 0u;
+  std::uint64_t present_timeline_value = 0u;
+  std::vector<VulkanTileSubmissionRecord> submissions;
+  std::string error;
+};
+
+std::string_view VulkanSnapshotTransitionKindToString(VulkanSnapshotTransitionKind kind);
 
 /// Vulkan compute backend skeleton used before native VkDevice integration.
 class VulkanComputeBackend final : public IRenderBackend {
@@ -112,12 +211,32 @@ class VulkanComputeBackend final : public IRenderBackend {
   IShaderCompiler* compiler() override;
   IShaderCache* shader_cache() override;
   std::unique_ptr<IFrameGraph> create_frame_graph() override;
+  std::string last_error() const override { return m_lastError; }
+
+  bool bind_scene_snapshot(vkpt::scene::RenderSceneSnapshot::Ptr snapshot);
+  bool bind_latest_snapshot(vkpt::scene::SnapshotRing& snapshots,
+                            std::uint32_t reader_id = vkpt::scene::SnapshotRing::kInvalidReader) {
+    auto snapshot = reader_id == vkpt::scene::SnapshotRing::kInvalidReader
+        ? snapshots.current()
+        : snapshots.current(reader_id);
+    return bind_scene_snapshot(std::move(snapshot));
+  }
+  const VulkanSnapshotBindingState& snapshot_state() const { return m_snapshotState; }
+  VulkanTileBatchDiagnostics submit_tile_batch(
+      std::span<const vkpt::pathtracer::RenderTile> tiles,
+      const VulkanTileBatchConfig& config = VulkanTileBatchConfig{});
+  VulkanTimelineDiagnostics timeline_diagnostics() const { return m_timeline; }
 
  private:
   bool m_initialized = false;
   bool m_simulated = true;
   std::unique_ptr<VulkanShaderCompiler> m_compiler;
   std::unique_ptr<VulkanShaderCache> m_cache;
+  vkpt::scene::RenderSceneSnapshot::Ptr m_boundSnapshot;
+  VulkanSnapshotBindingState m_snapshotState{};
+  VulkanTimelineDiagnostics m_timeline{};
+  std::uint32_t m_nextCommandBuffer = 0u;
+  std::string m_lastError;
 };
 
 /// Execute a minimal graph/allocator smoke test against a Vulkan-compatible backend.
@@ -133,13 +252,13 @@ struct VulkanBVHPassResult {
   std::string error;
 };
 
-/// Upload RTSceneData, simulate BVH build, and execute a pathtrace graph.
+/// Upload PathTracerSceneSnapshot, simulate BVH build, and execute a pathtrace graph.
 ///
 /// No Vulkan SDK objects are required in this stub; all operations are performed
 /// through the simulated allocator and frame-graph contracts.
 VulkanBVHPassResult RunVulkanBVHPass(
     vkpt::render::VulkanComputeBackend& backend,
-    const vkpt::pathtracer::RTSceneData& scene,
+    const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
     uint32_t width,
     uint32_t height);
 

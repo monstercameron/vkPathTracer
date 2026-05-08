@@ -90,6 +90,41 @@ void FilmBuffer::add_sample(uint32_t x, uint32_t y, const Vec3& color) {
   m_sampleCounts[idx] += 1;
 }
 
+void FilmBuffer::set_pixel_raw(uint32_t x,
+                               uint32_t y,
+                               const Vec3& accumulation,
+                               uint32_t sample_count,
+                               float invalid_samples) {
+  const std::size_t idx = static_cast<std::size_t>(y) * m_width + x;
+  if (idx >= m_accumulation.size()) {
+    return;
+  }
+  m_accumulation[idx] = accumulation;
+  m_sampleCounts[idx] = sample_count;
+  m_invalidSamples[idx] = std::max(0.0f, invalid_samples);
+}
+
+void FilmBuffer::reset_pixel(uint32_t x, uint32_t y) {
+  const std::size_t idx = static_cast<std::size_t>(y) * m_width + x;
+  if (idx >= m_accumulation.size()) {
+    return;
+  }
+  m_accumulation[idx] = {};
+  m_sampleCounts[idx] = 0u;
+  m_invalidSamples[idx] = 0.0f;
+}
+
+bool FilmBuffer::copy_from(const FilmBuffer& src) {
+  if (m_width != src.m_width || m_height != src.m_height) {
+    return false;
+  }
+  m_accumulation = src.m_accumulation;
+  m_sampleCounts = src.m_sampleCounts;
+  m_invalidSamples = src.m_invalidSamples;
+  m_resolveSettings = src.m_resolveSettings;
+  return true;
+}
+
 void FilmBuffer::import_tile(const FilmBuffer& src, uint32_t start_y, uint32_t end_y) {
   if (m_width != src.m_width || m_height == 0 || src.m_height == 0) {
     return;
@@ -189,7 +224,7 @@ Vec3 WhiteBalanceScale(float kelvin) {
 }
 
 FilmResolveSettings CameraAdjustedFilmResolveSettings(const FilmResolveSettings& base,
-                                                       const RTSceneData& scene) {
+                                                       const PathTracerSceneSnapshot& scene) {
   FilmResolveSettings out = base;
   // Convert camera exposure controls into a scalar multiplier before tone mapping.
   if (std::isfinite(scene.camera_f_stop) &&

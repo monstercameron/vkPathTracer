@@ -1,7 +1,7 @@
 // GPU path tracer compute shader (HLSL / SM 6.0).
 // One invocation per pixel; accumulates into a persistent RGBA32F ByteAddressBuffer.
 // Root constants carry all per-dispatch state (camera, scene counts, sample index).
-// Layout mirrors RTSceneData on the CPU side and pathtrace.comp (GLSL).
+// Layout mirrors PathTracerSceneSnapshot on the CPU side and pathtrace.comp (GLSL).
 
 #ifndef PT_D3D12_STATIC_TRAVERSAL_MODE
 #define PT_D3D12_STATIC_TRAVERSAL_MODE 0

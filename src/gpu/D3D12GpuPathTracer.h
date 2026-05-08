@@ -14,6 +14,7 @@
 #include <dxcapi.h>
 
 #include "pathtracer/PathTracer.h"
+#include "gpu/GpuBackendIntrospection.h"
 
 #include <cstdint>
 #include <span>
@@ -72,32 +73,44 @@ struct D3D12TemporalCameraState {
 /// The backend owns device lifetime, scene buffer packing/upload, GPU film
 /// accumulation, optional post passes, and the DXR BLAS/TLAS/SBT objects used
 /// when hardware ray tracing is selected.
-class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
+class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer,
+                                 public IGpuBackendIntrospect {
  public:
   /// Creates the backend and defers most GPU resource allocation until configure/load.
   D3D12GpuPathTracer(std::string hlsl_path, std::string entry_point = "main");
   ~D3D12GpuPathTracer() override;
 
   /// Allocates film resources and records render settings for subsequent uploads.
-  bool configure(const vkpt::pathtracer::RenderSettings& s) override;
+  vkpt::core::Status configure(const vkpt::pathtracer::RenderSettings& s) override;
   /// Updates constants-only settings without rebuilding scene buffers when possible.
   bool update_render_settings(const vkpt::pathtracer::RenderSettings& s) override;
+  vkpt::core::Status update_render_settings_status(
+      const vkpt::pathtracer::RenderSettings& s);
   /// Stores a CPU scene snapshot; call build_or_update_acceleration() to upload it.
-  bool load_scene_snapshot(const vkpt::pathtracer::RTSceneData& scene) override;
+  vkpt::core::Status load_scene_snapshot(const vkpt::pathtracer::PathTracerSceneSnapshot& scene) override;
   /// Packs scene data into shader layouts, uploads buffers, and builds DXR AS if enabled.
-  bool build_or_update_acceleration() override;
+  vkpt::core::Status build_or_update_acceleration() override;
   /// Clears GPU and CPU-visible accumulation state without rebuilding scene buffers.
   bool reset_accumulation() override;
+  vkpt::core::Status reset_accumulation_status();
   /// Updates only camera state after scene buffers exist; invalidates temporal history.
   bool update_camera(const vkpt::pathtracer::Vec3& pos,
                      const vkpt::pathtracer::Vec3& target,
                      const vkpt::pathtracer::Vec3& up,
                      float fov_deg) override;
+  vkpt::core::Status update_camera_status(const vkpt::pathtracer::Vec3& pos,
+                                          const vkpt::pathtracer::Vec3& target,
+                                          const vkpt::pathtracer::Vec3& up,
+                                          float fov_deg);
   bool update_camera_state(const vkpt::pathtracer::RTCameraState& camera) override;
+  vkpt::core::Status update_camera_state_status(
+      const vkpt::pathtracer::RTCameraState& camera);
   /// Uploads dynamic instance transforms and refreshes the software BVH or DXR TLAS.
   bool update_instance_transforms(
       const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates) override;
-  vkpt::pathtracer::InstanceTransformUpdatePlan plan_instance_transform_update(
+  vkpt::core::Status update_instance_transforms_status(
+      const std::vector<vkpt::pathtracer::RTInstanceTransformUpdate>& updates);
+  vkpt::pathtracer::InstanceTransformPlan plan_instance_transform_update(
       std::span<const vkpt::pathtracer::RTInstanceTransformUpdate> updates,
       const vkpt::pathtracer::InstanceTransformUpdateOptions& options) const override;
   vkpt::pathtracer::InstanceTransformUpdateResult apply_instance_transform_update(
@@ -105,12 +118,20 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
       const vkpt::pathtracer::InstanceTransformUpdateOptions& options) override;
   /// Applies material/light-only deltas that do not require triangle repacking.
   bool update_scene_delta(const vkpt::pathtracer::RTSceneDeltaUpdate& update) override;
-  /// Dispatches one GPU sample batch and optionally readbacks the LDR display buffer.
-  bool render_sample_batch(uint32_t sy, uint32_t ey,
-                           uint32_t sample_idx, uint32_t frame_idx) override;
+  vkpt::core::Status update_scene_delta_status(
+      const vkpt::pathtracer::RTSceneDeltaUpdate& update);
+  /// Dispatches one GPU tile request and optionally readbacks the LDR display buffer.
+  bool render_tile(const vkpt::pathtracer::RenderTile& tile,
+                   uint32_t frame_idx) override;
+  vkpt::core::Status render_tile_status(const vkpt::pathtracer::RenderTile& tile,
+                                        uint32_t frame_idx);
   vkpt::pathtracer::FilmLdr resolve_ldr() const override;
   vkpt::pathtracer::FilmHdr resolve_hdr() const override;
+  vkpt::pathtracer::FilmReadbackToken request_film_readback() override;
+  vkpt::pathtracer::FilmReadbackResult poll_film(
+      vkpt::pathtracer::FilmReadbackToken token) override;
   vkpt::pathtracer::SampleCounters read_counters() const override;
+  vkpt::pathtracer::PathTracerStatus status() const override;
   const vkpt::pathtracer::FilmBuffer& film() const override { return m_film; }
   void shutdown() override;
 
@@ -133,13 +154,49 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   std::string bvh_split_mode() const { return m_bvhSplitMode; }
   std::string shader_traversal_mode() const { return m_shaderTraversalMode; }
   bool        packed_triangle_buffer_enabled() const { return m_packedTriangleBufferEnabled; }
+  GpuBackendIntrospection introspect() const override {
+    const std::uint64_t total = static_cast<std::uint64_t>(m_vramMb) * 1024ull * 1024ull;
+    const std::uint64_t used =
+        m_uploadSize +
+        (m_filmBuf ? m_filmBuf->GetDesc().Width : 0ull) +
+        (m_ldrBuf ? m_ldrBuf->GetDesc().Width : 0ull) +
+        (m_denoiseBuf ? m_denoiseBuf->GetDesc().Width : 0ull) +
+        (m_guideBuf ? m_guideBuf->GetDesc().Width : 0ull) +
+        (m_temporalBuf ? m_temporalBuf->GetDesc().Width : 0ull);
+    GpuBackendIntrospection info;
+    info.adapter_name = m_gpuName;
+    info.vram_bytes_used = used;
+    info.vram_bytes_total = total;
+    info.pending_dispatches = 0u;
+    info.last_present_us = 0u;
+    info.last_fence_wait_us = 0u;
+    info.timeline_value = static_cast<std::uint64_t>(m_fenceValue);
+    info.device_lost_recent = !m_error.empty() && m_error.find("device") != std::string::npos;
+    info.fence_timeout_recent = !m_error.empty() && m_error.find("fence") != std::string::npos;
+    if (!m_valid && !m_error.empty()) {
+      info.lifecycle = vkpt::core::contracts::ComponentLifecycle::Failed;
+    } else if (!m_configured) {
+      info.lifecycle = vkpt::core::contracts::ComponentLifecycle::Uninitialized;
+    } else if (!m_sceneUploaded) {
+      info.lifecycle = vkpt::core::contracts::ComponentLifecycle::Initializing;
+    } else {
+      info.lifecycle = vkpt::core::contracts::ComponentLifecycle::Ready;
+    }
+    info.current_flow_id = m_filmGeneration;
+    info.set_determinism(m_settings.determinism_context());
+    info.last_error = m_error;
+    return info;
+  }
+  vkpt::core::health::Report health_report() const {
+    return GpuHealthReportFromIntrospection(introspect());
+  }
 
  private:
   struct DynamicInstanceTransformUpdateStage {
     // Mirrors only the slice of m_sceneData that can be mutated by a transform
     // update (the instances vector). The rest of the scene snapshot —
     // vertices, indices, materials, textures, lights, env map — is immutable
-    // for transform updates and is left untouched on the live RTSceneData.
+    // for transform updates and is left untouched on the live PathTracerSceneSnapshot.
     std::vector<vkpt::pathtracer::RTInstance> instances;
     std::vector<uint32_t> gpu_instances;
     std::vector<float> gpu_dynamic_bvh;
@@ -151,9 +208,9 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   };
 
   /// Creates the DXGI factory, device, queue, command list, fence, and upload heap.
-  bool init_device();
+  vkpt::core::Status init_device();
   /// Creates DXR-specific queue/list/fence objects after device capability probing.
-  bool init_dxr_runtime_objects();
+  vkpt::core::Status init_dxr_runtime_objects();
   /// Builds the compute root signature and all compute/postprocess PSOs.
   bool create_root_sig_and_pso();
   bool create_tonemap_pso(const std::string& src);
@@ -199,6 +256,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_idx, bool doReadback);
   bool wait_for_dxr_gpu();
   void destroy_dxr_resources();
+  void debug_check_state_contract(const char* operation) const;
 
   Microsoft::WRL::ComPtr<IDXGIFactory6>  m_factory;
   Microsoft::WRL::ComPtr<ID3D12Device>   m_device;
@@ -258,7 +316,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   void* m_ldrReadbackPtr  = nullptr;
 
   vkpt::pathtracer::RenderSettings        m_settings{};
-  vkpt::pathtracer::RTSceneData           m_sceneData{};
+  vkpt::pathtracer::PathTracerSceneSnapshot           m_sceneData{};
   mutable vkpt::pathtracer::FilmBuffer    m_film;
   mutable vkpt::pathtracer::SampleCounters m_counters{};
 
@@ -314,6 +372,10 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
   bool m_packedTriangleBufferEnabled = true;
   bool m_temporalHistoryValid = false;
   D3D12TemporalCameraState m_temporalPrevCamera{};
+  vkpt::pathtracer::FilmReadbackToken m_latestFilmReadbackToken{};
+  uint64_t m_nextFilmReadbackId = 1u;
+  uint64_t m_filmGeneration = 0u;
+  uint64_t m_ldrResolveGeneration = 0u;
 
   std::vector<float>    m_gpuVerts;
   std::vector<float>    m_gpuTexcoords;

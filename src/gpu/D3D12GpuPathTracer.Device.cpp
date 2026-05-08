@@ -4,12 +4,24 @@
 
 #include <algorithm>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 namespace vkpt::gpu {
 
+namespace {
+
+vkpt::core::Status D3D12InitFailure(
+    std::string message,
+    vkpt::core::StatusCode code = vkpt::core::StatusCode::InternalError) {
+  return vkpt::core::Status::error(code, std::move(message));
+}
+
+}  // namespace
+
 void D3D12GpuPathTracer::shutdown() {
   if (!m_device) return;
+  EmitGpuBackendStopped("d3d12", introspect());
   // Stop GPU work before releasing resources; mapped upload/readback pointers
   // remain valid only while their owning committed resources are alive.
   (void)wait_for_gpu();
@@ -48,7 +60,7 @@ void D3D12GpuPathTracer::shutdown() {
 // Init helpers
 // ============================================================================
 
-bool D3D12GpuPathTracer::init_device() {
+vkpt::core::Status D3D12GpuPathTracer::init_device() {
 #if defined(_DEBUG)
   Microsoft::WRL::ComPtr<ID3D12Debug> dbg;
   if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg))))
@@ -63,7 +75,7 @@ bool D3D12GpuPathTracer::init_device() {
   if (FAILED(createFactoryHr)) {
     m_error = "CreateDXGIFactory2 hr=" + FormatHr(createFactoryHr);
     LogError("init_device: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
 
   // Enumerate adapters, pick the one with the most dedicated VRAM
@@ -99,7 +111,7 @@ bool D3D12GpuPathTracer::init_device() {
     DXGI_ADAPTER_DESC1 desc{};
     if (FAILED(chosen->GetDesc1(&desc))) {
       m_error = "EnumWarpAdapter returned invalid adapter";
-      return false;
+      return D3D12InitFailure(m_error, vkpt::core::StatusCode::NotReady);
     }
     bestVram = 0;
     bestName = WStringToUtf8(desc.Description);
@@ -119,7 +131,7 @@ bool D3D12GpuPathTracer::init_device() {
   if (FAILED(createDeviceHr)) {
     m_error = "D3D12CreateDevice hr=" + FormatHr(createDeviceHr);
     LogError("init_device: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
 
   // Probe DXR capability for migration planning and benchmark telemetry.
@@ -151,7 +163,7 @@ bool D3D12GpuPathTracer::init_device() {
   if (FAILED(createQueueHr)) {
     m_error = "CreateCommandQueue hr=" + FormatHr(createQueueHr);
     LogError("init_device: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
 
   // Command allocator + list
@@ -160,20 +172,20 @@ bool D3D12GpuPathTracer::init_device() {
   if (FAILED(createAllocHr)) {
     m_error = "CreateCommandAllocator hr=" + FormatHr(createAllocHr);
     LogError("init_device: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
   const HRESULT createListHr = m_device->CreateCommandList(0, commandListType,
       m_cmdAllocator.Get(), nullptr, IID_PPV_ARGS(&m_cmdList));
   if (FAILED(createListHr)) {
     m_error = "CreateCommandList hr=" + FormatHr(createListHr);
     LogError("init_device: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
   const HRESULT closeListHr = m_cmdList->Close();
   if (FAILED(closeListHr)) {
     m_error = "CreateCommandList initial close hr=" + FormatHr(closeListHr);
     LogError("init_device: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
 
   // Fence
@@ -182,13 +194,13 @@ bool D3D12GpuPathTracer::init_device() {
   if (FAILED(createFenceHr)) {
     m_error = "CreateFence hr=" + FormatHr(createFenceHr);
     LogError("init_device: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
   m_fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
   if (!m_fenceEvent) {
     m_error = "CreateEventW";
     LogError("init_device: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
 
   // Persistent upload heap. Scene uploads suballocate from this mapped buffer
@@ -209,23 +221,24 @@ bool D3D12GpuPathTracer::init_device() {
   if (FAILED(createUploadHr)) {
     m_error = "upload buffer hr=" + FormatHr(createUploadHr);
     LogError("init_device: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error, vkpt::core::StatusCode::AllocFailed);
   }
   const HRESULT mapUploadHr = m_uploadBuf->Map(0, nullptr, &m_uploadPtr);
   if (FAILED(mapUploadHr)) {
     m_error = "upload buffer map hr=" + FormatHr(mapUploadHr);
     LogError("init_device: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
   LogDebug("D3D12 device init success upload_heap=" + std::to_string(m_uploadSize));
 
   LogInfo("D3D12 device init success");
-  return true;
+  return vkpt::core::Status::ok("D3D12 device initialized");
 }
 
-bool D3D12GpuPathTracer::init_dxr_runtime_objects() {
+vkpt::core::Status D3D12GpuPathTracer::init_dxr_runtime_objects() {
   if (!m_dxrSupported || !m_device5) {
-    return false;
+    m_error = "DXR runtime requested before ID3D12Device5 support is available";
+    return D3D12InitFailure(m_error, vkpt::core::StatusCode::Unsupported);
   }
 
   D3D12_COMMAND_QUEUE_DESC qd{};
@@ -235,7 +248,7 @@ bool D3D12GpuPathTracer::init_dxr_runtime_objects() {
   if (FAILED(createQueueHr)) {
     m_error = "CreateCommandQueue(DIRECT) hr=" + FormatHr(createQueueHr);
     LogError("init_dxr_runtime_objects: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
 
   const HRESULT createAllocHr = m_device->CreateCommandAllocator(
@@ -243,7 +256,7 @@ bool D3D12GpuPathTracer::init_dxr_runtime_objects() {
   if (FAILED(createAllocHr)) {
     m_error = "CreateCommandAllocator(DIRECT) hr=" + FormatHr(createAllocHr);
     LogError("init_dxr_runtime_objects: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
 
   const HRESULT createListHr = m_device5->CreateCommandList(
@@ -252,13 +265,13 @@ bool D3D12GpuPathTracer::init_dxr_runtime_objects() {
   if (FAILED(createListHr)) {
     m_error = "CreateCommandList4(DIRECT) hr=" + FormatHr(createListHr);
     LogError("init_dxr_runtime_objects: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
   const HRESULT closeDxrListHr = m_dxrCmdList->Close();
   if (FAILED(closeDxrListHr)) {
     m_error = "CreateCommandList4(DIRECT) initial close hr=" + FormatHr(closeDxrListHr);
     LogError("init_dxr_runtime_objects: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
   m_dxrRuntimeObjectsReady = true;
 
@@ -269,19 +282,19 @@ bool D3D12GpuPathTracer::init_dxr_runtime_objects() {
   if (FAILED(createDxrFenceHr)) {
     m_error = "CreateFence(DXR) hr=" + FormatHr(createDxrFenceHr);
     LogError("init_dxr_runtime_objects: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
   m_dxrFenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
   if (!m_dxrFenceEvent) {
     m_error = "CreateEventW(DXR)";
     LogError("init_dxr_runtime_objects: " + m_error);
-    return false;
+    return D3D12InitFailure(m_error);
   }
 
   std::ostringstream st;
   st << "DXR runtime objects ready tier=" << dxr_tier_string();
   LogInfo(st.str());
-  return true;
+  return vkpt::core::Status::ok("D3D12 DXR runtime initialized");
 }
 
 bool D3D12GpuPathTracer::wait_for_gpu() {

@@ -10,7 +10,7 @@
 
 namespace vkpt::pathtracer {
 
-vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
+vkpt::core::Result<RTSceneLayoutManifest> BuildPathTracerSceneSnapshotLayoutManifest(
     std::vector<std::string>* diagnostics) {
   if (diagnostics) {
     diagnostics->clear();
@@ -62,44 +62,44 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
   RTSceneLayoutManifest manifest;
   manifest.schema_version = "1.0";
 
-  // Build from empty scene data to include every RTSceneData field used by conversion.
+  // Build from empty scene data to include every PathTracerSceneSnapshot field used by conversion.
   std::size_t cpuCursor = 0u;
   std::size_t gpuCursor = 0u;
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_position", sizeof(Vec3), 1u, alignof(Vec3));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_target", sizeof(Vec3), 1u, alignof(Vec3));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_up", sizeof(Vec3), 1u, alignof(Vec3));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_fov_deg", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_focal_length_mm", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_sensor_width_mm", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_sensor_height_mm", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_aperture_radius", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_focus_distance", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_f_stop", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_shutter_seconds", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_iso", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_exposure_compensation", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_white_balance_kelvin", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_iris_blade_count", sizeof(std::uint32_t), 1u, alignof(std::uint32_t));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_iris_rotation_degrees", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_iris_roundness", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "camera_anamorphic_squeeze", sizeof(float), 1u, alignof(float));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_color", sizeof(Vec3), 1u, alignof(Vec3));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_map_scale", sizeof(Vec3), 1u, alignof(Vec3));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_map_width", sizeof(std::uint32_t), 1u, alignof(std::uint32_t));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_map_height", sizeof(std::uint32_t), 1u, alignof(std::uint32_t));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "environment_map", sizeof(Vec3), scene.environment_map.size(), alignof(Vec3));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "materials", sizeof(RTMaterial), scene.materials.size(), alignof(RTMaterial));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "vertices", sizeof(Vec3), scene.vertices.size(), alignof(Vec3));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "texcoords", sizeof(Vec2), scene.texcoords.size(), alignof(Vec2));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "indices", sizeof(std::uint32_t), scene.indices.size(), alignof(std::uint32_t));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "local_vertices", sizeof(Vec3), scene.local_vertices.size(), alignof(Vec3));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "local_indices", sizeof(std::uint32_t), scene.local_indices.size(), alignof(std::uint32_t));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "instances", sizeof(RTInstance), scene.instances.size(), alignof(RTInstance));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "tessellation_requests", sizeof(RTTessellationRequest), scene.tessellation_requests.size(), alignof(RTTessellationRequest));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "sdf_primitives", sizeof(RTSdfPrimitive), scene.sdf_primitives.size(), alignof(RTSdfPrimitive));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "lights", sizeof(RTHitLight), scene.lights.size(), alignof(RTHitLight));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "textures_count", sizeof(std::uint64_t), 1u, alignof(std::uint64_t));
-  append_field(manifest.fields, cpuCursor, gpuCursor, "RTSceneData", "texture_names", sizeof(char), 0u, alignof(char));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_position", sizeof(Vec3), 1u, alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_target", sizeof(Vec3), 1u, alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_up", sizeof(Vec3), 1u, alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_fov_deg", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_focal_length_mm", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_sensor_width_mm", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_sensor_height_mm", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_aperture_radius", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_focus_distance", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_f_stop", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_shutter_seconds", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_iso", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_exposure_compensation", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_white_balance_kelvin", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_iris_blade_count", sizeof(std::uint32_t), 1u, alignof(std::uint32_t));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_iris_rotation_degrees", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_iris_roundness", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "camera_anamorphic_squeeze", sizeof(float), 1u, alignof(float));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "environment_color", sizeof(Vec3), 1u, alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "environment_map_scale", sizeof(Vec3), 1u, alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "environment_map_width", sizeof(std::uint32_t), 1u, alignof(std::uint32_t));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "environment_map_height", sizeof(std::uint32_t), 1u, alignof(std::uint32_t));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "environment_map", sizeof(Vec3), scene.environment_map.size(), alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "materials", sizeof(RTMaterial), scene.materials.size(), alignof(RTMaterial));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "vertices", sizeof(Vec3), scene.vertices.size(), alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "texcoords", sizeof(Vec2), scene.texcoords.size(), alignof(Vec2));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "indices", sizeof(std::uint32_t), scene.indices.size(), alignof(std::uint32_t));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "local_vertices", sizeof(Vec3), scene.local_vertices.size(), alignof(Vec3));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "local_indices", sizeof(std::uint32_t), scene.local_indices.size(), alignof(std::uint32_t));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "instances", sizeof(RTInstance), scene.instances.size(), alignof(RTInstance));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "tessellation_requests", sizeof(RTTessellationRequest), scene.tessellation_requests.size(), alignof(RTTessellationRequest));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "sdf_primitives", sizeof(RTSdfPrimitive), scene.sdf_primitives.size(), alignof(RTSdfPrimitive));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "lights", sizeof(RTHitLight), scene.lights.size(), alignof(RTHitLight));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "textures_count", sizeof(std::uint64_t), 1u, alignof(std::uint64_t));
+  append_field(manifest.fields, cpuCursor, gpuCursor, "PathTracerSceneSnapshot", "texture_names", sizeof(char), 0u, alignof(char));
 
   manifest.total_cpu_bytes = cpuCursor;
   manifest.total_gpu_bytes = gpuCursor;
@@ -110,7 +110,7 @@ vkpt::core::Result<RTSceneLayoutManifest> BuildRTSceneDataLayoutManifest(
   return vkpt::core::Result<RTSceneLayoutManifest>::ok(std::move(manifest));
 }
 
-std::string SerializeRTSceneDataLayoutManifest(const RTSceneLayoutManifest& manifest) {
+std::string SerializePathTracerSceneSnapshotLayoutManifest(const RTSceneLayoutManifest& manifest) {
   std::ostringstream out;
   out << "{";
   out << "\"schema_version\":\"" << manifest.schema_version << "\",";

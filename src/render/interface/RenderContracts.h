@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <array>
 #include <utility>
 #include <variant>
 #include <memory>
@@ -11,6 +12,7 @@
 #include <string_view>
 #include <vector>
 
+#include "core/contracts/Result.h"
 #include "core/Types.h"
 #include "render/interface/ResourceRegistry.h"
 
@@ -102,6 +104,70 @@ enum class BackendSelectionSource {
   PlatformPreferred,
   FirstCompatible,
   NullFallback
+};
+
+enum class RenderContractState : std::uint8_t {
+  Uninitialized,
+  Ready,
+  Recording,
+  Built,
+  Executing,
+  ShuttingDown,
+  Failed,
+};
+
+struct RenderStateTransitionContract {
+  RenderContractState from = RenderContractState::Uninitialized;
+  const char* interface_name = "";
+  const char* operation = "";
+  RenderContractState to = RenderContractState::Uninitialized;
+  const char* result = "";
+};
+
+struct RenderInterfaceStandardContract {
+  std::string schema_version = "render.interface.contract.v1";
+  std::array<RenderStateTransitionContract, 8> state_machine{{
+      {RenderContractState::Uninitialized,
+       "IRenderBackend",
+       "initialize",
+       RenderContractState::Ready,
+       "Status/Result success; capabilities and factories become queryable"},
+      {RenderContractState::Ready,
+       "IRenderBackend",
+       "shutdown",
+       RenderContractState::ShuttingDown,
+       "no new devices, frame graphs, compilers, or caches may be requested"},
+      {RenderContractState::Uninitialized,
+       "IRenderDevice",
+       "begin",
+       RenderContractState::Recording,
+       "command contexts and swapchain access are valid until end"},
+      {RenderContractState::Recording,
+       "IRenderDevice",
+       "end",
+       RenderContractState::Ready,
+       "in-flight command recording is closed"},
+      {RenderContractState::Uninitialized,
+       "IFrameGraph",
+       "build",
+       RenderContractState::Built,
+       "passes, dependencies, and resource hazards have been validated"},
+      {RenderContractState::Built,
+       "IFrameGraph",
+       "execute",
+       RenderContractState::Executing,
+       "returns FrameGraphResult with per-pass Status entries"},
+      {RenderContractState::Executing,
+       "IFrameGraph",
+       "execute_complete",
+       RenderContractState::Built,
+       "graph remains reusable for later frames"},
+      {RenderContractState::Ready,
+       "IRenderBackend",
+       "create_frame_graph",
+       RenderContractState::Ready,
+       "factory returns a new unbuilt graph without mutating backend lifecycle"},
+  }};
 };
 
 struct ShaderManifest {
@@ -502,6 +568,28 @@ struct FrameGraphDesc {
   bool validate_hazards = true;
 };
 
+struct FrameGraphPassResult {
+  std::uint32_t pass_id = 0u;
+  std::string pass_name;
+  vkpt::core::Status status = vkpt::core::Status::ok();
+};
+
+struct FrameGraphResult {
+  vkpt::core::Status overall = vkpt::core::Status::ok();
+  std::vector<FrameGraphPassResult> per_pass;
+
+  /// Preferred naming for new call sites; fields remain for source compatibility.
+  const vkpt::core::Status& overall_status() const noexcept { return overall; }
+  vkpt::core::Status& overall_status() noexcept { return overall; }
+  const std::vector<FrameGraphPassResult>& pass_results() const noexcept {
+    return per_pass;
+  }
+  std::vector<FrameGraphPassResult>& pass_results() noexcept { return per_pass; }
+  bool is_ok() const noexcept { return overall.is_ok(); }
+  bool is_error() const noexcept { return overall.is_error(); }
+  operator bool() const noexcept { return is_ok(); }
+};
+
 /// Backend advertised to the selection policy before an instance is created.
 struct BackendCandidateDesc {
   std::string name;
@@ -579,6 +667,16 @@ class IRenderSwapchain {
 };
 
 /// Logical render device lifetime and command-context factory.
+///
+/// IRenderDevice state machine contract:
+///
+/// state\method     begin      end        create_command_context  swapchain
+/// Uninitialized    ->Recording noop       error                   ok|null
+/// Recording        noop       ->Ready     ok                      ok|null
+/// Ready            ->Recording noop       ok                      ok|null
+/// Failed           error      noop       error                   ok|null
+///
+/// begin()/end() are serialized lifecycle calls owned by the render backend.
 class IRenderDevice {
  public:
   virtual ~IRenderDevice() = default;
@@ -594,6 +692,8 @@ class IShaderCompiler {
  public:
   virtual ~IShaderCompiler() = default;
   virtual bool supports_feature(std::string_view feature) const = 0;
+  /// Thread-safety: implementations must be reentrant for concurrent compile
+  /// requests once their owning backend has completed initialize().
   virtual bool compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) = 0;
 };
 
@@ -609,6 +709,9 @@ struct CachedManifest {
 class IShaderCache {
  public:
   virtual ~IShaderCache() = default;
+  /// Thread-safety: this interface does not require internal locking. Callers
+  /// sharing one cache across threads must serialize query/store/invalidate/
+  /// dump calls, and no cache method may race backend shutdown().
   virtual bool query(std::string_view key, std::string& binary) = 0;
   virtual bool store(std::string_view key, const std::string& binary) = 0;
   virtual bool invalidate(std::string_view key) = 0;
@@ -617,6 +720,17 @@ class IShaderCache {
 };
 
 /// Declarative render pass graph with dependency and resource-hazard validation.
+///
+/// IFrameGraph state machine contract:
+///
+/// state\method  add_pass  build     add_dependency  validate  execute  passes/dependencies
+/// Empty         ok        ->Built   ok              ok        error    ok
+/// Built         ok        ->Built   ok              ok        ok       ok
+/// Executing     illegal   illegal   illegal         ok        illegal  ok
+/// Failed        ok        ->Built   ok              ok        error    ok
+///
+/// execute() reports failures through FrameGraphResult::overall_status() and
+/// per-pass Status entries; bool is reserved for predicates only.
 class IFrameGraph {
  public:
   /// Concrete pass record after a graph has assigned dense ids.
@@ -636,16 +750,30 @@ class IFrameGraph {
   virtual bool build(const FrameGraphDesc& desc, std::vector<std::string>* diagnostics = nullptr) = 0;
   virtual bool add_dependency(std::uint32_t from, std::uint32_t to) = 0;
   virtual bool validate(std::vector<std::string>* diagnostics) const = 0;
-  virtual bool execute(IRenderCommandContext& context,
-                       const std::vector<std::uint32_t>* execution_order = nullptr) const = 0;
-  virtual bool execute(IRenderCommandContext& context,
-                       const FrameContext& frame,
-                       const std::vector<std::uint32_t>* execution_order = nullptr) const = 0;
+  virtual FrameGraphResult execute(
+      IRenderCommandContext& context,
+      const std::vector<std::uint32_t>* execution_order = nullptr) const = 0;
+  virtual FrameGraphResult execute(
+      IRenderCommandContext& context,
+      const FrameContext& frame,
+      const std::vector<std::uint32_t>* execution_order = nullptr) const = 0;
   virtual const std::vector<Pass>& passes() const = 0;
   virtual const std::vector<std::pair<std::uint32_t, std::uint32_t>>& dependencies() const = 0;
 };
 
 /// Backend module contract for initialization, device creation, compiler/cache, and graphs.
+///
+/// IRenderBackend state machine contract:
+///
+/// state\method      initialize  shutdown      capabilities  create_device  compiler/cache  create_frame_graph
+/// Uninitialized     ->Ready     noop          ok            error          null/error       error
+/// Ready             noop        ->ShuttingDown ok           ok             ok               ok
+/// ShuttingDown      error       noop          ok            error          null/error       error
+/// Failed            error       noop          ok            error          null/error       error
+///
+/// Implementations should expose failure details through Status/Result-returning
+/// factory helpers when available; legacy bool/null returns are compatibility
+/// shims and must also update last_error().
 class IRenderBackend {
  public:
   virtual ~IRenderBackend() = default;
@@ -655,6 +783,11 @@ class IRenderBackend {
   virtual std::string name() const = 0;
   virtual RenderBackendCapabilities capabilities() const = 0;
   virtual std::unique_ptr<IRenderDevice> create_device() = 0;
+  /// Thread-safety: compiler()/shader_cache() pointer retrieval is stable only
+  /// after initialize() succeeds and before shutdown() begins. initialize(),
+  /// shutdown(), create_device(), and create_frame_graph() are lifecycle calls
+  /// the owner must serialize. The returned compiler is reentrant; the returned
+  /// cache follows IShaderCache's externally serialized mutation contract.
   virtual IShaderCompiler* compiler() = 0;
   virtual IShaderCache* shader_cache() = 0;
   virtual std::unique_ptr<IFrameGraph> create_frame_graph() = 0;
@@ -707,5 +840,52 @@ std::string_view ResourceLifetimeToString(ResourceLifetime lifetime);
 std::string_view ShaderSourceFormatToString(ShaderSourceFormat format);
 std::string_view BackendSelectionSourceToString(BackendSelectionSource source);
 void AppendDiagnosticField(std::vector<std::string>& diagnostics, const std::string& entry);
+
+inline RenderInterfaceStandardContract BuildStandardRenderInterfaceContract() {
+  return {};
+}
+
+inline bool ValidateStandardRenderInterfaceContract(
+    const RenderInterfaceStandardContract& contract,
+    std::vector<std::string>* diagnostics = nullptr) {
+  if (diagnostics) {
+    diagnostics->clear();
+  }
+  bool ok = true;
+  auto require = [&](bool condition, const char* message) {
+    if (!condition) {
+      ok = false;
+      if (diagnostics) {
+        diagnostics->push_back(message);
+      }
+    }
+  };
+
+  require(contract.schema_version == "render.interface.contract.v1",
+          "unexpected render interface contract schema version");
+  require(contract.state_machine.size() == 8u,
+          "render interface state machine must publish eight standard transitions");
+  require(contract.state_machine[0].from == RenderContractState::Uninitialized &&
+              std::string_view(contract.state_machine[0].interface_name) == "IRenderBackend" &&
+              std::string_view(contract.state_machine[0].operation) == "initialize" &&
+              contract.state_machine[0].to == RenderContractState::Ready,
+          "render interface contract missing backend initialize transition");
+  require(contract.state_machine[2].from == RenderContractState::Uninitialized &&
+              std::string_view(contract.state_machine[2].interface_name) == "IRenderDevice" &&
+              std::string_view(contract.state_machine[2].operation) == "begin" &&
+              contract.state_machine[2].to == RenderContractState::Recording,
+          "render interface contract missing device begin transition");
+  require(contract.state_machine[4].from == RenderContractState::Uninitialized &&
+              std::string_view(contract.state_machine[4].interface_name) == "IFrameGraph" &&
+              std::string_view(contract.state_machine[4].operation) == "build" &&
+              contract.state_machine[4].to == RenderContractState::Built,
+          "render interface contract missing frame graph build transition");
+  require(contract.state_machine[5].from == RenderContractState::Built &&
+              std::string_view(contract.state_machine[5].interface_name) == "IFrameGraph" &&
+              std::string_view(contract.state_machine[5].operation) == "execute" &&
+              contract.state_machine[5].to == RenderContractState::Executing,
+          "render interface contract missing frame graph execute transition");
+  return ok;
+}
 
 }  // namespace vkpt::render

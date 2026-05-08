@@ -104,7 +104,7 @@ uint32_t SelectRaysPerPixelPerDispatch(const vkpt::pathtracer::RenderSettings& s
 uint32_t SelectReadbackInterval(const vkpt::pathtracer::RenderSettings& settings);
 uint64_t SaturatingMulU64(uint64_t lhs, uint64_t rhs);
 uint64_t EstimateLogicalRaysPerD3D12Sample(const vkpt::pathtracer::RenderSettings& settings,
-                                           const vkpt::pathtracer::RTSceneData& scene,
+                                           const vkpt::pathtracer::PathTracerSceneSnapshot& scene,
                                            bool usingDxrDispatch);
 D3D12_UNORDERED_ACCESS_VIEW_DESC MakeRawBufferUavDesc(UINT64 byteSize);
 D3D12TemporalCameraState MakeTemporalCameraState(const PathTraceConstants& pc);
