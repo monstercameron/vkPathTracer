@@ -1,21 +1,38 @@
 #include "app/RuntimeMode.h"
 #include "scene/Scene.h"
+#include "scripting/Channels.h"
 #include "scripting/ScriptRuntime.h"
+#include "assets/AssetImporters.h"
 #include "audio/AudioSystem.h"
+#include "audio/AudioChannels.h"
+#include "core/Logging.h"
+#include "core/health/Health.h"
+#include "core/metrics/Metrics.h"
+#include "diagnostics/CrashRecorder.h"
+#include "diagnostics/StatusFile.h"
+#include "jobs/JobSystem.h"
+#include "scene/SnapshotRing.h"
 #include "pathtracer/SceneConversion.h"
+#include "physics/Channels.h"
 #include "physics/PhysicsWorld.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <new>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <thread>
+#include <type_traits>
 #include <unordered_set>
 #include <variant>
 #include <vector>
@@ -30,10 +47,118 @@ bool Check(bool condition, const std::string& message) {
   return true;
 }
 
+bool CheckAudioAndDiagnosticsNamingContracts() {
+  static_assert(std::is_same_v<vkpt::audio::AudioSystemStatus,
+                               vkpt::audio::AudioStatus>);
+  static_assert(std::is_same_v<vkpt::audio::AudioSystemDiagnostics,
+                               vkpt::audio::AudioDiagnostics>);
+  static_assert(std::is_same_v<vkpt::diagnostics::CrashRecorderStatus,
+                               vkpt::diagnostics::DiagnosticsStatus>);
+  static_assert(std::is_same_v<vkpt::diagnostics::StatusFileSnapshot,
+                               vkpt::diagnostics::StatusFileData>);
+
+  vkpt::audio::AudioSystemStatus audio_status;
+  vkpt::diagnostics::CrashRecorderStatus diagnostics_status;
+  vkpt::diagnostics::StatusFileSnapshot status_file;
+
+  return Check(vkpt::audio::AudioSubsystemName() == "audio",
+               "audio subsystem should expose a stable canonical name") &&
+         Check(std::string_view(audio_status.name) ==
+                   vkpt::audio::kAudioSubsystemName,
+               "audio status should carry the canonical subsystem name") &&
+         Check(vkpt::audio::kAudioNamingContract.status_type_name ==
+                   "AudioStatus",
+               "audio naming contract should expose the status type name") &&
+         Check(vkpt::audio::kAudioNamingContract.snapshot_consumer_contract ==
+                   vkpt::audio::kAudioSnapshotConsumerContractName,
+               "audio snapshot consumer contract should be source-proofable") &&
+         Check(vkpt::audio::kAudioNamingContract.command_ring_contract ==
+                   vkpt::audio::kAudioCommandRingContractName,
+               "audio command ring contract should be source-proofable") &&
+         Check(vkpt::diagnostics::DiagnosticsSubsystemName() == "diagnostics",
+               "diagnostics subsystem should expose a stable canonical name") &&
+         Check(std::string_view(diagnostics_status.name) ==
+                   vkpt::diagnostics::kDiagnosticsSubsystemName,
+               "diagnostics status should carry the canonical subsystem name") &&
+         Check(vkpt::diagnostics::kDiagnosticsNamingContract.status_type_name ==
+                   "DiagnosticsStatus",
+               "diagnostics naming contract should expose the status type name") &&
+         Check(vkpt::diagnostics::kDiagnosticsNamingContract.crash_recorder_contract ==
+                   vkpt::diagnostics::kCrashRecorderContractName,
+               "diagnostics crash recorder contract should be source-proofable") &&
+         Check(std::string_view(status_file.build_status) ==
+                   vkpt::diagnostics::kStatusFileBuildOkName,
+               "status file should use the canonical ok build status") &&
+         Check(vkpt::diagnostics::kStatusFileRunErrorPrefix == "error:",
+               "status file should expose the canonical run-error prefix");
+}
+
+std::uint64_t ReadEnvU64(const char* name, std::uint64_t fallback) {
+#if defined(_WIN32)
+  char* raw_buffer = nullptr;
+  std::size_t raw_size = 0u;
+  if (_dupenv_s(&raw_buffer, &raw_size, name) != 0 || raw_buffer == nullptr) {
+    return fallback;
+  }
+  std::string raw(raw_buffer, raw_size > 0u ? raw_size - 1u : 0u);
+  std::free(raw_buffer);
+#else
+  const char* raw = std::getenv(name);
+  if (raw == nullptr || *raw == '\0') {
+    return fallback;
+  }
+  std::string raw(raw);
+#endif
+  if (raw.empty()) {
+    return fallback;
+  }
+  try {
+    return std::stoull(raw);
+  } catch (...) {
+    return fallback;
+  }
+}
+
 bool HasText(const std::vector<std::string>& values, const std::string& needle) {
   return std::any_of(values.begin(), values.end(), [&](const std::string& value) {
     return value.find(needle) != std::string::npos;
   });
+}
+
+std::uint64_t MetricCounterValue(std::string_view name) {
+  const auto metrics =
+      vkpt::core::metrics::MetricsRegistry::instance().snapshot_prefix(name);
+  for (const auto& metric : metrics) {
+    if (metric.name == name &&
+        metric.kind == vkpt::core::metrics::Kind::CounterKind) {
+      return metric.counter_value;
+    }
+  }
+  return 0u;
+}
+
+std::uint64_t MetricHistogramCount(std::string_view name) {
+  const auto metrics =
+      vkpt::core::metrics::MetricsRegistry::instance().snapshot_prefix(name);
+  for (const auto& metric : metrics) {
+    if (metric.name == name &&
+        metric.kind == vkpt::core::metrics::Kind::HistogramKind) {
+      return metric.hist.count;
+    }
+  }
+  return 0u;
+}
+
+double MetricGaugeValue(std::string_view name) {
+  const auto metrics =
+      vkpt::core::metrics::MetricsRegistry::instance().snapshot_prefix(name);
+  for (const auto& metric : metrics) {
+    if (metric.name == name &&
+        metric.kind == vkpt::core::metrics::Kind::GaugeKind) {
+      return metric.gauge_value;
+    }
+  }
+  return 0.0;
 }
 
 bool PathExists(const std::filesystem::path& path) {
@@ -54,6 +179,54 @@ std::filesystem::path FindRepoFile(const std::filesystem::path& relative_path) {
     current = current.parent_path();
   }
   return relative_path;
+}
+
+bool CheckSceneWorldContractQueries() {
+  vkpt::scene::EcsWorld world;
+  const auto entity = world.create_entity("contract_entity", 70001u);
+
+  vkpt::scene::TransformComponent initial_transform;
+  initial_transform.translation = {1.0f, 0.0f, 0.0f};
+  if (!Check(world.set_transform(entity,
+                                 initial_transform,
+                                 vkpt::scene::TransformAuthority::ScriptControlled,
+                                 "script",
+                                 11u),
+             "EcsWorld alias should expose SceneWorld transform writes")) {
+    return false;
+  }
+
+  const auto dirty_before_recompute = world.dirty_entities();
+  if (!Check(dirty_before_recompute.size() == 1u &&
+                 dirty_before_recompute.front() == entity,
+             "SceneWorld dirty_entities should expose transform-dirty entities")) {
+    return false;
+  }
+
+  world.recompute_world_transforms();
+  if (!Check(world.dirty_entities().empty(),
+             "SceneWorld dirty_entities should clear after transform recompute")) {
+    return false;
+  }
+
+  vkpt::scene::TransformComponent lower_authority_transform = initial_transform;
+  lower_authority_transform.translation = {2.0f, 0.0f, 0.0f};
+  const bool accepted_lower_authority =
+      world.set_transform(entity,
+                          lower_authority_transform,
+                          vkpt::scene::TransformAuthority::EditorControlled,
+                          "editor",
+                          11u);
+  const auto& conflicts = world.authority_conflicts();
+  return Check(!accepted_lower_authority,
+               "SceneWorld should reject lower-authority same-frame transform writes") &&
+         Check(conflicts.size() == 1u &&
+                   conflicts.front().entity == entity &&
+                   conflicts.front().writer_a == "script" &&
+                   conflicts.front().writer_b == "editor" &&
+                   conflicts.front().selected ==
+                       vkpt::scene::TransformAuthority::ScriptControlled,
+               "SceneWorld should surface per-write transform authority conflicts");
 }
 
 vkpt::scene::Vec3 RotateByQuat(const vkpt::scene::Vec3& value, const vkpt::scene::Quat& rotation) {
@@ -130,6 +303,36 @@ vkpt::scene::Vec3 RotateByQuat(const vkpt::scene::Vec3& value, const vkpt::scene
     }
   }
   return nullptr;
+}
+
+bool CheckAudioUnderrunShortSoak(vkpt::audio::IAudioSystem& audio_system,
+                                 std::chrono::milliseconds duration,
+                                 std::uint64_t min_mixed_buffers) {
+  const auto before = audio_system.diagnostics();
+  const auto deadline = std::chrono::steady_clock::now() + duration;
+  vkpt::audio::AudioDiagnostics after = before;
+  do {
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    audio_system.update();
+    after = audio_system.diagnostics();
+  } while (std::chrono::steady_clock::now() < deadline);
+
+  const std::uint64_t mixed_delta =
+      after.mixed_buffers >= before.mixed_buffers
+          ? after.mixed_buffers - before.mixed_buffers
+          : 0u;
+  return Check(mixed_delta >= min_mixed_buffers,
+               "audio short soak should mix multiple no-op callback buffers") &&
+         Check(after.underruns == before.underruns,
+               "audio short soak should not add callback underruns") &&
+         Check(after.stream_ring_underruns == before.stream_ring_underruns,
+               "audio short soak should not add stream ring underruns") &&
+         Check(MetricCounterValue("vkp.audio.underruns_total") == 0u,
+               "audio underrun metric should stay at 0 during short soak") &&
+         Check(MetricHistogramCount("vkp.audio.callback_latency_us") > 0u,
+               "audio callback latency histogram should record during short soak") &&
+         Check(MetricHistogramCount("vkp.audio.callback_jitter_us") > 0u,
+               "audio callback jitter histogram should record during short soak");
 }
 
 vkpt::scripting::ScriptExecutionContext MakeScriptContextFromRuntimeMode(
@@ -361,6 +564,666 @@ return {
 #endif
 }
 
+bool CheckLuaStatePoolReuseAndPureBinding() {
+#ifndef PT_ENABLE_LUA
+  return true;
+#else
+  const auto script_path =
+      std::filesystem::temp_directory_path() / "vkpt_lua_state_pool_probe.lua";
+  {
+    std::ofstream file(script_path, std::ios::binary);
+    if (!Check(static_cast<bool>(file), "Lua state pool probe script should be writable")) {
+      return false;
+    }
+    file << R"lua(
+pure = true
+
+return {
+  on_update = function(self, ctx)
+    if ctx.world.spawn_entity ~= nil then
+      error("pure script received mutating world bindings")
+    end
+    if self.set_transform ~= nil then
+      error("pure script received mutating entity bindings")
+    end
+    local frame = ctx.frame
+    if frame == nil then
+      error("pure script did not receive a frame")
+    end
+  end
+}
+)lua";
+  }
+
+  vkpt::scene::SceneWorld world;
+  const auto entity = world.create_entity("pure_state_pool_probe", 30301u);
+  vkpt::scene::ScriptComponent script;
+  script.script = script_path.generic_string();
+  if (!Check(world.set_component(entity, vkpt::scene::ComponentKind::Script, script),
+             "Lua state pool probe should attach script component")) {
+    std::error_code remove_error;
+    std::filesystem::remove(script_path, remove_error);
+    return false;
+  }
+
+  auto runtime = vkpt::scripting::CreateScriptRuntime();
+  const auto binding_summary = runtime->reload_bindings(world);
+  if (!Check(binding_summary.runnable_count == 1u,
+             "Lua state pool probe should expose one runnable binding") ||
+      !Check(!runtime->bindings().empty() && runtime->bindings().front().pure,
+             "pure = true preamble should mark the binding pure")) {
+    std::error_code remove_error;
+    std::filesystem::remove(script_path, remove_error);
+    return false;
+  }
+
+  vkpt::scripting::ScriptExecutionContext context;
+  context.game_mode = true;
+  context.runtime.mode = "play";
+  context.runtime.scripts_running = true;
+  context.delta_seconds = 1.0 / 60.0;
+
+  std::uintptr_t state_ptr = 0u;
+  constexpr int kHookFires = 10000;
+  for (int i = 0; i < kHookFires; ++i) {
+    context.frame = static_cast<vkpt::core::FrameIndex>(100 + i);
+    vkpt::scene::WorldCommandBuffer commands;
+    const auto dispatch = runtime->dispatch_hook(world,
+                                                 vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+                                                 context,
+                                                 commands);
+    if (!Check(dispatch.hook_call_count == 1u,
+               "Lua state pool probe should run each update hook") ||
+        !Check(dispatch.command_count_after == 0u,
+               "pure Lua state pool probe should not emit world commands") ||
+        !Check(runtime->runtime_states().size() == 1u &&
+                   runtime->runtime_states().front().pure,
+               "runtime state should report pure script execution")) {
+      std::error_code remove_error;
+      std::filesystem::remove(script_path, remove_error);
+      return false;
+    }
+    const auto current_ptr = runtime->runtime_states().front().state_ptr;
+    if (i == 0) {
+      state_ptr = current_ptr;
+    } else if (!Check(current_ptr == state_ptr,
+                      "Lua state pool should reuse the same lua_State for repeated hooks")) {
+      std::error_code remove_error;
+      std::filesystem::remove(script_path, remove_error);
+      return false;
+    }
+  }
+
+  std::error_code remove_error;
+  std::filesystem::remove(script_path, remove_error);
+  return Check(runtime->lua_state_count() == 1u,
+               "Lua state pool should retain one state for one script") &&
+         Check(runtime->lua_states_created_total() == 1u,
+               "Lua state pool should create one state across repeated hooks");
+#endif
+}
+
+bool CheckPureJobsYieldAndReloadSafety() {
+#ifndef PT_ENABLE_LUA
+  return true;
+#else
+  const auto pure_script_path =
+      std::filesystem::temp_directory_path() / "vkpt_lua_pure_job_probe.lua";
+  const auto yield_script_path =
+      std::filesystem::temp_directory_path() / "vkpt_lua_yield_probe.lua";
+  const auto reload_script_path =
+      std::filesystem::temp_directory_path() / "vkpt_lua_reload_probe.lua";
+  const auto thread_script_path =
+      std::filesystem::temp_directory_path() / "vkpt_lua_script_thread_probe.lua";
+  auto cleanup = [&]() {
+    std::error_code ec;
+    std::filesystem::remove(pure_script_path, ec);
+    std::filesystem::remove(yield_script_path, ec);
+    std::filesystem::remove(reload_script_path, ec);
+    std::filesystem::remove(thread_script_path, ec);
+  };
+
+  {
+    std::ofstream file(pure_script_path, std::ios::binary);
+    if (!Check(static_cast<bool>(file), "pure job probe script should be writable")) {
+      cleanup();
+      return false;
+    }
+    file << R"lua(
+pure = true
+
+return {
+  on_update = function(self, ctx)
+    if ctx.world.spawn_entity ~= nil or self.set_transform ~= nil then
+      error("pure job received mutating bindings")
+    end
+    local frame = ctx.frame
+    if frame == nil then error("pure job missing frame") end
+  end
+}
+)lua";
+  }
+  {
+    std::ofstream file(yield_script_path, std::ios::binary);
+    if (!Check(static_cast<bool>(file), "yield probe script should be writable")) {
+      cleanup();
+      return false;
+    }
+    file << R"lua(
+local yielded = false
+
+return {
+  on_update = function(self, ctx)
+    if not yielded then
+      yielded = true
+      coroutine.yield()
+    end
+  end
+}
+)lua";
+  }
+  {
+    std::ofstream file(reload_script_path, std::ios::binary);
+    if (!Check(static_cast<bool>(file), "reload probe script should be writable")) {
+      cleanup();
+      return false;
+    }
+    file << R"lua(
+return {
+  on_update = function(self, ctx)
+    local total = 0
+    for i = 1, 400000 do
+      total = total + i
+    end
+  end
+}
+)lua";
+  }
+  {
+    std::ofstream file(thread_script_path, std::ios::binary);
+    if (!Check(static_cast<bool>(file), "script thread probe script should be writable")) {
+      cleanup();
+      return false;
+    }
+    file << R"lua(
+return {
+  on_update = function(self, ctx)
+    ctx.world:spawn_entity({ name = "threaded_spawn" })
+  end
+}
+)lua";
+  }
+
+  vkpt::scene::SceneWorld pure_world;
+  for (int i = 0; i < 2; ++i) {
+    const auto entity = pure_world.create_entity("pure_job_probe", 30400u + i);
+    vkpt::scene::ScriptComponent script;
+    script.script = pure_script_path.generic_string();
+    if (!Check(pure_world.set_component(entity, vkpt::scene::ComponentKind::Script, script),
+               "pure job probe should attach script component")) {
+      cleanup();
+      return false;
+    }
+  }
+  auto pure_runtime = vkpt::scripting::CreateScriptRuntime();
+  auto pure_summary = pure_runtime->reload_bindings(pure_world);
+  vkpt::jobs::JobSystem pure_jobs(2u);
+  vkpt::scripting::ScriptExecutionContext pure_context;
+  pure_context.game_mode = true;
+  pure_context.runtime.mode = "play";
+  pure_context.runtime.scripts_running = true;
+  pure_context.job_system = &pure_jobs;
+  pure_context.frame = 41u;
+  vkpt::scene::WorldCommandBuffer pure_commands;
+  const auto pure_dispatch = pure_runtime->dispatch_hook(
+      pure_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, pure_context, pure_commands);
+  pure_context.deterministic = true;
+  pure_context.frame = 42u;
+  vkpt::scene::WorldCommandBuffer deterministic_commands;
+  const auto deterministic_dispatch = pure_runtime->dispatch_hook(
+      pure_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, pure_context, deterministic_commands);
+  if (!Check(pure_summary.runnable_count == 2u,
+             "pure job probe should expose two runnable bindings") ||
+      !Check(pure_dispatch.hook_call_count == 2u && pure_dispatch.pure_job_count == 2u,
+             "pure scripts should fan out through JobSystem jobs") ||
+      !Check(pure_runtime->lua_state_count() == 2u,
+             "pure script pool should create one state per pure script binding") ||
+      !Check(deterministic_dispatch.hook_call_count == 2u &&
+                 deterministic_dispatch.pure_job_count == 0u &&
+                 deterministic_dispatch.deterministic_group_b_disabled,
+             "deterministic script context should disable Group-B fanout")) {
+    cleanup();
+    return false;
+  }
+  pure_jobs.shutdown();
+
+  vkpt::scene::SceneWorld thread_world;
+  const auto thread_entity = thread_world.create_entity("script_thread_probe", 30405u);
+  vkpt::scene::ScriptComponent thread_script;
+  thread_script.script = thread_script_path.generic_string();
+  if (!Check(thread_world.set_component(thread_entity, vkpt::scene::ComponentKind::Script, thread_script),
+             "script thread probe should attach script component")) {
+    cleanup();
+    return false;
+  }
+  {
+    auto direct_thread_runtime = vkpt::scripting::CreateScriptRuntime();
+    direct_thread_runtime->reload_bindings(thread_world);
+    vkpt::scripting::ScriptExecutionContext direct_context;
+    direct_context.game_mode = true;
+    direct_context.runtime.mode = "play";
+    direct_context.runtime.scripts_running = true;
+    vkpt::scene::WorldCommandBuffer direct_commands;
+    const auto direct_dispatch = direct_thread_runtime->dispatch_hook(
+        thread_world,
+        vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+        direct_context,
+        direct_commands);
+    if (!Check(direct_dispatch.hook_call_count == 1u && !direct_commands.commands().empty(),
+               "script thread probe should emit commands through direct dispatch")) {
+      cleanup();
+      return false;
+    }
+  }
+  vkpt::scripting::ScriptThread script_thread;
+  script_thread.publish_world_snapshot(thread_world);
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  vkpt::scripting::ScriptHookRequest request;
+  request.hook = vkpt::scripting::ScriptLifecycleHook::OnUpdate;
+  request.frame = 77u;
+  request.context.frame = 77u;
+  request.context.game_mode = true;
+  request.context.runtime.mode = "play";
+  request.context.runtime.scripts_running = true;
+  if (!Check(script_thread.enqueue_hook(request),
+             "script thread should accept hook requests")) {
+    cleanup();
+    return false;
+  }
+  vkpt::scene::WorldCommandBuffer threaded_commands;
+  for (int spin = 0; spin < 100 && threaded_commands.commands().empty(); ++spin) {
+    script_thread.drain_commands(threaded_commands);
+    if (threaded_commands.commands().empty()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+  script_thread.stop();
+  if (!Check(!threaded_commands.commands().empty(),
+             "script thread should drain ScriptHookRing and publish ScriptCmdRing commands")) {
+    cleanup();
+    return false;
+  }
+
+  vkpt::scene::SceneWorld yield_world;
+  const auto yield_entity = yield_world.create_entity("yield_probe", 30410u);
+  vkpt::scene::ScriptComponent yield_script;
+  yield_script.script = yield_script_path.generic_string();
+  if (!Check(yield_world.set_component(yield_entity, vkpt::scene::ComponentKind::Script, yield_script),
+             "yield probe should attach script component")) {
+    cleanup();
+    return false;
+  }
+  auto yield_runtime = vkpt::scripting::CreateScriptRuntime();
+  yield_runtime->reload_bindings(yield_world);
+  vkpt::scripting::ScriptExecutionContext yield_context;
+  yield_context.game_mode = true;
+  yield_context.runtime.mode = "play";
+  yield_context.runtime.scripts_running = true;
+  yield_context.yield_budget = 2u;
+  vkpt::scene::WorldCommandBuffer yield_commands_1;
+  const auto yield_dispatch_1 = yield_runtime->dispatch_hook(
+      yield_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, yield_context, yield_commands_1);
+  yield_context.frame = 1u;
+  vkpt::scene::WorldCommandBuffer yield_commands_2;
+  const auto yield_dispatch_2 = yield_runtime->dispatch_hook(
+      yield_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, yield_context, yield_commands_2);
+  if (!Check(yield_dispatch_1.hook_call_count == 1u,
+             "yielding hook should count as a fired hook") ||
+      !Check(!yield_runtime->runtime_states().empty() &&
+                 yield_runtime->runtime_states().front().skip_reason.empty(),
+             "yielding hook should resume and complete on the next dispatch") ||
+      !Check(yield_dispatch_2.hook_call_count == 1u,
+             "yielded coroutine should resume on the next frame")) {
+    cleanup();
+    return false;
+  }
+
+  vkpt::scene::SceneWorld reload_world;
+  const auto reload_entity = reload_world.create_entity("reload_probe", 30420u);
+  vkpt::scene::ScriptComponent reload_script;
+  reload_script.script = reload_script_path.generic_string();
+  if (!Check(reload_world.set_component(reload_entity, vkpt::scene::ComponentKind::Script, reload_script),
+             "reload probe should attach script component")) {
+    cleanup();
+    return false;
+  }
+  auto reload_runtime = vkpt::scripting::CreateScriptRuntime();
+  reload_runtime->reload_bindings(reload_world);
+  vkpt::scripting::ScriptExecutionContext reload_context;
+  reload_context.game_mode = true;
+  reload_context.runtime.mode = "play";
+  reload_context.runtime.scripts_running = true;
+  reload_context.instruction_budget = 2000000u;
+  bool dispatch_ok = false;
+  std::thread dispatch_thread([&]() {
+    vkpt::scene::WorldCommandBuffer reload_commands;
+    const auto dispatch = reload_runtime->dispatch_hook(
+        reload_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, reload_context, reload_commands);
+    dispatch_ok = dispatch.hook_call_count == 1u && dispatch.diagnostics.empty();
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const auto reload_summary = reload_runtime->reload_bindings(reload_world);
+  dispatch_thread.join();
+  cleanup();
+  return Check(dispatch_ok, "in-flight hook should remain valid across reload request") &&
+         Check(reload_summary.runnable_count == 1u,
+               "concurrent reload should preserve runnable binding");
+#endif
+}
+
+vkpt::scene::SceneWorld BuildPhysicsProbeWorld() {
+  vkpt::scene::SceneWorld world;
+  const auto ground = world.create_entity("ground", 30500u);
+  vkpt::scene::TransformComponent ground_transform;
+  ground_transform.translation = {0.0f, -0.5f, 0.0f};
+  ground_transform.scale = {8.0f, 1.0f, 8.0f};
+  ground_transform.dirty = true;
+  vkpt::scene::PhysicsBodyComponent ground_body;
+  ground_body.enabled = true;
+  ground_body.dynamic = false;
+  ground_body.body_type = "static";
+  ground_body.shape = "box";
+  world.set_component(ground, vkpt::scene::ComponentKind::Transform, ground_transform);
+  world.set_component(ground, vkpt::scene::ComponentKind::PhysicsBody, ground_body);
+
+  const auto ball = world.create_entity("ball", 30501u);
+  vkpt::scene::TransformComponent ball_transform;
+  ball_transform.translation = {0.0f, 3.0f, 0.0f};
+  ball_transform.scale = {0.5f, 0.5f, 0.5f};
+  ball_transform.dirty = true;
+  vkpt::scene::PhysicsBodyComponent ball_body;
+  ball_body.enabled = true;
+  ball_body.dynamic = true;
+  ball_body.body_type = "dynamic";
+  ball_body.shape = "sphere";
+  ball_body.mass = 1.0f;
+  ball_body.allow_sleeping = false;
+  world.set_component(ball, vkpt::scene::ComponentKind::Transform, ball_transform);
+  world.set_component(ball, vkpt::scene::ComponentKind::PhysicsBody, ball_body);
+  world.recompute_world_transforms();
+  return world;
+}
+
+bool CheckPhysicsChannelsAndNonblockingDeterminism() {
+  vkpt::physics::PhysicsBodySync body;
+  body.entity = 30501u;
+  vkpt::physics::PhysicsCmd add_cmd{
+      vkpt::physics::PhysicsAddBodyCmd{10u, body}};
+  vkpt::physics::PhysicsCmd remove_cmd{
+      vkpt::physics::PhysicsRemoveBodyCmd{11u, 30501u}};
+  vkpt::physics::PhysicsCmd gravity_cmd{
+      vkpt::physics::PhysicsSetGravityCmd{12u, {0.0f, -9.81f, 0.0f}}};
+  vkpt::physics::PhysicsDelta sleep_delta{
+      vkpt::physics::PhysicsSleepStateChangedDelta{13u, 30501u, true}};
+  (void)add_cmd;
+  (void)remove_cmd;
+  (void)gravity_cmd;
+  (void)sleep_delta;
+
+  auto run_stream = []() {
+    auto world = BuildPhysicsProbeWorld();
+    auto physics = vkpt::physics::CreatePhysicsWorld();
+    physics->sync_from_scene_world(world);
+    vkpt::physics::PhysicsStepConfig step;
+    step.fixed_dt = 1.0f / 60.0f;
+    step.collision_steps = 2;
+    step.deterministic = true;
+    std::vector<float> y_values;
+    std::uint64_t last_snapshot_generation = 0u;
+    for (int frame = 0; frame < 8; ++frame) {
+      const auto stepped = physics->step_fixed(step);
+      if (!stepped) {
+        y_values.push_back(9999.0f);
+        continue;
+      }
+      bool captured_ball_write = false;
+      for (int spin = 0; spin < 100 && !captured_ball_write; ++spin) {
+        const auto snapshot = physics->step_snapshot();
+        if (!snapshot.complete || snapshot.generation <= last_snapshot_generation) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          continue;
+        }
+        last_snapshot_generation = snapshot.generation;
+        for (const auto& write : snapshot.transform_writes) {
+          if (write.entity == 30501u) {
+            y_values.push_back(write.transform.translation.y);
+            captured_ball_write = true;
+            break;
+          }
+        }
+        if (!captured_ball_write) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+      }
+      if (!captured_ball_write) {
+        y_values.push_back(9999.0f);
+      }
+    }
+    return y_values;
+  };
+  const auto lhs = run_stream();
+  const auto rhs = run_stream();
+  if (!Check(!lhs.empty() && lhs.size() == rhs.size(),
+             "physics deterministic probe should produce comparable transform streams")) {
+    return false;
+  }
+  for (std::size_t i = 0; i < lhs.size(); ++i) {
+    if (!Check(std::abs(lhs[i] - rhs[i]) < 0.0005f,
+               "physics deterministic probe should reproduce the same delta stream")) {
+      return false;
+    }
+  }
+
+  auto world = BuildPhysicsProbeWorld();
+  auto physics = vkpt::physics::CreatePhysicsWorld();
+  physics->sync_from_scene_world(world);
+  vkpt::physics::PhysicsStepConfig long_step;
+  long_step.fixed_dt = 0.5f;
+  long_step.collision_steps = 4;
+  const auto step_start = std::chrono::steady_clock::now();
+  const auto step_result = physics->step_fixed(long_step);
+  const auto step_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - step_start).count();
+  const auto extract_start = std::chrono::steady_clock::now();
+  (void)physics->step_snapshot();
+  const auto extract_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - extract_start).count();
+  return Check(static_cast<bool>(step_result),
+               "long physics step should be accepted asynchronously") &&
+         Check(step_ms < 25.0,
+               "physics step_fixed should not block caller on worker completion") &&
+         Check(extract_ms < 50.0,
+               "physics extraction should not hang when worker is still catching up");
+}
+
+bool CheckScriptingTelemetry() {
+#ifdef PT_ENABLE_LUA
+  vkpt::core::metrics::MetricsRegistry::instance().reset("vkp.script.");
+
+  auto event_sink = std::make_unique<vkpt::log::RingBufferSink>(128u);
+  auto* event_sink_ptr = event_sink.get();
+  vkpt::log::Logger::instance().set_min_severity(vkpt::log::Severity::Debug);
+  vkpt::log::Logger::instance().add_sink(std::move(event_sink));
+
+  vkpt::scene::SceneWorld world;
+  const auto entity = world.create_entity("script_telemetry_probe", 30600u);
+  vkpt::scene::TransformComponent transform;
+  world.set_component(entity, vkpt::scene::ComponentKind::Transform, transform);
+  vkpt::scene::ScriptComponent script;
+  script.script = "assets/scripts/script_param_probe.lua";
+  script.params["offset_x"] = "1.5";
+  world.set_component(entity, vkpt::scene::ComponentKind::Script, script);
+
+  auto runtime = vkpt::scripting::CreateScriptRuntime();
+  runtime->reload_bindings(world);
+  vkpt::scripting::ScriptExecutionContext context;
+  context.game_mode = true;
+  context.runtime.mode = "play";
+  context.runtime.scripts_running = true;
+  context.frame = 40u;
+  context.delta_seconds = 1.0 / 60.0;
+  vkpt::scene::WorldCommandBuffer commands;
+  const auto dispatch = runtime->dispatch_hook(
+      world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, context, commands);
+  const auto status = runtime->status();
+  const auto script_list = vkpt::scripting::FormatScriptList(*runtime);
+
+  vkpt::scene::SceneWorld budget_world;
+  const auto budget_entity = budget_world.create_entity("budget_telemetry_probe", 30601u);
+  vkpt::scene::ScriptComponent budget_script;
+  budget_script.script = "assets/scripts/script_budget_probe.lua";
+  budget_world.set_component(budget_entity, vkpt::scene::ComponentKind::Script, budget_script);
+  auto budget_runtime = vkpt::scripting::CreateScriptRuntime();
+  budget_runtime->reload_bindings(budget_world);
+  vkpt::scripting::ScriptExecutionContext budget_context = context;
+  budget_context.frame = 41u;
+  budget_context.instruction_budget = 1000u;
+  vkpt::scene::WorldCommandBuffer budget_commands;
+  const auto budget_dispatch = budget_runtime->dispatch_hook(
+      budget_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, budget_context, budget_commands);
+  const auto budget_status = budget_runtime->status();
+
+  bool saw_hook_fired = false;
+  bool saw_budget_exceeded = false;
+  for (const auto& event : event_sink_ptr->snapshot()) {
+    if (event.subsystem != "scripts") {
+      continue;
+    }
+    if (event.message == "script.hook_fired") {
+      saw_hook_fired = true;
+    } else if (event.message == "script.budget_exceeded") {
+      saw_budget_exceeded = true;
+    }
+  }
+  vkpt::log::Logger::instance().set_min_severity(vkpt::log::Severity::Info);
+
+  return Check(dispatch.hook_call_count == 1u,
+               "script telemetry probe should execute one hook") &&
+         Check(status.active_scripts == 1u && status.hooks_fired_total == 1u,
+               "ScriptingStatus should expose active scripts and fired hook count") &&
+         Check(script_list.find("assets/scripts/script_param_probe.lua") != std::string::npos &&
+                   script_list.find("hooks_fired_total=1") != std::string::npos,
+               "script list output should include per-script and aggregate status") &&
+         Check(budget_dispatch.hook_call_count == 0u,
+               "budget telemetry probe should be interrupted") &&
+         Check(budget_status.budget_kills_total == 1u &&
+                   budget_status.last_error_script_id == budget_entity,
+               "ScriptingStatus should count budget kills and retain last error script") &&
+         Check(!budget_runtime->runtime_states().empty() &&
+                   budget_runtime->runtime_states().front().budget_exceeded &&
+                   budget_runtime->runtime_states().front().budget_exceeded_type == "instructions" &&
+                   budget_runtime->runtime_states().front().instruction_count >= 1000u,
+               "budget telemetry should expose instruction usage on the runtime state") &&
+         Check(MetricHistogramCount("vkp.script.hook_us.hook.on_update") > 0u,
+               "script telemetry should record per-hook timing histogram") &&
+         Check(MetricHistogramCount("vkp.script.instructions_per_frame") >= 2u,
+               "script telemetry should record instructions-per-frame histogram") &&
+         Check(MetricCounterValue("vkp.script.hooks_total") >= 1u,
+               "script telemetry should count fired hooks") &&
+         Check(saw_hook_fired, "script telemetry should emit script.hook_fired") &&
+         Check(saw_budget_exceeded, "script telemetry should emit script.budget_exceeded");
+#else
+  vkpt::scene::SceneWorld world;
+  const auto entity = world.create_entity("script_status_probe", 30600u);
+  vkpt::scene::ScriptComponent script;
+  script.script = "assets/scripts/script_param_probe.lua";
+  world.set_component(entity, vkpt::scene::ComponentKind::Script, script);
+  auto runtime = vkpt::scripting::CreateScriptRuntime();
+  runtime->reload_bindings(world);
+  const auto status = runtime->status();
+  const auto script_list = vkpt::scripting::FormatScriptList(*runtime);
+  return Check(status.active_scripts == 1u,
+               "ScriptingStatus should expose active scripts without Lua execution") &&
+         Check(script_list.find("assets/scripts/script_param_probe.lua") != std::string::npos,
+               "script list output should include bindings without Lua execution");
+#endif
+}
+
+class TestFlowSource final : public vkpt::core::contracts::IFlowSource {
+ public:
+  explicit TestFlowSource(std::uint64_t flow_id) : flow_id_(flow_id) {}
+  std::uint64_t current_flow_id() const noexcept override { return flow_id_; }
+
+ private:
+  std::uint64_t flow_id_ = 0u;
+};
+
+bool CheckPhysicsTelemetry() {
+  vkpt::core::metrics::MetricsRegistry::instance().reset("vkp.physics.");
+
+  auto event_sink = std::make_unique<vkpt::log::RingBufferSink>(128u);
+  auto* event_sink_ptr = event_sink.get();
+  vkpt::log::Logger::instance().add_sink(std::move(event_sink));
+
+  auto world = BuildPhysicsProbeWorld();
+  world.create_entity("non_physics_entity_for_drift", 30610u);
+  auto physics = vkpt::physics::CreatePhysicsWorld();
+  TestFlowSource flow_source(77u);
+  physics->set_flow_source(&flow_source);
+  const auto summary = physics->sync_from_scene_world(world);
+
+  vkpt::physics::PhysicsStepConfig step;
+  step.fixed_dt = 1.0f / 60.0f;
+  step.collision_steps = 1;
+  const auto valid_step = physics->step_fixed(step);
+  for (int spin = 0; spin < 100 && physics->status().last_step_us == 0u; ++spin) {
+    (void)physics->step_snapshot();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto valid_status = physics->status();
+
+  vkpt::physics::PhysicsStepConfig invalid_step;
+  invalid_step.fixed_dt = 0.0f;
+  invalid_step.collision_steps = 1;
+  const auto invalid_result = physics->step_fixed(invalid_step);
+  const auto failed_status = physics->status();
+
+  bool saw_sync_drift = false;
+  bool saw_step_failed = false;
+  for (const auto& event : event_sink_ptr->snapshot()) {
+    if (event.subsystem != "physics") {
+      continue;
+    }
+    if (event.message == "physics.sync_drift") {
+      saw_sync_drift = true;
+    } else if (event.message == "physics.step_failed") {
+      saw_step_failed = true;
+    }
+  }
+
+  return Check(summary.enabled_bodies == 2u && summary.ecs_entities == 3u,
+               "physics telemetry probe should create a sync drift") &&
+         Check(static_cast<bool>(valid_step),
+               "physics telemetry valid step should be accepted") &&
+         Check(valid_status.backend.size() > 0 &&
+                   valid_status.fixed_dt_ms > 0.0 &&
+                   valid_status.body_counts.at("enabled") == 2u &&
+                   valid_status.current_flow_id == 77u,
+               "PhysicsStatus should expose backend, dt, body counts, and flow id") &&
+         Check(!static_cast<bool>(invalid_result),
+               "physics telemetry invalid step should fail") &&
+         Check(failed_status.last_error == "invalid_argument",
+               "PhysicsStatus should retain the last step error") &&
+         Check(MetricHistogramCount("vkp.physics.step_us") > 0u,
+               "physics telemetry should record step_us histogram") &&
+         Check(MetricHistogramCount("vkp.physics.contacts_per_step") > 0u,
+               "physics telemetry should record contacts_per_step histogram") &&
+         Check(MetricGaugeValue("vkp.physics.body_count.enabled") == 2.0,
+               "physics telemetry should publish enabled body-count gauge") &&
+         Check(saw_sync_drift, "physics telemetry should emit physics.sync_drift") &&
+         Check(saw_step_failed, "physics telemetry should emit physics.step_failed");
+}
+
 [[maybe_unused]] const vkpt::scene::WorldCommandBuffer::AssignLightCommand* FindAssignLight(
     const vkpt::scene::WorldCommandBuffer& commands,
     vkpt::core::StableId entity_id) {
@@ -387,11 +1250,178 @@ return {
   return nullptr;
 }
 
+bool CheckJobSystemTelemetry() {
+  vkpt::core::metrics::MetricsRegistry::instance().reset("vkp.jobs.");
+
+  auto event_sink = std::make_unique<vkpt::log::RingBufferSink>(128u);
+  auto* event_sink_ptr = event_sink.get();
+  vkpt::log::Logger::instance().add_sink(std::move(event_sink));
+
+  vkpt::jobs::JobSystem jobs(1u);
+  jobs.set_deterministic(true);
+
+  std::exception_ptr ok_exception;
+  const auto ok_job = jobs.submit_job([]() {});
+  const bool ok_waited = jobs.wait(ok_job, &ok_exception);
+
+  const auto failing_job = jobs.submit_job([]() {
+    throw std::runtime_error("job telemetry smoke");
+  });
+  std::exception_ptr failure;
+  const bool failed_wait = jobs.wait(failing_job, &failure);
+
+  bool failure_rethrows = false;
+  if (failure) {
+    try {
+      std::rethrow_exception(failure);
+    } catch (const std::runtime_error& ex) {
+      failure_rethrows = std::string_view(ex.what()).find("job telemetry smoke") !=
+                         std::string_view::npos;
+    } catch (...) {
+    }
+  }
+
+  const auto status = jobs.status();
+  const auto events = event_sink_ptr->snapshot();
+  bool saw_deterministic_event = false;
+  bool saw_exception_event = false;
+  for (const auto& event : events) {
+    if (event.subsystem == "jobs" && event.message == "jobs.deterministic_mode") {
+      saw_deterministic_event = true;
+    }
+    if (event.subsystem == "jobs" && event.message == "jobs.exception") {
+      saw_exception_event = true;
+    }
+  }
+  jobs.shutdown();
+
+  return Check(ok_waited && !ok_exception,
+               "job telemetry should wait successfully for a passing job") &&
+         Check(!failed_wait && failure_rethrows,
+               "job telemetry should surface the stored exception through wait") &&
+         Check(status.worker_count == 1u && status.deterministic,
+               "job telemetry status should report worker count and deterministic mode") &&
+         Check(status.jobs_submitted_total >= 2u &&
+                   status.jobs_failed_total >= 1u,
+               "job telemetry status should count submitted and failed jobs") &&
+         Check(MetricHistogramCount("vkp.jobs.run_us") >= 2u,
+               "job telemetry should record run_us histogram samples") &&
+         Check(MetricHistogramCount("vkp.jobs.wait_us") >= 2u,
+               "job telemetry should record queue wait histogram samples") &&
+         Check(MetricCounterValue("vkp.jobs.exception_total") >= 1u,
+               "job telemetry should count thrown jobs") &&
+         Check(MetricGaugeValue("vkp.jobs.deterministic") == 1.0,
+               "job telemetry should publish deterministic gauge") &&
+         Check(saw_deterministic_event,
+               "job telemetry should emit deterministic lifecycle event") &&
+         Check(saw_exception_event,
+               "job telemetry should emit exception event");
+}
+
+bool CheckAssetTelemetry() {
+  vkpt::assets::ResetAssetTelemetryForTest();
+  auto registry = vkpt::assets::CreateDefaultImporterRegistry(true);
+  auto asset_event_sink = std::make_unique<vkpt::log::RingBufferSink>(32u);
+  auto* asset_event_sink_ptr = asset_event_sink.get();
+  vkpt::log::Logger::instance().set_min_severity(vkpt::log::Severity::Debug);
+  vkpt::log::Logger::instance().add_sink(std::move(asset_event_sink));
+
+  vkpt::assets::AssetImportSource fake_source;
+  fake_source.uri = "telemetry_probe.fake";
+  fake_source.binding_context = "scripting_runtime_smoke";
+  fake_source.flow_id = 7701u;
+  fake_source.bytes = {
+      std::byte{0x66}, std::byte{0x61}, std::byte{0x6b}, std::byte{0x65}};
+
+  const auto first = registry.import_source(fake_source);
+  const auto second = registry.import_source(fake_source);
+
+  vkpt::assets::AssetImportSource missing_source;
+  missing_source.uri = "telemetry_probe.unsupported";
+  missing_source.binding_context = "scripting_runtime_smoke";
+  missing_source.flow_id = 7702u;
+  const auto failed = registry.import_source(missing_source);
+
+  const auto status = vkpt::assets::GetAssetsStatus();
+  const auto health_reports = vkpt::core::health::HealthRegistry::instance().scrape();
+  const auto events = asset_event_sink_ptr->snapshot();
+  bool saw_started = false;
+  bool saw_completed = false;
+  bool saw_failed = false;
+  for (const auto& event : events) {
+    if (event.subsystem != "assets") {
+      continue;
+    }
+    if (event.message == "assets.load_started") {
+      saw_started = true;
+    } else if (event.message == "assets.load_completed") {
+      saw_completed = true;
+    } else if (event.message == "assets.load_failed") {
+      saw_failed = true;
+    }
+  }
+  const auto asset_health =
+      std::find_if(health_reports.begin(),
+                   health_reports.end(),
+                   [](const auto& report) { return report.first == "assets"; });
+  vkpt::log::Logger::instance().set_min_severity(vkpt::log::Severity::Info);
+  return Check(first.success && second.success,
+               "asset telemetry should preserve successful fake imports") &&
+         Check(first.status.is_ok() && second.status.is_ok() &&
+                   failed.status.is_error(),
+               "asset imports should expose Status alongside legacy success flags") &&
+         Check(!failed.success,
+               "asset telemetry should observe unsupported import failures") &&
+          Check(status.lifecycle == vkpt::core::contracts::ComponentLifecycle::Degraded &&
+                    status.last_tick_ns != 0u &&
+                    status.ticks_total == 3u &&
+                    status.errors_total == 1u &&
+                    status.current_flow_id == 7702u,
+                "asset status should expose lifecycle, tick/error counts, and flow id") &&
+          Check(status.load_started_total == 3u,
+                "asset telemetry status should count started loads") &&
+          Check(status.load_completed_total == 2u,
+                "asset telemetry status should count completed loads") &&
+         Check(status.load_failed_total == 1u,
+               "asset telemetry status should count failed loads") &&
+         Check(status.cache_hit_total == 1u && status.cache_miss_total == 2u,
+               "asset telemetry status should count cache hits and misses") &&
+         Check(status.load_us_count == 2u && status.in_flight == 0u,
+               "asset telemetry status should publish load timing count and no in-flight loads") &&
+         Check(status.total_bytes_loaded == 8u &&
+                   std::abs(status.cache_hit_rate - (1.0 / 3.0)) < 0.001,
+               "asset telemetry status should expose loaded bytes and cache hit rate") &&
+          Check(!status.last_error.empty() && status.last_kind == "unsupported",
+                "asset telemetry status should retain the last failure reason and kind") &&
+          Check(MetricCounterValue("vkp.assets.cache_hit_total") == 1u &&
+                    MetricCounterValue("vkp.assets.cache_miss_total") == 2u,
+                "asset telemetry should publish cache hit and miss counters") &&
+          Check(MetricHistogramCount("vkp.assets.load_us") == 3u,
+                "asset telemetry should publish load_us histogram samples") &&
+          Check(MetricGaugeValue("vkp.assets.in_flight") == 0.0 &&
+                    std::abs(MetricGaugeValue("vkp.assets.cache_hit_rate") - (1.0 / 3.0)) < 0.001,
+                "asset telemetry should publish in-flight depth and cache hit rate gauges") &&
+          Check(asset_health != health_reports.end() &&
+                    asset_health->second.status == vkpt::core::health::Status::Degraded,
+                "asset health probe should report degraded after an import failure") &&
+          Check(saw_started && saw_completed && saw_failed,
+                "asset telemetry should emit load started, completed, and failed events");
+}
+
 }  // namespace
 
 int RunScriptingRuntimeSmoke() {
-  if (!CheckRuntimeModeCapabilityContract() ||
-      !CheckLiveEditScriptingContract()) {
+  if (!CheckAudioAndDiagnosticsNamingContracts() ||
+      !CheckSceneWorldContractQueries() ||
+      !CheckRuntimeModeCapabilityContract() ||
+      !CheckLiveEditScriptingContract() ||
+      !CheckLuaStatePoolReuseAndPureBinding() ||
+      !CheckPureJobsYieldAndReloadSafety() ||
+      !CheckPhysicsChannelsAndNonblockingDeterminism() ||
+      !CheckScriptingTelemetry() ||
+      !CheckPhysicsTelemetry() ||
+      !CheckJobSystemTelemetry() ||
+      !CheckAssetTelemetry()) {
     return 1;
   }
 
@@ -2073,7 +3103,7 @@ return script
                "third-person physics collision test should step Jolt")) {
       return 1;
     }
-    for (const auto& write : physics->extract_transform_writes()) {
+    for (const auto& write : physics->step_snapshot().transform_writes) {
       if (write.entity == 9131u) {
         latest_ball_transform = write.transform;
       }
@@ -2323,7 +3353,8 @@ return script
 
   vkpt::audio::AudioSystemConfig audio_config;
   audio_config.backend = "noop";
-  audio_config.muted = true;
+  audio_config.muted = false;
+  vkpt::scene::SnapshotRing audio_snapshot_ring;
   auto audio_system = vkpt::audio::CreateAudioSystem(audio_config);
   vkpt::audio::SetGlobalAudioSystem(audio_system.get());
   if (!Check(audio_system->initialize(),
@@ -2333,7 +3364,25 @@ return script
     vkpt::audio::SetGlobalAudioSystem(nullptr);
     return 1;
   }
+  vkpt::core::metrics::MetricsRegistry::instance().reset("vkp.audio.");
+  const auto audio_rt_scene =
+      vkpt::pathtracer::BuildSceneDataFromDocument(audio_document_result.value());
+  if (!Check(static_cast<bool>(audio_rt_scene),
+             "audio demo should build RT scene data for snapshot-backed callback smoke")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+  vkpt::scene::RenderSceneSnapshotRevisions audio_snapshot_revisions;
+  audio_snapshot_revisions.generation = 1u;
+  audio_snapshot_revisions.wall_time_ns = vkpt::scene::SnapshotWallTimeNowNs();
+  audio_snapshot_ring.publish(vkpt::scene::BuildRenderSceneSnapshot(
+      audio_rt_scene.value(), nullptr, audio_snapshot_revisions));
+  audio_system->set_snapshot_ring(&audio_snapshot_ring);
+  if (const auto current_audio_snapshot = audio_snapshot_ring.current()) {
+    audio_system->consume_snapshot(*current_audio_snapshot);
+  }
   auto audio_diag = audio_system->diagnostics();
+  const auto audio_snapshot_status = audio_system->status();
   if (!Check(audio_diag.loaded_clips >= 6u,
              "audio demo should declare file-backed and generated clips") ||
       !Check(audio_diag.loaded_streams >= 1u,
@@ -2345,27 +3394,53 @@ return script
       !Check(audio_diag.event_history_size == 0u,
              "audio demo should not autoplay scene audio before Lua starts") ||
       !Check(audio_diag.play_requests == 0u,
-             "audio demo sound should be started by Lua game-mode hooks")) {
+             "audio demo sound should be started by Lua game-mode hooks") ||
+      !Check(audio_diag.listener_updates >= 1u,
+             "audio consume_snapshot should update listener diagnostics") ||
+      !Check(audio_snapshot_status.snapshot_generation == audio_snapshot_revisions.generation,
+             "audio status should expose the last consumed scene snapshot generation") ||
+      !Check(MetricGaugeValue("vkp.audio.snapshot_generation") ==
+                 static_cast<double>(audio_snapshot_revisions.generation),
+             "audio metrics should expose the last consumed scene snapshot generation")) {
     vkpt::audio::SetGlobalAudioSystem(nullptr);
     return 1;
   }
-  vkpt::audio::AudioPostEventDesc direct_audio_event;
+  vkpt::audio::AudioTrackedEventDesc direct_audio_event;
   direct_audio_event.event_name = "ui.radar.ping";
   direct_audio_event.bus = "ui";
   direct_audio_event.priority = 0.95f;
-  const auto direct_voice = audio_system->post_event(direct_audio_event);
+  const auto direct_voice = audio_system->post_tracked_event(direct_audio_event);
+  vkpt::audio::AudioOneShotEventDesc one_shot_audio_event;
+  one_shot_audio_event.event_name = "ui.radar.ping";
+  one_shot_audio_event.bus = "ui";
+  const auto one_shot_status = audio_system->post_one_shot_event(one_shot_audio_event);
   audio_system->set_bus_muted("ui", true);
-  vkpt::audio::AudioPostEventDesc muted_audio_event = direct_audio_event;
+  vkpt::audio::AudioTrackedEventDesc muted_audio_event = direct_audio_event;
   muted_audio_event.event_name = "pickup.collect";
-  const auto muted_voice = audio_system->post_event(muted_audio_event);
-  audio_system->stop(direct_voice);
+  const auto muted_voice = audio_system->post_tracked_event(muted_audio_event);
+  audio_system->set_volume(direct_voice, 0.4f);
+  const auto direct_voice_state = audio_system->query_state(direct_voice);
+  audio_system->cancel(direct_voice);
   audio_system->stop(direct_voice);
   audio_system->update();
+  const auto audio_buffers_before_stall = audio_system->diagnostics().mixed_buffers;
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
   audio_diag = audio_system->diagnostics();
+  const auto audio_status = audio_system->status();
+  const auto audio_health_reports = vkpt::core::health::HealthRegistry::instance().scrape();
+  const auto audio_health =
+      std::find_if(audio_health_reports.begin(),
+                   audio_health_reports.end(),
+                   [](const auto& report) { return report.first == "audio"; });
   if (!Check(static_cast<bool>(direct_voice),
              "audio post_event should return a voice handle in no-op mode") ||
+      !Check(one_shot_status.is_ok(),
+             "audio one-shot post should return Status success") ||
       !Check(static_cast<bool>(muted_voice),
              "muted bus audio should still resolve an event handle") ||
+      !Check(direct_voice_state.valid && direct_voice_state.playing &&
+                 direct_voice_state.volume == 0.4f,
+             "tracked audio event handles should support volume and state queries") ||
       !Check(audio_diag.stop_requests >= 2u,
              "audio diagnostics should count stop requests for handle lifecycle checks") ||
       !Check(audio_diag.voices.size() >= 1u,
@@ -2373,7 +3448,110 @@ return script
       !Check(std::any_of(audio_diag.buses.begin(), audio_diag.buses.end(), [](const auto& bus) {
                 return bus.name == "ui" && bus.muted;
               }),
-             "audio bus diagnostics should report muted UI bus state")) {
+             "audio bus diagnostics should report muted UI bus state") ||
+      !Check(audio_diag.mixed_buffers > audio_buffers_before_stall,
+             "audio no-op callback should continue while sim is stalled for 500 ms") ||
+      !Check(audio_diag.underruns == 0u,
+             "audio no-op callback should not underrun during 500 ms sim stall") ||
+      !Check(audio_diag.decode_jobs_completed >= 1u,
+             "audio background decode thread should complete file-backed clip jobs") ||
+      !Check(audio_diag.streaming_voices >= 1u,
+             "audio mixer should expose per-voice PCM streaming rings") ||
+      !Check(audio_diag.stream_pages_produced > 0u,
+             "audio loader thread should fill per-voice PCM pages") ||
+      !Check(audio_diag.stream_pages_consumed > 0u,
+             "audio callback should consume per-voice PCM pages") ||
+      !Check(audio_diag.stream_ring_underruns == 0u,
+             "audio per-voice PCM rings should not underrun during 500 ms sim stall") ||
+      !Check(audio_status.initialized && audio_status.backend_name == "noop",
+             "audio status should report initialized no-op backend") ||
+      !Check(audio_status.lifecycle == vkpt::core::contracts::ComponentLifecycle::Ready &&
+                 audio_status.last_tick_ns != 0u &&
+                 audio_status.ticks_total > 0u &&
+                 audio_status.errors_total == 0u &&
+                 audio_status.current_flow_id == audio_snapshot_revisions.generation,
+             "audio status should expose lifecycle, tick/error counts, and flow id") ||
+      !Check(audio_status.loaded_clips >= 6u && audio_status.events >= 6u,
+             "audio status should expose loaded clip and event counts") ||
+      !Check(audio_status.voices_max >= audio_status.active_voices &&
+                 audio_status.last_underrun_ns == 0u,
+             "audio status should expose max voice capacity and last underrun timestamp") ||
+      !Check(audio_status.play_requests >= 2u && audio_status.failed_play_requests == 0u,
+             "audio status should count successful play requests") ||
+      !Check(MetricCounterValue("vkp.audio.events_posted_total") >= 2u,
+             "audio metrics should count posted events") ||
+      !Check(audio_health != audio_health_reports.end() &&
+                 audio_health->second.status == vkpt::core::health::Status::Ok,
+             "audio health probe should report ok during no-op callback smoke") ||
+      !Check(MetricGaugeValue("vkp.audio.voices_active") >= 0.0,
+             "audio metrics should publish active voice gauge")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+  vkpt::audio::AudioSystemConfig stealing_audio_config = audio_config;
+  stealing_audio_config.max_voices = 1u;
+  auto stealing_audio_system = vkpt::audio::CreateAudioSystem(stealing_audio_config);
+  const auto stealing_audio_init = stealing_audio_system->initialize();
+  const auto stealing_audio_load =
+      stealing_audio_system->load_scene_audio(audio_document_result.value(),
+                                              audio_scene_path.generic_string());
+  vkpt::audio::AudioTrackedEventDesc stealing_audio_event = direct_audio_event;
+  const auto stolen_voice = stealing_audio_system->post_tracked_event(stealing_audio_event);
+  stealing_audio_event.event_name = "pickup.collect";
+  const auto replacement_voice = stealing_audio_system->post_tracked_event(stealing_audio_event);
+  const auto stolen_voice_state = stealing_audio_system->query_state(stolen_voice);
+  stealing_audio_system->shutdown();
+  if (!Check(static_cast<bool>(stealing_audio_init),
+             "audio voice-steal smoke should initialize no-op backend") ||
+      !Check(static_cast<bool>(stealing_audio_load),
+             "audio voice-steal smoke should load scene audio") ||
+      !Check(static_cast<bool>(stolen_voice) && static_cast<bool>(replacement_voice),
+             "audio voice-steal smoke should allocate tracked handles") ||
+      !Check(stolen_voice_state.stolen && !stolen_voice_state.playing,
+             "tracked audio event state should expose stolen handles")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+  const auto audio_soak_ms = ReadEnvU64("PT_AUDIO_SOAK_MS", 750u);
+  const auto audio_soak_min_buffers =
+      ReadEnvU64("PT_AUDIO_SOAK_MIN_BUFFERS", audio_soak_ms >= 600000u ? 1000u : 8u);
+  if (!CheckAudioUnderrunShortSoak(*audio_system,
+                                   std::chrono::milliseconds(audio_soak_ms),
+                                   audio_soak_min_buffers)) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+
+  vkpt::audio::SoundRing audio_cmd_ring(2u);
+  vkpt::audio::AudioCmd audio_cmd;
+  audio_cmd.kind = vkpt::audio::AudioCmdKind::PlayResolved;
+  audio_cmd.cmd_id = 1u;
+  audio_cmd.event_name = "ui.radar.ping";
+  audio_cmd.clip = 1u;
+  const bool audio_cmd_push_1 = audio_cmd_ring.try_push(audio_cmd);
+  audio_cmd.cmd_id = 2u;
+  const bool audio_cmd_push_2 = audio_cmd_ring.try_push(audio_cmd);
+  audio_cmd.cmd_id = 3u;
+  const bool audio_cmd_push_3 = audio_cmd_ring.try_push(audio_cmd);
+  vkpt::audio::AudioCmd popped_audio_cmd;
+  std::size_t audio_cmd_drained = 0u;
+  std::vector<std::uint64_t> audio_cmd_drained_ids;
+  while (audio_cmd_ring.try_pop(popped_audio_cmd)) {
+    audio_cmd_drained_ids.push_back(popped_audio_cmd.cmd_id);
+    ++audio_cmd_drained;
+  }
+  if (!Check(audio_cmd_push_1 && audio_cmd_push_2,
+             "audio SoundRing should accept commands up to capacity") ||
+      !Check(audio_cmd_push_3,
+             "audio SoundRing should accept newest command after dropping the oldest one") ||
+      !Check(audio_cmd_ring.dropped_total() == 1u,
+             "audio SoundRing should count dropped commands") ||
+      !Check(audio_cmd_drained == 2u,
+             "audio SoundRing should drain accepted commands") ||
+      !Check(audio_cmd_drained_ids.size() == 2u &&
+                 audio_cmd_drained_ids[0] == 2u &&
+                 audio_cmd_drained_ids[1] == 3u,
+             "audio SoundRing should drop the oldest command under pressure")) {
     vkpt::audio::SetGlobalAudioSystem(nullptr);
     return 1;
   }

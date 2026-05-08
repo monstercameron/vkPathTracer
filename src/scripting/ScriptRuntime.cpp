@@ -1,18 +1,25 @@
 #include "scripting/ScriptRuntime.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include "audio/AudioSystem.h"
 #include "core/Logging.h"
+#include "core/metrics/Metrics.h"
+#include "jobs/JobSystem.h"
+#include "scripting/Channels.h"
 #ifdef PT_ENABLE_LUA
 extern "C" {
 #include <lauxlib.h>
@@ -28,7 +35,7 @@ bool IsSupportedLanguage(std::string_view language) {
   return language.empty() || language == "lua";
 }
 
-std::string TrimCopy(std::string_view text) {
+[[maybe_unused]] std::string TrimCopy(std::string_view text) {
   std::size_t begin = 0u;
   while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
     ++begin;
@@ -40,7 +47,7 @@ std::string TrimCopy(std::string_view text) {
   return std::string(text.substr(begin, end - begin));
 }
 
-std::string LowerSnakeCopy(std::string_view text) {
+[[maybe_unused]] std::string LowerSnakeCopy(std::string_view text) {
   std::string out;
   out.reserve(text.size());
   bool lastSeparator = false;
@@ -65,7 +72,7 @@ std::string ScriptVariableOverrideKey(vkpt::core::StableEntityId entity,
   return std::to_string(entity) + "|" + std::string(scope) + "|" + std::string(name);
 }
 
-const ScriptVariableOverride* FindVariableOverride(
+[[maybe_unused]] const ScriptVariableOverride* FindVariableOverride(
     const std::unordered_map<std::string, ScriptVariableOverride>& overrides,
     vkpt::core::StableEntityId entity,
     std::string_view scope,
@@ -114,6 +121,268 @@ void LogDiagnostic(const ScriptDiagnostic& diagnostic) {
       diagnostic.frame);
 }
 
+[[maybe_unused]] void LogScriptHookFired(const ScriptBinding& binding,
+                                         ScriptLifecycleHook hook,
+                                         const ScriptExecutionContext& context) {
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Debug,
+      "scripts",
+      "script.hook_fired",
+      {{"script_id", std::to_string(binding.entity)},
+       {"hook", std::string(to_string(hook))},
+       {"gen", std::to_string(context.frame)},
+       {"source", binding.source}},
+      context.frame);
+}
+
+[[maybe_unused]] void LogScriptBudgetExceeded(const ScriptBinding& binding,
+                                              ScriptLifecycleHook hook,
+                                              const ScriptExecutionContext& context,
+                                              std::string_view budget,
+                                              std::size_t actual,
+                                              std::size_t limit) {
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Warning,
+      "scripts",
+      "script.budget_exceeded",
+      {{"script_id", std::to_string(binding.entity)},
+       {"hook", std::string(to_string(hook))},
+       {"gen", std::to_string(context.frame)},
+       {"budget", std::string(budget)},
+       {"actual", std::to_string(actual)},
+       {"limit", std::to_string(limit)},
+       {"source", binding.source}},
+      context.frame);
+}
+
+[[maybe_unused]] void RecordScriptHookTiming(ScriptLifecycleHook hook, std::uint64_t hook_us) {
+  auto& registry = vkpt::core::metrics::MetricsRegistry::instance();
+  registry.histogram("vkp.script.hook_us").record(hook_us);
+  registry.histogram("vkp.script.hook_us.hook." + std::string(to_string(hook))).record(hook_us);
+}
+
+void RecordScriptInstructionsPerFrame(std::size_t instructions) {
+  vkpt::core::metrics::MetricsRegistry::instance()
+      .histogram("vkp.script.instructions_per_frame")
+      .record(static_cast<std::uint64_t>(instructions));
+}
+
+ScriptCmd::Type ScriptCmdTypeForSceneCommand(vkpt::scene::WorldCommandBuffer::CommandType type) {
+  using CommandType = vkpt::scene::WorldCommandBuffer::CommandType;
+  switch (type) {
+    case CommandType::CreateEntity:
+      return ScriptCmd::Type::SpawnEntity;
+    case CommandType::DestroyEntity:
+      return ScriptCmd::Type::DestroyEntity;
+    case CommandType::SetTransform:
+      return ScriptCmd::Type::SetTransform;
+    case CommandType::AssignMaterial:
+      return ScriptCmd::Type::SetMaterial;
+    default:
+      return ScriptCmd::Type::SceneCommand;
+  }
+}
+
+void AppendSceneCommandPayload(const vkpt::scene::WorldCommandBuffer::Command& command,
+                               vkpt::scene::WorldCommandBuffer& out) {
+  std::visit([&](const auto& payload) {
+    using T = std::decay_t<decltype(payload)>;
+    if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::CreateEntityCommand>) {
+      out.add_create_entity(payload.name, payload.requested_id, payload.requested_parent);
+    } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::DestroyEntityCommand>) {
+      if (payload.destroy_children) {
+        out.add_destroy_subtree(payload.id);
+      } else {
+        out.add_destroy_entity(payload.id);
+      }
+    } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::SetComponentCommand>) {
+      out.add_set_component(payload.id, payload.kind, payload.component);
+    } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AddComponentCommand>) {
+      out.add_add_component(payload.id, payload.kind, payload.component);
+    } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::RemoveComponentCommand>) {
+      out.add_remove_component(payload.id, payload.kind);
+    } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::SetTransformCommand>) {
+      out.add_set_transform(payload.id, payload.transform, payload.authority, payload.writer, payload.frame);
+    } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::ReparentEntityCommand>) {
+      out.add_reparent_entity(payload.child, payload.parent, payload.preserve_world_transform);
+    } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::ReorderSiblingCommand>) {
+      out.add_reorder_sibling(payload.moved, payload.sibling_before, payload.sibling_after);
+    } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignMaterialCommand>) {
+      out.add_assign_material(payload.id, payload.material_id);
+    } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignLightCommand>) {
+      out.add_assign_light(payload.id, payload.light);
+    } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignCameraCommand>) {
+      out.add_assign_camera(payload.id, payload.camera);
+    }
+  }, command.payload);
+}
+
+class ScriptRingCommandQueue final {
+ public:
+  explicit ScriptRingCommandQueue(std::size_t capacity) : ring(capacity) {}
+
+  ScriptCmdRing ring;
+};
+
+}  // namespace
+
+ScriptCmd MakeScriptCmd(const vkpt::scene::WorldCommandBuffer::Command& command) {
+  ScriptCmd cmd;
+  cmd.type = ScriptCmdTypeForSceneCommand(command.type);
+  cmd.payload = command;
+  return cmd;
+}
+
+bool AppendScriptCmdToWorldCommands(const ScriptCmd& cmd, vkpt::scene::WorldCommandBuffer& commands) {
+  if (const auto* scene_command = std::get_if<vkpt::scene::WorldCommandBuffer::Command>(&cmd.payload)) {
+    AppendSceneCommandPayload(*scene_command, commands);
+    return true;
+  }
+  return false;
+}
+
+struct ScriptCommandQueue::Impl {
+  explicit Impl(std::size_t capacity) : queue(capacity) {}
+  ScriptRingCommandQueue queue;
+};
+
+ScriptCommandQueue::ScriptCommandQueue(std::size_t capacity)
+    : m_impl(std::make_unique<Impl>(capacity)) {}
+
+ScriptCommandQueue::~ScriptCommandQueue() = default;
+
+bool ScriptCommandQueue::push_scene_command(const vkpt::scene::WorldCommandBuffer::Command& command) {
+  return m_impl->queue.ring.try_push(MakeScriptCmd(command));
+}
+
+std::size_t ScriptCommandQueue::drain_to(vkpt::scene::WorldCommandBuffer& commands) {
+  std::size_t drained = 0u;
+  ScriptCmd cmd;
+  while (m_impl->queue.ring.try_pop(cmd)) {
+    if (AppendScriptCmdToWorldCommands(cmd, commands)) {
+      ++drained;
+    }
+  }
+  return drained;
+}
+
+std::size_t ScriptCommandQueue::dropped_total() const {
+  return m_impl->queue.ring.dropped_total();
+}
+
+void ScriptCommandQueue::clear() {
+  ScriptCmd cmd;
+  while (m_impl->queue.ring.try_pop(cmd)) {
+  }
+}
+
+struct ScriptThread::Impl {
+  Impl(std::size_t hook_capacity, std::size_t command_capacity)
+      : hooks(hook_capacity),
+        commands(command_capacity),
+        runtime(CreateScriptRuntime()) {
+    worker = std::thread([this]() {
+      worker_loop();
+    });
+  }
+
+  ~Impl() {
+    stop();
+  }
+
+  void stop() {
+    const bool already_stopping = stopping.exchange(true, std::memory_order_acq_rel);
+    cv.notify_one();
+    if (!already_stopping && worker.joinable()) {
+      worker.join();
+    } else if (worker.joinable()) {
+      worker.join();
+    }
+  }
+
+  void worker_loop() {
+    while (!stopping.load(std::memory_order_acquire)) {
+      ScriptHookRequest request;
+      {
+        std::unique_lock lock(wake_mutex);
+        cv.wait_for(lock, std::chrono::milliseconds(1), [&]() {
+          return stopping.load(std::memory_order_acquire) || hooks.depth() > 0u ||
+                 reload_requested.load(std::memory_order_acquire);
+        });
+      }
+
+      vkpt::scene::SceneWorld local_world;
+      const bool should_reload = reload_requested.exchange(false, std::memory_order_acq_rel);
+      {
+        std::scoped_lock lock(world_mutex);
+        local_world = world_snapshot;
+      }
+      if (should_reload) {
+        runtime->reload_bindings(local_world);
+      }
+
+      while (hooks.try_pop(request)) {
+        {
+          std::scoped_lock lock(world_mutex);
+          local_world = world_snapshot;
+        }
+        local_world.recompute_world_transforms();
+        if (request.context.frame == 0u) {
+          request.context.frame = request.frame;
+        }
+        vkpt::scene::WorldCommandBuffer hook_commands;
+        (void)runtime->dispatch_hook(local_world, request.hook, request.context, hook_commands);
+        for (const auto& command : hook_commands.commands()) {
+          (void)commands.push_scene_command(command);
+        }
+      }
+    }
+  }
+
+  ScriptHookRing hooks;
+  ScriptCommandQueue commands;
+  std::unique_ptr<IScriptRuntime> runtime;
+  vkpt::scene::SceneWorld world_snapshot;
+  std::mutex world_mutex;
+  std::mutex wake_mutex;
+  std::condition_variable cv;
+  std::thread worker;
+  std::atomic_bool stopping{false};
+  std::atomic_bool reload_requested{false};
+};
+
+ScriptThread::ScriptThread(std::size_t hook_capacity, std::size_t command_capacity)
+    : m_impl(std::make_unique<Impl>(hook_capacity, command_capacity)) {}
+
+ScriptThread::~ScriptThread() = default;
+
+void ScriptThread::publish_world_snapshot(vkpt::scene::SceneWorld world) {
+  {
+    std::scoped_lock lock(m_impl->world_mutex);
+    m_impl->world_snapshot = std::move(world);
+  }
+  m_impl->reload_requested.store(true, std::memory_order_release);
+  m_impl->cv.notify_one();
+}
+
+bool ScriptThread::enqueue_hook(ScriptHookRequest request) {
+  if (!m_impl->hooks.try_push(std::move(request))) {
+    return false;
+  }
+  m_impl->cv.notify_one();
+  return true;
+}
+
+std::size_t ScriptThread::drain_commands(vkpt::scene::WorldCommandBuffer& commands) {
+  return m_impl->commands.drain_to(commands);
+}
+
+void ScriptThread::stop() {
+  m_impl->stop();
+}
+
+namespace {
+
 #ifdef PT_ENABLE_LUA
 
 constexpr int kScriptKeyLeft = 0x01000012;
@@ -135,13 +404,28 @@ struct LuaHostContext {
   vkpt::core::StableEntityId next_entity_id = 1;
   std::unordered_set<vkpt::core::StableEntityId> reserved_entity_ids;
   std::unordered_set<std::string> ensured_script_keys;
+  bool pure = false;
+  struct LuaInstructionBudget* instruction_budget = nullptr;
 };
 
 struct LuaMemoryBudget {
   std::size_t used = 0;
   std::size_t peak = 0;
   std::size_t limit = 0;
+  std::size_t requested = 0;
+  bool exceeded = false;
 };
+
+struct LuaInstructionBudget {
+  std::size_t limit = 0;
+  std::size_t interval = 0;
+  std::size_t executed = 0;
+  bool exceeded = false;
+};
+
+constexpr const char* kLuaHostContextRegistryKey = "vkpt.current_host_context";
+
+LuaHostContext* Host(lua_State* lua);
 
 void* LuaBudgetAllocator(void* ud, void* ptr, std::size_t osize, std::size_t nsize) {
   auto* budget = static_cast<LuaMemoryBudget*>(ud);
@@ -155,6 +439,8 @@ void* LuaBudgetAllocator(void* ud, void* ptr, std::size_t osize, std::size_t nsi
   const auto current = budget == nullptr ? 0u : budget->used;
   const auto next = current - std::min(current, osize) + nsize;
   if (budget != nullptr && budget->limit != 0 && next > budget->limit) {
+    budget->requested = next;
+    budget->exceeded = true;
     return nullptr;
   }
   void* out = std::realloc(ptr, nsize);
@@ -166,11 +452,27 @@ void* LuaBudgetAllocator(void* ud, void* ptr, std::size_t osize, std::size_t nsi
 }
 
 void LuaInstructionBudgetHook(lua_State* lua, lua_Debug*) {
+  if (auto* host = Host(lua); host != nullptr && host->instruction_budget != nullptr) {
+    auto& budget = *host->instruction_budget;
+    budget.executed += budget.interval;
+    if (budget.limit == 0 || budget.executed < budget.limit) {
+      return;
+    }
+    budget.exceeded = true;
+  }
   luaL_error(lua, "instruction budget exceeded");
 }
 
 LuaHostContext* Host(lua_State* lua) {
-  return static_cast<LuaHostContext*>(lua_touserdata(lua, lua_upvalueindex(1)));
+  lua_getfield(lua, LUA_REGISTRYINDEX, kLuaHostContextRegistryKey);
+  auto* host = static_cast<LuaHostContext*>(lua_touserdata(lua, -1));
+  lua_pop(lua, 1);
+  return host;
+}
+
+void SetCurrentHost(lua_State* lua, LuaHostContext* host) {
+  lua_pushlightuserdata(lua, host);
+  lua_setfield(lua, LUA_REGISTRYINDEX, kLuaHostContextRegistryKey);
 }
 
 int LuaBytecodeWriter(lua_State*, const void* data, std::size_t size, void* user_data) {
@@ -443,6 +745,8 @@ void OpenSafeLuaLibraries(lua_State* lua) {
   luaL_requiref(lua, LUA_TABLIBNAME, luaopen_table, 1);
   lua_pop(lua, 1);
   luaL_requiref(lua, LUA_STRLIBNAME, luaopen_string, 1);
+  lua_pop(lua, 1);
+  luaL_requiref(lua, LUA_COLIBNAME, luaopen_coroutine, 1);
   lua_pop(lua, 1);
 
   const char* blocked_globals[] = {
@@ -1097,8 +1401,8 @@ int LuaEntitySetUiPanel(lua_State* lua) {
 }
 
 void PushHostClosure(lua_State* lua, LuaHostContext& host, lua_CFunction function) {
-  lua_pushlightuserdata(lua, &host);
-  lua_pushcclosure(lua, function, 1);
+  (void)host;
+  lua_pushcfunction(lua, function);
 }
 
 void PushEntityObject(lua_State* lua, LuaHostContext& host, vkpt::core::StableEntityId entity_id) {
@@ -1112,30 +1416,32 @@ void PushEntityObject(lua_State* lua, LuaHostContext& host, vkpt::core::StableEn
   lua_setfield(lua, -2, "get_name");
   PushHostClosure(lua, host, LuaEntityGetTransform);
   lua_setfield(lua, -2, "get_transform");
-  PushHostClosure(lua, host, LuaEntitySetTransform);
-  lua_setfield(lua, -2, "set_transform");
-  PushHostClosure(lua, host, LuaEntitySetName);
-  lua_setfield(lua, -2, "set_name");
   PushHostClosure(lua, host, LuaEntityLog);
   lua_setfield(lua, -2, "log");
-  PushHostClosure(lua, host, LuaEntitySetDebugValue);
-  lua_setfield(lua, -2, "set_debug_value");
   PushHostClosure(lua, host, LuaEntityGetLight);
   lua_setfield(lua, -2, "get_light");
-  PushHostClosure(lua, host, LuaEntitySetLight);
-  lua_setfield(lua, -2, "set_light");
   PushHostClosure(lua, host, LuaEntityGetCamera);
   lua_setfield(lua, -2, "get_camera");
-  PushHostClosure(lua, host, LuaEntitySetCamera);
-  lua_setfield(lua, -2, "set_camera");
   PushHostClosure(lua, host, LuaEntityGetPhysics);
   lua_setfield(lua, -2, "get_physics");
   PushHostClosure(lua, host, LuaEntityGetMaterialId);
   lua_setfield(lua, -2, "get_material_id");
   PushHostClosure(lua, host, LuaEntityGetUiPanel);
   lua_setfield(lua, -2, "get_ui_panel");
-  PushHostClosure(lua, host, LuaEntitySetUiPanel);
-  lua_setfield(lua, -2, "set_ui_panel");
+  if (!host.pure) {
+    PushHostClosure(lua, host, LuaEntitySetTransform);
+    lua_setfield(lua, -2, "set_transform");
+    PushHostClosure(lua, host, LuaEntitySetName);
+    lua_setfield(lua, -2, "set_name");
+    PushHostClosure(lua, host, LuaEntitySetDebugValue);
+    lua_setfield(lua, -2, "set_debug_value");
+    PushHostClosure(lua, host, LuaEntitySetLight);
+    lua_setfield(lua, -2, "set_light");
+    PushHostClosure(lua, host, LuaEntitySetCamera);
+    lua_setfield(lua, -2, "set_camera");
+    PushHostClosure(lua, host, LuaEntitySetUiPanel);
+    lua_setfield(lua, -2, "set_ui_panel");
+  }
 }
 
 vkpt::core::StableEntityId AllocateScriptEntityId(LuaHostContext& host) {
@@ -1736,20 +2042,22 @@ void PushWorldTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "entity");
   PushHostClosure(lua, host, LuaWorldChildrenOf);
   lua_setfield(lua, -2, "children_of");
-  PushHostClosure(lua, host, LuaWorldSpawnEntity);
-  lua_setfield(lua, -2, "spawn_entity");
-  PushHostClosure(lua, host, LuaWorldDestroyEntity);
-  lua_setfield(lua, -2, "destroy_entity");
   PushHostClosure(lua, host, LuaWorldHasComponent);
   lua_setfield(lua, -2, "has_component");
-  PushHostClosure(lua, host, LuaWorldReparentEntity);
-  lua_setfield(lua, -2, "reparent_entity");
-  PushHostClosure(lua, host, LuaWorldReorderEntity);
-  lua_setfield(lua, -2, "reorder_entity");
-  PushHostClosure(lua, host, LuaWorldRemoveComponent);
-  lua_setfield(lua, -2, "remove_component");
-  PushHostClosure(lua, host, LuaWorldAssignMaterial);
-  lua_setfield(lua, -2, "assign_material");
+  if (!host.pure) {
+    PushHostClosure(lua, host, LuaWorldSpawnEntity);
+    lua_setfield(lua, -2, "spawn_entity");
+    PushHostClosure(lua, host, LuaWorldDestroyEntity);
+    lua_setfield(lua, -2, "destroy_entity");
+    PushHostClosure(lua, host, LuaWorldReparentEntity);
+    lua_setfield(lua, -2, "reparent_entity");
+    PushHostClosure(lua, host, LuaWorldReorderEntity);
+    lua_setfield(lua, -2, "reorder_entity");
+    PushHostClosure(lua, host, LuaWorldRemoveComponent);
+    lua_setfield(lua, -2, "remove_component");
+    PushHostClosure(lua, host, LuaWorldAssignMaterial);
+    lua_setfield(lua, -2, "assign_material");
+  }
 }
 
 void PushSceneTable(lua_State* lua, LuaHostContext& host) {
@@ -1760,12 +2068,14 @@ void PushSceneTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "find_entity");
   PushHostClosure(lua, host, LuaSceneEntitiesWithComponent);
   lua_setfield(lua, -2, "entities_with_component");
-  PushHostClosure(lua, host, LuaSceneEnsureScript);
-  lua_setfield(lua, -2, "ensure_script");
   PushHostClosure(lua, host, LuaSceneUseSystem);
   lua_setfield(lua, -2, "use_system");
-  PushHostClosure(lua, host, LuaSceneRegisterInteractable);
-  lua_setfield(lua, -2, "register_interactable");
+  if (!host.pure) {
+    PushHostClosure(lua, host, LuaSceneEnsureScript);
+    lua_setfield(lua, -2, "ensure_script");
+    PushHostClosure(lua, host, LuaSceneRegisterInteractable);
+    lua_setfield(lua, -2, "register_interactable");
+  }
 }
 
 std::string ResolvedRuntimeMode(const ScriptExecutionContext& context) {
@@ -1840,7 +2150,7 @@ int LuaAudioPostEvent(lua_State* lua) {
     return 1;
   }
 
-  vkpt::audio::AudioPostEventDesc desc;
+  vkpt::audio::AudioTrackedEventDesc desc;
   desc.event_name = lua_tostring(lua, eventIndex);
   desc.entity = host->binding == nullptr ? 0u : host->binding->entity;
   if (host->world != nullptr && desc.entity != 0u) {
@@ -1876,7 +2186,7 @@ int LuaAudioPostEvent(lua_State* lua) {
     }
   }
 
-  const auto handle = audio->post_event(desc);
+  const auto handle = audio->post_tracked_event(desc);
   if (!handle) {
     lua_pushnil(lua);
     return 1;
@@ -1917,10 +2227,12 @@ int LuaAudioStop(lua_State* lua) {
 
 void PushAudioTable(lua_State* lua, LuaHostContext& host) {
   lua_newtable(lua);
-  PushHostClosure(lua, host, LuaAudioPostEvent);
-  lua_setfield(lua, -2, "post_event");
-  PushHostClosure(lua, host, LuaAudioStop);
-  lua_setfield(lua, -2, "stop");
+  if (!host.pure) {
+    PushHostClosure(lua, host, LuaAudioPostEvent);
+    lua_setfield(lua, -2, "post_event");
+    PushHostClosure(lua, host, LuaAudioStop);
+    lua_setfield(lua, -2, "stop");
+  }
 }
 
 void PushContextTable(lua_State* lua,
@@ -1974,6 +2286,171 @@ vkpt::core::StableEntityId NextEntityId(const vkpt::scene::SceneWorld& world) {
   return next;
 }
 
+}  // namespace
+
+struct LuaStatePool::Impl {
+  struct YieldedCoroutine {
+    int thread_ref = LUA_NOREF;
+    int hook_function_ref = LUA_NOREF;
+    std::size_t yield_count = 0u;
+  };
+
+  struct State {
+    lua_State* lua = nullptr;
+    LuaMemoryBudget memory_budget;
+    int script_table_ref = LUA_NOREF;
+    std::string key;
+    std::mutex call_mutex;
+    std::unordered_map<int, YieldedCoroutine> yielded;
+
+    ~State() {
+      if (lua != nullptr) {
+        for (const auto& [_, yielded_coroutine] : yielded) {
+          (void)_;
+          if (yielded_coroutine.thread_ref != LUA_NOREF) {
+            luaL_unref(lua, LUA_REGISTRYINDEX, yielded_coroutine.thread_ref);
+          }
+          if (yielded_coroutine.hook_function_ref != LUA_NOREF) {
+            luaL_unref(lua, LUA_REGISTRYINDEX, yielded_coroutine.hook_function_ref);
+          }
+        }
+        if (script_table_ref != LUA_NOREF) {
+          luaL_unref(lua, LUA_REGISTRYINDEX, script_table_ref);
+        }
+        lua_close(lua);
+      }
+    }
+  };
+
+  mutable std::mutex mutex;
+  std::unordered_map<std::string, std::shared_ptr<State>> states;
+  std::size_t created_total = 0u;
+};
+
+LuaStatePool::LuaStatePool() : m_impl(std::make_unique<Impl>()) {}
+LuaStatePool::~LuaStatePool() = default;
+
+void LuaStatePool::clear() {
+  std::scoped_lock lock(m_impl->mutex);
+  m_impl->states.clear();
+}
+
+std::size_t LuaStatePool::state_count() const {
+  std::scoped_lock lock(m_impl->mutex);
+  return m_impl->states.size();
+}
+
+std::size_t LuaStatePool::created_total() const {
+  std::scoped_lock lock(m_impl->mutex);
+  return m_impl->created_total;
+}
+
+LuaStatePool::Impl& LuaStatePool::impl() {
+  return *m_impl;
+}
+
+const LuaStatePool::Impl& LuaStatePool::impl() const {
+  return *m_impl;
+}
+
+namespace {
+
+std::string LuaStateKey(const ScriptBinding& binding, const std::filesystem::path& script_path) {
+  return std::to_string(binding.entity) + "|" + script_path.generic_string() + "|" + binding.module_id;
+}
+
+std::shared_ptr<LuaStatePool::Impl::State> GetOrCreateLuaState(
+    LuaStatePool::Impl& pool,
+    LuaHostContext& host,
+    const ScriptBinding& binding,
+    const ScriptExecutionContext& context,
+    ScriptBindingRuntimeState& runtime_state,
+    std::unordered_map<std::string, std::string>& bytecode_cache,
+    std::mutex& bytecode_cache_mutex) {
+  const auto script_path = ResolveScriptPath(binding.source);
+  const auto key = LuaStateKey(binding, script_path);
+  {
+    std::scoped_lock lock(pool.mutex);
+    if (const auto existing = pool.states.find(key); existing != pool.states.end()) {
+      existing->second->memory_budget.limit = context.memory_budget_bytes;
+      return existing->second;
+    }
+  }
+
+  auto state = std::make_shared<LuaStatePool::Impl::State>();
+  state->key = key;
+  state->memory_budget.limit = context.memory_budget_bytes;
+  state->lua = lua_newstate(LuaBudgetAllocator, &state->memory_budget);
+  if (state->lua == nullptr) {
+    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "could not create Lua state");
+    return nullptr;
+  }
+
+  auto* lua = state->lua;
+  SetCurrentHost(lua, &host);
+  OpenSafeLuaLibraries(lua);
+  PushHostClosure(lua, host, LuaInclude);
+  lua_setglobal(lua, "include");
+
+  const auto chunk_name = "@" + script_path.generic_string();
+  const auto cache_key = script_path.generic_string();
+  bool chunk_loaded = false;
+  {
+    std::scoped_lock cache_lock(bytecode_cache_mutex);
+    if (auto cached = bytecode_cache.find(cache_key); cached != bytecode_cache.end()) {
+      if (luaL_loadbufferx(lua, cached->second.data(), cached->second.size(), chunk_name.c_str(), "b") == LUA_OK) {
+        chunk_loaded = true;
+      } else {
+        lua_pop(lua, 1);
+        bytecode_cache.erase(cached);
+      }
+    }
+    if (!chunk_loaded) {
+      const auto script_text = ReadTextFile(script_path);
+      if (!script_text) {
+        runtime_state.last_error = "script source could not be read";
+        AddLuaDiagnostic(host,
+                         ScriptDiagnosticSeverity::Error,
+                         "script source could not be read: " + script_path.generic_string());
+        return nullptr;
+      }
+
+      if (luaL_loadbufferx(lua, script_text->data(), script_text->size(), chunk_name.c_str(), "t") != LUA_OK) {
+        runtime_state.last_error = "script compile failed: " + LuaErrorText(lua);
+        AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
+        return nullptr;
+      }
+      std::string bytecode;
+      if (lua_dump(lua, LuaBytecodeWriter, &bytecode, 0) == 0 && !bytecode.empty()) {
+        bytecode_cache[cache_key] = std::move(bytecode);
+      }
+    }
+  }
+  if (lua_pcall(lua, 0, 1, 0) != LUA_OK) {
+    runtime_state.last_error = "script load failed: " + LuaErrorText(lua);
+    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
+    return nullptr;
+  }
+  if (!lua_istable(lua, -1)) {
+    runtime_state.last_error = "script must return a table";
+    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
+    lua_pop(lua, 1);
+    return nullptr;
+  }
+
+  state->script_table_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
+  std::shared_ptr<LuaStatePool::Impl::State> out = state;
+  {
+    std::scoped_lock lock(pool.mutex);
+    auto [it, inserted] = pool.states.emplace(key, std::move(state));
+    if (inserted) {
+      ++pool.created_total;
+    }
+    out = it->second;
+  }
+  return out;
+}
+
 bool ExecuteLuaHook(const ScriptBinding& binding,
                     const vkpt::scene::SceneWorld& world,
                     ScriptLifecycleHook hook,
@@ -1983,24 +2460,10 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
                     std::vector<ScriptDiagnostic>& runtime_diagnostics,
                     std::vector<ScriptVariableSnapshot>& variable_snapshots,
                     ScriptBindingRuntimeState& runtime_state,
+                    LuaStatePool::Impl& state_pool,
                     std::unordered_map<std::string, std::string>& bytecode_cache,
+                    std::mutex& bytecode_cache_mutex,
                     const std::unordered_map<std::string, ScriptVariableOverride>& variable_overrides) {
-  LuaMemoryBudget memory_budget;
-  memory_budget.limit = context.memory_budget_bytes;
-  auto lua = lua_newstate(LuaBudgetAllocator, &memory_budget);
-  if (lua == nullptr) {
-    LuaHostContext host;
-    host.world = &world;
-    host.commands = &commands;
-    host.context = &context;
-    host.binding = &binding;
-    host.hook = hook;
-    host.dispatch_diagnostics = &dispatch_diagnostics;
-    host.runtime_diagnostics = &runtime_diagnostics;
-    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "could not create Lua state");
-    return false;
-  }
-
   LuaHostContext host;
   host.world = &world;
   host.commands = &commands;
@@ -2010,6 +2473,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
   host.dispatch_diagnostics = &dispatch_diagnostics;
   host.runtime_diagnostics = &runtime_diagnostics;
   host.next_entity_id = NextEntityId(world);
+  host.pure = binding.pure;
   runtime_state.entity = binding.entity;
   runtime_state.source = binding.source;
   runtime_state.last_hook = hook;
@@ -2017,65 +2481,36 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
   runtime_state.command_count = commands.commands().size();
   runtime_state.last_error.clear();
   runtime_state.skip_reason.clear();
+  runtime_state.pure = binding.pure;
+  runtime_state.hook_fired = false;
+  runtime_state.budget_exceeded = false;
+  runtime_state.budget_exceeded_type.clear();
+  runtime_state.instruction_count = 0u;
   const auto hook_start = std::chrono::steady_clock::now();
 
-  OpenSafeLuaLibraries(lua);
+  auto pooled_state = GetOrCreateLuaState(
+      state_pool, host, binding, context, runtime_state, bytecode_cache, bytecode_cache_mutex);
+  if (pooled_state == nullptr || pooled_state->lua == nullptr || pooled_state->script_table_ref == LUA_NOREF) {
+    return false;
+  }
+  std::unique_lock state_call_lock(pooled_state->call_mutex);
+  auto* lua = pooled_state->lua;
+  SetCurrentHost(lua, &host);
+  runtime_state.state_ptr = reinterpret_cast<std::uintptr_t>(lua);
+  pooled_state->memory_budget.limit = context.memory_budget_bytes;
+  pooled_state->memory_budget.exceeded = false;
+  pooled_state->memory_budget.requested = 0u;
   PushHostClosure(lua, host, LuaInclude);
   lua_setglobal(lua, "include");
-  if (context.instruction_budget > 0) {
-    lua_sethook(lua,
-                LuaInstructionBudgetHook,
-                LUA_MASKCOUNT,
-                static_cast<int>(std::min<std::size_t>(context.instruction_budget, 1000000u)));
-  }
-  const auto script_path = ResolveScriptPath(binding.source);
-  const auto chunk_name = "@" + script_path.generic_string();
-  const auto cache_key = script_path.generic_string();
-  bool chunk_loaded = false;
-  // Cache dumped Lua bytecode by resolved source path; stale cache entries are discarded on load failure.
-  if (auto cached = bytecode_cache.find(cache_key); cached != bytecode_cache.end()) {
-    if (luaL_loadbufferx(lua, cached->second.data(), cached->second.size(), chunk_name.c_str(), "b") == LUA_OK) {
-      chunk_loaded = true;
-    } else {
-      lua_pop(lua, 1);
-      bytecode_cache.erase(cached);
-    }
-  }
-  if (!chunk_loaded) {
-    const auto script_text = ReadTextFile(script_path);
-    if (!script_text) {
-      AddLuaDiagnostic(host,
-                       ScriptDiagnosticSeverity::Error,
-                       "script source could not be read: " + script_path.generic_string());
-      runtime_state.last_error = "script source could not be read";
-      lua_close(lua);
-      return false;
-    }
+  constexpr std::size_t kInstructionSampleInterval = 1000u;
+  LuaInstructionBudget instruction_budget;
+  instruction_budget.limit = context.instruction_budget;
+  instruction_budget.interval = context.instruction_budget == 0u
+                                    ? 0u
+                                    : std::min(context.instruction_budget, kInstructionSampleInterval);
+  host.instruction_budget = &instruction_budget;
 
-    if (luaL_loadbufferx(lua, script_text->data(), script_text->size(), chunk_name.c_str(), "t") != LUA_OK) {
-      runtime_state.last_error = "script compile failed: " + LuaErrorText(lua);
-      AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
-      lua_close(lua);
-      return false;
-    }
-    std::string bytecode;
-    if (lua_dump(lua, LuaBytecodeWriter, &bytecode, 0) == 0 && !bytecode.empty()) {
-      bytecode_cache[cache_key] = std::move(bytecode);
-    }
-  }
-  if (lua_pcall(lua, 0, 1, 0) != LUA_OK) {
-    runtime_state.last_error = "script load failed: " + LuaErrorText(lua);
-    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
-    lua_close(lua);
-    return false;
-  }
-  if (!lua_istable(lua, -1)) {
-    runtime_state.last_error = "script must return a table";
-    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
-    lua_close(lua);
-    return false;
-  }
-
+  lua_rawgeti(lua, LUA_REGISTRYINDEX, pooled_state->script_table_ref);
   const int script_table = lua_absindex(lua, -1);
   for (const auto& [_, overrideValue] : variable_overrides) {
     (void)_;
@@ -2087,59 +2522,224 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
     lua_setfield(lua, script_table, overrideValue.name.c_str());
   }
 
-  lua_getfield(lua, -1, std::string(to_string(hook)).c_str());
-  if (lua_isnil(lua, -1)) {
-    // Missing hook functions are normal and are counted as non-calls, not diagnostics.
-    lua_close(lua);
-    return false;
-  }
-  if (!lua_isfunction(lua, -1)) {
-    runtime_state.last_error = "script hook is not a function";
-    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
-    lua_close(lua);
-    return false;
-  }
-  const int hook_function = lua_absindex(lua, -1);
-  for (int i = 1;; ++i) {
-    const char* name = lua_getupvalue(lua, hook_function, i);
-    if (name == nullptr) {
-      break;
-    }
-    const bool hasOverride = std::string_view{name} != "_ENV" &&
-        FindVariableOverride(variable_overrides, binding.entity, "upvalue", name) != nullptr;
+  const int hook_key = static_cast<int>(hook);
+  int hook_function_ref = LUA_NOREF;
+  int coroutine_ref = LUA_NOREF;
+  int resume_status = LUA_OK;
+  int result_count = 0;
+  lua_State* active_coroutine = nullptr;
+  bool resumed_yielded_hook = false;
+  if (auto yielded = pooled_state->yielded.find(hook_key);
+      yielded != pooled_state->yielded.end()) {
+    resumed_yielded_hook = true;
+    hook_function_ref = yielded->second.hook_function_ref;
+    coroutine_ref = yielded->second.thread_ref;
+    lua_rawgeti(lua, LUA_REGISTRYINDEX, coroutine_ref);
+    auto* coroutine = lua_tothread(lua, -1);
+    active_coroutine = coroutine;
     lua_pop(lua, 1);
-    if (!hasOverride) {
-      continue;
+    if (coroutine == nullptr) {
+      runtime_state.last_error = "script yielded coroutine is invalid";
+      AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
+      luaL_unref(lua, LUA_REGISTRYINDEX, coroutine_ref);
+      if (hook_function_ref != LUA_NOREF) {
+        luaL_unref(lua, LUA_REGISTRYINDEX, hook_function_ref);
+      }
+      pooled_state->yielded.erase(yielded);
+      lua_pop(lua, 1);
+      lua_sethook(lua, nullptr, 0, 0);
+      SetCurrentHost(lua, nullptr);
+      return false;
     }
-    const auto* overrideValue = FindVariableOverride(variable_overrides, binding.entity, "upvalue", name);
-    PushLuaOverrideValue(lua, overrideValue->value);
-    (void)lua_setupvalue(lua, hook_function, i);
+    if (context.instruction_budget > 0u) {
+      lua_sethook(coroutine,
+                  LuaInstructionBudgetHook,
+                  LUA_MASKCOUNT,
+                  static_cast<int>(instruction_budget.interval));
+    }
+    runtime_state.hook_fired = true;
+    LogScriptHookFired(binding, hook, context);
+    VKP_METRIC_INC("vkp.script.hooks_total");
+    resume_status = lua_resume(coroutine, lua, 0, &result_count);
+  } else {
+    lua_getfield(lua, -1, std::string(to_string(hook)).c_str());
+    if (lua_isnil(lua, -1)) {
+      // Missing hook functions are normal and are counted as non-calls, not diagnostics.
+      lua_pop(lua, 2);
+      lua_sethook(lua, nullptr, 0, 0);
+      SetCurrentHost(lua, nullptr);
+      return false;
+    }
+    if (!lua_isfunction(lua, -1)) {
+      runtime_state.last_error = "script hook is not a function";
+      AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
+      lua_pop(lua, 2);
+      lua_sethook(lua, nullptr, 0, 0);
+      SetCurrentHost(lua, nullptr);
+      return false;
+    }
+    const int hook_function = lua_absindex(lua, -1);
+    for (int i = 1;; ++i) {
+      const char* name = lua_getupvalue(lua, hook_function, i);
+      if (name == nullptr) {
+        break;
+      }
+      const bool hasOverride = std::string_view{name} != "_ENV" &&
+          FindVariableOverride(variable_overrides, binding.entity, "upvalue", name) != nullptr;
+      lua_pop(lua, 1);
+      if (!hasOverride) {
+        continue;
+      }
+      const auto* overrideValue = FindVariableOverride(variable_overrides, binding.entity, "upvalue", name);
+      PushLuaOverrideValue(lua, overrideValue->value);
+      (void)lua_setupvalue(lua, hook_function, i);
+    }
+    lua_pushvalue(lua, -1);
+    hook_function_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
+    auto* coroutine = lua_newthread(lua);
+    active_coroutine = coroutine;
+    coroutine_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
+    lua_xmove(lua, coroutine, 1);
+    PushEntityObject(lua, host, binding.entity);
+    lua_xmove(lua, coroutine, 1);
+    PushContextTable(lua, host, variable_overrides);
+    lua_xmove(lua, coroutine, 1);
+    if (context.instruction_budget > 0u) {
+      lua_sethook(coroutine,
+                  LuaInstructionBudgetHook,
+                  LUA_MASKCOUNT,
+                  static_cast<int>(instruction_budget.interval));
+    }
+    runtime_state.hook_fired = true;
+    LogScriptHookFired(binding, hook, context);
+    VKP_METRIC_INC("vkp.script.hooks_total");
+    resume_status = lua_resume(coroutine, lua, 2, &result_count);
   }
-  lua_pushvalue(lua, -1);
-  const int hook_function_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
-  PushEntityObject(lua, host, binding.entity);
-  PushContextTable(lua, host, variable_overrides);
-  if (lua_pcall(lua, 2, 0, 0) != LUA_OK) {
-    runtime_state.last_error = "script hook failed: " + LuaErrorText(lua);
-    if (runtime_state.last_error.find("instruction budget exceeded") != std::string::npos) {
+  runtime_state.instruction_count = instruction_budget.executed;
+  if (resume_status == LUA_YIELD) {
+    if (active_coroutine != nullptr && result_count > 0) {
+      lua_pop(active_coroutine, result_count);
+    }
+    auto& yielded = pooled_state->yielded[hook_key];
+    if (!resumed_yielded_hook) {
+      yielded.thread_ref = coroutine_ref;
+      yielded.hook_function_ref = hook_function_ref;
+    }
+    ++yielded.yield_count;
+    runtime_state.skip_reason = "yielded";
+    runtime_state.memory_estimate_bytes = pooled_state->memory_budget.peak;
+    if (context.yield_budget == 0u || yielded.yield_count > context.yield_budget) {
+      runtime_state.last_error = "script hook killed: yield budget exceeded";
       runtime_state.disabled_until_reload = true;
+      runtime_state.budget_exceeded = true;
+      runtime_state.budget_exceeded_type = "yield";
+      LogScriptBudgetExceeded(binding, hook, context, "yield", yielded.yield_count, context.yield_budget);
+      AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Warning, runtime_state.last_error);
+      luaL_unref(lua, LUA_REGISTRYINDEX, yielded.thread_ref);
+      luaL_unref(lua, LUA_REGISTRYINDEX, yielded.hook_function_ref);
+      pooled_state->yielded.erase(hook_key);
+      runtime_state.skip_reason.clear();
+      lua_pop(lua, 1);
+      if (active_coroutine != nullptr) {
+        lua_sethook(active_coroutine, nullptr, 0, 0);
+      }
+      lua_sethook(lua, nullptr, 0, 0);
+      const auto hook_end = std::chrono::steady_clock::now();
+      runtime_state.hook_duration_ns = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(hook_end - hook_start).count());
+      RecordScriptHookTiming(hook, runtime_state.hook_duration_ns / 1000u);
+      SetCurrentHost(lua, nullptr);
+      return false;
+    }
+    lua_pop(lua, 1);
+    if (active_coroutine != nullptr) {
+      lua_sethook(active_coroutine, nullptr, 0, 0);
+    }
+    lua_sethook(lua, nullptr, 0, 0);
+    const auto hook_end = std::chrono::steady_clock::now();
+    runtime_state.hook_duration_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(hook_end - hook_start).count());
+    SetCurrentHost(lua, nullptr);
+    return true;
+  }
+  if (resume_status != LUA_OK) {
+    runtime_state.last_error = "script hook failed: " +
+        LuaErrorText(active_coroutine != nullptr ? active_coroutine : lua);
+    if (instruction_budget.exceeded ||
+        runtime_state.last_error.find("instruction budget exceeded") != std::string::npos) {
+      runtime_state.budget_exceeded = true;
+      runtime_state.budget_exceeded_type = "instructions";
+      runtime_state.instruction_count = std::max(instruction_budget.executed, context.instruction_budget);
+      runtime_state.disabled_until_reload = true;
+      LogScriptBudgetExceeded(binding,
+                              hook,
+                              context,
+                              "instructions",
+                              runtime_state.instruction_count,
+                              context.instruction_budget);
+    } else if (pooled_state->memory_budget.exceeded ||
+               runtime_state.last_error.find("memory") != std::string::npos) {
+      runtime_state.budget_exceeded = true;
+      runtime_state.budget_exceeded_type = "memory";
+      runtime_state.disabled_until_reload = true;
+      const auto actual = std::max(pooled_state->memory_budget.requested,
+                                   pooled_state->memory_budget.peak);
+      LogScriptBudgetExceeded(binding,
+                              hook,
+                              context,
+                              "memory",
+                              actual,
+                              context.memory_budget_bytes);
     }
     AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
-    luaL_unref(lua, LUA_REGISTRYINDEX, hook_function_ref);
-    runtime_state.memory_estimate_bytes = memory_budget.peak;
-    lua_close(lua);
+    if (hook_function_ref != LUA_NOREF) {
+      luaL_unref(lua, LUA_REGISTRYINDEX, hook_function_ref);
+    }
+    if (coroutine_ref != LUA_NOREF) {
+      luaL_unref(lua, LUA_REGISTRYINDEX, coroutine_ref);
+    }
+    if (resumed_yielded_hook) {
+      pooled_state->yielded.erase(hook_key);
+    }
+    lua_pop(lua, 1);
+    runtime_state.memory_estimate_bytes = pooled_state->memory_budget.peak;
+    if (active_coroutine != nullptr) {
+      lua_sethook(active_coroutine, nullptr, 0, 0);
+    }
+    lua_sethook(lua, nullptr, 0, 0);
+    const auto hook_end = std::chrono::steady_clock::now();
+    runtime_state.hook_duration_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(hook_end - hook_start).count());
+    RecordScriptHookTiming(hook, runtime_state.hook_duration_ns / 1000u);
+    SetCurrentHost(lua, nullptr);
     return false;
+  }
+  if (coroutine_ref != LUA_NOREF) {
+    luaL_unref(lua, LUA_REGISTRYINDEX, coroutine_ref);
+  }
+  if (active_coroutine != nullptr && result_count > 0) {
+    lua_pop(active_coroutine, result_count);
+  }
+  if (resumed_yielded_hook) {
+    pooled_state->yielded.erase(hook_key);
+  }
+  if (active_coroutine != nullptr) {
+    lua_sethook(active_coroutine, nullptr, 0, 0);
   }
   lua_sethook(lua, nullptr, 0, 0);
   lua_rawgeti(lua, LUA_REGISTRYINDEX, hook_function_ref);
   CaptureLuaScriptVariables(lua, -2, -1, binding, hook, context, variable_snapshots);
   lua_pop(lua, 1);
-  luaL_unref(lua, LUA_REGISTRYINDEX, hook_function_ref);
+  if (hook_function_ref != LUA_NOREF) {
+    luaL_unref(lua, LUA_REGISTRYINDEX, hook_function_ref);
+  }
+  lua_pop(lua, 1);
   const auto hook_end = std::chrono::steady_clock::now();
   runtime_state.hook_duration_ns = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(hook_end - hook_start).count());
+  RecordScriptHookTiming(hook, runtime_state.hook_duration_ns / 1000u);
   runtime_state.command_count = commands.commands().size() - runtime_state.command_count;
-  runtime_state.memory_estimate_bytes = memory_budget.peak;
+  runtime_state.memory_estimate_bytes = pooled_state->memory_budget.peak;
   vkpt::log::Logger::instance().log(
       vkpt::log::Severity::Debug,
       "scripts",
@@ -2151,11 +2751,59 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
        {"commands_after", std::to_string(commands.commands().size())},
        {"active_keys", std::to_string(context.input.active_keys.size())}},
       context.frame);
-  lua_close(lua);
+  SetCurrentHost(lua, nullptr);
   return true;
 }
 
+#else
+
+}  // namespace
+
+struct LuaStatePool::Impl {
+  std::size_t created_total = 0u;
+};
+
+LuaStatePool::LuaStatePool() : m_impl(std::make_unique<Impl>()) {}
+LuaStatePool::~LuaStatePool() = default;
+
+void LuaStatePool::clear() {}
+
+std::size_t LuaStatePool::state_count() const {
+  return 0u;
+}
+
+std::size_t LuaStatePool::created_total() const {
+  return m_impl->created_total;
+}
+
+LuaStatePool::Impl& LuaStatePool::impl() {
+  return *m_impl;
+}
+
+const LuaStatePool::Impl& LuaStatePool::impl() const {
+  return *m_impl;
+}
+
+namespace {
+
 #endif  // PT_ENABLE_LUA
+
+#ifndef PT_ENABLE_LUA
+std::string ResolvedRuntimeMode(const ScriptExecutionContext& context) {
+  if (!context.runtime.mode.empty()) {
+    return context.runtime.mode;
+  }
+  return context.game_mode ? "play" : "edit";
+}
+
+bool ResolvedRuntimeScriptsRunning(const ScriptExecutionContext& context) {
+  if (context.runtime.scripts_running) {
+    return true;
+  }
+  const auto mode = ResolvedRuntimeMode(context);
+  return context.game_mode || mode == "play" || mode == "live_edit";
+}
+#endif
 
 std::string BindingSignature(const std::vector<ScriptBinding>& bindings) {
   std::ostringstream out;
@@ -2172,16 +2820,51 @@ std::string BindingSignature(const std::vector<ScriptBinding>& bindings) {
 
 }  // namespace
 
+EcsScriptRuntime::EcsScriptRuntime()
+    : m_lua_state_pool(std::make_unique<LuaStatePool>()),
+      m_script_command_queue(std::make_unique<ScriptCommandQueue>()) {
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Info,
+      "scripting",
+      "scripting.started",
+      {{"lifecycle", "uninitialized"}});
+}
+
+EcsScriptRuntime::~EcsScriptRuntime() {
+  vkpt::log::Logger::instance().log(
+      vkpt::log::Severity::Info,
+      "scripting",
+      "scripting.stopped",
+      {{"lifecycle", "shutting_down"}});
+}
+
 ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWorld& world,
                                                       ScriptLifecycleHook hook,
                                                       const ScriptExecutionContext& context,
                                                       vkpt::scene::WorldCommandBuffer& commands) {
+  std::unique_lock runtime_lock(m_runtime_mutex);
+  vkpt::core::contracts::assert_state(
+      "EcsScriptRuntime::dispatch_hook",
+      m_status.lifecycle,
+      {vkpt::core::contracts::ComponentLifecycle::Uninitialized,
+       vkpt::core::contracts::ComponentLifecycle::Ready,
+       vkpt::core::contracts::ComponentLifecycle::Degraded,
+       vkpt::core::contracts::ComponentLifecycle::Failed});
+  m_status.lifecycle = vkpt::core::contracts::ComponentLifecycle::Busy;
+  m_status.last_frame = context.frame;
+  m_status.current_flow_id = context.frame;
+  commands.set_flow_id(context.frame);
   const auto current_bindings = BuildScriptBindings(world);
   if (BindingSignature(current_bindings) != BindingSignature(m_bindings)) {
     // Entity/script topology changes invalidate stable dispatch order and compiled bytecode assumptions.
     m_bindings = current_bindings;
     ApplyScriptEditorAnnotations(m_bindings);
-    m_lua_bytecode_cache.clear();
+    {
+      std::scoped_lock cache_lock(m_lua_cache_mutex);
+      m_lua_bytecode_cache.clear();
+    }
+    m_lua_state_pool->clear();
+    m_script_command_queue->clear();
     m_disabled_until_reload.clear();
   }
 
@@ -2195,20 +2878,75 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
   summary.scripts_disabled = !context.scripts_enabled;
   summary.game_mode_blocked = !ResolvedRuntimeScriptsRunning(context);
   summary.benchmark_blocked = context.benchmark_mode && !context.allow_benchmark_scripts;
+  summary.deterministic_group_b_disabled = context.deterministic;
   m_variable_snapshots.clear();
   m_runtime_states.clear();
 
-  for (const auto& binding : m_bindings) {
+  struct BindingDispatchResult {
+    ScriptBindingRuntimeState runtime_state;
+    vkpt::scene::WorldCommandBuffer commands;
+    std::vector<ScriptDiagnostic> dispatch_diagnostics;
+    std::vector<ScriptDiagnostic> runtime_diagnostics;
+    std::vector<ScriptVariableSnapshot> variable_snapshots;
+    bool hook_called = false;
+    bool disabled_until_reload = false;
+    std::string disabled_key;
+  };
+
+  std::vector<BindingDispatchResult> binding_results(m_bindings.size());
+  std::vector<vkpt::core::JobHandle> pure_jobs;
+  vkpt::jobs::IJobSystem* group_b_jobs = context.job_system;
+  const bool has_parallel_pure_work =
+      !context.deterministic &&
+      std::any_of(m_bindings.begin(), m_bindings.end(), [](const ScriptBinding& binding) {
+        return binding.enabled && binding.pure && IsSupportedLanguage(binding.language);
+      });
+  if (group_b_jobs == nullptr && has_parallel_pure_work) {
+    if (!m_pure_job_system) {
+      m_pure_job_system = std::make_unique<vkpt::jobs::JobSystem>();
+    }
+    group_b_jobs = m_pure_job_system.get();
+  }
+
+  auto run_lua_binding = [&](std::size_t index, const ScriptBinding& binding) {
+    auto& result = binding_results[index];
+#ifdef PT_ENABLE_LUA
+    if (ExecuteLuaHook(binding,
+                       world,
+                       hook,
+                       context,
+                       result.commands,
+                       result.dispatch_diagnostics,
+                       result.runtime_diagnostics,
+                       result.variable_snapshots,
+                       result.runtime_state,
+                       m_lua_state_pool->impl(),
+                       m_lua_bytecode_cache,
+                       m_lua_cache_mutex,
+                       m_variable_overrides)) {
+      result.hook_called = true;
+    }
+    result.disabled_until_reload = result.runtime_state.disabled_until_reload;
+#else
+    result.hook_called = true;
+    (void)binding;
+#endif
+  };
+
+  for (std::size_t binding_index = 0; binding_index < m_bindings.size(); ++binding_index) {
+    const auto& binding = m_bindings[binding_index];
+    auto& result = binding_results[binding_index];
     ScriptBindingRuntimeState runtime_state;
     runtime_state.entity = binding.entity;
     runtime_state.source = binding.source;
     runtime_state.last_hook = hook;
     runtime_state.last_frame = context.frame;
     const auto disabled_key = std::to_string(binding.entity) + ":" + binding.source;
+    result.disabled_key = disabled_key;
     if (!binding.enabled || !IsSupportedLanguage(binding.language)) {
       runtime_state.skip_reason = !binding.enabled ? "disabled" : "unsupported language";
       ++summary.skipped_count;
-      m_runtime_states.push_back(std::move(runtime_state));
+      result.runtime_state = std::move(runtime_state);
       continue;
     }
 
@@ -2217,26 +2955,32 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
     if (summary.scripts_disabled) {
       runtime_state.skip_reason = "scripts disabled";
       ++summary.skipped_count;
-      m_runtime_states.push_back(std::move(runtime_state));
+      result.runtime_state = std::move(runtime_state);
       continue;
     }
     if (summary.game_mode_blocked) {
       runtime_state.skip_reason = "game mode required";
       ++summary.skipped_count;
-      m_runtime_states.push_back(std::move(runtime_state));
+      result.runtime_state = std::move(runtime_state);
       continue;
     }
     if (summary.benchmark_blocked) {
       runtime_state.skip_reason = "benchmark blocked";
       ++summary.skipped_count;
-      m_runtime_states.push_back(std::move(runtime_state));
+      result.runtime_state = std::move(runtime_state);
       continue;
     }
     if (m_disabled_until_reload.contains(disabled_key)) {
       runtime_state.skip_reason = "disabled until reload";
       runtime_state.disabled_until_reload = true;
       ++summary.skipped_count;
-      m_runtime_states.push_back(std::move(runtime_state));
+      result.runtime_state = std::move(runtime_state);
+      continue;
+    }
+    if (binding.requires_authoritative_reads && !context.allow_authoritative_reads) {
+      runtime_state.skip_reason = "deferred for authoritative reads";
+      ++summary.skipped_count;
+      result.runtime_state = std::move(runtime_state);
       continue;
     }
     if (!summary.execution_available) {
@@ -2248,37 +2992,137 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
                                        context,
                                        "script hook skipped because Lua execution is not available");
       LogDiagnostic(diagnostic);
-      summary.diagnostics.push_back(diagnostic);
-      m_diagnostics.push_back(std::move(diagnostic));
-      m_runtime_states.push_back(std::move(runtime_state));
+      result.dispatch_diagnostics.push_back(diagnostic);
+      result.runtime_diagnostics.push_back(std::move(diagnostic));
+      result.runtime_state = std::move(runtime_state);
       continue;
     }
 
-#ifdef PT_ENABLE_LUA
-    if (ExecuteLuaHook(binding,
-                       world,
-                       hook,
-                       context,
-                       commands,
-                       summary.diagnostics,
-                       m_diagnostics,
-                       m_variable_snapshots,
-                       runtime_state,
-                       m_lua_bytecode_cache,
-                       m_variable_overrides)) {
-      ++summary.hook_call_count;
+    result.runtime_state = std::move(runtime_state);
+    if (binding.pure && group_b_jobs != nullptr && !context.deterministic) {
+      ++summary.pure_job_count;
+      const auto index = binding_index;
+      pure_jobs.push_back(group_b_jobs->submit_job([&, index, binding]() {
+        run_lua_binding(index, binding);
+      }));
+      continue;
     }
-    if (runtime_state.disabled_until_reload) {
-      m_disabled_until_reload.insert(disabled_key);
-    }
-    m_runtime_states.push_back(std::move(runtime_state));
-#else
-    ++summary.hook_call_count;
-    m_runtime_states.push_back(std::move(runtime_state));
-#endif
+
+    run_lua_binding(binding_index, binding);
   }
 
+  if (!pure_jobs.empty() && group_b_jobs != nullptr) {
+    if (!group_b_jobs->wait_group(pure_jobs)) {
+      auto diagnostic = MakeDiagnostic(ScriptDiagnosticSeverity::Error,
+                                       hook,
+                                       {},
+                                       context,
+                                       "one or more pure script jobs failed");
+      LogDiagnostic(diagnostic);
+      summary.diagnostics.push_back(diagnostic);
+      summary.result.errors.push_back(ScriptError{
+          .severity = diagnostic.severity,
+          .hook = diagnostic.hook,
+          .entity = diagnostic.entity,
+          .frame = diagnostic.frame,
+          .source = diagnostic.source,
+          .message = diagnostic.message,
+          .budget_exceeded = false,
+          .budget = {},
+          .killed = false,
+      });
+      m_diagnostics.push_back(std::move(diagnostic));
+    }
+  }
+
+  std::size_t instructions_this_frame = 0u;
+  m_status.active_scripts = summary.runnable_count;
+  for (auto& result : binding_results) {
+    if (result.hook_called) {
+      ++summary.hook_call_count;
+    }
+    if (result.runtime_state.hook_fired || result.hook_called) {
+      ++m_status.hooks_fired_total;
+    }
+    if (result.runtime_state.budget_exceeded) {
+      ++m_status.budget_kills_total;
+      ++summary.result.budget_exceeded_count;
+    }
+    const bool killed_this_dispatch = result.runtime_state.disabled_until_reload &&
+                                      !result.runtime_state.last_error.empty();
+    if (killed_this_dispatch) {
+      ++summary.result.script_killed_count;
+    }
+    if (!result.runtime_state.last_error.empty()) {
+      m_status.last_error_script_id = result.runtime_state.entity;
+      summary.result.errors.push_back(ScriptError{
+          .severity = result.runtime_state.budget_exceeded
+                          ? ScriptDiagnosticSeverity::Warning
+                          : ScriptDiagnosticSeverity::Error,
+          .hook = result.runtime_state.last_hook,
+          .entity = result.runtime_state.entity,
+          .frame = result.runtime_state.last_frame,
+          .source = result.runtime_state.source,
+          .message = result.runtime_state.last_error,
+          .budget_exceeded = result.runtime_state.budget_exceeded,
+          .budget = result.runtime_state.budget_exceeded_type,
+          .killed = killed_this_dispatch,
+      });
+    }
+    instructions_this_frame += result.runtime_state.instruction_count;
+    for (auto& diagnostic : result.dispatch_diagnostics) {
+      summary.diagnostics.push_back(diagnostic);
+    }
+    for (auto& diagnostic : result.runtime_diagnostics) {
+      m_diagnostics.push_back(std::move(diagnostic));
+    }
+    for (auto& variable : result.variable_snapshots) {
+      m_variable_snapshots.push_back(std::move(variable));
+    }
+    for (const auto& command : result.commands.commands()) {
+      if (!m_script_command_queue->push_scene_command(command)) {
+        ScriptBinding diagnostic_binding;
+        diagnostic_binding.entity = result.runtime_state.entity;
+        diagnostic_binding.source = result.runtime_state.source;
+        auto diagnostic = MakeDiagnostic(ScriptDiagnosticSeverity::Warning,
+                                         hook,
+                                         diagnostic_binding,
+                                         context,
+                                         "script command dropped because ScriptCmdRing is full");
+        LogDiagnostic(diagnostic);
+        summary.diagnostics.push_back(diagnostic);
+        m_diagnostics.push_back(std::move(diagnostic));
+      }
+    }
+    if (result.disabled_until_reload && !result.disabled_key.empty()) {
+      m_disabled_until_reload.insert(result.disabled_key);
+    }
+    m_runtime_states.push_back(std::move(result.runtime_state));
+  }
+
+  m_script_command_queue->drain_to(commands);
   summary.command_count_after = commands.commands().size();
+  if (!summary.result.errors.empty() || summary.result.budget_exceeded_count > 0u ||
+      summary.result.script_killed_count > 0u) {
+    summary.result.overall_status = summary.hook_call_count > 0u
+                                        ? ScriptDispatchResult::Status::PartialFailure
+                                        : ScriptDispatchResult::Status::Failure;
+  } else if (summary.runnable_count > 0u && summary.hook_call_count == 0u &&
+             summary.skipped_count > 0u) {
+    summary.result.overall_status = ScriptDispatchResult::Status::Skipped;
+  }
+  if (!summary.result.errors.empty()) {
+    m_status.health = vkpt::core::contracts::SubsystemHealth::Degraded;
+    m_status.lifecycle = vkpt::core::contracts::ComponentLifecycle::Degraded;
+    m_status.health_reason = "script_errors";
+    m_status.last_error = summary.result.errors.front().message;
+  } else {
+    m_status.health = vkpt::core::contracts::SubsystemHealth::Ok;
+    m_status.lifecycle = vkpt::core::contracts::ComponentLifecycle::Ready;
+    m_status.health_reason = "ok";
+    m_status.last_error.clear();
+  }
+  RecordScriptInstructionsPerFrame(instructions_this_frame);
   return summary;
 }
 

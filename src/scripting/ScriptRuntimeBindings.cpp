@@ -118,6 +118,8 @@ struct AnnotationTokens {
 struct EditorAnnotationParseResult {
   std::vector<ScriptEditorParam> params;
   std::vector<std::string> diagnostics;
+  bool pure = false;
+  bool requires_authoritative_reads = false;
 };
 
 AnnotationTokens TokenizeAnnotation(std::string_view text) {
@@ -446,6 +448,50 @@ EditorAnnotationParseResult ParseScriptEditorAnnotations(std::string_view source
   return result;
 }
 
+struct ScriptPreambleFlags {
+  bool pure = false;
+  bool requires_authoritative_reads = false;
+};
+
+ScriptPreambleFlags DetectScriptPreambleFlags(std::string_view source) {
+  ScriptPreambleFlags flags;
+  std::size_t offset = 0u;
+  while (offset <= source.size()) {
+    const auto newline = source.find('\n', offset);
+    const auto count = newline == std::string_view::npos ? source.size() - offset : newline - offset;
+    auto line = TrimCopy(source.substr(offset, count));
+    if (line.starts_with("--")) {
+      if (newline == std::string_view::npos) {
+        break;
+      }
+      offset = newline + 1u;
+      continue;
+    }
+    const auto comment = line.find("--");
+    if (comment != std::string::npos) {
+      line = TrimCopy(std::string_view(line).substr(0u, comment));
+    }
+    const auto equals = line.find('=');
+    if (equals != std::string::npos) {
+      const auto lhs = TrimCopy(std::string_view(line).substr(0u, equals));
+      const auto rhs = LowerCopy(TrimCopy(std::string_view(line).substr(equals + 1u)));
+      if (lhs == "pure") {
+        flags.pure = rhs == "true" || rhs == "1";
+      } else if (lhs == "fresh_reads" || lhs == "authoritative_reads") {
+        flags.requires_authoritative_reads = rhs == "true" || rhs == "1";
+      }
+    }
+    if (!line.empty() && !line.starts_with("local ")) {
+      return flags;
+    }
+    if (newline == std::string::npos) {
+      break;
+    }
+    offset = newline + 1u;
+  }
+  return flags;
+}
+
 std::string ScriptVariableOverrideKey(vkpt::core::StableEntityId entity,
                                       std::string_view scope,
                                       std::string_view name) {
@@ -539,6 +585,8 @@ void ApplyScriptEditorAnnotations(std::vector<ScriptBinding>& bindings) {
     if (const auto cached = annotation_cache.find(cache_key); cached != annotation_cache.end()) {
       binding.editor_params = cached->second.params;
       binding.editor_param_diagnostics = cached->second.diagnostics;
+      binding.pure = cached->second.pure;
+      binding.requires_authoritative_reads = cached->second.requires_authoritative_reads;
       continue;
     }
     if (unreadable_sources.contains(cache_key)) {
@@ -556,6 +604,11 @@ void ApplyScriptEditorAnnotations(std::vector<ScriptBinding>& bindings) {
       continue;
     }
     auto parsed = ParseScriptEditorAnnotations(*source, cache_key);
+    const auto preamble = DetectScriptPreambleFlags(*source);
+    parsed.pure = preamble.pure;
+    parsed.requires_authoritative_reads = preamble.requires_authoritative_reads;
+    binding.pure = parsed.pure;
+    binding.requires_authoritative_reads = parsed.requires_authoritative_reads;
     binding.editor_params = parsed.params;
     binding.editor_param_diagnostics = parsed.diagnostics;
     annotation_cache.emplace(cache_key, std::move(parsed));
@@ -587,14 +640,35 @@ ScriptBindingSummary SummarizeScriptBindings(const std::vector<ScriptBinding>& b
 }
 
 ScriptBindingSummary EcsScriptRuntime::reload_bindings(const vkpt::scene::SceneWorld& world) {
+  std::unique_lock runtime_lock(m_runtime_mutex);
+  vkpt::core::contracts::assert_state(
+      "EcsScriptRuntime::reload_bindings",
+      m_status.lifecycle,
+      {vkpt::core::contracts::ComponentLifecycle::Uninitialized,
+       vkpt::core::contracts::ComponentLifecycle::Ready,
+       vkpt::core::contracts::ComponentLifecycle::Degraded,
+       vkpt::core::contracts::ComponentLifecycle::Failed});
+  m_status.lifecycle = vkpt::core::contracts::ComponentLifecycle::Initializing;
   m_bindings = BuildScriptBindings(world);
   ApplyScriptEditorAnnotations(m_bindings);
   // Source paths can resolve differently after reload, so bytecode is rebuilt on demand.
-  m_lua_bytecode_cache.clear();
+  {
+    std::scoped_lock cache_lock(m_lua_cache_mutex);
+    m_lua_bytecode_cache.clear();
+  }
+  m_lua_state_pool->clear();
+  m_script_command_queue->clear();
   m_variable_snapshots.clear();
   m_runtime_states.clear();
   m_disabled_until_reload.clear();
   const auto summary = SummarizeScriptBindings(m_bindings, lua_compiled_in(), execution_available());
+  m_status.lifecycle = vkpt::core::contracts::ComponentLifecycle::Ready;
+  m_status.health = vkpt::core::contracts::SubsystemHealth::Ok;
+  m_status.active_scripts = summary.runnable_count;
+  m_status.last_error_script_id = 0u;
+  m_status.current_flow_id = 0u;
+  m_status.health_reason = "ok";
+  m_status.last_error.clear();
   vkpt::log::Logger::instance().log(
       vkpt::log::Severity::Info,
       "scripts",
@@ -625,6 +699,7 @@ bool EcsScriptRuntime::set_variable_override(vkpt::core::StableEntityId entity,
                                              std::string_view scope,
                                              std::string_view name,
                                              std::string_view value) {
+  std::unique_lock runtime_lock(m_runtime_mutex);
   if (entity == 0u || scope.empty() || name.empty()) {
     return false;
   }
@@ -638,6 +713,7 @@ bool EcsScriptRuntime::set_variable_override(vkpt::core::StableEntityId entity,
 }
 
 void EcsScriptRuntime::clear_variable_overrides(vkpt::core::StableEntityId entity) {
+  std::unique_lock runtime_lock(m_runtime_mutex);
   if (entity == 0u) {
     m_variable_overrides.clear();
     return;
@@ -652,6 +728,7 @@ void EcsScriptRuntime::clear_variable_overrides(vkpt::core::StableEntityId entit
 }
 
 std::vector<ScriptVariableOverride> EcsScriptRuntime::variable_overrides() const {
+  std::unique_lock runtime_lock(m_runtime_mutex);
   std::vector<ScriptVariableOverride> out;
   out.reserve(m_variable_overrides.size());
   for (const auto& [_, overrideValue] : m_variable_overrides) {
@@ -663,6 +740,96 @@ std::vector<ScriptVariableOverride> EcsScriptRuntime::variable_overrides() const
 
 const std::vector<ScriptBindingRuntimeState>& EcsScriptRuntime::runtime_states() const {
   return m_runtime_states;
+}
+
+ScriptingStatus EcsScriptRuntime::status() const {
+  std::unique_lock runtime_lock(m_runtime_mutex);
+  return m_status;
+}
+
+vkpt::core::health::Report EvaluateScriptingHealth(const ScriptingStatus& status) {
+  using vkpt::core::health::Report;
+  using vkpt::core::health::Status;
+
+  if (status.lifecycle == vkpt::core::contracts::ComponentLifecycle::Failed) {
+    return Report{Status::Failed,
+                  status.last_error.empty() ? "scripting failed" : status.last_error};
+  }
+  if (!status.last_error.empty() || status.last_error_script_id != 0u) {
+    return Report{Status::Degraded,
+                  status.last_error.empty() ? "script_errors" : status.last_error};
+  }
+  return Report{Status::Ok,
+                status.health_reason.empty() ? "ok" : status.health_reason};
+}
+
+vkpt::core::contracts::SubsystemStatus ToSubsystemStatus(
+    const ScriptingStatus& status) {
+  auto out = vkpt::core::contracts::MakeSubsystemStatus(status.name,
+                                                       status.health);
+  out.last_error = status.last_error;
+  out.set_custom("lifecycle",
+                 std::string(vkpt::core::contracts::ComponentLifecycleName(
+                     status.lifecycle)));
+  out.set_custom("health_reason", status.health_reason);
+  out.set_custom("active_scripts", std::to_string(status.active_scripts));
+  out.set_custom("hooks_fired_total", std::to_string(status.hooks_fired_total));
+  out.set_custom("budget_kills_total", std::to_string(status.budget_kills_total));
+  out.set_custom("last_error_script_id",
+                 std::to_string(status.last_error_script_id));
+  out.set_custom("last_frame", std::to_string(status.last_frame));
+  out.set_custom("current_flow_id", std::to_string(status.current_flow_id));
+  return out;
+}
+
+std::string FormatScriptingStatus(const ScriptingStatus& status) {
+  std::ostringstream out;
+  out << "scripting status: "
+      << vkpt::core::contracts::SubsystemHealthName(status.health)
+      << "\n  lifecycle: "
+      << vkpt::core::contracts::ComponentLifecycleName(status.lifecycle)
+      << "\n  active_scripts: " << status.active_scripts
+      << "\n  hooks_fired_total: " << status.hooks_fired_total
+      << "\n  budget_kills_total: " << status.budget_kills_total
+      << "\n  last_error_script_id: " << status.last_error_script_id
+      << "\n  last_frame: " << status.last_frame
+      << "\n  current_flow_id: " << status.current_flow_id;
+  if (!status.last_error.empty()) {
+    out << "\n  last_error: " << status.last_error;
+  }
+  return out.str();
+}
+
+std::shared_ptr<vkpt::core::health::IHealthProbe>
+EcsScriptRuntime::create_health_probe() const {
+  class ScriptingHealthProbe final : public vkpt::core::health::IHealthProbe {
+   public:
+    explicit ScriptingHealthProbe(const EcsScriptRuntime* runtime)
+        : m_runtime(runtime) {}
+
+    std::string name() const override { return std::string(kScriptingSubsystemName); }
+
+    vkpt::core::health::Report check() override {
+      if (m_runtime == nullptr) {
+        return {vkpt::core::health::Status::Failed,
+                "scripting runtime unavailable"};
+      }
+      return EvaluateScriptingHealth(m_runtime->status());
+    }
+
+   private:
+    const EcsScriptRuntime* m_runtime = nullptr;
+  };
+
+  return std::make_shared<ScriptingHealthProbe>(this);
+}
+
+std::size_t EcsScriptRuntime::lua_state_count() const {
+  return m_lua_state_pool->state_count();
+}
+
+std::size_t EcsScriptRuntime::lua_states_created_total() const {
+  return m_lua_state_pool->created_total();
 }
 
 bool EcsScriptRuntime::lua_compiled_in() const {
@@ -679,6 +846,44 @@ bool EcsScriptRuntime::execution_available() const {
 
 std::unique_ptr<IScriptRuntime> CreateScriptRuntime() {
   return std::make_unique<EcsScriptRuntime>();
+}
+
+std::string FormatScriptList(const IScriptRuntime& runtime) {
+  std::ostringstream out;
+  const auto status = runtime.status();
+  out << "active_scripts=" << status.active_scripts
+      << " hooks_fired_total=" << status.hooks_fired_total
+      << " budget_kills_total=" << status.budget_kills_total
+      << " last_error_script_id=" << status.last_error_script_id << "\n";
+
+  const auto& bindings = runtime.bindings();
+  const auto& states = runtime.runtime_states();
+  for (const auto& binding : bindings) {
+    const auto state_it = std::find_if(
+        states.begin(),
+        states.end(),
+        [&](const ScriptBindingRuntimeState& state) {
+          return state.entity == binding.entity && state.source == binding.source;
+        });
+    out << binding.entity << " " << binding.source
+        << " enabled=" << (binding.enabled ? "true" : "false")
+        << " pure=" << (binding.pure ? "true" : "false");
+    if (state_it != states.end()) {
+      out << " hook=" << to_string(state_it->last_hook)
+          << " hook_us=" << (state_it->hook_duration_ns / 1000u)
+          << " instructions=" << state_it->instruction_count
+          << " mem_kb=" << (state_it->memory_estimate_bytes / 1024u)
+          << " state_ptr=0x" << std::hex << state_it->state_ptr << std::dec;
+      if (!state_it->last_error.empty()) {
+        out << " last_error=" << state_it->last_error;
+      }
+      if (!state_it->skip_reason.empty()) {
+        out << " skip=" << state_it->skip_reason;
+      }
+    }
+    out << "\n";
+  }
+  return out.str();
 }
 
 
