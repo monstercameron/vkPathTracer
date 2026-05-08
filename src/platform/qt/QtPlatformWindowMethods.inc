@@ -970,6 +970,20 @@ void QtWindow::record_frame_presented(std::uint64_t frameId,
     stats = m_framebufferStats;
   }
 
+  // Headline UX metric: input → first present that reflects it. Only records
+  // when the presented snapshot was tagged with a pending input timestamp by
+  // the publish lambda. Generations not driven by user input contribute no
+  // sample.
+  const auto _vkp_input_ns =
+      vkpt::core::metrics::ResolveInputNsForGeneration(generation);
+  if (_vkp_input_ns != 0u) {
+    const auto _vkp_now_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+    if (_vkp_now_ns > _vkp_input_ns) {
+      VKP_METRIC_OBSERVE("vkp.ui.input_to_pixel_us",
+                         (_vkp_now_ns - _vkp_input_ns) / 1000u);
+    }
+  }
+
   if (firstPresented) {
     vkpt::log::Logger::instance().log(
         vkpt::log::Severity::Info,
@@ -1115,6 +1129,7 @@ void QtWindow::destroy() {
 
 void QtWindow::queue_event(InputEvent event) {
   m_events.push_back(event);
+  RecordUiInputEvent("qt_window", event, m_events.size(), 0u);
 }
 
 void QtWindow::update_metrics_from_widget() {

@@ -23,25 +23,28 @@ class QtViewportWindow final : public QWidget {
     m_owner = owner;
   }
 
+  // Overlay setters set m_dirty and let the 8ms poll timer coalesce the
+  // repaint. Calling update() here too forces Qt to schedule an immediate
+  // paint per setter; with several overlays mutated per frame (FPS text,
+  // selection boxes, script panels) that produces 4-7× the necessary paints
+  // and pegs the UI thread on a 3ms paintEvent that doesn't render any new
+  // frame data. The timer still fires every 8ms and will pick up m_dirty.
   void setOverlayText(QString text) {
     if (m_overlayText == text) {
       return;
     }
     m_overlayText = std::move(text);
     m_dirty = true;
-    update();
   }
 
   void setSelectionOverlayBoxes(std::vector<QtSelectionOverlayBox> boxes) {
     m_overlayBoxes = std::move(boxes);
     m_dirty = true;
-    update();
   }
 
   void setScriptOverlayPanels(std::vector<QtScriptOverlayPanel> panels) {
     m_scriptOverlayPanels = std::move(panels);
     m_dirty = true;
-    update();
   }
 
   void setViewportCursor(QtViewportCursor cursor) {
@@ -99,8 +102,10 @@ class QtViewportWindow final : public QWidget {
                               std::size_t height,
                               std::uint64_t generation,
                               std::uint64_t frameId) {
+    const auto _vkp_deliver_t0_ns = vkpt::core::metrics::UiInputLatencyNowNs();
     if (src == nullptr || !FitsQtImageDimensions(width, height)) {
       clearFrameOnUiThread();
+      VKP_METRIC_INC("vkp.ui.frame_dropped_by_ui_total");
       return false;
     }
 
@@ -108,6 +113,7 @@ class QtViewportWindow final : public QWidget {
     if (!CheckedRgbaByteCount(width, height, required) ||
         srcBytes < required) {
       clearFrameOnUiThread();
+      VKP_METRIC_INC("vkp.ui.frame_dropped_by_ui_total");
       return false;
     }
 
@@ -118,6 +124,7 @@ class QtViewportWindow final : public QWidget {
       m_frame = QImage(imageWidth, imageHeight, QImage::Format_RGBA8888);
     }
     if (m_frame.isNull()) {
+      VKP_METRIC_INC("vkp.ui.frame_dropped_by_ui_total");
       return false;
     }
 
@@ -125,6 +132,7 @@ class QtViewportWindow final : public QWidget {
     const auto dstStride = m_frame.bytesPerLine();
     if (dstStride < 0 || static_cast<std::size_t>(dstStride) < srcStride) {
       clearFrameOnUiThread();
+      VKP_METRIC_INC("vkp.ui.frame_dropped_by_ui_total");
       return false;
     }
 
@@ -142,11 +150,17 @@ class QtViewportWindow final : public QWidget {
     m_framePresented = false;
     m_dirty = true;
     update();
+    const auto _vkp_deliver_t1_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+    VKP_METRIC_OBSERVE("vkp.ui.frame_deliver_us",
+                       (_vkp_deliver_t1_ns - _vkp_deliver_t0_ns) / 1000u);
+    VKP_METRIC_INC("vkp.ui.frame_delivered_total");
     return true;
   }
 
  protected:
   void paintEvent(QPaintEvent* /*event*/) override {
+    const auto _vkp_paint_t0_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+    VKP_METRIC_INC("vkp.ui.repaint_total");
     QPainter painter(this);
     painter.fillRect(rect(), QColor(6, 8, 12));
 
@@ -278,6 +292,8 @@ class QtViewportWindow final : public QWidget {
     }
 
     m_dirty = false;
+    const auto _vkp_paint_t1_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+    VKP_METRIC_OBSERVE("vkp.ui.paint_us", (_vkp_paint_t1_ns - _vkp_paint_t0_ns) / 1000u);
   }
 
   void closeEvent(QCloseEvent* event) override {

@@ -123,9 +123,9 @@ QtAppRuntime& AppRuntime() {
 
 QtPlatform::QtPlatform(std::string_view name) : m_name(name) {}
 
-vkpt::core::Result<void> QtPlatform::initialize() {
+vkpt::core::Status QtPlatform::initialize_status() {
   if (m_initialized) {
-    return vkpt::core::Result<void>::ok();
+    return vkpt::core::Status::ok();
   }
 
   InstallQtDiagnostics();
@@ -140,8 +140,10 @@ vkpt::core::Result<void> QtPlatform::initialize() {
         vkpt::log::Severity::Error,
         kQtLogSubsystem,
         "existing QCoreApplication is not a QApplication");
+    m_lastError = "existing QCoreApplication is not a QApplication";
     RestoreQtDiagnostics();
-    return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Unsupported);
+    return vkpt::core::Status::error(vkpt::core::StatusCode::Unsupported,
+                                     m_lastError);
   }
   QCoreApplication::setApplicationName(ToQString(m_name));
   if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
@@ -151,11 +153,16 @@ vkpt::core::Result<void> QtPlatform::initialize() {
   m_input.set_window(&m_window);
   m_surface.set_window(&m_window);
 
-  if (!m_window.initialize(1280, 720, m_name)) {
+  const auto window_status = m_window.initialize_status(1280, 720, m_name);
+  if (window_status.is_error()) {
     m_input.set_window(nullptr);
     m_surface.set_window(nullptr);
+    m_lastError = window_status.message.empty()
+        ? "Qt window initialization failed"
+        : window_status.message;
     RestoreQtDiagnostics();
-    return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Internal);
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError,
+                                     m_lastError);
   }
 
   const QString platformName = QGuiApplication::platformName();
@@ -176,12 +183,13 @@ vkpt::core::Result<void> QtPlatform::initialize() {
       });
 
   m_initialized = true;
-  return vkpt::core::Result<void>::ok();
+  m_lastError.clear();
+  return vkpt::core::Status::ok();
 }
 
-void QtPlatform::shutdown() {
+vkpt::core::Status QtPlatform::shutdown_status() {
   if (!m_initialized) {
-    return;
+    return vkpt::core::Status::ok();
   }
 
   vkpt::log::Logger::instance().log(
@@ -200,10 +208,46 @@ void QtPlatform::shutdown() {
   m_surface.set_window(nullptr);
   m_initialized = false;
   RestoreQtDiagnostics();
+  return vkpt::core::Status::ok();
+}
+
+void QtPlatform::set_determinism(const vkpt::core::DeterminismContext& context) {
+  const auto previous = m_determinism;
+  m_determinism = context;
+  SetUiDeterminismContext(context);
+  vkpt::core::EmitDeterminismChangedIfNeeded("platform", previous, m_determinism);
+}
+
+vkpt::core::DeterminismContext QtPlatform::determinism_context() const {
+  return m_determinism;
 }
 
 bool QtPlatform::is_headless() const {
   return false;
+}
+
+PlatformStatus QtPlatform::status() const {
+  PlatformStatus out;
+  const auto ui_status = GetUiStatus();
+  out.initialized = m_initialized;
+  out.lifecycle = !m_lastError.empty()
+      ? vkpt::core::contracts::ComponentLifecycle::Failed
+      : (m_initialized
+             ? vkpt::core::contracts::ComponentLifecycle::Ready
+             : vkpt::core::contracts::ComponentLifecycle::Uninitialized);
+  out.last_tick_ns = ui_status.last_tick_ns;
+  out.ticks_total = ui_status.ticks_total;
+  out.errors_total = ui_status.errors_total;
+  out.headless = false;
+  out.window_open = m_window.is_open();
+  out.input_focused = true;
+  out.vsync_mode = "qt";
+  out.last_error = m_lastError;
+  out.events = m_events.status();
+  out.current_flow_id = std::max(ui_status.current_flow_id,
+                                 m_determinism.frame_index);
+  out.set_determinism(m_determinism);
+  return out;
 }
 
 IWindow* QtPlatform::window() { return &m_window; }

@@ -1,11 +1,14 @@
 #include "platform/qt/QtPlatform.h"
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "core/Logging.h"
+#include "core/metrics/Metrics.h"
+#include "core/metrics/UiInputLatency.h"
 
 namespace vkpt::platform {
 
@@ -36,6 +39,10 @@ void QtWindow::emit_close_requested() {
 }
 
 void QtWindow::emit_key(std::int32_t key, std::int32_t raw_key, bool pressed) {
+  const auto t0_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+  vkpt::core::metrics::RecordInputEvent(t0_ns);
+  VKP_METRIC_INC("vkp.ui.input_event_total");
+  VKP_METRIC_INC("vkp.ui.input.key_total");
   vkpt::log::Logger::instance().log(
       vkpt::log::Severity::Debug,
       kQtLogSubsystem,
@@ -47,9 +54,15 @@ void QtWindow::emit_key(std::int32_t key, std::int32_t raw_key, bool pressed) {
   InputEvent event = InputEventNormalizer::key(key, pressed);
   event.raw_code = raw_key;
   queue_event(event);
+  const auto t1_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+  VKP_METRIC_OBSERVE("vkp.ui.input_dispatch_us", (t1_ns - t0_ns) / 1000u);
 }
 
 void QtWindow::emit_mouse_move(int x, int y) {
+  const auto t0_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+  vkpt::core::metrics::RecordInputEvent(t0_ns);
+  VKP_METRIC_INC("vkp.ui.input_event_total");
+  VKP_METRIC_INC("vkp.ui.input.mouse_move_total");
   queue_event(InputEventNormalizer::mouse_move(
       static_cast<float>(x),
       static_cast<float>(y),
@@ -57,9 +70,15 @@ void QtWindow::emit_mouse_move(int x, int y) {
       static_cast<float>(y - m_lastMouseY)));
   m_lastMouseX = x;
   m_lastMouseY = y;
+  const auto t1_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+  VKP_METRIC_OBSERVE("vkp.ui.input_dispatch_us", (t1_ns - t0_ns) / 1000u);
 }
 
 void QtWindow::emit_mouse_move_delta(int x, int y, float dx, float dy) {
+  const auto t0_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+  vkpt::core::metrics::RecordInputEvent(t0_ns);
+  VKP_METRIC_INC("vkp.ui.input_event_total");
+  VKP_METRIC_INC("vkp.ui.input.mouse_move_total");
   queue_event(InputEventNormalizer::mouse_move(
       static_cast<float>(x),
       static_cast<float>(y),
@@ -67,18 +86,30 @@ void QtWindow::emit_mouse_move_delta(int x, int y, float dx, float dy) {
       dy));
   m_lastMouseX = x;
   m_lastMouseY = y;
+  const auto t1_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+  VKP_METRIC_OBSERVE("vkp.ui.input_dispatch_us", (t1_ns - t0_ns) / 1000u);
 }
 
 void QtWindow::emit_mouse_button(std::int32_t button, bool pressed, int x, int y) {
+  const auto t0_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+  vkpt::core::metrics::RecordInputEvent(t0_ns);
+  VKP_METRIC_INC("vkp.ui.input_event_total");
+  VKP_METRIC_INC("vkp.ui.input.mouse_button_total");
   m_lastMouseX = x;
   m_lastMouseY = y;
   queue_event(InputEventNormalizer::mouse_button(button,
                                                  pressed,
                                                  static_cast<float>(x),
                                                  static_cast<float>(y)));
+  const auto t1_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+  VKP_METRIC_OBSERVE("vkp.ui.input_dispatch_us", (t1_ns - t0_ns) / 1000u);
 }
 
 void QtWindow::emit_mouse_wheel(float delta_x, float delta_y, int x, int y) {
+  const auto t0_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+  vkpt::core::metrics::RecordInputEvent(t0_ns);
+  VKP_METRIC_INC("vkp.ui.input_event_total");
+  VKP_METRIC_INC("vkp.ui.input.mouse_wheel_total");
   m_lastMouseX = x;
   m_lastMouseY = y;
   InputEvent event = InputEventNormalizer::mouse_wheel(
@@ -88,6 +119,8 @@ void QtWindow::emit_mouse_wheel(float delta_x, float delta_y, int x, int y) {
   event.delta_x = delta_x;
   event.delta_y = delta_y;
   queue_event(event);
+  const auto t1_ns = vkpt::core::metrics::UiInputLatencyNowNs();
+  VKP_METRIC_OBSERVE("vkp.ui.input_dispatch_us", (t1_ns - t0_ns) / 1000u);
 }
 
 void QtWindow::emit_menu_command(std::uint32_t command_id) {
@@ -156,6 +189,7 @@ std::vector<InputEvent> QtWindow::drain_events() {
     out.push_back(m_events.front());
     m_events.pop_front();
   }
+  RecordUiEventQueueDepth(m_events.size());
   return out;
 }
 

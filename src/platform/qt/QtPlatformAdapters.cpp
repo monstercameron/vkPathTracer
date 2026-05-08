@@ -8,6 +8,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "core/Logging.h"
@@ -44,12 +45,23 @@ std::string ToUtf8String(const QString& text) {
 }  // namespace
 std::size_t QtInput::consume(std::vector<InputEvent>& out) {
   out.clear();
+  if (m_source) {
+    std::vector<InputEvent> sourced;
+    (void)m_source->poll(sourced);
+    out.insert(out.end(), sourced.begin(), sourced.end());
+  }
   if (m_window == nullptr) {
-    return 0u;
+    return out.size();
   }
   m_window->poll_events();
-  out = m_window->drain_events();
+  auto windowEvents = m_window->drain_events();
+  out.insert(out.end(), windowEvents.begin(), windowEvents.end());
+  RecordUiEventQueueDepth(0u);
   return out.size();
+}
+
+void QtInput::set_source(std::shared_ptr<IInputSource> source) {
+  m_source = std::move(source);
 }
 
 void QtInput::set_window(QtWindow* window) {
@@ -57,18 +69,39 @@ void QtInput::set_window(QtWindow* window) {
 }
 
 void QtEvents::publish(std::string_view source, const InputEvent& event) {
-  (void)source;
+  const auto start = std::chrono::steady_clock::now();
   m_events.push_back(event);
+  m_highWaterMark = std::max(m_highWaterMark, m_events.size());
+  const auto processing_us = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - start)
+          .count());
+  RecordUiInputEvent(source, event, m_events.size(), processing_us);
 }
 
-std::size_t QtEvents::consume(std::vector<InputEvent>& out) {
+std::size_t QtEvents::consume(std::vector<InputEvent>& out) const {
+  out.clear();
+  out.reserve(m_events.size());
+  for (const auto& event : m_events) {
+    out.push_back(event);
+  }
+  RecordUiEventQueueDepth(m_events.size());
+  return out.size();
+}
+
+std::size_t QtEvents::drain(std::vector<InputEvent>& out) {
   out.clear();
   out.reserve(m_events.size());
   while (!m_events.empty()) {
     out.push_back(m_events.front());
     m_events.pop_front();
   }
+  RecordUiEventQueueDepth(m_events.size());
   return out.size();
+}
+
+EventQueueStatus QtEvents::status() const {
+  return EventQueueStatus{m_events.size(), m_highWaterMark, m_droppedTotal};
 }
 
 std::uint64_t QtTimeSource::now_ms() const {

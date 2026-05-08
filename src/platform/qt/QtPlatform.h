@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -218,11 +219,31 @@ class QtWindow final : public IWindow {
  public:
   ~QtWindow() override;
 
-  bool initialize(std::size_t width, std::size_t height, std::string_view title) override;
+  vkpt::core::Status initialize_status(std::size_t width,
+                                       std::size_t height,
+                                       std::string_view title) override {
+    return initialize(width, height, title)
+        ? vkpt::core::Status::ok()
+        : vkpt::core::Status::error(vkpt::core::StatusCode::InternalError,
+                                    "Qt window initialization failed");
+  }
+  bool initialize(std::size_t width, std::size_t height, std::string_view title);
   bool is_open() const override;
   void close() override;
   WindowMetrics metrics() const override;
-  bool poll_events() override;
+  vkpt::core::Status poll_events_status() override {
+    return poll_events()
+        ? vkpt::core::Status::ok()
+        : vkpt::core::Status::error(vkpt::core::StatusCode::NotReady,
+                                    "Qt window is closed");
+  }
+  bool poll_events();
+  vkpt::core::Status resize_status(std::size_t width, std::size_t height) {
+    return resize(width, height)
+        ? vkpt::core::Status::ok()
+        : vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument,
+                                    "Qt window resize failed");
+  }
   bool resize(std::size_t width, std::size_t height);
   void set_title(std::string_view title);
   void set_overlay_text(std::string_view text);
@@ -365,19 +386,34 @@ class QtWindow final : public IWindow {
 class QtInput final : public IInput {
  public:
   std::size_t consume(std::vector<InputEvent>& out) override;
+  vkpt::core::Status set_source_status(std::shared_ptr<IInputSource> source) override {
+    set_source(std::move(source));
+    return vkpt::core::Status::ok();
+  }
+  void set_source(std::shared_ptr<IInputSource> source);
   void set_window(QtWindow* window);
 
  private:
   QtWindow* m_window = nullptr;
+  std::shared_ptr<IInputSource> m_source;
 };
 
 class QtEvents final : public IEvents {
  public:
-  void publish(std::string_view source, const InputEvent& event) override;
-  std::size_t consume(std::vector<InputEvent>& out) override;
+  vkpt::core::Status publish_status(std::string_view source,
+                                    const InputEvent& event) override {
+    publish(source, event);
+    return vkpt::core::Status::ok();
+  }
+  void publish(std::string_view source, const InputEvent& event);
+  std::size_t consume(std::vector<InputEvent>& out) const override;
+  std::size_t drain(std::vector<InputEvent>& out) override;
+  EventQueueStatus status() const override;
 
  private:
   std::deque<InputEvent> m_events;
+  std::size_t m_highWaterMark = 0u;
+  std::uint64_t m_droppedTotal = 0u;
 };
 
 class QtTimeSource final : public ITimeSource {
@@ -418,9 +454,12 @@ class QtPlatform final : public IPlatform {
  public:
   explicit QtPlatform(std::string_view name = "vkpt-qt");
 
-  vkpt::core::Result<void> initialize() override;
-  void shutdown() override;
+  vkpt::core::Status initialize_status() override;
+  vkpt::core::Status shutdown_status() override;
+  void set_determinism(const vkpt::core::DeterminismContext& context) override;
+  vkpt::core::DeterminismContext determinism_context() const override;
   bool is_headless() const override;
+  PlatformStatus status() const override;
 
   IWindow* window() override;
   const IWindow* window() const override;
@@ -439,6 +478,8 @@ class QtPlatform final : public IPlatform {
 
  private:
   std::string m_name;
+  std::string m_lastError;
+  vkpt::core::DeterminismContext m_determinism;
   bool m_initialized = false;
   QtWindow m_window;
   QtInput m_input;

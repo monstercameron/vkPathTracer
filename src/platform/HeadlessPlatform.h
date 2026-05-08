@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,11 +12,13 @@ namespace vkpt::platform {
 
 class HeadlessWindow final : public IWindow {
  public:
-  bool initialize(std::size_t width, std::size_t height, std::string_view title) override;
+  vkpt::core::Status initialize_status(std::size_t width,
+                                       std::size_t height,
+                                       std::string_view title) override;
   bool is_open() const override;
   void close() override;
   WindowMetrics metrics() const override;
-  bool poll_events() override;
+  vkpt::core::Status poll_events_status() override;
 
   void set_title(std::string_view title);
 
@@ -28,19 +31,26 @@ class HeadlessWindow final : public IWindow {
 class HeadlessInput final : public IInput {
  public:
   std::size_t consume(std::vector<InputEvent>& out) override;
+  vkpt::core::Status set_source_status(std::shared_ptr<IInputSource> source) override;
   void queue(InputEvent event);
 
  private:
+  std::shared_ptr<IInputSource> m_source;
   std::deque<InputEvent> m_queue;
 };
 
 class HeadlessEvents final : public IEvents {
  public:
-  void publish(std::string_view source, const InputEvent& event) override;
-  std::size_t consume(std::vector<InputEvent>& out) override;
+  vkpt::core::Status publish_status(std::string_view source,
+                                    const InputEvent& event) override;
+  std::size_t consume(std::vector<InputEvent>& out) const override;
+  std::size_t drain(std::vector<InputEvent>& out) override;
+  EventQueueStatus status() const override;
 
  private:
   std::deque<InputEvent> m_events;
+  std::size_t m_highWaterMark = 0u;
+  std::uint64_t m_droppedTotal = 0u;
 };
 
 class HeadlessTimeSource final : public ITimeSource {
@@ -77,9 +87,12 @@ class HeadlessPlatform final : public IPlatform {
  public:
   explicit HeadlessPlatform(std::string_view name = "vkpt-headless");
 
-  vkpt::core::Result<void> initialize() override;
-  void shutdown() override;
+  vkpt::core::Status initialize_status() override;
+  vkpt::core::Status shutdown_status() override;
+  void set_determinism(const vkpt::core::DeterminismContext& context) override;
+  vkpt::core::DeterminismContext determinism_context() const override;
   bool is_headless() const override;
+  PlatformStatus status() const override;
 
   IWindow* window() override;
   const IWindow* window() const override;
@@ -97,7 +110,9 @@ class HeadlessPlatform final : public IPlatform {
   const INativeSurfaceProvider* native_surface() const override;
 
  private:
- std::string m_name;
+  std::string m_name;
+  std::string m_lastError;
+  vkpt::core::DeterminismContext m_determinism;
   bool m_initialized = false;
   HeadlessWindow m_window;
   HeadlessInput m_input;

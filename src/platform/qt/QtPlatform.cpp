@@ -16,6 +16,8 @@
 #include <unordered_set>
 #include <utility>
 #include "core/Logging.h"
+#include "core/metrics/Metrics.h"
+#include "core/metrics/UiInputLatency.h"
 #include "platform/qt/QtPlatformDockTree.h"
 #include "platform/qt/QtPlatformStyle.h"
 #include <QAbstractItemView>

@@ -9,6 +9,7 @@
 #include <string>
 #include <algorithm>
 #include <cstring>
+#include <utility>
 #include "core/Logging.h"
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -248,7 +249,9 @@ LRESULT CALLBACK DesktopWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
 }  // namespace
 #endif
 
-bool DesktopWindow::initialize(std::size_t width, std::size_t height, std::string_view title) {
+vkpt::core::Status DesktopWindow::initialize_status(std::size_t width,
+                                                    std::size_t height,
+                                                    std::string_view title) {
 #ifdef _WIN32
   const auto className = L"vkpt-desktop-window";
   static bool classRegistered = false;
@@ -263,7 +266,8 @@ bool DesktopWindow::initialize(std::size_t width, std::size_t height, std::strin
       wc.hInstance = GetModuleHandleW(nullptr);
       wc.lpszClassName = className;
       if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        return false;
+        return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError,
+                                         "failed to register Win32 window class");
       }
       classRegistered = true;
     }
@@ -275,7 +279,8 @@ bool DesktopWindow::initialize(std::size_t width, std::size_t height, std::strin
                               static_cast<int>(width), static_cast<int>(height),
                               nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
   if (!hwnd) {
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError,
+                                     "failed to create Win32 window");
   }
   SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
   m_hwnd = hwnd;
@@ -291,7 +296,9 @@ bool DesktopWindow::initialize(std::size_t width, std::size_t height, std::strin
       vkpt::log::Severity::Warning,
       "platform",
       "raw native desktop window requested on a host with only a stub implementation");
-  return false;
+  return vkpt::core::Status::error(vkpt::core::StatusCode::Unsupported,
+                                   "raw desktop unsupported on this host",
+                                   "use Qt or headless platform");
 #endif
   m_metrics.width = static_cast<int>(width);
   m_metrics.height = static_cast<int>(height);
@@ -301,7 +308,7 @@ bool DesktopWindow::initialize(std::size_t width, std::size_t height, std::strin
   m_lastMouseY = 0;
   m_events.emplace_back(InputEventNormalizer::resize(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)));
   m_events.emplace_back(InputEventNormalizer::focus(true));
-  return true;
+  return vkpt::core::Status::ok();
 }
 
 void* DesktopWindow::native_handle() const {
@@ -334,10 +341,11 @@ WindowMetrics DesktopWindow::metrics() const {
   return m_metrics;
 }
 
-bool DesktopWindow::poll_events() {
+vkpt::core::Status DesktopWindow::poll_events_status() {
 #ifdef _WIN32
   if (!m_hwnd) {
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady,
+                                     "desktop window handle is not available");
   }
   // The platform owns the native message pump; callers consume normalized
   // events later through the window/input interfaces.
@@ -347,15 +355,21 @@ bool DesktopWindow::poll_events() {
     DispatchMessageW(&msg);
   }
 #endif
-  return m_open;
+  if (!m_open) {
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady,
+                                     "desktop window is closed");
+  }
+  return vkpt::core::Status::ok();
 }
 
-bool DesktopWindow::resize(std::size_t width, std::size_t height) {
+vkpt::core::Status DesktopWindow::resize_status(std::size_t width, std::size_t height) {
   if (!m_open) {
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady,
+                                     "desktop window is closed");
   }
   if (width == 0u || height == 0u) {
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument,
+                                     "desktop window resize dimensions must be non-zero");
   }
   [[maybe_unused]] const bool changed = (m_metrics.width != static_cast<int>(width))
                                      || (m_metrics.height != static_cast<int>(height));
@@ -377,7 +391,7 @@ bool DesktopWindow::resize(std::size_t width, std::size_t height) {
   m_metrics.height = static_cast<int>(height);
   m_events.emplace_back(InputEventNormalizer::resize(static_cast<std::uint32_t>(width),
                                                     static_cast<std::uint32_t>(height)));
-  return true;
+  return vkpt::core::Status::ok();
 }
 
 void DesktopWindow::on_native_resize(std::size_t width, std::size_t height) {
@@ -524,9 +538,12 @@ std::vector<InputEvent> DesktopWindow::drain_events() {
   std::vector<InputEvent> out;
   out.reserve(m_events.size());
   while (!m_events.empty()) {
-    out.push_back(m_events.front());
+    const auto event = m_events.front();
+    out.push_back(event);
     m_events.pop_front();
+    RecordUiInputEvent("raw_window", event, m_events.size(), 0u);
   }
+  RecordUiEventQueueDepth(m_events.size());
   return out;
 }
 
@@ -537,20 +554,35 @@ void DesktopWindow::mark_closed() {
 
 std::size_t DesktopInput::consume(std::vector<InputEvent>& out) {
   out.clear();
+  if (m_source) {
+    std::vector<InputEvent> sourced;
+    (void)m_source->poll(sourced);
+    for (auto& event : sourced) {
+      queue_normalized(event);
+    }
+  }
   out.reserve(m_queue.size());
   while (!m_queue.empty()) {
     out.push_back(m_queue.front());
     m_queue.pop_front();
   }
+  RecordUiEventQueueDepth(m_queue.size());
   return out.size();
+}
+
+vkpt::core::Status DesktopInput::set_source_status(std::shared_ptr<IInputSource> source) {
+  m_source = std::move(source);
+  return vkpt::core::Status::ok();
 }
 
 void DesktopInput::queue(InputEvent event) {
   m_queue.push_back(event);
+  RecordUiInputEvent("raw_input", event, m_queue.size(), 0u);
 }
 
 void DesktopInput::queue_normalized(InputEvent event) {
   m_queue.push_back(event);
+  RecordUiInputEvent("raw_input", event, m_queue.size(), 0u);
 }
 
 void DesktopInput::emit_key(std::int32_t key, bool pressed) {
@@ -575,19 +607,42 @@ void DesktopInput::emit_touch(std::int32_t touch_id, std::int32_t phase, float x
   m_queue.push_back(event);
 }
 
-void DesktopEvents::publish(std::string_view source, const InputEvent& event) {
-  (void)source;
+vkpt::core::Status DesktopEvents::publish_status(std::string_view source,
+                                                 const InputEvent& event) {
+  const auto start = std::chrono::steady_clock::now();
   m_events.push_back(event);
+  m_highWaterMark = std::max(m_highWaterMark, m_events.size());
+  const auto processing_us = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - start)
+          .count());
+  RecordUiInputEvent(source, event, m_events.size(), processing_us);
+  return vkpt::core::Status::ok();
 }
 
-std::size_t DesktopEvents::consume(std::vector<InputEvent>& out) {
+std::size_t DesktopEvents::consume(std::vector<InputEvent>& out) const {
+  out.clear();
+  out.reserve(m_events.size());
+  for (const auto& event : m_events) {
+    out.push_back(event);
+  }
+  RecordUiEventQueueDepth(m_events.size());
+  return out.size();
+}
+
+std::size_t DesktopEvents::drain(std::vector<InputEvent>& out) {
   out.clear();
   out.reserve(m_events.size());
   while (!m_events.empty()) {
     out.push_back(m_events.front());
     m_events.pop_front();
   }
+  RecordUiEventQueueDepth(m_events.size());
   return out.size();
+}
+
+EventQueueStatus DesktopEvents::status() const {
+  return EventQueueStatus{m_events.size(), m_highWaterMark, m_droppedTotal};
 }
 
 std::uint64_t DesktopTimeSource::now_ms() const {
@@ -638,36 +693,83 @@ void DesktopSurfaceProvider::set_handles(void* window_handle, void* instance_han
 
 DesktopPlatform::DesktopPlatform(std::string_view name) : m_name(name) {}
 
-vkpt::core::Result<void> DesktopPlatform::initialize() {
+vkpt::core::Status DesktopPlatform::initialize_status() {
   if (m_initialized) {
-    return vkpt::core::Result<void>::ok();
+    return vkpt::core::Status::ok();
   }
-  if (!m_window.initialize(1280, 720, m_name)) {
+  const auto window_status = m_window.initialize_status(1280, 720, m_name);
+  if (window_status.is_error()) {
 #ifdef _WIN32
-    return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Internal);
+    m_lastError = window_status.message.empty()
+        ? "window initialization failed"
+        : window_status.message;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError,
+                                     m_lastError);
 #else
-    return vkpt::core::Result<void>::error(vkpt::core::ErrorCode::Unsupported);
+    m_lastError = window_status.message.empty()
+        ? "raw desktop unsupported on this host"
+        : window_status.message;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::Unsupported,
+                                     m_lastError,
+                                     "use Qt or headless platform");
 #endif
   }
 #ifdef _WIN32
   m_surface.set_handles(m_window.native_handle(), GetModuleHandleW(nullptr));
 #endif
   m_initialized = true;
-  return vkpt::core::Result<void>::ok();
+  m_lastError.clear();
+  return vkpt::core::Status::ok();
 }
 
-void DesktopPlatform::shutdown() {
+vkpt::core::Status DesktopPlatform::shutdown_status() {
   if (!m_initialized) {
-    return;
+    return vkpt::core::Status::ok();
   }
   if (m_window.is_open()) {
     m_window.close();
   }
   m_initialized = false;
+  return vkpt::core::Status::ok();
+}
+
+void DesktopPlatform::set_determinism(const vkpt::core::DeterminismContext& context) {
+  const auto previous = m_determinism;
+  m_determinism = context;
+  SetUiDeterminismContext(context);
+  vkpt::core::EmitDeterminismChangedIfNeeded("platform", previous, m_determinism);
+}
+
+vkpt::core::DeterminismContext DesktopPlatform::determinism_context() const {
+  return m_determinism;
 }
 
 bool DesktopPlatform::is_headless() const {
   return false;
+}
+
+PlatformStatus DesktopPlatform::status() const {
+  PlatformStatus out;
+  const auto ui_status = GetUiStatus();
+  out.initialized = m_initialized;
+  out.lifecycle = !m_lastError.empty()
+      ? vkpt::core::contracts::ComponentLifecycle::Failed
+      : (m_initialized
+             ? vkpt::core::contracts::ComponentLifecycle::Ready
+             : vkpt::core::contracts::ComponentLifecycle::Uninitialized);
+  out.last_tick_ns = ui_status.last_tick_ns;
+  out.ticks_total = ui_status.ticks_total;
+  out.errors_total = ui_status.errors_total;
+  out.headless = false;
+  out.window_open = m_window.is_open();
+  out.input_focused = m_window.focused();
+  out.vsync_mode = "platform";
+  out.last_error = m_lastError;
+  out.events = m_events.status();
+  out.current_flow_id = std::max(ui_status.current_flow_id,
+                                 m_determinism.frame_index);
+  out.set_determinism(m_determinism);
+  return out;
 }
 
 IWindow* DesktopPlatform::window() { return &m_window; }
