@@ -230,8 +230,13 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer,
                                    const std::vector<float>& gpuDynamicBvh,
                                    uint32_t firstInstance = 0u,
                                    uint32_t instanceCount = std::numeric_limits<uint32_t>::max());
+  bool upload_instance_material_buffers(bool uploadInstances, bool uploadTriData);
   bool emit_pending_instance_upload(ID3D12GraphicsCommandList* commandList,
-                                    UINT64 uploadOffsetBytes);
+                                    UINT64 uploadOffsetBytes,
+                                    UINT64* nextUploadOffsetBytes = nullptr);
+  bool emit_pending_scene_delta_uploads(ID3D12GraphicsCommandList* commandList,
+                                        UINT64 uploadOffsetBytes,
+                                        UINT64* nextUploadOffsetBytes = nullptr);
   /// Uploads material and/or light buffers for small scene deltas.
   bool upload_material_light_buffers(bool uploadMaterials, bool uploadLights);
   bool build_texture_buffers();
@@ -362,6 +367,10 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer,
   bool m_pendingInstanceUpload = false;
   uint32_t m_pendingInstanceUploadFirst = 0u;
   uint32_t m_pendingInstanceUploadCount = 0u;
+  bool m_pendingMaterialUpload = false;
+  bool m_pendingLightUpload = false;
+  bool m_pendingInstanceMaterialUpload = false;
+  bool m_pendingTriDataUpload = false;
   bool m_forceReadbackEverySample = false;
   bool m_dynamicInstanceTransformsAllowed = true;
   std::string m_dxrBuildMode = "fast_build";

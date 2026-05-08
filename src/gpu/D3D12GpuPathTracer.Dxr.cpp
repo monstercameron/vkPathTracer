@@ -471,7 +471,16 @@ bool D3D12GpuPathTracer::dispatch_dxr_rays(uint32_t sample_idx, uint32_t frame_i
     return false;
   }
   constexpr UINT64 kMotionUploadOffset = 4096u;
-  if (!emit_pending_instance_upload(cl4.Get(), kMotionUploadOffset)) {
+  UINT64 nextUploadOffset = kMotionUploadOffset;
+  if (!emit_pending_instance_upload(cl4.Get(),
+                                    kMotionUploadOffset,
+                                    &nextUploadOffset)) {
+    LogError("dispatch_dxr_rays: " + m_error);
+    return false;
+  }
+  if (!emit_pending_scene_delta_uploads(cl4.Get(),
+                                        nextUploadOffset,
+                                        &nextUploadOffset)) {
     LogError("dispatch_dxr_rays: " + m_error);
     return false;
   }

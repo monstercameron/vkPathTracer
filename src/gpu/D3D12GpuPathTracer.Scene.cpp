@@ -524,10 +524,15 @@ bool D3D12GpuPathTracer::update_scene_delta(
   }
   const bool uploadMaterials = !update.materials.empty();
   const bool uploadLights = !update.lights.empty();
+  const bool uploadInstanceMaterials = !update.instance_materials.empty();
   if (uploadMaterials && !m_matBuf) {
     return false;
   }
   if (uploadLights && !m_ltBuf) {
+    return false;
+  }
+  if (uploadInstanceMaterials && (!m_instBuf || !m_triDataBuf ||
+                                  m_gpuInsts.empty() || m_gpuTriData.empty())) {
     return false;
   }
 
@@ -545,11 +550,52 @@ bool D3D12GpuPathTracer::update_scene_delta(
       return false;
     }
   }
+  std::vector<vkpt::pathtracer::RTInstanceMaterialUpdate> resolvedInstanceMaterials;
+  resolvedInstanceMaterials.reserve(update.instance_materials.size());
+  auto resolveInstanceIndex =
+      [&](const vkpt::pathtracer::RTInstanceMaterialUpdate& instanceMaterial) {
+    uint32_t instanceIndex = instanceMaterial.instance_index;
+    if (instanceIndex >= m_sceneData.instances.size() &&
+        instanceMaterial.entity_id != 0u) {
+      for (std::size_t index = 0; index < m_sceneData.instances.size(); ++index) {
+        if (m_sceneData.instances[index].entity_id == instanceMaterial.entity_id) {
+          instanceIndex = static_cast<uint32_t>(index);
+          break;
+        }
+      }
+    }
+    return instanceIndex;
+  };
+  for (const auto& instanceMaterial : update.instance_materials) {
+    const uint32_t instanceIndex = resolveInstanceIndex(instanceMaterial);
+    if (instanceIndex >= m_sceneData.instances.size() ||
+        instanceMaterial.material_index >= m_sceneData.materials.size()) {
+      return false;
+    }
+    const std::size_t base =
+        static_cast<std::size_t>(instanceIndex) * kGpuInstanceStrideU32;
+    if (base + kGpuInstanceStrideU32 > m_gpuInsts.size()) {
+      return false;
+    }
+    const uint32_t flags = m_gpuInsts[base + 3u];
+    if ((flags & vkpt::pathtracer::kRTInstanceFlagDynamicTransform) == 0u) {
+      return false;
+    }
+    const uint64_t firstTri = m_gpuInsts[base + 0u];
+    const uint64_t triCount = m_gpuInsts[base + 1u];
+    const uint64_t triDataCount =
+        static_cast<uint64_t>(m_gpuTriData.size() / kGpuTriDataStrideFloats);
+    if (firstTri > triDataCount || triCount > triDataCount - firstTri) {
+      return false;
+    }
+    auto resolved = instanceMaterial;
+    resolved.instance_index = instanceIndex;
+    resolvedInstanceMaterials.push_back(resolved);
+  }
 
-  // Validate and pack into CPU mirrors before touching GPU resources so a
-  // failed delta leaves both scene state and buffers on the previous version.
-  auto nextScene = m_sceneData;
-  if (!vkpt::pathtracer::ApplySceneDeltaUpdate(nextScene, update)) {
+  // The update was validated above; apply directly to the CPU scene mirror
+  // instead of cloning the full scene for every small light/material delta.
+  if (!vkpt::pathtracer::ApplySceneDeltaUpdate(m_sceneData, update)) {
     return false;
   }
   for (const auto& material : update.materials) {
@@ -562,18 +608,32 @@ bool D3D12GpuPathTracer::update_scene_delta(
       return false;
     }
   }
+  for (const auto& instanceMaterial : resolvedInstanceMaterials) {
+    const std::size_t base =
+        static_cast<std::size_t>(instanceMaterial.instance_index) * kGpuInstanceStrideU32;
+    m_gpuInsts[base + 2u] = instanceMaterial.material_index;
+    const uint32_t firstTri = m_gpuInsts[base + 0u];
+    const uint32_t triCount = m_gpuInsts[base + 1u];
+    for (uint32_t tri = 0u; tri < triCount; ++tri) {
+      const std::size_t triBase =
+          static_cast<std::size_t>(firstTri + tri) * kGpuTriDataStrideFloats;
+      m_gpuTriData[triBase + 3u] = static_cast<float>(instanceMaterial.material_index);
+    }
+  }
 
-  const bool uploaded = upload_material_light_buffers(uploadMaterials, uploadLights);
+  const bool uploaded =
+      upload_material_light_buffers(uploadMaterials, uploadLights) &&
+      upload_instance_material_buffers(uploadInstanceMaterials, uploadInstanceMaterials);
   if (!uploaded) {
     return false;
   }
-  m_sceneData = std::move(nextScene);
   m_film.set_resolve_settings(
       vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
   m_temporalHistoryValid = false;
   std::ostringstream ss;
   ss << "scene delta uploaded mats=" << update.materials.size()
      << " lights=" << update.lights.size()
+     << " instance_materials=" << update.instance_materials.size()
      << " environment=" << (update.environment_color_changed ? "true" : "false");
   LogDebug(ss.str());
   debug_check_state_contract("update_scene_delta");
@@ -1378,73 +1438,46 @@ bool D3D12GpuPathTracer::upload_material_light_buffers(bool uploadMaterials,
     LogError("upload_material_light_buffers: " + m_error);
     return false;
   }
-  if (!wait_for_gpu()) {
-    LogError("upload_material_light_buffers: " + m_error);
+  // Defer the upload into the next render command list. This keeps script
+  // hooks from submitting and fencing tiny material/light copy lists on the UI
+  // thread while preserving GPU ordering before the next dispatch.
+  m_pendingMaterialUpload = m_pendingMaterialUpload || uploadMaterials;
+  m_pendingLightUpload = m_pendingLightUpload || uploadLights;
+  return true;
+}
+
+bool D3D12GpuPathTracer::upload_instance_material_buffers(bool uploadInstances,
+                                                          bool uploadTriData) {
+  if (!uploadInstances && !uploadTriData) {
+    return true;
+  }
+  if (uploadInstances && (!m_instBuf || m_gpuInsts.empty())) {
+    m_error = "instance material delta upload missing instance buffer";
+    LogError("upload_instance_material_buffers: " + m_error);
     return false;
   }
-  if (FAILED(m_cmdAllocator->Reset()) ||
-      FAILED(m_cmdList->Reset(m_cmdAllocator.Get(), nullptr))) {
-    m_error = "material/light upload command reset failed";
-    LogError("upload_material_light_buffers: " + m_error);
+  if (uploadTriData && (!m_triDataBuf || m_gpuTriData.empty())) {
+    m_error = "instance material delta upload missing triangle data buffer";
+    LogError("upload_instance_material_buffers: " + m_error);
     return false;
   }
 
-  // Delta uploads rewrite whole material/light buffers. That keeps descriptor
-  // bindings stable and avoids per-element copy bookkeeping.
-  D3D12_RESOURCE_BARRIER toCopy[2]{};
-  UINT barrierCount = 0u;
-  auto addToCopy = [&](ID3D12Resource* resource) {
-    auto& barrier = toCopy[barrierCount++];
-    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    barrier.Transition.pResource = resource;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  };
-
-  if (uploadMaterials) {
-    std::memcpy(m_uploadPtr, m_gpuMats.data(), static_cast<std::size_t>(matSize));
-    addToCopy(m_matBuf.Get());
-  }
-  if (uploadLights) {
-    std::memcpy(static_cast<uint8_t*>(m_uploadPtr) + lightOffset,
-                m_gpuLights.data(),
-                static_cast<std::size_t>(lightSize));
-    addToCopy(m_ltBuf.Get());
-  }
-  m_cmdList->ResourceBarrier(barrierCount, toCopy);
-  if (uploadMaterials) {
-    m_cmdList->CopyBufferRegion(m_matBuf.Get(), 0, m_uploadBuf.Get(), 0, matSize);
-  }
-  if (uploadLights) {
-    m_cmdList->CopyBufferRegion(m_ltBuf.Get(), 0, m_uploadBuf.Get(), lightOffset, lightSize);
-  }
-
-  D3D12_RESOURCE_BARRIER toSrv[2]{};
-  for (UINT i = 0u; i < barrierCount; ++i) {
-    toSrv[i] = toCopy[i];
-    toSrv[i].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    toSrv[i].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-  }
-  m_cmdList->ResourceBarrier(barrierCount, toSrv);
-
-  if (FAILED(m_cmdList->Close())) {
-    m_error = "material/light upload command close failed";
-    LogError("upload_material_light_buffers: " + m_error);
+  const UINT64 instSize = uploadInstances
+      ? static_cast<UINT64>(m_gpuInsts.size()) * sizeof(uint32_t)
+      : 0u;
+  const UINT64 triDataSize = uploadTriData
+      ? static_cast<UINT64>(m_gpuTriData.size()) * sizeof(float)
+      : 0u;
+  const auto align = [](UINT64 x) { return (x + 255ull) & ~255ull; };
+  const UINT64 triDataOffset = align(instSize);
+  const UINT64 requiredSize = triDataOffset + triDataSize;
+  if (requiredSize > m_uploadSize) {
+    m_error = "upload_instance_material_buffers overflow";
+    LogError("upload_instance_material_buffers: " + m_error);
     return false;
   }
-  ID3D12CommandList* lists[] = {m_cmdList.Get()};
-  m_cmdQueue->ExecuteCommandLists(1, lists);
-  if (!wait_for_gpu()) {
-    LogError("upload_material_light_buffers: " + m_error);
-    return false;
-  }
-  const auto removeHr = m_device->GetDeviceRemovedReason();
-  if (FAILED(removeHr)) {
-    m_error = "device removed during upload_material_light_buffers hr=" + FormatHr(removeHr);
-    LogError("upload_material_light_buffers: " + m_error);
-    return false;
-  }
+  m_pendingInstanceMaterialUpload = m_pendingInstanceMaterialUpload || uploadInstances;
+  m_pendingTriDataUpload = m_pendingTriDataUpload || uploadTriData;
   return true;
 }
 
@@ -1542,7 +1575,12 @@ bool D3D12GpuPathTracer::upload_instance_buffer_from(const std::vector<uint32_t>
 }
 
 bool D3D12GpuPathTracer::emit_pending_instance_upload(ID3D12GraphicsCommandList* commandList,
-                                                      UINT64 uploadOffsetBytes) {
+                                                      UINT64 uploadOffsetBytes,
+                                                      UINT64* nextUploadOffsetBytes) {
+  const auto align = [](UINT64 x) { return (x + 255ull) & ~255ull; };
+  if (nextUploadOffsetBytes != nullptr) {
+    *nextUploadOffsetBytes = align(uploadOffsetBytes);
+  }
   if (!m_pendingInstanceUpload) {
     return true;
   }
@@ -1574,7 +1612,6 @@ bool D3D12GpuPathTracer::emit_pending_instance_upload(ID3D12GraphicsCommandList*
   const UINT64 instOffset = static_cast<UINT64>(firstInstance) * instStrideBytes;
   const UINT64 instSize = static_cast<UINT64>(instanceCount) * instStrideBytes;
   const UINT64 bvhSize = static_cast<UINT64>(m_gpuDynamicBvh.size()) * sizeof(float);
-  const auto align = [](UINT64 x) { return (x + 255ull) & ~255ull; };
   const UINT64 instUploadOffset = align(uploadOffsetBytes);
   const UINT64 bvhUploadOffset = align(instUploadOffset + instSize);
   if (bvhUploadOffset + bvhSize > m_uploadSize) {
@@ -1614,6 +1651,142 @@ bool D3D12GpuPathTracer::emit_pending_instance_upload(ID3D12GraphicsCommandList*
   m_pendingInstanceUpload = false;
   m_pendingInstanceUploadFirst = 0u;
   m_pendingInstanceUploadCount = 0u;
+  if (nextUploadOffsetBytes != nullptr) {
+    *nextUploadOffsetBytes = align(bvhUploadOffset + bvhSize);
+  }
+  return true;
+}
+
+bool D3D12GpuPathTracer::emit_pending_scene_delta_uploads(
+    ID3D12GraphicsCommandList* commandList,
+    UINT64 uploadOffsetBytes,
+    UINT64* nextUploadOffsetBytes) {
+  const auto align = [](UINT64 x) { return (x + 255ull) & ~255ull; };
+  UINT64 cursor = align(uploadOffsetBytes);
+  if (nextUploadOffsetBytes != nullptr) {
+    *nextUploadOffsetBytes = cursor;
+  }
+  if (!m_pendingMaterialUpload &&
+      !m_pendingLightUpload &&
+      !m_pendingInstanceMaterialUpload &&
+      !m_pendingTriDataUpload) {
+    return true;
+  }
+  if (!commandList || !m_uploadPtr || !m_uploadBuf) {
+    m_error = "pending scene delta upload resources are not ready";
+    LogError("emit_pending_scene_delta_uploads: " + m_error);
+    return false;
+  }
+  if (m_pendingMaterialUpload && (!m_matBuf || m_gpuMats.empty())) {
+    m_error = "pending material upload missing material buffer";
+    LogError("emit_pending_scene_delta_uploads: " + m_error);
+    return false;
+  }
+  if (m_pendingLightUpload && (!m_ltBuf || m_gpuLights.empty())) {
+    m_error = "pending light upload missing light buffer";
+    LogError("emit_pending_scene_delta_uploads: " + m_error);
+    return false;
+  }
+  if (m_pendingInstanceMaterialUpload && (!m_instBuf || m_gpuInsts.empty())) {
+    m_error = "pending instance-material upload missing instance buffer";
+    LogError("emit_pending_scene_delta_uploads: " + m_error);
+    return false;
+  }
+  if (m_pendingTriDataUpload && (!m_triDataBuf || m_gpuTriData.empty())) {
+    m_error = "pending instance-material upload missing triangle data buffer";
+    LogError("emit_pending_scene_delta_uploads: " + m_error);
+    return false;
+  }
+
+  struct PendingCopy {
+    ID3D12Resource* resource = nullptr;
+    const void* data = nullptr;
+    UINT64 size = 0u;
+    UINT64 uploadOffset = 0u;
+  };
+  std::array<PendingCopy, 4> copies{};
+  UINT copyCount = 0u;
+  auto addCopy = [&](ID3D12Resource* resource, const void* data, UINT64 size) {
+    if (size == 0u) {
+      return true;
+    }
+    if (copyCount >= copies.size()) {
+      return false;
+    }
+    cursor = align(cursor);
+    if (cursor + size > m_uploadSize) {
+      return false;
+    }
+    copies[copyCount++] = PendingCopy{resource, data, size, cursor};
+    cursor += size;
+    return true;
+  };
+
+  if (m_pendingMaterialUpload &&
+      !addCopy(m_matBuf.Get(),
+               m_gpuMats.data(),
+               static_cast<UINT64>(m_gpuMats.size()) * sizeof(float))) {
+    m_error = "pending material upload overflow";
+    LogError("emit_pending_scene_delta_uploads: " + m_error);
+    return false;
+  }
+  if (m_pendingLightUpload &&
+      !addCopy(m_ltBuf.Get(),
+               m_gpuLights.data(),
+               static_cast<UINT64>(m_gpuLights.size()) * sizeof(float))) {
+    m_error = "pending light upload overflow";
+    LogError("emit_pending_scene_delta_uploads: " + m_error);
+    return false;
+  }
+  if (m_pendingInstanceMaterialUpload &&
+      !addCopy(m_instBuf.Get(),
+               m_gpuInsts.data(),
+               static_cast<UINT64>(m_gpuInsts.size()) * sizeof(uint32_t))) {
+    m_error = "pending instance-material upload overflow";
+    LogError("emit_pending_scene_delta_uploads: " + m_error);
+    return false;
+  }
+  if (m_pendingTriDataUpload &&
+      !addCopy(m_triDataBuf.Get(),
+               m_gpuTriData.data(),
+               static_cast<UINT64>(m_gpuTriData.size()) * sizeof(float))) {
+    m_error = "pending triangle-data upload overflow";
+    LogError("emit_pending_scene_delta_uploads: " + m_error);
+    return false;
+  }
+
+  std::array<D3D12_RESOURCE_BARRIER, 4> toCopy{};
+  for (UINT i = 0u; i < copyCount; ++i) {
+    std::memcpy(static_cast<uint8_t*>(m_uploadPtr) + copies[i].uploadOffset,
+                copies[i].data,
+                static_cast<std::size_t>(copies[i].size));
+    toCopy[i] = MakeTransitionBarrier(copies[i].resource,
+                                      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                      D3D12_RESOURCE_STATE_COPY_DEST);
+  }
+  commandList->ResourceBarrier(copyCount, toCopy.data());
+  for (UINT i = 0u; i < copyCount; ++i) {
+    commandList->CopyBufferRegion(copies[i].resource,
+                                  0,
+                                  m_uploadBuf.Get(),
+                                  copies[i].uploadOffset,
+                                  copies[i].size);
+  }
+
+  std::array<D3D12_RESOURCE_BARRIER, 4> toSrv = toCopy;
+  for (UINT i = 0u; i < copyCount; ++i) {
+    toSrv[i].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    toSrv[i].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+  }
+  commandList->ResourceBarrier(copyCount, toSrv.data());
+
+  m_pendingMaterialUpload = false;
+  m_pendingLightUpload = false;
+  m_pendingInstanceMaterialUpload = false;
+  m_pendingTriDataUpload = false;
+  if (nextUploadOffsetBytes != nullptr) {
+    *nextUploadOffsetBytes = align(cursor);
+  }
   return true;
 }
 
@@ -1632,6 +1805,10 @@ void D3D12GpuPathTracer::destroy_scene_buffers() {
   m_pendingInstanceUpload = false;
   m_pendingInstanceUploadFirst = 0u;
   m_pendingInstanceUploadCount = 0u;
+  m_pendingMaterialUpload = false;
+  m_pendingLightUpload = false;
+  m_pendingInstanceMaterialUpload = false;
+  m_pendingTriDataUpload = false;
   m_srvUavHeap.Reset();
   m_sceneUploaded = false;
 }

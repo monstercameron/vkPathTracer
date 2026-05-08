@@ -332,7 +332,16 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
     return false;
   }
   constexpr UINT64 kMotionUploadOffset = 4096u;
-  if (!emit_pending_instance_upload(m_cmdList.Get(), kMotionUploadOffset)) {
+  UINT64 nextUploadOffset = kMotionUploadOffset;
+  if (!emit_pending_instance_upload(m_cmdList.Get(),
+                                    kMotionUploadOffset,
+                                    &nextUploadOffset)) {
+    LogError("render_sample_batch: " + m_error);
+    return false;
+  }
+  if (!emit_pending_scene_delta_uploads(m_cmdList.Get(),
+                                        nextUploadOffset,
+                                        &nextUploadOffset)) {
     LogError("render_sample_batch: " + m_error);
     return false;
   }
