@@ -1,5 +1,5 @@
-// Stage B Qt orchestration stress gate. Drives 4 deterministic phases
-// (idle, camera_pan, transform_drag, lua_motion) on the polled Qt render loop
+// Stage B Qt orchestration stress gate. Drives deterministic phases
+// (idle, camera_pan, transform_drag, lua_motion, game_mode_walk, game_mode_reenter) on the polled Qt render loop
 // and captures Stage A metrics deltas, then writes a JSON report and closes
 // the window. This file is included once inside the Qt branch of AppRuntime.
 #ifdef PT_ENABLE_QT
@@ -16,7 +16,9 @@
         CameraPan = 1,
         TransformDrag = 2,
         LuaMotion = 3,
-        Done = 4,
+        GameModeWalk = 4,
+        GameModeReenter = 5,
+        Done = 6,
       };
 
       const auto qtStressPhaseDuration = std::chrono::milliseconds(
@@ -24,11 +26,13 @@
       const auto qtStressTickInterval = std::chrono::milliseconds(16); // ~60Hz
 
       QtStressPhaseId qtStressPhase = QtStressPhaseId::Idle;
-      std::array<QtStressPhaseRecord, 4> qtStressRecords{};
+      std::array<QtStressPhaseRecord, 6> qtStressRecords{};
       qtStressRecords[0].name = "idle";
       qtStressRecords[1].name = "camera_pan";
       qtStressRecords[2].name = "transform_drag";
       qtStressRecords[3].name = "lua_motion";
+      qtStressRecords[4].name = "game_mode_walk";
+      qtStressRecords[5].name = "game_mode_reenter";
 
       auto qtStressNow = std::chrono::steady_clock::now();
       auto qtStressPhaseStart = qtStressNow;
@@ -69,6 +73,8 @@
         qtStressLuaBaseTranslation = qtStressDragBaseTranslation;
       }
       float qtStressLuaPhaseSec = 0.0f;
+      bool qtStressGameFireHeld = false;
+      bool qtStressGameModePhaseEntered = false;
 
       auto qtStressCaptureBefore = [&](QtStressPhaseRecord& rec) {
         rec.before = vkpt::core::metrics::MetricsRegistry::instance().snapshot_all();
@@ -144,6 +150,81 @@
         qtPublishRenderSnapshotForBackground(false, true, false, false);
       };
 
+      // Game-mode walk: enter Play mode and synthesize a held W key so the
+      // scene's gameplay scripts own movement, matching a user pressing F1+W.
+      // Editor FPS mode is intentionally kept off; running both the editor FPS
+      // solver and the Lua FPS camera double-publishes camera updates and does
+      // not represent Play-mode input ownership.
+      auto qtStressEnterGameMode = [&]() {
+        if (!qtIsPlayMode()) {
+          qtSetGameMode(true, qtFrameCount, "qt stress gate");
+        }
+        qtFpsMode = false;
+        qtLeftMouseDown = false;
+        qtRightMouseDown = true;
+        qtStressGameFireHeld = false;
+        if (qtWindow != nullptr) {
+          qtWindow->emit_mouse_button(1, true, 320, 180);
+        }
+        qtKeysDown.insert('W');
+        logger.log(vkpt::log::Severity::Info, "app",
+                   "qt_stress_gate game_mode_walk entered",
+                   {{"frame", std::to_string(qtFrameCount)},
+                    {"runtime_mode", std::string(qtRuntimeModeName())},
+                    {"scripts_running", qtScriptsRunning() ? "true" : "false"},
+                    {"fps_mode", qtFpsMode ? "true" : "false"}});
+      };
+      auto qtStressExitGameMode = [&]() {
+        if (qtStressGameFireHeld && qtWindow != nullptr) {
+          qtWindow->emit_mouse_button(0, false, 320, 180);
+        }
+        qtStressGameFireHeld = false;
+        qtLeftMouseDown = false;
+        if (qtRightMouseDown && qtWindow != nullptr) {
+          qtWindow->emit_mouse_button(1, false, 320, 180);
+        }
+        qtRightMouseDown = false;
+        qtKeysDown.erase('W');
+        qtFpsMode = false;
+        if (qtIsPlayMode()) {
+          qtSetGameMode(false, qtFrameCount, "qt stress gate");
+        }
+        logger.log(vkpt::log::Severity::Info, "app",
+                   "qt_stress_gate game_mode_walk exited",
+                   {{"frame", std::to_string(qtFrameCount)},
+                    {"runtime_mode", std::string(qtRuntimeModeName())},
+                    {"scripts_running", qtScriptsRunning() ? "true" : "false"},
+                    {"fps_mode", "false"}});
+      };
+      auto qtStressTickGameModeWalk = [&](float t_seconds) {
+        ++qtStressTickSeq;
+        // Let the authored FPS scene fire straight ahead first so the
+        // projectile impact path is covered, then resume mouse input samples.
+        if (t_seconds > 0.70f) {
+          qtStressSynthesizeMouseMove(qtStressTickSeq);
+        }
+        float fireEnd = static_cast<float>(qtStressPhaseSeconds) - 0.25f;
+        if (fireEnd < 0.55f) {
+          fireEnd = 0.55f;
+        }
+        const bool fireActive = t_seconds >= 0.35f && t_seconds <= fireEnd;
+        const int firePulseTick = static_cast<int>((t_seconds - 0.35f) * 100.0f);
+        const bool fireHeld = fireActive && ((firePulseTick % 28) < 16);
+        if (fireHeld != qtStressGameFireHeld) {
+          qtStressGameFireHeld = fireHeld;
+          qtLeftMouseDown = fireHeld;
+          if (qtWindow != nullptr) {
+            qtWindow->emit_mouse_button(0, fireHeld, 320, 180);
+          }
+          logger.log(vkpt::log::Severity::Info, "app",
+                     "qt_stress_gate game_mode_fire pulse",
+                     {{"frame", std::to_string(qtFrameCount)},
+                      {"pressed", fireHeld ? "true" : "false"}});
+        } else {
+          qtLeftMouseDown = fireHeld;
+        }
+      };
+
       auto qtStressTickLuaMotion = [&](float t_seconds) {
         ++qtStressTickSeq;
         // Lua phase intentionally does NOT synthesize a mouse move — it models
@@ -172,6 +253,13 @@
           qtStressBeforeCaptured = true;
           qtStressPhaseStart = now;
           qtStressLastTick = now - qtStressTickInterval;
+          if (qtStressPhase == QtStressPhaseId::GameModeWalk ||
+              qtStressPhase == QtStressPhaseId::GameModeReenter) {
+            if (!qtStressGameModePhaseEntered) {
+              qtStressEnterGameMode();
+              qtStressGameModePhaseEntered = true;
+            }
+          }
         }
 
         const bool tickReady = (now - qtStressLastTick) >= qtStressTickInterval;
@@ -189,6 +277,10 @@
               qtStressLuaPhaseSec = t_phase;
               qtStressTickLuaMotion(t_phase);
               break;
+            case QtStressPhaseId::GameModeWalk:
+            case QtStressPhaseId::GameModeReenter:
+              qtStressTickGameModeWalk(t_phase);
+              break;
             case QtStressPhaseId::Done: break;
           }
           qtStressLastTick = now;
@@ -197,12 +289,13 @@
         if ((now - qtStressPhaseStart) >= qtStressPhaseDuration) {
           qtStressCaptureAfter(rec, qtStressPhaseStart, now);
           qtStressBeforeCaptured = false;
-          // End the simulated gizmo drag when leaving TransformDrag — leaves
-          // the editor in a clean state for the LuaMotion phase, which models
-          // a different mutation source (script tick) and should NOT have an
-          // active gizmo so we measure the non-drag path for comparison.
           if (qtStressPhase == QtStressPhaseId::TransformDrag) {
             qtGizmoDrag = {};
+          }
+          if (qtStressPhase == QtStressPhaseId::GameModeWalk ||
+              qtStressPhase == QtStressPhaseId::GameModeReenter) {
+            qtStressExitGameMode();
+            qtStressGameModePhaseEntered = false;
           }
           qtStressPhase = static_cast<QtStressPhaseId>(static_cast<int>(qtStressPhase) + 1);
           if (qtStressPhase == QtStressPhaseId::Done) {
@@ -267,7 +360,10 @@
           case vkpt::core::metrics::Kind::HistogramKind: {
             std::uint64_t count_delta = after->hist.count -
                 (before ? before->hist.count : 0ull);
+            std::uint64_t sum_delta = after->hist.sum -
+                (before ? before->hist.sum : 0ull);
             os << "{\"count_delta\":" << count_delta
+               << ",\"sum_delta\":" << sum_delta
                << ",\"p50\":" << after->hist.p50
                << ",\"p95\":" << after->hist.p95
                << ",\"p99\":" << after->hist.p99
@@ -278,7 +374,7 @@
         }
       };
 
-      const std::array<std::string_view, 18> qtStressTrackedMetrics = {
+      const std::array<std::string_view, 51> qtStressTrackedMetrics = {
         "vkp.ui.paint_us",
         "vkp.ui.repaint_total",
         "vkp.ui.input_event_total",
@@ -297,6 +393,39 @@
         "vkp.tracer.tile_latency_us",
         "vkp.render.handoff.published_total",
         "vkp.render.handoff.dropped_total",
+        "vkp.qt.fps_movement_us",
+        "vkp.qt.scripts_us",
+        "vkp.qt.physics_apply_us",
+        "vkp.qt.snapshot_flush_us",
+        "vkp.physics.qt_apply_us",
+        "vkp.ui.preview_dock_us",
+        "vkp.ui.preview_script_us",
+        "vkp.ui.preview_status_us",
+        "vkp.qt.script_world_us",
+        "vkp.qt.script_context_us",
+        "vkp.qt.script_lua_dispatch_us",
+        "vkp.qt.script_state_sync_us",
+        "vkp.qt.script_apply_commands_us",
+        "vkp.qt.script_total_us",
+        "vkp.qt.script_command_classify_us",
+        "vkp.qt.script_command_mutate_us",
+        "vkp.qt.script_command_replay_us",
+        "vkp.qt.script_world_snapshot_us",
+        "vkp.qt.script_command_transform_us",
+        "vkp.qt.script_command_light_us",
+        "vkp.qt.script_command_material_us",
+        "vkp.qt.script_command_camera_us",
+        "vkp.qt.script_command_reload_us",
+        "vkp.qt.script_command_apply_us",
+        "vkp.qt.loop_poll_us",
+        "vkp.qt.loop_input_us",
+        "vkp.qt.loop_physics_us",
+        "vkp.qt.loop_selection_us",
+        "vkp.qt.loop_render_us",
+        "vkp.qt.loop_ui_us",
+        "vkp.qt.loop_frame_work_us",
+        "vkp.qt.loop_pace_wait_us",
+        "vkp.qt.loop_late_us",
       };
 
       const std::array<std::string_view, 4> qtStressPublishBySource = {
@@ -314,6 +443,30 @@
         js << "{\n";
         js << "  \"scene\": \"" << qtStressJsonEscape(config.scene_path.value) << "\",\n";
         js << "  \"phase_seconds\": " << qtStressPhaseSeconds << ",\n";
+        js << "  \"platform\": \"" << qtStressJsonEscape(config.platform.value) << "\",\n";
+        js << "  \"renderer_path\": \"" << qtStressJsonEscape(qtRendererPath) << "\",\n";
+        js << "  \"performance_culling_enabled\": "
+           << (qtSceneDocument.performance_culling.enabled ? "true" : "false") << ",\n";
+        js << "  \"source_mesh_instances\": " << qtStressSourceMeshStats.instances << ",\n";
+        js << "  \"source_mesh_vertices\": " << qtStressSourceMeshStats.vertices << ",\n";
+        js << "  \"source_mesh_triangles\": " << qtStressSourceMeshStats.triangles << ",\n";
+        js << "  \"rt_instances\": " << qtStressRtMeshStats.instances << ",\n";
+        js << "  \"rt_vertices\": " << qtStressRtMeshStats.vertices << ",\n";
+        js << "  \"rt_triangles\": " << qtStressRtMeshStats.triangles << ",\n";
+        js << "  \"culled_mesh_instances\": "
+           << (qtStressSourceMeshStats.instances > qtStressRtMeshStats.instances
+                   ? qtStressSourceMeshStats.instances - qtStressRtMeshStats.instances
+                   : 0u) << ",\n";
+        js << "  \"culled_mesh_vertices\": "
+           << (qtStressSourceMeshStats.vertices > qtStressRtMeshStats.vertices
+                   ? qtStressSourceMeshStats.vertices - qtStressRtMeshStats.vertices
+                   : 0u) << ",\n";
+        js << "  \"culled_mesh_triangles\": "
+           << (qtStressSourceMeshStats.triangles > qtStressRtMeshStats.triangles
+                   ? qtStressSourceMeshStats.triangles - qtStressRtMeshStats.triangles
+                   : 0u) << ",\n";
+        js << "  \"culling_ballast_instances\": " << qtStressBallastMeshStats.instances << ",\n";
+        js << "  \"culling_ballast_triangles\": " << qtStressBallastMeshStats.triangles << ",\n";
         js << "  \"phases\": [\n";
         std::uint64_t worstP99 = 0u;
         std::string worstName;

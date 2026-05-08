@@ -25,6 +25,131 @@
 
 namespace vkpt::app {
 
+namespace {
+
+struct PhysicsGateMeshStats {
+  std::size_t instances = 0u;
+  std::size_t vertices = 0u;
+  std::size_t triangles = 0u;
+};
+
+vkpt::core::StableId MaxAuthoredSceneId(const vkpt::scene::SceneDocument& document) {
+  vkpt::core::StableId maxId = 0u;
+  for (const auto& material : document.materials) maxId = std::max(maxId, material.id);
+  for (const auto& geometry : document.geometry) maxId = std::max(maxId, geometry.id);
+  for (const auto& entity : document.entities) maxId = std::max(maxId, entity.id);
+  for (const auto& asset : document.assets) maxId = std::max(maxId, asset.id);
+  for (const auto& emitter : document.particle_emitters) maxId = std::max(maxId, emitter.id);
+  for (const auto& sdf : document.sdf_primitives) maxId = std::max(maxId, sdf.id);
+  for (const auto& camera : document.cameras) maxId = std::max(maxId, camera.id);
+  for (const auto& light : document.lights) maxId = std::max(maxId, light.id);
+  return maxId;
+}
+
+PhysicsGateMeshStats CountAuthoredMeshStats(const vkpt::scene::SceneDocument& document) {
+  std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneGeometryDefinition*> geometryById;
+  geometryById.reserve(document.geometry.size());
+  for (const auto& geometry : document.geometry) {
+    geometryById[geometry.id] = &geometry;
+  }
+
+  PhysicsGateMeshStats stats;
+  for (const auto& entity : document.entities) {
+    if (!entity.visible || !entity.has_mesh) {
+      continue;
+    }
+    const auto found = geometryById.find(entity.mesh.mesh_id);
+    if (found == geometryById.end()) {
+      continue;
+    }
+    const auto& geometry = *found->second;
+    if (geometry.vertices.empty() || geometry.indices.empty() ||
+        geometry.indices.size() % 3u != 0u) {
+      continue;
+    }
+    ++stats.instances;
+    stats.vertices += geometry.vertices.size();
+    stats.triangles += geometry.indices.size() / 3u;
+  }
+  return stats;
+}
+
+PhysicsGateMeshStats AppendOffscreenCullingBallast(vkpt::scene::SceneDocument& document) {
+  constexpr uint32_t kGrid = 64u;
+  constexpr uint32_t kInstances = 128u;
+  vkpt::core::StableId nextId =
+      std::max<vkpt::core::StableId>(900000000ull, MaxAuthoredSceneId(document) + 1u);
+
+  vkpt::core::StableId materialId = 0u;
+  if (!document.materials.empty()) {
+    materialId = document.materials.front().id;
+  } else {
+    vkpt::scene::SceneMaterialDefinition material;
+    material.id = nextId++;
+    material.name = "Physics gate ballast";
+    material.family = "diffuse";
+    material.albedo = {0.45f, 0.48f, 0.52f};
+    document.materials.push_back(material);
+    materialId = material.id;
+  }
+
+  vkpt::scene::SceneGeometryDefinition geometry;
+  geometry.id = nextId++;
+  geometry.primitive = "triangle";
+  geometry.material_id = materialId;
+  geometry.tags.push_back("performance_culling_ballast");
+  geometry.vertices.reserve(static_cast<std::size_t>(kGrid + 1u) * (kGrid + 1u));
+  geometry.indices.reserve(static_cast<std::size_t>(kGrid) * kGrid * 6u);
+  for (uint32_t z = 0u; z <= kGrid; ++z) {
+    for (uint32_t x = 0u; x <= kGrid; ++x) {
+      geometry.vertices.push_back(vkpt::scene::Vec3{
+          (static_cast<float>(x) - static_cast<float>(kGrid) * 0.5f) * 0.5f,
+          0.0f,
+          (static_cast<float>(z) - static_cast<float>(kGrid) * 0.5f) * 0.5f});
+    }
+  }
+  for (uint32_t z = 0u; z < kGrid; ++z) {
+    for (uint32_t x = 0u; x < kGrid; ++x) {
+      const uint32_t row0 = z * (kGrid + 1u);
+      const uint32_t row1 = (z + 1u) * (kGrid + 1u);
+      const uint32_t i0 = row0 + x;
+      const uint32_t i1 = row0 + x + 1u;
+      const uint32_t i2 = row1 + x;
+      const uint32_t i3 = row1 + x + 1u;
+      geometry.indices.insert(geometry.indices.end(), {i0, i2, i1, i1, i2, i3});
+    }
+  }
+
+  const auto geometryId = geometry.id;
+  const std::size_t trianglesPerInstance = geometry.indices.size() / 3u;
+  const std::size_t verticesPerInstance = geometry.vertices.size();
+  document.geometry.push_back(std::move(geometry));
+
+  for (uint32_t i = 0u; i < kInstances; ++i) {
+    vkpt::scene::SceneEntityDefinition entity;
+    entity.id = nextId++;
+    entity.name = "Performance Culling Ballast " + std::to_string(i);
+    entity.visible = true;
+    entity.has_transform = true;
+    entity.transform.translation = {
+        600.0f + static_cast<float>(i % 16u) * 28.0f,
+        -6.0f,
+        420.0f + static_cast<float>(i / 16u) * 28.0f};
+    entity.transform.scale = {1.0f, 1.0f, 1.0f};
+    entity.has_mesh = true;
+    entity.mesh.mesh_id = geometryId;
+    entity.mesh.material_id = materialId;
+    document.entities.push_back(std::move(entity));
+  }
+
+  return PhysicsGateMeshStats{
+      kInstances,
+      verticesPerInstance * static_cast<std::size_t>(kInstances),
+      trianglesPerInstance * static_cast<std::size_t>(kInstances)};
+}
+
+}  // namespace
+
 int RunDynamicPhysicsPerformanceGate(std::string scenePath, std::string backend,
                                      uint32_t width, uint32_t height,
                                      uint32_t frames) {
@@ -55,6 +180,11 @@ int RunDynamicPhysicsPerformanceGate(std::string scenePath, std::string backend,
   std::size_t physicsDynamicBodies = 0u;
   std::size_t liftedDynamicBodies = 0u;
   std::size_t physicsWrites = 0u;
+  PhysicsGateMeshStats sourceMeshStats;
+  PhysicsGateMeshStats ballastMeshStats;
+  std::size_t rtInstances = 0u;
+  std::size_t rtVertices = 0u;
+  std::size_t rtTriangles = 0u;
   uint32_t successfulUpdates = 0u;
   uint32_t rebuildCount = 0u;
   double physicsStepMs = 0.0;
@@ -82,6 +212,21 @@ int RunDynamicPhysicsPerformanceGate(std::string scenePath, std::string backend,
         << "  \"resolution\": { \"width\": " << width
         << ", \"height\": " << height << " },\n"
         << "  \"frames\": " << frames << ",\n"
+        << "  \"performance_culling_enabled\": true,\n"
+        << "  \"source_mesh_instances\": " << sourceMeshStats.instances << ",\n"
+        << "  \"source_mesh_vertices\": " << sourceMeshStats.vertices << ",\n"
+        << "  \"source_mesh_triangles\": " << sourceMeshStats.triangles << ",\n"
+        << "  \"rt_instances\": " << rtInstances << ",\n"
+        << "  \"rt_vertices\": " << rtVertices << ",\n"
+        << "  \"rt_triangles\": " << rtTriangles << ",\n"
+        << "  \"culled_mesh_instances\": "
+        << (sourceMeshStats.instances > rtInstances ? sourceMeshStats.instances - rtInstances : 0u) << ",\n"
+        << "  \"culled_mesh_vertices\": "
+        << (sourceMeshStats.vertices > rtVertices ? sourceMeshStats.vertices - rtVertices : 0u) << ",\n"
+        << "  \"culled_mesh_triangles\": "
+        << (sourceMeshStats.triangles > rtTriangles ? sourceMeshStats.triangles - rtTriangles : 0u) << ",\n"
+        << "  \"culling_ballast_instances\": " << ballastMeshStats.instances << ",\n"
+        << "  \"culling_ballast_triangles\": " << ballastMeshStats.triangles << ",\n"
         << "  \"dynamic_instances\": " << dynamicInstances << ",\n"
         << "  \"physics_dynamic_bodies\": " << physicsDynamicBodies << ",\n"
         << "  \"lifted_dynamic_bodies\": " << liftedDynamicBodies << ",\n"
@@ -120,6 +265,17 @@ int RunDynamicPhysicsPerformanceGate(std::string scenePath, std::string backend,
     return fail("scene parse failed");
   }
   auto document = parseResult.value();
+  document.performance_culling.enabled = true;
+  document.performance_culling.frustum = true;
+  document.performance_culling.distance = true;
+  document.performance_culling.cull_dynamic = true;
+  document.performance_culling.aspect_ratio =
+      static_cast<float>(width) / static_cast<float>(height);
+  if (document.performance_culling.max_distance <= 0.0f) {
+    document.performance_culling.max_distance = 180.0f;
+  }
+  ballastMeshStats = AppendOffscreenCullingBallast(document);
+  sourceMeshStats = CountAuthoredMeshStats(document);
   for (auto& entity : document.entities) {
     if (!entity.has_physics_body ||
         !entity.physics_body.enabled ||
@@ -144,6 +300,9 @@ int RunDynamicPhysicsPerformanceGate(std::string scenePath, std::string backend,
     return fail("scene RT conversion failed");
   }
   auto rtScene = sceneResult.value();
+  rtInstances = rtScene.instances.size();
+  rtVertices = rtScene.vertices.size();
+  rtTriangles = rtScene.indices.size() / 3u;
 
   // Transform writes arrive by ECS entity id, while D3D12 updates require the
   // compact RT instance index. Build the bridge once before timing the loop.
@@ -290,13 +449,23 @@ int RunDynamicPhysicsPerformanceGate(std::string scenePath, std::string backend,
   physicsStepMs /= static_cast<double>(frames);
   transformPublishMs /= static_cast<double>(successfulUpdates);
   renderMs = std::max(0.0001, renderMs);
-  passed = rebuildCount == 0u && totalRays > 0u;
+  const std::size_t culledMeshTriangles =
+      sourceMeshStats.triangles > rtTriangles ? sourceMeshStats.triangles - rtTriangles : 0u;
+  const bool cullingWorked =
+      ballastMeshStats.triangles == 0u || culledMeshTriangles >= ballastMeshStats.triangles;
+  passed = rebuildCount == 0u && totalRays > 0u && cullingWorked;
   if (!passed) {
-    failure = "gate counters did not meet pass criteria";
+    failure = cullingWorked ? "gate counters did not meet pass criteria"
+                            : "performance culling did not reject offscreen ballast";
   }
   writeArtifact();
   std::cout << "dynamic physics gate: " << (passed ? "ok" : "fail") << "\n";
   std::cout << "artifact: " << artifactPath.string() << "\n";
+  std::cout << "source_mesh_triangles: " << sourceMeshStats.triangles << "\n";
+  std::cout << "rt_triangles: " << rtTriangles << "\n";
+  std::cout << "culled_mesh_triangles: "
+            << (sourceMeshStats.triangles > rtTriangles ? sourceMeshStats.triangles - rtTriangles : 0u)
+            << "\n";
   std::cout << "dynamic_instances: " << dynamicInstances << "\n";
   std::cout << "physics_dynamic_bodies: " << physicsDynamicBodies << "\n";
   std::cout << "transform_updates: " << successfulUpdates << "\n";
