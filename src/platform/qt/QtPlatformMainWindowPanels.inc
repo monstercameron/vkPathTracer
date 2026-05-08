@@ -240,10 +240,15 @@ class QtMainWindow final : public QMainWindow {
         appendSignatureField(out, option);
       }
       out << ']';
-      out << property.minimum << ',' << property.maximum << ','
-          << property.step << ',' << property.default_value << ','
-          << (property.has_numeric_range ? '1' : '0')
-          << (property.has_default ? '1' : '0');
+      const bool liveRuntimeValue = property.id.rfind("script.runtime.variable.", 0) == 0;
+      if (liveRuntimeValue) {
+        out << "live-runtime-value";
+      } else {
+        out << property.minimum << ',' << property.maximum << ','
+            << property.step << ',' << property.default_value << ','
+            << (property.has_numeric_range ? '1' : '0')
+            << (property.has_default ? '1' : '0');
+      }
       out << (property.editable ? '1' : '0') << (property.enabled ? '1' : '0') << ';';
     }
     return out.str();
@@ -675,6 +680,10 @@ class QtMainWindow final : public QMainWindow {
 
   static bool isButtonProperty(const QtDockProperty& property) {
     return property.editable && property.editor == "button";
+  }
+
+  static bool isListProperty(const QtDockProperty& property) {
+    return property.editor == "list";
   }
 
   static bool usesCompactPropertyTable(const QtDockPanel& panel) {

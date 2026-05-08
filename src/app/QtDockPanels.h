@@ -3,6 +3,7 @@
 #ifdef PT_ENABLE_QT
 
 #include "editor/UiModels.h"
+#include "audio/AudioSystem.h"
 #include "pathtracer/PathTracer.h"
 #include "platform/qt/QtPlatform.h"
 #include "render/interface/RenderContracts.h"
@@ -119,15 +120,19 @@ struct QtDockScriptRuntimeState {
   bool scripts_enabled = true;
   bool playing = false;
   bool benchmark_scripts_allowed = false;
+  std::string mode;
   std::string status = "idle";
   std::string last_hook = "none";
   vkpt::core::FrameIndex last_frame = 0u;
   std::uint64_t dispatch_count = 0u;
+  bool viewport_input_forwarding = false;
   vkpt::scripting::ScriptBindingSummary binding_summary{};
   vkpt::scripting::ScriptDispatchSummary last_dispatch{};
+  vkpt::audio::AudioDiagnostics audio{};
   std::vector<vkpt::scripting::ScriptBinding> bindings;
   std::vector<vkpt::scripting::ScriptDiagnostic> diagnostics;
   std::vector<vkpt::scripting::ScriptVariableSnapshot> variables;
+  std::vector<vkpt::scripting::ScriptBindingRuntimeState> runtime_states;
 };
 
 struct QtDockRayDeviceMetric {

@@ -228,6 +228,9 @@ class QtWindow final : public IWindow {
   void set_overlay_text(std::string_view text);
   void set_startup_splash_text(std::string_view text);
   void finish_startup_splash();
+  void show_runtime_loading_dialog(std::string_view title, std::string_view detail);
+  void set_runtime_loading_text(std::string_view text);
+  void finish_runtime_loading_dialog();
   void set_selection_overlay_boxes(const std::vector<QtSelectionOverlayBox>& boxes);
   void set_script_overlay_panels(const std::vector<QtScriptOverlayPanel>& panels);
   void set_viewport_cursor(QtViewportCursor cursor);
@@ -318,6 +321,7 @@ class QtWindow final : public IWindow {
   void show_startup_splash();
   void reveal_main_window_from_splash();
   void close_startup_splash(bool animated);
+  void close_runtime_loading_dialog(bool animated);
   void record_frame_presented(std::uint64_t frameId,
                               std::uint64_t generation,
                               std::size_t width,
@@ -340,6 +344,7 @@ class QtWindow final : public IWindow {
   QWidget* m_shell = nullptr;
   QWidget* m_widget = nullptr;
   QWidget* m_startupSplash = nullptr;
+  QWidget* m_runtimeLoadingDialog = nullptr;
   bool m_startupSplashActive = false;
   bool m_mainWindowRevealed = false;
   std::deque<InputEvent> m_events;

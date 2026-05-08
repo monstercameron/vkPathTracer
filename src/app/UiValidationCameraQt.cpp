@@ -201,6 +201,204 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                            [](const QtDockProperty& property) {
                              return property.label == "runtime status";
                            }));
+    vkpt::scene::SceneDocument scriptDoc;
+    vkpt::scene::SceneEntityDefinition scriptedEntity;
+    scriptedEntity.id = 901;
+    scriptedEntity.name = "Scripted Probe";
+    scriptedEntity.script.script = "assets/scripts/probe.lua";
+    scriptedEntity.script.language = "lua";
+    scriptedEntity.script.entry = "default";
+    scriptedEntity.script.params["offset_x"] = "2.5";
+    scriptedEntity.script.params["enabled"] = "true";
+    scriptDoc.entities.push_back(scriptedEntity);
+    SelectionState scriptSelection;
+    scriptSelection.selected_entity_ids = {scriptedEntity.id};
+    scriptSelection.active_primary_entity = scriptedEntity.id;
+    QtDockScriptRuntimeState scriptRuntime;
+    scriptRuntime.mode = "live_edit";
+    scriptRuntime.status = "smoke runtime";
+    scriptRuntime.playing = false;
+    scriptRuntime.viewport_input_forwarding = true;
+    scriptRuntime.binding_summary.lua_compiled_in = true;
+    scriptRuntime.binding_summary.execution_available = true;
+    scriptRuntime.binding_summary.binding_count = 1u;
+    scriptRuntime.binding_summary.runnable_count = 1u;
+    vkpt::scripting::ScriptBinding binding;
+    binding.entity = scriptedEntity.id;
+    binding.stable_order = 0u;
+    binding.entity_name = scriptedEntity.name;
+    binding.source = scriptedEntity.script.script;
+    binding.language = "lua";
+    binding.entry = "default";
+    binding.module_id = "default";
+    binding.enabled = true;
+    binding.reload_on_save = true;
+    binding.params = scriptedEntity.script.params;
+    scriptRuntime.bindings.push_back(binding);
+    vkpt::scripting::ScriptBindingRuntimeState runtimeState;
+    runtimeState.entity = scriptedEntity.id;
+    runtimeState.last_hook = vkpt::scripting::ScriptLifecycleHook::OnUpdate;
+    runtimeState.last_frame = 12u;
+    runtimeState.command_count = 1u;
+    scriptRuntime.runtime_states.push_back(runtimeState);
+    vkpt::scripting::ScriptVariableSnapshot variable;
+    variable.entity = scriptedEntity.id;
+    variable.frame = 12u;
+    variable.hook = vkpt::scripting::ScriptLifecycleHook::OnUpdate;
+    variable.source = scriptedEntity.script.script;
+    variable.scope = "ctx";
+    variable.name = "offset_x";
+    variable.value = "2.5";
+    scriptRuntime.variables.push_back(variable);
+    vkpt::scripting::ScriptVariableSnapshot stringVariable = variable;
+    stringVariable.scope = "upvalue";
+    stringVariable.name = "CAMERA_NAME";
+    stringVariable.value = "\"Audio Demo Camera Listener\"";
+    scriptRuntime.variables.push_back(stringVariable);
+    vkpt::scripting::ScriptVariableSnapshot rangeVariable = variable;
+    rangeVariable.scope = "upvalue";
+    rangeVariable.name = "MIN_CAMERA_PITCH";
+    rangeVariable.value = "0.12";
+    scriptRuntime.variables.push_back(rangeVariable);
+    vkpt::scripting::ScriptVariableSnapshot listVariable = variable;
+    listVariable.scope = "script";
+    listVariable.name = "waypoints";
+    listVariable.value = "{1=\"alpha\", 2=\"bravo\"}";
+    scriptRuntime.variables.push_back(listVariable);
+    vkpt::scripting::ScriptDiagnostic diagnostic;
+    diagnostic.severity = vkpt::scripting::ScriptDiagnosticSeverity::Warning;
+    diagnostic.hook = vkpt::scripting::ScriptLifecycleHook::OnUpdate;
+    diagnostic.entity = scriptedEntity.id;
+    diagnostic.frame = 12u;
+    diagnostic.source = scriptedEntity.script.script;
+    diagnostic.message = "probe warning";
+    scriptRuntime.diagnostics.push_back(diagnostic);
+    const auto scriptScene = vkpt::pathtracer::BuildSceneDataFromDocument(scriptDoc);
+    check_true("script dock scene builds", scriptScene.has_value());
+    if (scriptScene) {
+      const auto scriptDockPanels = BuildQtDockPanels(scriptDoc,
+                                                      scriptScene.value(),
+                                                      vkpt::pathtracer::RenderSettings{},
+                                                      UiRuntimeState{},
+                                                      scriptSelection,
+                                                      CreateDefaultLayout(),
+                                                      BenchmarkPanelModel{},
+                                                      QtDockFrameStats{},
+                                                      QtDockDeviceStats{},
+                                                      0,
+                                                      std::array<bool, 4>{},
+                                                      &scriptRuntime);
+      const auto scriptDock = std::find_if(scriptDockPanels.begin(),
+                                           scriptDockPanels.end(),
+                                           [](const QtDockPanelContent& panel) {
+                                             return panel.id == "script_panel";
+                                           });
+      auto hasScriptProperty = [&](std::string_view id,
+                                   std::string_view editor = {}) {
+        return scriptDock != scriptDockPanels.end() &&
+               std::any_of(scriptDock->properties.begin(),
+                           scriptDock->properties.end(),
+                           [&](const QtDockProperty& property) {
+                             return property.id == id &&
+                                    (editor.empty() || property.editor == editor);
+                           });
+      };
+      auto hasAvailableScriptRow = [&]() {
+        return scriptDock != scriptDockPanels.end() &&
+               std::any_of(scriptDock->tree_rows.begin(),
+                           scriptDock->tree_rows.end(),
+                           [](const QtDockTreeRow& group) {
+                             return group.label.find("Available Lua Scripts") != std::string::npos &&
+                                    std::any_of(group.children.begin(),
+                                                group.children.end(),
+                                                [](const QtDockTreeRow& child) {
+                                                  return child.id.starts_with("script.asset.") &&
+                                                         child.icon == "script" &&
+                                                         child.activatable;
+                                                });
+                           });
+      };
+      check_true("script dock exposes attach detach new open reload controls",
+                 hasScriptProperty("script.selection.attach", "button") &&
+                 hasScriptProperty("script.selection.detach", "button") &&
+                 hasScriptProperty("script.actions.new_lua_script", "button") &&
+                 hasScriptProperty("script.actions.open_folder", "button") &&
+                 hasScriptProperty("script.selection.open", "button") &&
+                 hasScriptProperty("script.runtime.reload", "button") &&
+                 hasAvailableScriptRow());
+      check_true("script dock exposes future live play controls and runtime mode",
+                 hasScriptProperty("script.runtime.run_live", "button") &&
+                 hasScriptProperty("script.runtime.play", "button") &&
+                 hasScriptProperty("script.runtime.stop", "button") &&
+                 hasScriptProperty("script.runtime.send_viewport_input", "button") &&
+                 std::any_of(scriptDock->properties.begin(),
+                             scriptDock->properties.end(),
+                             [](const QtDockProperty& property) {
+                              return property.id == "script.runtime.mode" &&
+                                      property.value == "live_edit";
+                             }) &&
+                 std::any_of(scriptDock->properties.begin(),
+                             scriptDock->properties.end(),
+                             [](const QtDockProperty& property) {
+                               return property.id == "script.runtime.status" &&
+                                      property.value == "smoke runtime";
+                             }) &&
+                 std::any_of(scriptDock->properties.begin(),
+                             scriptDock->properties.end(),
+                             [](const QtDockProperty& property) {
+                               return property.id == "script.runtime.viewport_input" &&
+                                      property.value == "true";
+                             }) &&
+                 std::any_of(scriptDock->properties.begin(),
+                             scriptDock->properties.end(),
+                             [](const QtDockProperty& property) {
+                               return property.id == "script.runtime.playing" &&
+                                      property.editor == "toggle" &&
+                                      property.value == "true";
+                             }));
+      check_true("script dock exposes lifecycle hook controls",
+                 hasScriptProperty("script.runtime.dispatch_on_load", "button") &&
+                 hasScriptProperty("script.runtime.dispatch_on_spawn", "button") &&
+                 hasScriptProperty("script.runtime.dispatch_on_enable", "button") &&
+                 hasScriptProperty("script.runtime.dispatch_on_update", "button") &&
+                 hasScriptProperty("script.runtime.dispatch_fixed_update", "button") &&
+                 hasScriptProperty("script.runtime.dispatch_late_update", "button") &&
+                 hasScriptProperty("script.runtime.dispatch_on_disable", "button") &&
+                 hasScriptProperty("script.runtime.dispatch_on_destroy", "button") &&
+                 hasScriptProperty("script.runtime.dispatch_on_unload", "button"));
+      check_true("script dock exposes editable typed params and runtime state",
+                 hasScriptProperty("entity.901.script.path", "text") &&
+                 hasScriptProperty("entity.901.script.language", "dropdown") &&
+                 hasScriptProperty("entity.901.script.enabled", "toggle") &&
+                 hasScriptProperty("entity.901.script.param.offset_x", "number") &&
+                 hasScriptProperty("entity.901.script.param.enabled", "toggle") &&
+                 std::any_of(scriptDock->properties.begin(),
+                             scriptDock->properties.end(),
+                             [](const QtDockProperty& property) {
+                               return property.label == "runtime 1" &&
+                                      property.value.find("cmds=1") != std::string::npos;
+                             }) &&
+                 std::any_of(scriptDock->properties.begin(),
+                             scriptDock->properties.end(),
+                             [](const QtDockProperty& property) {
+                               return property.label == "diagnostic 1" &&
+                               property.value.find("probe warning") != std::string::npos;
+                             }));
+      auto hasVariableControl = [&](std::string_view label,
+                                    std::string_view editor) {
+        return scriptDock != scriptDockPanels.end() &&
+               std::any_of(scriptDock->properties.begin(),
+                           scriptDock->properties.end(),
+                           [&](const QtDockProperty& property) {
+                             return property.label == label && property.editor == editor;
+                           });
+      };
+      check_true("script dock labels captured variables by name with typed controls",
+                 hasVariableControl("offset_x", "number") &&
+                 hasVariableControl("CAMERA_NAME", "text") &&
+                 hasVariableControl("MIN_CAMERA_PITCH", "slider") &&
+                 hasVariableControl("waypoints", "list"));
+    }
     QtDockFrameStats fpsFrame;
     fpsFrame.camera_mode = "fps";
     fpsFrame.fps_player_grounded = true;
@@ -238,6 +436,70 @@ void RunUiCameraAndQtDockSmokeChecks(const UiSmokeCheckFn& check_true) {
                              return property.id == "camera.mode.fps_toggle" &&
                                     property.value == "Exit FPS";
                            }));
+  }
+
+  {
+    ViewportMouseClickState clickState;
+    BeginViewportMouseClick(clickState,
+                            ViewportMouseInputMode::Editor,
+                            0,
+                            10.0f,
+                            10.0f);
+    auto clickResult = EndViewportMouseClick(clickState,
+                                             ViewportMouseInputMode::Editor,
+                                             0,
+                                             11.0f,
+                                             10.5f,
+                                             6.0f);
+    check_true("viewport click state allows editor selection",
+               clickResult.editor_pick_allowed && !clickResult.suppressed_editor_pick);
+
+    BeginViewportMouseClick(clickState,
+                            ViewportMouseInputMode::GameModeScript,
+                            0,
+                            20.0f,
+                            20.0f);
+    clickResult = EndViewportMouseClick(clickState,
+                                        ViewportMouseInputMode::GameModeScript,
+                                        0,
+                                        20.5f,
+                                        20.0f,
+                                        6.0f);
+    check_true("viewport click state sends game clicks to scripts",
+               !clickResult.editor_pick_allowed &&
+               clickResult.game_mode_click &&
+               clickResult.suppressed_editor_pick);
+
+    BeginViewportMouseClick(clickState,
+                            ViewportMouseInputMode::GameModeScript,
+                            0,
+                            30.0f,
+                            30.0f);
+    clickResult = EndViewportMouseClick(clickState,
+                                        ViewportMouseInputMode::Editor,
+                                        0,
+                                        30.0f,
+                                        30.0f,
+                                        6.0f);
+    check_true("viewport click state keeps game-mode ownership through release",
+               !clickResult.editor_pick_allowed &&
+               clickResult.game_mode_click &&
+               clickResult.suppressed_editor_pick);
+
+    BeginViewportMouseClick(clickState,
+                            ViewportMouseInputMode::Editor,
+                            0,
+                            40.0f,
+                            40.0f);
+    (void)UpdateViewportMouseClickDrag(clickState, 55.0f, 40.0f);
+    clickResult = EndViewportMouseClick(clickState,
+                                        ViewportMouseInputMode::Editor,
+                                        0,
+                                        55.0f,
+                                        40.0f,
+                                        6.0f);
+    check_true("viewport click state rejects editor drag selection",
+               !clickResult.editor_pick_allowed && clickResult.drag_pixels > 6.0f);
   }
 
   {

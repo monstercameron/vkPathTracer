@@ -56,6 +56,43 @@ struct ViewportPickResult {
   float distance = 0.0f;
 };
 
+enum class ViewportMouseInputMode {
+  Editor,
+  FpsCamera,
+  GameModeScript,
+};
+
+enum class ViewportMouseClickOwner {
+  None,
+  EditorSelection,
+  FpsCamera,
+  GameModeScript,
+  NonPrimaryButton,
+};
+
+enum class ViewportMouseClickPhase {
+  Idle,
+  Pressed,
+  Dragging,
+};
+
+struct ViewportMouseClickState {
+  ViewportMouseClickPhase phase = ViewportMouseClickPhase::Idle;
+  ViewportMouseClickOwner owner = ViewportMouseClickOwner::None;
+  int button = -1;
+  float press_x = 0.0f;
+  float press_y = 0.0f;
+  float drag_pixels = 0.0f;
+};
+
+struct ViewportMouseClickResult {
+  ViewportMouseClickOwner owner = ViewportMouseClickOwner::None;
+  bool editor_pick_allowed = false;
+  bool game_mode_click = false;
+  bool suppressed_editor_pick = false;
+  float drag_pixels = 0.0f;
+};
+
 struct FpsPlayerState {
   bool initialized = false;
   vkpt::pathtracer::Vec3 feet_position{};
@@ -259,6 +296,20 @@ std::optional<ViewportPickResult> PickViewportObject(const std::vector<ViewportP
                                                      float width,
                                                      float height,
                                                      float renderAspect = 0.0f);
+void ResetViewportMouseClick(ViewportMouseClickState& state);
+void BeginViewportMouseClick(ViewportMouseClickState& state,
+                             ViewportMouseInputMode mode,
+                             int button,
+                             float x,
+                             float y);
+float UpdateViewportMouseClickDrag(ViewportMouseClickState& state, float x, float y);
+void MarkViewportMouseClickDrag(ViewportMouseClickState& state);
+ViewportMouseClickResult EndViewportMouseClick(ViewportMouseClickState& state,
+                                               ViewportMouseInputMode currentMode,
+                                               int button,
+                                               float x,
+                                               float y,
+                                               float clickThresholdPixels);
 vkpt::platform::QtViewportCursor CursorForGizmoHit(const ViewportGizmoHit& hit);
 float ScreenDistance(float ax, float ay, float bx, float by);
 bool SameGizmoHandle(const std::optional<ViewportGizmoHit>& a,

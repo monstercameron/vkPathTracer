@@ -6,6 +6,7 @@
       constexpr auto kQtCanvasRateWindow = std::chrono::milliseconds(1500);
       constexpr auto kQtCanvasRateMinWindow = std::chrono::milliseconds(750);
       constexpr auto kQtStatusBarRefreshInterval = std::chrono::milliseconds(250);
+      constexpr auto kQtDockPanelLiveScriptRefreshInterval = std::chrono::milliseconds(100);
       constexpr auto kQtDockPanelDirtyRefreshInterval = std::chrono::milliseconds(500);
       constexpr auto kQtDockPanelIdleRefreshInterval = std::chrono::milliseconds(5000);
       auto qtUpdateCanvasFrameRate =
@@ -107,18 +108,22 @@
         stats.tracer_ready = qtTracerReady;
         stats.preview_status = qtPreviewStatus;
         stats.render_mode = qtTracerReady
-            ? (qtScriptState.playing
-                   ? (qtUseBg ? std::string("game (background thread)") : std::string("game (event loop)"))
+            ? (qtScriptsRunning()
+                   ? (qtUseBg
+                          ? std::string(qtIsPlayMode() ? "play (background thread)" : "live edit (background thread)")
+                          : std::string(qtIsPlayMode() ? "play (event loop)" : "live edit (event loop)"))
                    : (qtUseBg ? std::string("editor (background thread)") : std::string("editor (event loop)")))
             : std::string("off");
         stats.publish_cap = qtUseBg
             ? (std::to_string(qtPreviewPublishHz) + " fps")
             : std::string("event loop");
-        stats.camera_mode = qtScriptState.playing
-            ? std::string("game")
+        stats.camera_mode = qtIsPlayMode()
+            ? std::string("play")
+            : (qtIsLiveEditMode()
+            ? std::string("live edit")
             : (qtFpsMode
             ? std::string("fps")
-            : (qtEnableAutoOrbit ? std::string("orbit") : std::string("authored")));
+            : (qtEnableAutoOrbit ? std::string("orbit") : std::string("authored"))));
         stats.fps_player_grounded = qtFpsPlayer.grounded;
         stats.fps_player_crouching = qtFpsPlayer.crouching;
         stats.fps_player_running = qtFpsPlayer.running;
@@ -203,7 +208,9 @@
         ui_runtime_state.spp_accumulated = frameStats.sample_count;
         ui_runtime_state.frame_ms = frameStats.canvas_frame_ms;
         ui_runtime_state.fps = frameStats.canvas_fps;
-        ui_runtime_state.background_job_count = qtUseBg ? 1u : 0u;
+        ui_runtime_state.background_job_count =
+            (qtUseBg ? 1u : 0u) +
+            ((qtSceneLoadJob && qtSceneLoadJob->active.load(std::memory_order_relaxed)) ? 1u : 0u);
       };
       auto syncQtStatusBar = [&](bool force) {
         if (qtWindow == nullptr) {
@@ -230,9 +237,12 @@
         }
         const auto now = std::chrono::steady_clock::now();
         if (!force && qtLastDockPanelSync != std::chrono::steady_clock::time_point{}) {
-          const auto minInterval = qtDockPanelsDirty
+          auto minInterval = qtDockPanelsDirty
               ? kQtDockPanelDirtyRefreshInterval
               : kQtDockPanelIdleRefreshInterval;
+          if (qtScriptsRunning()) {
+            minInterval = std::min(minInterval, kQtDockPanelLiveScriptRefreshInterval);
+          }
           if (now - qtLastDockPanelSync < minInterval) {
             return;
           }
@@ -246,6 +256,11 @@
             &benchmarkPanel.score);
         ApplyQtStatusBarToWindow(qtWindow, BuildQtStatusBarText(statusBar));
         qtLastStatusBarSync = now;
+        if (qtAudioSystem) {
+          qtScriptState.audio = qtAudioSystem->diagnostics();
+        } else {
+          qtScriptState.audio = {};
+        }
         qtLastDockPanels = BuildQtDockPanels(qtSceneDocument,
                                              qtScene,
                                              qtSettings,
@@ -554,6 +569,13 @@
           qtPhysicsPrevTime = now;
           qtLastPhysicsScenePublish = std::chrono::steady_clock::time_point{};
           qtPhysicsRuntimeDirty = false;
+        }
+        if (!qtScriptsRunning()) {
+          qtPhysicsAccumulatorSeconds = 0.0f;
+          qtPhysicsPrevTime = now;
+          qtPendingPhysicsInstanceUpdates.clear();
+          qtPhysicsScenePublishPending = false;
+          return;
         }
         const bool physicsOn =
             qtPhysicsSummary.enabled_bodies > 0u && qtPhysicsSummary.dynamic_bodies > 0u;

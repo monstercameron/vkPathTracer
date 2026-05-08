@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <exception>
 #include <iomanip>
 #include <iostream>
 #include <filesystem>
@@ -48,6 +49,7 @@
 #include "app/AppRuntimeSupport.h"
 #include "audio/AudioSystem.h"
 #include "app/DoctorChecks.h"
+#include "app/RuntimeMode.h"
 #include "app/UiValidation.h"
 #include "editor/UiModels.h"
 #include "diagnostics/CrashHooks.h"

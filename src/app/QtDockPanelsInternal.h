@@ -209,6 +209,7 @@ QtDockPanelContent BuildQtDebugViewsDock(const vkpt::editor::UiRuntimeState& run
 QtDockPanelContent BuildQtTimelineDock(const vkpt::scene::SceneDocument& document,
                                        const vkpt::editor::UiLayoutDocument& layout);
 QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
+                                     const vkpt::editor::SelectionState& selection,
                                      const vkpt::editor::UiLayoutDocument& layout,
                                      const QtDockScriptRuntimeState* runtime);
 QtDockPanelContent BuildQtPhysicsDock(const vkpt::scene::SceneDocument& document,

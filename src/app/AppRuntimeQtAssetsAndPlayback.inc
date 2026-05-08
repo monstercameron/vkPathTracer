@@ -1,60 +1,94 @@
-      auto qtLoadSceneFromAssetBrowser = [&](std::string scenePath,
-                                             vkpt::core::FrameIndex frameIndex) {
-        if (scenePath.empty()) {
-          return false;
+      struct QtSceneLoadJobResult {
+        std::string display_path;
+        std::string error;
+        vkpt::scene::SceneDocument document;
+        vkpt::pathtracer::RTSceneData scene;
+        bool ok = false;
+        double parse_ms = 0.0;
+        double convert_ms = 0.0;
+        double total_ms = 0.0;
+      };
+      struct QtSceneLoadJob {
+        std::mutex mutex;
+        std::string phase;
+        std::optional<QtSceneLoadJobResult> result;
+        std::atomic_bool active{false};
+        std::jthread worker;
+      };
+      std::unique_ptr<QtSceneLoadJob> qtSceneLoadJob;
+      std::uint64_t qtSceneLoadWaitingForPaintGeneration = 0u;
+      auto qtSceneLoadErrorCodeName = [](vkpt::core::ErrorCode code) {
+        switch (code) {
+          case vkpt::core::ErrorCode::Ok: return "ok";
+          case vkpt::core::ErrorCode::InvalidArgument: return "invalid_argument";
+          case vkpt::core::ErrorCode::NotFound: return "not_found";
+          case vkpt::core::ErrorCode::IOError: return "io_error";
+          case vkpt::core::ErrorCode::Unsupported: return "unsupported";
+          case vkpt::core::ErrorCode::Timeout: return "timeout";
+          case vkpt::core::ErrorCode::Internal: return "internal";
+          case vkpt::core::ErrorCode::Cancelled: return "cancelled";
+          default: return "unknown";
         }
-        const std::filesystem::path requestedPath(scenePath);
-        const std::string displayPath = requestedPath.lexically_normal().generic_string();
-        if (qtWindow != nullptr && !qtWindow->confirm_scene_replacement(displayPath)) {
-          ui_runtime_state.status_message = "scene load canceled";
+      };
+      auto qtPumpSceneLoadDialog = [&](std::string_view phase) {
+        if (qtWindow == nullptr) {
+          return;
+        }
+        qtWindow->set_runtime_loading_text(phase);
+        qtWindow->set_status_bar_text(phase);
+      };
+      auto qtApplyLoadedSceneResult =
+          [&](QtSceneLoadJobResult result, vkpt::core::FrameIndex frameIndex) {
+        if (!result.ok) {
+          ui_runtime_state.status_message = "scene load failed: " + result.display_path;
+          ui_runtime_state.last_warning_or_error =
+              result.error.empty() ? ui_runtime_state.status_message : result.error;
           ui_runtime_state.focused_panel = "asset_browser";
-          qtDockPanelsDirty = true;
-          return false;
-        }
-        if (qtWindow != nullptr) {
-          qtWindow->clear_framebuffer();
-          qtWindow->set_overlay_text("Loading scene...\n" + displayPath + "\nRebuilding renderer and UI panels.");
-          qtWindow->set_status_bar_text("Loading scene: " + displayPath);
-          QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 16);
-        }
-        auto parseResult = vkpt::scene::SceneDocument::load_from_file(displayPath);
-        if (!parseResult) {
-          ui_runtime_state.status_message = "scene load failed: " + displayPath;
-          ui_runtime_state.last_warning_or_error = ui_runtime_state.status_message;
           qtPreviewStatus = "scene load failed";
-          if (qtWindow != nullptr) {
-            qtWindow->set_overlay_text("Scene load failed\n" + displayPath);
-          }
           qtDockPanelsDirty = true;
+          if (qtWindow != nullptr) {
+            qtWindow->set_overlay_text("Scene load failed\n" + result.display_path +
+                                       "\n" + ui_runtime_state.last_warning_or_error);
+            qtWindow->set_runtime_loading_text("Scene load failed");
+            qtWindow->finish_runtime_loading_dialog();
+          }
           PushUiEvent(ui_event_log,
                       "asset_browser_scene_load_failed",
                       "asset_browser",
                       "scene",
                       frameIndex,
                       {},
-                      displayPath,
+                      result.display_path,
                       ui_runtime_state.status_message);
+          UpdateCrashArtifactsFromUiState(ui_runtime_state,
+                                         ui_selection_state,
+                                         ui_layout_state,
+                                         ui_event_log,
+                                         ui_command_history);
+          logger.log(vkpt::log::Severity::Error,
+                     "app",
+                     "Qt asset browser scene load failed",
+                     {{"scene", result.display_path},
+                      {"error", ui_runtime_state.last_warning_or_error}});
           return false;
         }
 
+        qtPumpSceneLoadDialog("Installing scene document");
         qtFpsMode = false;
         qtSetViewportMouseLocked(false);
         qtSyncViewportAssetDropMode();
         qtDiscardFpsMovementResults();
         qtGizmoDrag = {};
         qtHoveredGizmoHit = std::nullopt;
-        qtSceneDocument = std::move(parseResult.value());
-        qtPromoteSceneObjectCamerasAndLights();
-        EnsureQtFallbackLightingEntities(qtSceneDocument);
-        if (qtAudioSystem) {
-          qtAudioSystem->load_scene_audio(qtSceneDocument, displayPath);
-        }
+        qtSceneDocument = std::move(result.document);
+        qtScene = std::move(result.scene);
+        qtRebuildRtInstanceIndexCache();
         ui_selection_state = vkpt::editor::CreateDefaultSelectionState();
-        config.scene_path.value = displayPath;
+        config.scene_path.value = result.display_path;
         config.scene_path.source = vkpt::config::ConfigSource::CliFlag;
-        vkpt::diagnostics::CrashRecorder::instance().update_scene(displayPath);
+        vkpt::diagnostics::CrashRecorder::instance().update_scene(result.display_path);
 
-        const bool loaded = qtReloadEditedScene("scene loaded");
+        qtPumpSceneLoadDialog("Refreshing camera and viewport data");
         qtEnsureRuntimeLightObject();
         if (qtSyncActiveCameraObjectFromPose) {
           qtSyncActiveCameraObjectFromPose();
@@ -68,10 +102,48 @@
                 : PtLength(PtSub(qtCameraPose.target, qtCameraPose.position)));
         qtCameraFocusPoint =
             PtAdd(qtCameraPose.position, PtMul(qtCameraForward(), qtCameraFocusDistance));
+        qtPickables = BuildViewportPickables(qtSceneDocument, qtScene);
+        qtViewportPickablesRefreshPending = false;
+        qtLastViewportPickablesRefresh = std::chrono::steady_clock::now();
+        qtFpsCollisionWorker.set_pickables(qtPickables);
+        RebuildSelectionBounds(ui_selection_state, qtPickables);
+
+        qtPumpSceneLoadDialog(qtUseBg ? "Posting renderer scene rebuild"
+                                      : "Rebuilding renderer acceleration");
+        bool loaded = false;
+        bool waitingForBackgroundPaint = false;
+        if (qtUseBg && qtRenderCoordinator) {
+          const auto renderStats = qtRenderCoordinator->stats();
+          qtOverlayRequiredRenderGeneration = renderStats.generation + 1u;
+          qtRenderCoordinator->post_scene(qtScene);
+          loaded = qtTracerReady;
+          waitingForBackgroundPaint = loaded && qtOverlayRequiredRenderGeneration != 0u;
+          qtSceneLoadWaitingForPaintGeneration =
+              waitingForBackgroundPaint ? qtOverlayRequiredRenderGeneration : 0u;
+        } else if (!qtUseBg && qtTracer) {
+          const bool configured = qtTracerReady || qtTracer->configure(qtSettings);
+          qtTracerReady = configured &&
+                          qtTracer->load_scene_snapshot(qtScene) &&
+                          qtTracer->build_or_update_acceleration() &&
+                          qtTracer->reset_accumulation();
+          qtSampleIndex = 0u;
+          loaded = qtTracerReady;
+          qtSceneLoadWaitingForPaintGeneration = 0u;
+        }
+        qtPublishedSample.store(0u, std::memory_order_relaxed);
+        qtPublishedRays.store(0u, std::memory_order_relaxed);
+
+        qtPumpSceneLoadDialog("Refreshing audio, scripts, physics, and panels");
+        if (qtAudioSystem) {
+          qtAudioSystem->load_scene_audio(qtSceneDocument, result.display_path);
+        }
+        qtSyncPhysicsFromSceneDocument();
+        qtReloadScriptsFromDocument("scene loaded");
         qtPreviewStatus = loaded ? "scene loaded" : "scene renderer reload failed";
-        ui_runtime_state.active_scene = displayPath;
+        ui_runtime_state.active_scene = result.display_path;
         ui_runtime_state.status_message = loaded
-            ? "asset browser scene load"
+            ? (waitingForBackgroundPaint ? "asset browser scene load; renderer rebuilding"
+                                         : "asset browser scene load")
             : "asset browser scene load failed";
         qtDockPanelsDirty = true;
         updateQtSelectionOverlay();
@@ -84,7 +156,7 @@
         command.undoable = false;
         command.redoable = false;
         command.validated = loaded;
-        command.payload = vkpt::editor::ImportAssetCommand{displayPath, "scene"};
+        command.payload = vkpt::editor::ImportAssetCommand{result.display_path, "scene"};
         ui_command_history.push(command);
         PushUiEvent(ui_event_log,
                     loaded ? "asset_browser_scene_loaded" : "asset_browser_scene_load_failed",
@@ -92,7 +164,7 @@
                     "scene",
                     frameIndex,
                     {},
-                    displayPath,
+                    result.display_path,
                     ui_runtime_state.status_message);
         UpdateCrashArtifactsFromUiState(ui_runtime_state,
                                        ui_selection_state,
@@ -100,15 +172,181 @@
                                        ui_event_log,
                                        ui_command_history);
         rebuildQtMenuBar();
-        if (qtWindow != nullptr && loaded) {
+        if (qtWindow != nullptr && loaded && !waitingForBackgroundPaint) {
           qtWindow->set_overlay_text(std::string_view{});
+          qtWindow->finish_runtime_loading_dialog();
+        } else if (qtWindow != nullptr && waitingForBackgroundPaint) {
+          qtWindow->set_runtime_loading_text("Renderer building acceleration and first preview");
         }
         logger.log(loaded ? vkpt::log::Severity::Info : vkpt::log::Severity::Error,
                    "app",
                    loaded ? "Qt asset browser scene loaded"
                           : "Qt asset browser scene renderer reload failed",
-                   {{"scene", displayPath}});
+                   {{"scene", result.display_path},
+                    {"parse_ms", std::to_string(result.parse_ms)},
+                    {"convert_ms", std::to_string(result.convert_ms)},
+                    {"total_ms", std::to_string(result.total_ms)},
+                    {"background_renderer", qtUseBg ? "true" : "false"}});
         return loaded;
+      };
+      auto qtPollSceneLoadJob = [&](vkpt::core::FrameIndex frameIndex) {
+        if (qtSceneLoadWaitingForPaintGeneration != 0u) {
+          if (qtUseBg && qtRenderCoordinator && qtRenderCoordinator->stats().failed) {
+            qtSceneLoadWaitingForPaintGeneration = 0u;
+            ui_runtime_state.status_message = "scene renderer reload failed";
+            ui_runtime_state.last_warning_or_error = ui_runtime_state.status_message;
+            qtPreviewStatus = ui_runtime_state.status_message;
+            qtDockPanelsDirty = true;
+            if (qtWindow != nullptr) {
+              qtWindow->set_runtime_loading_text("Scene renderer reload failed");
+              qtWindow->finish_runtime_loading_dialog();
+            }
+          } else if (qtLatestPaintedRenderGeneration() >= qtSceneLoadWaitingForPaintGeneration) {
+            qtSceneLoadWaitingForPaintGeneration = 0u;
+            ui_runtime_state.status_message = "asset browser scene load";
+            qtPreviewStatus = "scene loaded";
+            qtDockPanelsDirty = true;
+            if (qtWindow != nullptr) {
+              qtWindow->set_overlay_text(std::string_view{});
+              qtWindow->set_runtime_loading_text("Scene loaded");
+              qtWindow->finish_runtime_loading_dialog();
+            }
+          } else if (qtWindow != nullptr) {
+            qtWindow->set_runtime_loading_text("Renderer building acceleration and first preview");
+          }
+        }
+
+        if (!qtSceneLoadJob) {
+          return false;
+        }
+        {
+          std::scoped_lock lock(qtSceneLoadJob->mutex);
+          if (!qtSceneLoadJob->phase.empty() && qtWindow != nullptr) {
+            qtWindow->set_runtime_loading_text(qtSceneLoadJob->phase);
+          }
+        }
+        if (qtSceneLoadJob->active.load(std::memory_order_acquire)) {
+          return true;
+        }
+
+        std::optional<QtSceneLoadJobResult> result;
+        {
+          std::scoped_lock lock(qtSceneLoadJob->mutex);
+          result = std::move(qtSceneLoadJob->result);
+        }
+        qtSceneLoadJob.reset();
+        if (!result) {
+          return false;
+        }
+        qtApplyLoadedSceneResult(std::move(*result), frameIndex);
+        return true;
+      };
+      auto qtLoadSceneFromAssetBrowser = [&](std::string scenePath,
+                                             vkpt::core::FrameIndex frameIndex) {
+        if (scenePath.empty()) {
+          return false;
+        }
+        if (qtSceneLoadJob || qtSceneLoadWaitingForPaintGeneration != 0u) {
+          ui_runtime_state.status_message = "scene load already in progress";
+          ui_runtime_state.focused_panel = "asset_browser";
+          qtDockPanelsDirty = true;
+          if (qtWindow != nullptr) {
+            qtWindow->set_runtime_loading_text(ui_runtime_state.status_message);
+          }
+          return true;
+        }
+        const std::filesystem::path requestedPath(scenePath);
+        const std::string displayPath = requestedPath.lexically_normal().generic_string();
+        if (qtWindow != nullptr && !qtWindow->confirm_scene_replacement(displayPath)) {
+          ui_runtime_state.status_message = "scene load canceled";
+          ui_runtime_state.focused_panel = "asset_browser";
+          qtDockPanelsDirty = true;
+          return false;
+        }
+        if (qtWindow != nullptr) {
+          qtWindow->clear_framebuffer();
+          qtWindow->set_overlay_text("Loading scene...\n" + displayPath +
+                                     "\nParsing and converting scene data in the background.");
+          qtWindow->set_status_bar_text("Loading scene: " + displayPath);
+          qtWindow->show_runtime_loading_dialog("Loading Scene", "Queueing scene load\n" + displayPath);
+        }
+        ui_runtime_state.status_message = "scene load queued: " + displayPath;
+        ui_runtime_state.focused_panel = "asset_browser";
+        qtPreviewStatus = "loading scene";
+        qtDockPanelsDirty = true;
+
+        qtSceneLoadJob = std::make_unique<QtSceneLoadJob>();
+        auto* job = qtSceneLoadJob.get();
+        job->active.store(true, std::memory_order_release);
+        {
+          std::scoped_lock lock(job->mutex);
+          job->phase = "Reading scene document\n" + displayPath;
+        }
+        job->worker = std::jthread([job, displayPath, qtSceneLoadErrorCodeName](std::stop_token stop) {
+          QtSceneLoadJobResult out;
+          out.display_path = displayPath;
+          const auto loadStart = std::chrono::steady_clock::now();
+          auto publishPhase = [&](std::string phase) {
+            std::scoped_lock lock(job->mutex);
+            job->phase = std::move(phase);
+          };
+          auto elapsedMs = [](auto begin, auto end) {
+            return std::chrono::duration<double, std::milli>(end - begin).count();
+          };
+          try {
+            publishPhase("Reading scene document\n" + displayPath);
+            auto parseResult = vkpt::scene::SceneDocument::load_from_file(displayPath);
+            const auto parseEnd = std::chrono::steady_clock::now();
+            out.parse_ms = elapsedMs(loadStart, parseEnd);
+            if (!parseResult) {
+              out.error = std::string("scene document load failed: ") +
+                          qtSceneLoadErrorCodeName(parseResult.error());
+            } else if (stop.stop_requested()) {
+              out.error = "scene load canceled";
+            } else {
+              publishPhase("Validating scene components");
+              auto document = std::move(parseResult.value());
+              PromoteQtSceneObjectCamerasAndLights(document);
+              EnsureQtFallbackLightingEntities(document);
+              publishPhase("Building render scene");
+              auto sceneResult = vkpt::pathtracer::BuildSceneDataFromDocument(document);
+              const auto convertEnd = std::chrono::steady_clock::now();
+              out.convert_ms = elapsedMs(parseEnd, convertEnd);
+              if (!sceneResult) {
+                out.error = std::string("render scene conversion failed: ") +
+                            qtSceneLoadErrorCodeName(sceneResult.error());
+              } else if (stop.stop_requested()) {
+                out.error = "scene load canceled";
+              } else {
+                publishPhase("Preparing renderer handoff");
+                out.document = std::move(document);
+                out.scene = std::move(sceneResult.value());
+                out.ok = true;
+              }
+            }
+          } catch (const std::exception& ex) {
+            out.error = std::string("scene load exception: ") + ex.what();
+          } catch (...) {
+            out.error = "scene load exception";
+          }
+          out.total_ms = elapsedMs(loadStart, std::chrono::steady_clock::now());
+          {
+            std::scoped_lock lock(job->mutex);
+            job->phase = out.ok ? std::string("Scene data ready")
+                                : std::string("Scene load failed");
+            job->result = std::move(out);
+          }
+          job->active.store(false, std::memory_order_release);
+        });
+        PushUiEvent(ui_event_log,
+                    "asset_browser_scene_load_queued",
+                    "asset_browser",
+                    "scene",
+                    frameIndex,
+                    {},
+                    displayPath,
+                    ui_runtime_state.status_message);
+        return true;
       };
       auto qtAssetBrowserSpawnPoint =
           [&](const vkpt::platform::QtDockRowActivation& activation) {
@@ -442,10 +680,14 @@
           qtMarkOverlayRequiresRenderCatchup();
           qtRenderCoordinator->post_settings(qtSettings);
         } else if (!qtUseBg && qtTracerReady) {
-          qtTracerReady = qtTracer->configure(qtSettings) &&
-                          qtTracer->load_scene_snapshot(qtScene) &&
-                          qtTracer->build_or_update_acceleration() &&
+          qtTracerReady = qtTracer->update_render_settings(qtSettings) &&
                           qtTracer->reset_accumulation();
+          if (!qtTracerReady) {
+            qtTracerReady = qtTracer->configure(qtSettings) &&
+                            qtTracer->load_scene_snapshot(qtScene) &&
+                            qtTracer->build_or_update_acceleration() &&
+                            qtTracer->reset_accumulation();
+          }
           qtSampleIndex = 0u;
         }
         qtDockPanelsDirty = true;
@@ -721,15 +963,23 @@
       std::function<bool(vkpt::core::FrameIndex)> qtDockAutoFocus;
       std::function<bool(vkpt::core::FrameIndex)> qtDockFocusSelected;
       std::function<void(bool, vkpt::core::FrameIndex, std::string_view)> qtSetFpsMode;
-      auto qtSetGameMode = [&](bool enabled,
-                               vkpt::core::FrameIndex frameIndex,
-                               std::string_view source) {
+      auto qtSetRuntimeMode = [&](RuntimeMode mode,
+                                  vkpt::core::FrameIndex frameIndex,
+                                  std::string_view source) {
+        const auto capabilities = GetRuntimeModeCapabilities(mode);
+        const bool requestedScriptsRunning = capabilities.scripts_running;
+        const bool requestedPlayMode = mode == RuntimeMode::Play;
+        const bool wasScriptsRunning = qtScriptsRunning();
+        const bool wasPlayMode = qtIsPlayMode();
+        const std::string requestedModeName(RuntimeModeStableName(mode));
         logger.log(vkpt::log::Severity::Info,
                    "scripts",
-                   "game mode toggle requested",
-                   {{"requested", enabled ? "on" : "off"},
+                   "runtime mode toggle requested",
+                   {{"requested_mode", requestedModeName},
                     {"source", std::string(source)},
-                    {"game_mode_before", qtScriptState.playing ? "true" : "false"},
+                    {"runtime_mode_before", std::string(qtRuntimeModeName())},
+                    {"play_mode_before", wasPlayMode ? "true" : "false"},
+                    {"scripts_running_before", wasScriptsRunning ? "true" : "false"},
                     {"scripts_enabled_before", qtScriptState.scripts_enabled ? "true" : "false"},
                     {"fps_mode_before", qtFpsMode ? "true" : "false"},
                     {"lua_compiled_in", qtScriptRuntime ? (qtScriptRuntime->lua_compiled_in() ? "true" : "false") : "missing_runtime"},
@@ -737,25 +987,26 @@
                     {"bindings", std::to_string(qtScriptState.binding_summary.binding_count)},
                     {"runnable", std::to_string(qtScriptState.binding_summary.runnable_count)}},
                    frameIndex);
-        if (enabled && qtScriptRuntime && !qtScriptRuntime->execution_available()) {
+        if (requestedScriptsRunning && qtScriptRuntime && !qtScriptRuntime->execution_available()) {
           qtScriptState.scripts_enabled = true;
           qtScriptState.playing = false;
-          qtScriptState.status = "game mode unavailable: Lua execution is not compiled in";
+          qtScriptState.mode = std::string(kRuntimeModeEditName);
+          qtScriptState.status = "runtime mode unavailable: Lua execution is not compiled in";
           ui_runtime_state.status_message = qtScriptState.status;
           ui_runtime_state.last_warning_or_error = qtScriptState.status;
           qtSyncViewportAssetDropMode();
           qtDockPanelsDirty = true;
           logger.log(vkpt::log::Severity::Error,
                      "scripts",
-                     "game mode unavailable in this executable",
-                     {{"requested", "on"},
+                     "runtime mode unavailable in this executable",
+                     {{"requested_mode", requestedModeName},
                       {"lua_compiled_in", qtScriptRuntime->lua_compiled_in() ? "true" : "false"},
                       {"execution_available", qtScriptRuntime->execution_available() ? "true" : "false"},
                       {"active_scene", ui_runtime_state.active_scene},
                       {"status", qtScriptState.status}},
                      frameIndex);
           PushUiEvent(ui_event_log,
-                      "game_mode_toggle",
+                      "runtime_mode_toggle",
                       "viewport",
                       source,
                       frameIndex,
@@ -764,16 +1015,35 @@
                       qtScriptState.status);
           return;
         }
-        if (enabled && qtFpsMode) {
+        if (requestedScriptsRunning && qtFpsMode) {
           if (qtSetFpsMode) {
             qtSetFpsMode(false, frameIndex, source);
           } else {
             qtFpsMode = false;
           }
         }
-        qtScriptState.playing = enabled;
-        if (enabled) {
+        if (!requestedScriptsRunning && wasScriptsRunning) {
+          qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnDisable,
+                               frameIndex,
+                               0.0,
+                               "runtime mode exit");
+        }
+        const bool modeChanged = qtRuntimeModeName() != requestedModeName;
+        qtScriptState.mode = requestedModeName;
+        qtScriptState.playing = requestedPlayMode;
+        if (mode != RuntimeMode::LiveEdit || modeChanged) {
+          qtScriptState.viewport_input_forwarding = false;
+        }
+        if (requestedScriptsRunning) {
           qtScriptState.scripts_enabled = true;
+        }
+        qtScriptState.benchmark_scripts_allowed = requestedScriptsRunning;
+        if (requestedScriptsRunning && !wasScriptsRunning) {
+          qtSyncPhysicsFromSceneDocument();
+          qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnEnable,
+                               frameIndex,
+                               0.0,
+                               requestedPlayMode ? "play mode enter" : "live edit enter");
         }
         qtPendingFpsLookDx = 0.0f;
         qtPendingFpsLookDy = 0.0f;
@@ -781,31 +1051,90 @@
         qtRightMouseDown = false;
         qtMiddleMouseDown = false;
         qtPotentialClick = false;
+        ResetViewportMouseClick(qtMouseClickState);
+        qtClickDragPixels = 0.0f;
         qtGizmoDrag = {};
         qtHoveredGizmoHit = std::nullopt;
-        qtSetViewportMouseLocked(enabled);
+        qtSetViewportMouseLocked(requestedPlayMode || qtLiveEditViewportInputArmed());
         qtSyncViewportAssetDropMode();
-        if (!enabled) {
+        if (!requestedScriptsRunning) {
+          if (qtAudioSystem) {
+            qtAudioSystem->stop_all();
+          }
           qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
         }
-        qtPreviewStatus = enabled ? "game mode" : "editor mode";
-        qtScriptState.status = enabled ? "game mode running" : "game mode stopped";
+        qtPreviewStatus = requestedPlayMode
+            ? "play mode"
+            : (mode == RuntimeMode::LiveEdit ? "live edit" : "editor mode");
+        qtScriptState.status = requestedPlayMode
+            ? "play mode running"
+            : (mode == RuntimeMode::LiveEdit ? "live edit running" : "runtime stopped");
         ui_runtime_state.status_message = qtScriptState.status;
         qtDockPanelsDirty = true;
         logger.log(vkpt::log::Severity::Info,
                    "scripts",
-                   "game mode toggle applied",
-                   {{"game_mode", qtScriptState.playing ? "true" : "false"},
+                   "runtime mode toggle applied",
+                   {{"runtime_mode", std::string(qtRuntimeModeName())},
+                    {"play_mode", qtScriptState.playing ? "true" : "false"},
+                    {"scripts_running", qtScriptsRunning() ? "true" : "false"},
                     {"scripts_enabled", qtScriptState.scripts_enabled ? "true" : "false"},
                     {"fps_mode", qtFpsMode ? "true" : "false"},
                     {"status", qtScriptState.status}},
                    frameIndex);
         PushUiEvent(ui_event_log,
-                    "game_mode_toggle",
+                    "runtime_mode_toggle",
                     "viewport",
                     source,
                     frameIndex,
                     {},
-                    enabled ? "on" : "off",
+                    requestedModeName,
+                    qtScriptState.status);
+      };
+      auto qtSetGameMode = [&](bool enabled,
+                               vkpt::core::FrameIndex frameIndex,
+                               std::string_view source) {
+        qtSetRuntimeMode(enabled ? RuntimeMode::Play : RuntimeMode::Edit,
+                         frameIndex,
+                         source);
+      };
+      auto qtToggleLiveEditMode = [&](vkpt::core::FrameIndex frameIndex,
+                                      std::string_view source) {
+        if (!qtIsLiveEditMode()) {
+          qtSetRuntimeMode(RuntimeMode::LiveEdit, frameIndex, source);
+          return;
+        }
+        qtScriptState.viewport_input_forwarding = !qtScriptState.viewport_input_forwarding;
+        qtPendingFpsLookDx = 0.0f;
+        qtPendingFpsLookDy = 0.0f;
+        qtLeftMouseDown = false;
+        qtRightMouseDown = false;
+        qtMiddleMouseDown = false;
+        qtPotentialClick = false;
+        ResetViewportMouseClick(qtMouseClickState);
+        qtClickDragPixels = 0.0f;
+        qtGizmoDrag = {};
+        qtHoveredGizmoHit = std::nullopt;
+        qtSetViewportMouseLocked(qtScriptState.viewport_input_forwarding);
+        qtSyncViewportAssetDropMode();
+        qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
+        qtScriptState.status = qtScriptState.viewport_input_forwarding
+            ? "live edit mouse locked"
+            : "live edit mouse unlocked";
+        ui_runtime_state.status_message = qtScriptState.status;
+        qtDockPanelsDirty = true;
+        logger.log(vkpt::log::Severity::Info,
+                   "scripts",
+                   "live edit mouse lock toggled",
+                   {{"locked", qtScriptState.viewport_input_forwarding ? "true" : "false"},
+                    {"source", std::string(source)},
+                    {"runtime_mode", std::string(qtRuntimeModeName())}},
+                   frameIndex);
+        PushUiEvent(ui_event_log,
+                    "live_edit_mouse_lock_toggle",
+                    "viewport",
+                    source,
+                    frameIndex,
+                    {},
+                    qtScriptState.viewport_input_forwarding ? "locked" : "unlocked",
                     qtScriptState.status);
       };

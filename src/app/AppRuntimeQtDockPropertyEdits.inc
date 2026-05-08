@@ -9,6 +9,9 @@
         bool entityTransformAffecting = false;
         vkpt::core::StableId cameraAffectingEntityId = 0u;
         std::unordered_set<vkpt::core::StableId> transformTouchedIds;
+        bool hasExplicitOldNew = false;
+        std::string explicitOldValue;
+        std::string explicitNewValue;
 
         auto failEdit = [&](std::string message) {
           ui_runtime_state.status_message = "property edit rejected: " + std::move(message);
@@ -40,22 +43,202 @@
                 return failEdit("expected true or false");
               }
               qtSetGameMode(value, frameIndex, "dock");
+            } else if (parts[2] == "run_live") {
+              qtSetRuntimeMode(RuntimeMode::LiveEdit, frameIndex, "dock");
             } else if (parts[2] == "play") {
-              qtSetGameMode(true, frameIndex, "dock");
+              qtSetRuntimeMode(RuntimeMode::Play, frameIndex, "dock");
             } else if (parts[2] == "pause") {
-              qtSetGameMode(false, frameIndex, "dock");
+              qtSetRuntimeMode(RuntimeMode::Edit, frameIndex, "dock");
+            } else if (parts[2] == "stop") {
+              qtSetRuntimeMode(RuntimeMode::Edit, frameIndex, "dock");
+            } else if (parts[2] == "send_viewport_input") {
+              if (!qtIsLiveEditMode()) {
+                return failEdit("viewport input can only be toggled in live edit");
+              }
+              qtToggleLiveEditMode(frameIndex, "dock");
             } else if (parts[2] == "step") {
               qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUpdate, frameIndex, 1.0 / 60.0, "dock step");
             } else if (parts[2] == "reload") {
               qtReloadScriptsFromDocument("dock");
             } else if (parts[2] == "dispatch_on_load") {
               qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLoad, frameIndex, 0.0, "dock on_load");
+            } else if (parts[2] == "dispatch_on_spawn") {
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnSpawn, frameIndex, 0.0, "dock on_spawn");
+            } else if (parts[2] == "dispatch_on_enable") {
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnEnable, frameIndex, 0.0, "dock on_enable");
+            } else if (parts[2] == "dispatch_on_update") {
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUpdate, frameIndex, 1.0 / 60.0, "dock on_update");
             } else if (parts[2] == "dispatch_fixed_update") {
               qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnFixedUpdate, frameIndex, 1.0 / 60.0, "dock fixed_update");
             } else if (parts[2] == "dispatch_late_update") {
               qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLateUpdate, frameIndex, 1.0 / 60.0, "dock late_update");
+            } else if (parts[2] == "dispatch_on_disable") {
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnDisable, frameIndex, 0.0, "dock on_disable");
+            } else if (parts[2] == "dispatch_on_destroy") {
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnDestroy, frameIndex, 0.0, "dock on_destroy");
+            } else if (parts[2] == "dispatch_on_unload") {
+              qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUnload, frameIndex, 0.0, "dock on_unload");
+            } else if (parts[2] == "variable" && parts.size() >= 6u) {
+              if (!qtScriptRuntime) {
+                return failEdit("script runtime unavailable");
+              }
+              vkpt::core::StableId entityId = 0u;
+              if (!QtParseStableId(parts[3], entityId)) {
+                return failEdit("invalid script variable entity");
+              }
+              const std::string scope = parts[4];
+              std::string name = parts[5];
+              for (std::size_t i = 6u; i < parts.size(); ++i) {
+                name += "." + parts[i];
+              }
+              if (!qtScriptRuntime->set_variable_override(entityId, scope, name, edit.value)) {
+                return failEdit("could not edit runtime variable");
+              }
+              for (auto& variable : qtScriptState.variables) {
+                if (variable.entity == entityId && variable.scope == scope && variable.name == name) {
+                  variable.value = edit.value;
+                }
+              }
+              qtScriptState.status = "runtime variable edited: " + name;
+              ui_runtime_state.status_message = qtScriptState.status;
             } else {
               return failEdit("unknown script runtime property");
+            }
+          } else if (parts.size() >= 3u && parts[1] == "audio") {
+            if (!qtAudioSystem) {
+              return failEdit("audio system unavailable");
+            }
+            if (parts[2] == "play_scene") {
+              if (!qtScriptsRunning()) {
+                qtSetGameMode(true, frameIndex, "script audio");
+              } else {
+                qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnEnable,
+                                     frameIndex,
+                                     0.0,
+                                     "script audio");
+              }
+              qtScriptState.status = "scripted scene audio playing";
+              ui_runtime_state.status_message = qtScriptState.status;
+            } else if (parts[2] == "pause_scene") {
+              qtAudioSystem->stop_all();
+              qtScriptState.status = "scripted scene audio paused";
+              ui_runtime_state.status_message = qtScriptState.status;
+            } else if ((parts[2] == "volume" || parts[2] == "muted") && parts.size() >= 4u) {
+              std::string bus = parts[3];
+              for (std::size_t i = 4u; i < parts.size(); ++i) {
+                bus += "." + parts[i];
+              }
+              if (parts[2] == "volume") {
+                float value = 1.0f;
+                if (!QtParseFloat(edit.value, value)) {
+                  return failEdit("expected audio volume number");
+                }
+                qtAudioSystem->set_bus_volume(bus, value);
+                qtScriptState.status = "audio volume set: " + bus;
+              } else {
+                bool value = false;
+                if (!QtParseBool(edit.value, value)) {
+                  return failEdit("expected true or false");
+                }
+                qtAudioSystem->set_bus_muted(bus, value);
+                qtScriptState.status = value ? ("audio muted: " + bus) : ("audio unmuted: " + bus);
+              }
+              ui_runtime_state.status_message = qtScriptState.status;
+            } else {
+              return failEdit("unknown script audio property");
+            }
+            qtScriptState.audio = qtAudioSystem->diagnostics();
+          } else if (parts.size() >= 3u && parts[1] == "selection") {
+            const auto selectedId = ui_selection_state.active_primary_entity != 0u
+                ? ui_selection_state.active_primary_entity
+                : (ui_selection_state.selected_entity_ids.empty()
+                       ? 0u
+                       : ui_selection_state.selected_entity_ids.front());
+            if (selectedId == 0u) {
+              return failEdit("no selected entity");
+            }
+            auto* entity = qtFindEntity(selectedId);
+            if (entity == nullptr) {
+              return failEdit("selected entity not found");
+            }
+            if (parts[2] == "attach") {
+              if (entity->script.script.empty()) {
+                entity->script.script = "assets/scripts/new_script.lua";
+              }
+              entity->script.language = entity->script.language.empty() ? "lua" : entity->script.language;
+              entity->script.entry = entity->script.entry.empty() ? "default" : entity->script.entry;
+              entity->script.enabled = true;
+              qtReloadScriptsFromDocument("script attached");
+            } else if (parts[2] == "detach") {
+              entity->script = {};
+              qtReloadScriptsFromDocument("script detached");
+            } else if (parts[2] == "open") {
+              if (entity->script.script.empty()) {
+                return failEdit("selected entity has no script path");
+              }
+              const auto target = std::filesystem::path(entity->script.script);
+              if (!OpenPathInExplorer(target)) {
+                return failEdit("could not open selected script");
+              }
+              ui_runtime_state.status_message = "opened script: " + entity->script.script;
+            } else {
+              return failEdit("unknown script selection action");
+            }
+          } else if (parts.size() >= 3u && parts[1] == "actions") {
+            if (parts[2] == "open_folder") {
+              if (!OpenPathInExplorer(std::filesystem::path("assets/scripts"))) {
+                return failEdit("could not open script folder");
+              }
+              ui_runtime_state.status_message = "opened script folder";
+            } else if (parts[2] == "new_lua_script") {
+              const auto scriptDir = std::filesystem::path("assets/scripts");
+              std::error_code ec;
+              std::filesystem::create_directories(scriptDir, ec);
+              if (ec) {
+                return failEdit("could not create assets/scripts");
+              }
+              std::filesystem::path scriptPath = scriptDir / "new_lua_script.lua";
+              for (int suffix = 2; std::filesystem::exists(scriptPath) && suffix < 1000; ++suffix) {
+                scriptPath = scriptDir / ("new_lua_script_" + std::to_string(suffix) + ".lua");
+              }
+              if (std::filesystem::exists(scriptPath)) {
+                return failEdit("could not allocate script filename");
+              }
+              {
+                std::ofstream out(scriptPath, std::ios::binary);
+                if (!out) {
+                  return failEdit("could not create Lua script file");
+                }
+                out << "local script = {}\n\n"
+                       "function script.on_update(self, ctx)\n"
+                       "  local transform = self:get_transform()\n"
+                       "  if transform == nil then\n"
+                       "    return\n"
+                       "  end\n"
+                       "\n"
+                       "  -- Add command-buffered gameplay writes here.\n"
+                       "end\n\n"
+                       "return script\n";
+              }
+              const auto selectedId = ui_selection_state.active_primary_entity != 0u
+                  ? ui_selection_state.active_primary_entity
+                  : (ui_selection_state.selected_entity_ids.empty()
+                         ? 0u
+                         : ui_selection_state.selected_entity_ids.front());
+              if (selectedId != 0u) {
+                if (auto* entity = qtFindEntity(selectedId); entity != nullptr) {
+                  entity->script.script = scriptPath.generic_string();
+                  entity->script.language = "lua";
+                  entity->script.entry = entity->script.entry.empty() ? "default" : entity->script.entry;
+                  entity->script.module_id = entity->script.module_id.empty() ? "default" : entity->script.module_id;
+                  entity->script.enabled = true;
+                  entity->script.reload_on_save = true;
+                  qtReloadScriptsFromDocument("new Lua script");
+                }
+              }
+              ui_runtime_state.status_message = "created Lua script: " + scriptPath.generic_string();
+            } else {
+              return failEdit("unknown script action");
             }
           } else {
             return failEdit("unknown script property");
@@ -576,6 +759,70 @@
             cameraAffecting = true;
             cameraAffectingEntityId = entityId;
             renderAffecting = true;
+          } else if (parts.size() >= 4u && parts[2] == "script") {
+            const auto& field = parts[3];
+            if (field == "path") {
+              hasExplicitOldNew = true;
+              explicitOldValue = entity->script.script;
+              entity->script.script = QtTrim(edit.value);
+              explicitNewValue = entity->script.script;
+            } else if (field == "language") {
+              hasExplicitOldNew = true;
+              explicitOldValue = entity->script.language;
+              entity->script.language = QtTrim(edit.value);
+              if (entity->script.language.empty()) {
+                entity->script.language = "lua";
+              }
+              explicitNewValue = entity->script.language;
+            } else if (field == "entry") {
+              hasExplicitOldNew = true;
+              explicitOldValue = entity->script.entry;
+              entity->script.entry = QtTrim(edit.value);
+              if (entity->script.entry.empty()) {
+                entity->script.entry = "default";
+              }
+              explicitNewValue = entity->script.entry;
+            } else if (field == "module_id") {
+              hasExplicitOldNew = true;
+              explicitOldValue = entity->script.module_id;
+              entity->script.module_id = QtTrim(edit.value);
+              if (entity->script.module_id.empty()) {
+                entity->script.module_id = "default";
+              }
+              explicitNewValue = entity->script.module_id;
+            } else if (field == "enabled" || field == "reload_on_save") {
+              bool value = false;
+              if (!QtParseBool(edit.value, value)) {
+                return failEdit("expected true or false");
+              }
+              hasExplicitOldNew = true;
+              if (field == "enabled") {
+                explicitOldValue = entity->script.enabled ? "true" : "false";
+                entity->script.enabled = value;
+              } else {
+                explicitOldValue = entity->script.reload_on_save ? "true" : "false";
+                entity->script.reload_on_save = value;
+              }
+              explicitNewValue = value ? "true" : "false";
+            } else if (field == "param" && parts.size() >= 5u) {
+              std::string key = parts[4];
+              for (std::size_t i = 5u; i < parts.size(); ++i) {
+                key += "." + parts[i];
+              }
+              if (key.empty()) {
+                return failEdit("empty script param name");
+              }
+              hasExplicitOldNew = true;
+              if (const auto existing = entity->script.params.find(key); existing != entity->script.params.end()) {
+                explicitOldValue = existing->second;
+              }
+              entity->script.params[key] = QtTrim(edit.value);
+              explicitNewValue = entity->script.params[key];
+            } else {
+              return failEdit("unknown script property");
+            }
+            changed = true;
+            qtReloadScriptsFromDocument("script property edited");
           } else if (parts.size() == 4u && parts[2] == "physics") {
             const auto& field = parts[3];
             if (field == "enabled") {
@@ -924,9 +1171,9 @@
                     edit.panel_id,
                     "dock",
                     frameIndex,
-                    {},
-                    edit.property_id,
-                    edit.value);
+                    hasExplicitOldNew ? std::string_view(explicitOldValue) : std::string_view{},
+                    hasExplicitOldNew ? std::string_view(explicitNewValue) : std::string_view(edit.property_id),
+                    hasExplicitOldNew ? edit.property_id : edit.value);
         UpdateCrashArtifactsFromUiState(ui_runtime_state,
                                        ui_selection_state,
                                        ui_layout_state,

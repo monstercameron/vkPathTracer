@@ -199,8 +199,7 @@
       bool qtRightMouseDown = false;
       bool qtMiddleMouseDown = false;
       bool qtPotentialClick = false;
-      float qtClickX = 0.0f;
-      float qtClickY = 0.0f;
+      ViewportMouseClickState qtMouseClickState{};
       float qtClickDragPixels = 0.0f;
       float qtLastMouseX = 0.0f;
       float qtLastMouseY = 0.0f;
@@ -274,6 +273,7 @@
       constexpr int kQtKeyRight = 0x01000014;
       constexpr int kQtKeyDown = 0x01000015;
       constexpr int kQtKeyF1 = 0x01000030;
+      constexpr int kQtKeyF2 = 0x01000031;
       constexpr int kQtKeySpace = 0x20;
       constexpr int kQtKeyBackspace = 0x01000003;
       constexpr int kQtKeyDelete = 0x01000007;
@@ -509,9 +509,31 @@
       qtSyncActiveCameraObjectFromPose();
       auto qtScriptRuntime = vkpt::scripting::CreateScriptRuntime();
       QtDockScriptRuntimeState qtScriptState;
+      qtScriptState.mode = std::string(kRuntimeModeEditName);
+      auto qtRuntimeModeName = [&]() -> std::string_view {
+        if (!qtScriptState.mode.empty()) {
+          return qtScriptState.mode;
+        }
+        return qtScriptState.playing ? kRuntimeModePlayName : kRuntimeModeEditName;
+      };
+      auto qtIsPlayMode = [&]() {
+        return qtRuntimeModeName() == kRuntimeModePlayName;
+      };
+      auto qtIsLiveEditMode = [&]() {
+        return qtRuntimeModeName() == kRuntimeModeLiveEditName;
+      };
+      auto qtLiveEditViewportInputArmed = [&]() {
+        return qtIsLiveEditMode() && qtScriptState.viewport_input_forwarding;
+      };
+      auto qtScriptsRunning = [&]() {
+        const auto mode = qtRuntimeModeName();
+        return mode == kRuntimeModePlayName || mode == kRuntimeModeLiveEditName;
+      };
       auto qtSyncViewportAssetDropMode = [&]() {
         if (qtWindow != nullptr) {
-          qtWindow->set_viewport_asset_drops_enabled(!qtFpsMode && !qtScriptState.playing);
+          qtWindow->set_viewport_asset_drops_enabled(!qtFpsMode &&
+                                                     !qtIsPlayMode() &&
+                                                     !qtLiveEditViewportInputArmed());
         }
       };
       qtSyncViewportAssetDropMode();

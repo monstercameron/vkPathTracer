@@ -40,7 +40,7 @@ std::vector<QtDockPanelContent> BuildQtDockPanels(
   panels.push_back(BuildQtDebugViewsDock(runtime, layout));
   panels.push_back(BuildQtAssetBrowserDock(document, scene, runtime, layout));
   panels.push_back(BuildQtTimelineDock(document, layout));
-  panels.push_back(BuildQtScriptDock(document, layout, script_runtime));
+  panels.push_back(BuildQtScriptDock(document, selection, layout, script_runtime));
   panels.push_back(BuildQtPhysicsDock(document, layout));
   return panels;
 }

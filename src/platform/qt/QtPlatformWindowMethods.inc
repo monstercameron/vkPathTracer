@@ -170,6 +170,7 @@ void QtWindow::close() {
     m_widget->hide();
   }
   close_startup_splash(false);
+  close_runtime_loading_dialog(false);
 }
 
 WindowMetrics QtWindow::metrics() const {
@@ -234,6 +235,47 @@ void QtWindow::set_startup_splash_text(std::string_view text) {
 
 void QtWindow::finish_startup_splash() {
   reveal_main_window_from_splash();
+}
+
+void QtWindow::show_runtime_loading_dialog(std::string_view title, std::string_view detail) {
+  if (m_runtimeLoadingDialog == nullptr) {
+    auto* dialog = CreateLoadingSplash(
+        ToQString(title.empty() ? std::string_view("Loading Scene") : title),
+        QStringLiteral("Runtime scene switch"),
+        QStringLiteral("Scene parsing and render-data conversion run off the UI path when possible."),
+        QStringList{
+            QStringLiteral("Reading scene document"),
+            QStringLiteral("Validating scene components"),
+            QStringLiteral("Building render scene"),
+            QStringLiteral("Preparing renderer handoff"),
+            QStringLiteral("Refreshing editor panels"),
+        });
+    m_runtimeLoadingDialog = dialog;
+    if (QObject* context = QCoreApplication::instance()) {
+      QObject::connect(dialog, &QObject::destroyed, context, [this, dialog]() {
+        if (m_runtimeLoadingDialog == dialog) {
+          m_runtimeLoadingDialog = nullptr;
+        }
+      });
+    }
+  }
+
+  SetLoadingSplashPhase(m_runtimeLoadingDialog, ToQString(detail));
+  ShowLoadingSplashCentered(m_runtimeLoadingDialog, m_shell != nullptr ? m_shell : m_widget);
+  if (QCoreApplication::instance() != nullptr) {
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 4);
+  }
+}
+
+void QtWindow::set_runtime_loading_text(std::string_view text) {
+  if (m_runtimeLoadingDialog == nullptr) {
+    return;
+  }
+  SetLoadingSplashPhase(m_runtimeLoadingDialog, ToQString(text));
+}
+
+void QtWindow::finish_runtime_loading_dialog() {
+  close_runtime_loading_dialog(true);
 }
 
 void QtWindow::set_selection_overlay_boxes(const std::vector<QtSelectionOverlayBox>& boxes) {
@@ -898,6 +940,16 @@ void QtWindow::close_startup_splash(bool animated) {
   FinishStartupSplash(splash, animated);
 }
 
+void QtWindow::close_runtime_loading_dialog(bool animated) {
+  if (m_runtimeLoadingDialog == nullptr) {
+    return;
+  }
+
+  QWidget* dialog = m_runtimeLoadingDialog;
+  m_runtimeLoadingDialog = nullptr;
+  FinishLoadingSplash(dialog, animated);
+}
+
 void QtWindow::record_frame_presented(std::uint64_t frameId,
                                       std::uint64_t generation,
                                       std::size_t width,
@@ -1030,6 +1082,7 @@ void QtWindow::destroy() {
   m_dockRowActivations.clear();
   m_menuBarSignature.clear();
   close_startup_splash(false);
+  close_runtime_loading_dialog(false);
   m_mainWindowRevealed = false;
   QWidget* shell = nullptr;
   QWidget* widget = nullptr;

@@ -14,10 +14,26 @@
         if (qtFpsMode) {
           return QtInputMode::FpsCamera;
         }
-        if (qtScriptState.playing) {
+        if (qtIsPlayMode() || qtLiveEditViewportInputArmed()) {
           return QtInputMode::GameMode;
         }
         return QtInputMode::Editor;
+      };
+      auto qtViewportMouseInputMode = [](QtInputMode mode) -> ViewportMouseInputMode {
+        switch (mode) {
+          case QtInputMode::FpsCamera:
+            return ViewportMouseInputMode::FpsCamera;
+          case QtInputMode::GameMode:
+            return ViewportMouseInputMode::GameModeScript;
+          case QtInputMode::Editor:
+          default:
+            return ViewportMouseInputMode::Editor;
+        }
+      };
+      auto qtResetViewportMouseClick = [&]() {
+        ResetViewportMouseClick(qtMouseClickState);
+        qtPotentialClick = false;
+        qtClickDragPixels = 0.0f;
       };
 
       // Ordered input layers give Escape a single reusable cancel path before
@@ -27,7 +43,7 @@
           return QtInputRouteResult::Pass;
         }
 
-        const bool wasGameMode = qtScriptState.playing;
+        const bool wasRuntimeMode = qtScriptsRunning();
         const bool hadSelection =
             !ui_selection_state.selected_entity_ids.empty() ||
             ui_selection_state.active_primary_entity != 0u ||
@@ -40,8 +56,8 @@
         ui_runtime_state.active_viewport_tool = vkpt::editor::ViewportTool::Select;
         ui_runtime_state.active_gizmo_mode = vkpt::editor::GizmoMode::None;
         qtHoveredGizmoHit = std::nullopt;
-        if (wasGameMode) {
-          qtSetGameMode(false, qtFrameCount, "keyboard");
+        if (wasRuntimeMode) {
+          qtSetRuntimeMode(RuntimeMode::Edit, qtFrameCount, "keyboard");
         } else if (hadSelection) {
           vkpt::editor::EditorCommand clearCommand;
           clearCommand.command_id = "keyboard.escape.clear_selection";
@@ -91,7 +107,13 @@
 
       auto qtHandleGameModeKeyLayer = [&](int key, int rawKey) -> QtInputRouteResult {
         if (key == kQtKeyF1 || rawKey == kQtKeyF1) {
-          qtSetGameMode(!qtScriptState.playing, qtFrameCount, "keyboard");
+          qtSetRuntimeMode(qtIsPlayMode() ? RuntimeMode::Edit : RuntimeMode::Play,
+                           qtFrameCount,
+                           "keyboard");
+          return QtInputRouteResult::Handled;
+        }
+        if (key == kQtKeyF2 || rawKey == kQtKeyF2) {
+          qtToggleLiveEditMode(qtFrameCount, "keyboard");
           return QtInputRouteResult::Handled;
         }
         return QtInputRouteResult::Pass;
@@ -203,6 +225,7 @@
           break;
         }
         const auto qtAfterPoll = std::chrono::steady_clock::now();
+        qtPollSceneLoadJob(qtFrameCount);
 
         for (const auto& event : qtInputEvents) {
           LogWindowInput(ui_event_log, ui_runtime_state, event, qtFrameCount);
@@ -314,12 +337,14 @@
                          {{"key", std::to_string(key)},
                           {"raw_key", std::to_string(rawKey)},
                           {"is_f1_key", (key == kQtKeyF1 || rawKey == kQtKeyF1) ? "true" : "false"},
+                          {"is_f2_key", (key == kQtKeyF2 || rawKey == kQtKeyF2) ? "true" : "false"},
                           {"is_w_key", (key == 'W' || rawKey == 'W') ? "true" : "false"},
                           {"is_a_key", (key == 'A' || rawKey == 'A') ? "true" : "false"},
                           {"is_s_key", (key == 'S' || rawKey == 'S') ? "true" : "false"},
                           {"is_d_key", (key == 'D' || rawKey == 'D') ? "true" : "false"},
                           {"keys_down", std::to_string(qtKeysDown.size())},
-                          {"game_mode", qtScriptState.playing ? "true" : "false"},
+                          {"runtime_mode", std::string(qtRuntimeModeName())},
+                          {"play_mode", qtIsPlayMode() ? "true" : "false"},
                           {"lua_compiled_in", qtScriptRuntime->lua_compiled_in() ? "true" : "false"},
                           {"execution_available", qtScriptRuntime->execution_available() ? "true" : "false"}},
                          qtFrameCount);
@@ -337,23 +362,48 @@
                          {{"key", std::to_string(key)},
                           {"raw_key", std::to_string(rawKey)},
                           {"is_f1_key", (key == kQtKeyF1 || rawKey == kQtKeyF1) ? "true" : "false"},
+                          {"is_f2_key", (key == kQtKeyF2 || rawKey == kQtKeyF2) ? "true" : "false"},
                           {"is_w_key", (key == 'W' || rawKey == 'W') ? "true" : "false"},
                           {"is_a_key", (key == 'A' || rawKey == 'A') ? "true" : "false"},
                           {"is_s_key", (key == 'S' || rawKey == 'S') ? "true" : "false"},
                           {"is_d_key", (key == 'D' || rawKey == 'D') ? "true" : "false"},
                           {"keys_down", std::to_string(qtKeysDown.size())},
-                          {"game_mode", qtScriptState.playing ? "true" : "false"}},
+                          {"runtime_mode", std::string(qtRuntimeModeName())},
+                          {"play_mode", qtIsPlayMode() ? "true" : "false"}},
                          qtFrameCount);
               break;
             }
             case vkpt::platform::InputEventType::MouseButtonDown:
               qtLastMouseX = event.x;
               qtLastMouseY = event.y;
-              if (qtCurrentInputMode() == QtInputMode::FpsCamera) {
+              {
+                const auto inputMode = qtCurrentInputMode();
+                BeginViewportMouseClick(qtMouseClickState,
+                                        qtViewportMouseInputMode(inputMode),
+                                        event.code,
+                                        event.x,
+                                        event.y);
+                qtPotentialClick =
+                    qtMouseClickState.owner == ViewportMouseClickOwner::EditorSelection;
+                if (inputMode == QtInputMode::FpsCamera) {
+                  qtUserCameraActive = true;
+                  qtLeftMouseDown = false;
+                  qtRightMouseDown = false;
+                  qtMiddleMouseDown = false;
+                  qtPotentialClick = false;
+                  qtGizmoDrag = {};
+                  break;
+                }
+              }
+              if (qtCurrentInputMode() == QtInputMode::GameMode) {
                 qtUserCameraActive = true;
-                qtLeftMouseDown = false;
-                qtRightMouseDown = false;
-                qtMiddleMouseDown = false;
+                if (event.code == 0) {
+                  qtLeftMouseDown = true;
+                } else if (event.code == 1) {
+                  qtRightMouseDown = true;
+                } else if (event.code == 2) {
+                  qtMiddleMouseDown = true;
+                }
                 qtPotentialClick = false;
                 qtGizmoDrag = {};
                 break;
@@ -361,8 +411,6 @@
               if (event.code == 0) {
                 qtUserCameraActive = true;
                 qtLeftMouseDown = true;
-                qtClickX = event.x;
-                qtClickY = event.y;
                 qtClickDragPixels = 0.0f;
                 qtPotentialClick = true;
                 if (qtCurrentInputMode() == QtInputMode::Editor &&
@@ -382,12 +430,13 @@
                           ui_runtime_state.active_gizmo_mode,
                           localPoint->first,
                           localPoint->second);
-                      if (hit) {
-                        qtCaptureGizmoDrag(*hit, event.x, event.y);
-                        if (qtGizmoDrag.active) {
-                          qtPotentialClick = false;
-                          ui_runtime_state.status_message = "gizmo drag started";
-                        }
+                    if (hit) {
+                      qtCaptureGizmoDrag(*hit, event.x, event.y);
+                      if (qtGizmoDrag.active) {
+                        MarkViewportMouseClickDrag(qtMouseClickState);
+                        qtPotentialClick = false;
+                        ui_runtime_state.status_message = "gizmo drag started";
+                      }
                       }
                     }
                   }
@@ -400,39 +449,85 @@
               }
               break;
             case vkpt::platform::InputEventType::MouseButtonUp:
-              if (qtCurrentInputMode() == QtInputMode::FpsCamera) {
-                qtLeftMouseDown = false;
-                qtRightMouseDown = false;
-                qtMiddleMouseDown = false;
-                qtPotentialClick = false;
-                qtGizmoDrag = {};
-                break;
-              }
-              if (event.code == 0) {
-                qtLeftMouseDown = false;
-                if (qtGizmoDrag.active) {
-                  qtApplyGizmoDrag(event.x, event.y, qtFrameCount);
-                  qtCommitGizmoDrag(qtFrameCount);
+              {
+                const QtInputMode inputMode = qtCurrentInputMode();
+                const auto mouseInputMode = qtViewportMouseInputMode(inputMode);
+                if (inputMode == QtInputMode::FpsCamera) {
+                  qtLeftMouseDown = false;
+                  qtRightMouseDown = false;
+                  qtMiddleMouseDown = false;
+                  qtResetViewportMouseClick();
                   qtGizmoDrag = {};
-                  ui_runtime_state.status_message = "gizmo drag committed";
-                  qtDockPanelsDirty = true;
-                } else if (qtPotentialClick && qtClickDragPixels <= 6.0f) {
-                  qtApplyViewportPick(event.x, event.y, qtFrameCount);
+                  break;
                 }
-                qtPotentialClick = false;
-                qtUpdateGizmoHoverCursor(event.x, event.y);
-              } else if (event.code == 1) {
-                qtRightMouseDown = false;
-                qtUpdateGizmoHoverCursor(event.x, event.y);
-              } else if (event.code == 2) {
-                qtMiddleMouseDown = false;
-                qtUpdateGizmoHoverCursor(event.x, event.y);
+                if (event.code == 0) {
+                  qtLeftMouseDown = false;
+                  const auto clickResult =
+                      EndViewportMouseClick(qtMouseClickState,
+                                            mouseInputMode,
+                                            event.code,
+                                            event.x,
+                                            event.y,
+                                            6.0f);
+                  if (qtGizmoDrag.active) {
+                    qtApplyGizmoDrag(event.x, event.y, qtFrameCount);
+                    qtCommitGizmoDrag(qtFrameCount);
+                    qtGizmoDrag = {};
+                    ui_runtime_state.status_message = "gizmo drag committed";
+                    qtDockPanelsDirty = true;
+                  } else if (clickResult.editor_pick_allowed) {
+                    qtApplyViewportPick(event.x, event.y, qtFrameCount);
+                  } else if (clickResult.suppressed_editor_pick) {
+                    ui_runtime_state.status_message =
+                        clickResult.game_mode_click
+                            ? "game mode consumed viewport click"
+                            : "viewport click consumed by camera mode";
+                    PushUiEvent(ui_event_log,
+                                "viewport_pick_suppressed",
+                                "viewport",
+                                clickResult.game_mode_click ? "game_mode" : "camera",
+                                qtFrameCount,
+                                {},
+                                clickResult.game_mode_click ? "game_mode" : "camera",
+                                ui_runtime_state.status_message);
+                  }
+                  qtPotentialClick = false;
+                  if (inputMode == QtInputMode::Editor) {
+                    qtUpdateGizmoHoverCursor(event.x, event.y);
+                  }
+                } else if (event.code == 1) {
+                  qtRightMouseDown = false;
+                  (void)EndViewportMouseClick(qtMouseClickState,
+                                              mouseInputMode,
+                                              event.code,
+                                              event.x,
+                                              event.y,
+                                              6.0f);
+                  if (inputMode == QtInputMode::Editor) {
+                    qtUpdateGizmoHoverCursor(event.x, event.y);
+                  }
+                } else if (event.code == 2) {
+                  qtMiddleMouseDown = false;
+                  (void)EndViewportMouseClick(qtMouseClickState,
+                                              mouseInputMode,
+                                              event.code,
+                                              event.x,
+                                              event.y,
+                                              6.0f);
+                  if (inputMode == QtInputMode::Editor) {
+                    qtUpdateGizmoHoverCursor(event.x, event.y);
+                  }
+                }
               }
               break;
             case vkpt::platform::InputEventType::MouseMove: {
               qtLastMouseX = event.x;
               qtLastMouseY = event.y;
               const QtInputMode inputMode = qtCurrentInputMode();
+              if (qtLeftMouseDown || qtRightMouseDown || qtMiddleMouseDown) {
+                qtClickDragPixels =
+                    UpdateViewportMouseClickDrag(qtMouseClickState, event.x, event.y);
+              }
               if (inputMode == QtInputMode::FpsCamera) {
                 qtUserCameraActive = true;
                 qtPendingFpsLookDx += event.delta_x;
@@ -447,12 +542,9 @@
               }
               if (qtLeftMouseDown && qtGizmoDrag.active) {
                 qtApplyGizmoDrag(event.x, event.y, qtFrameCount);
-                qtClickDragPixels = std::max(qtClickDragPixels,
-                                             ScreenDistance(event.x, event.y, qtClickX, qtClickY));
+                qtClickDragPixels = UpdateViewportMouseClickDrag(qtMouseClickState, event.x, event.y);
               } else if (qtLeftMouseDown && qtPotentialClick) {
-                const float dx = event.x - qtClickX;
-                const float dy = event.y - qtClickY;
-                qtClickDragPixels = std::max(qtClickDragPixels, std::sqrt(dx * dx + dy * dy));
+                qtClickDragPixels = UpdateViewportMouseClickDrag(qtMouseClickState, event.x, event.y);
               }
               if ((qtRightMouseDown || inputMode == QtInputMode::FpsCamera) && !qtGizmoDrag.active) {
                 qtUserCameraActive = true;
@@ -489,18 +581,23 @@
               }
               break;
             case vkpt::platform::InputEventType::FocusLost:
+              if (qtLiveEditViewportInputArmed()) {
+                qtScriptState.viewport_input_forwarding = false;
+                qtDockPanelsDirty = true;
+              }
               if (qtSetFpsMode && qtFpsMode) {
                 qtSetFpsMode(false, qtFrameCount, "focus");
               } else {
                 qtSetViewportMouseLocked(false);
               }
+              qtSyncViewportAssetDropMode();
               qtPendingFpsLookDx = 0.0f;
               qtPendingFpsLookDy = 0.0f;
               qtKeysDown.clear();
               qtLeftMouseDown = false;
               qtRightMouseDown = false;
               qtMiddleMouseDown = false;
-              qtPotentialClick = false;
+              qtResetViewportMouseClick();
               if (qtGizmoDrag.active) {
                 qtCommitGizmoDrag(qtFrameCount);
               }
@@ -535,6 +632,7 @@
             qtApplySceneGraphActivation(activation, qtFrameCount);
           }
         }
+        qtPollSceneLoadJob(qtFrameCount);
         if (!qtInputEvents.empty() || !qtPropertyEdits.empty() || !qtDockRowActivations.empty()) {
           UpdateCrashArtifactsFromUiState(ui_runtime_state,
                                          ui_selection_state,
@@ -574,10 +672,12 @@
           qtPendingPanDx = 0.0f;
           qtPendingPanDy = 0.0f;
         }
+        qtApplyContinuousOrbitCameraMovement(qtInputDt);
+        qtApplyContinuousFpsMovement(qtInputDt);
         qtApplyPhysicsSimulation(qtFrameStart);
         const auto qtAfterPhysics = std::chrono::steady_clock::now();
         const bool qtScriptDispatched = qtApplyGameModeScripts(qtFrameStart, qtFrameCount, qtInputDt);
-        if (qtScriptDispatched && qtScriptState.playing && !qtFpsMode) {
+        if (qtScriptDispatched && qtScriptsRunning() && !qtFpsMode) {
           qtPendingFpsLookDx = 0.0f;
           qtPendingFpsLookDy = 0.0f;
         }
@@ -753,15 +853,44 @@
         const auto qtAfterUi = std::chrono::steady_clock::now();
         const double qtProfileCurrentFrameMs =
             std::chrono::duration<double, std::milli>(qtAfterUi - qtFrameStart).count();
-        qtProfilePollMs += std::chrono::duration<double, std::milli>(qtAfterPoll - qtFrameStart).count();
-        qtProfileInputMs += std::chrono::duration<double, std::milli>(qtAfterInputHandling - qtAfterPoll).count();
-        qtProfilePhysicsMs += std::chrono::duration<double, std::milli>(qtAfterPhysics - qtAfterInputHandling).count();
-        qtProfileSelectionMs += std::chrono::duration<double, std::milli>(qtAfterSelectionOverlay - qtAfterPhysics).count();
-        qtProfileRenderMs += std::chrono::duration<double, std::milli>(qtAfterRender - qtAfterSelectionOverlay).count();
-        qtProfileUiMs += std::chrono::duration<double, std::milli>(qtAfterUi - qtAfterRender).count();
+        const double qtThisFramePollMs = std::chrono::duration<double, std::milli>(qtAfterPoll - qtFrameStart).count();
+        const double qtThisFrameInputMs = std::chrono::duration<double, std::milli>(qtAfterInputHandling - qtAfterPoll).count();
+        const double qtThisFramePhysicsMs = std::chrono::duration<double, std::milli>(qtAfterPhysics - qtAfterInputHandling).count();
+        const double qtThisFrameSelectionMs = std::chrono::duration<double, std::milli>(qtAfterSelectionOverlay - qtAfterPhysics).count();
+        const double qtThisFrameRenderMs = std::chrono::duration<double, std::milli>(qtAfterRender - qtAfterSelectionOverlay).count();
+        const double qtThisFrameUiMs = std::chrono::duration<double, std::milli>(qtAfterUi - qtAfterRender).count();
+        qtProfilePollMs += qtThisFramePollMs;
+        qtProfileInputMs += qtThisFrameInputMs;
+        qtProfilePhysicsMs += qtThisFramePhysicsMs;
+        qtProfileSelectionMs += qtThisFrameSelectionMs;
+        qtProfileRenderMs += qtThisFrameRenderMs;
+        qtProfileUiMs += qtThisFrameUiMs;
         qtProfileFrameMs += qtProfileCurrentFrameMs;
         qtProfileMaxFrameMs = std::max(qtProfileMaxFrameMs, qtProfileCurrentFrameMs);
         ++qtProfileFrames;
+        // Live drag-fps diagnostic. While a gizmo drag is active, log the
+        // per-phase breakdown for any frame that overruns 1.5x the target. The
+        // user can drag once and the log will show which phase ate the budget
+        // (poll = Qt event drain, input = gizmo math + transform publish,
+        // selection = updateQtSelectionOverlay, render = frame acquire +
+        // set_framebuffer_rgba, ui = updateQtPreviewOverlay).
+        if (qtGizmoDrag.active) {
+          const auto frameTargetMs =
+              std::chrono::duration<double, std::milli>(qtInteractiveFrameTarget()).count();
+          if (qtProfileCurrentFrameMs > frameTargetMs * 1.5) {
+            logger.log(vkpt::log::Severity::Info, "app", "Qt drag frame profile", {
+              {"frame", std::to_string(qtFrameCount)},
+              {"frame_ms", std::to_string(qtProfileCurrentFrameMs)},
+              {"target_ms", std::to_string(frameTargetMs)},
+              {"poll_ms", std::to_string(qtThisFramePollMs)},
+              {"input_ms", std::to_string(qtThisFrameInputMs)},
+              {"physics_ms", std::to_string(qtThisFramePhysicsMs)},
+              {"selection_ms", std::to_string(qtThisFrameSelectionMs)},
+              {"render_ms", std::to_string(qtThisFrameRenderMs)},
+              {"ui_ms", std::to_string(qtThisFrameUiMs)}
+            });
+          }
+        }
 #endif
         if (!window->is_open()) break;
         ++qtFrameCount;

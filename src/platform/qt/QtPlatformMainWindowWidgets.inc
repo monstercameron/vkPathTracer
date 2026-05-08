@@ -2,6 +2,14 @@
           button->setEnabled(property.enabled);
           button->setToolTip(ToQString(property.name));
         }
+      } else if (isListProperty(property)) {
+        auto* text = qobject_cast<QTextEdit*>(cell);
+        if (text != nullptr && !text->hasFocus()) {
+          QSignalBlocker textBlocker(text);
+          text->setPlainText(ToQString(property.value));
+          text->setEnabled(property.enabled);
+          text->setToolTip(ToQString(property.name));
+        }
       }
     }
   }
@@ -196,7 +204,8 @@
                                      isToggleProperty(property) ||
                                      isSliderProperty(property) ||
                                      isTextProperty(property) ||
-                                     isButtonProperty(property);
+                                     isButtonProperty(property) ||
+                                     isListProperty(property);
         auto* nameItem = new QTableWidgetItem(ToQString(property.name));
         auto* valueItem = new QTableWidgetItem(ToQString(property.value));
         valueItem->setData(Qt::UserRole, ToQString(property.id));
@@ -463,6 +472,51 @@
                            });
           table->setCellWidget(row, valueColumn, button);
           table->setRowHeight(row, compactProperties ? 38 : 32);
+        } else if (isListProperty(property)) {
+          auto* text = new QTextEdit(table);
+          text->setReadOnly(!property.enabled);
+          text->setPlainText(ToQString(property.value));
+          text->setEnabled(property.enabled);
+          text->setToolTip(ToQString(property.name));
+          text->setFrameShape(QFrame::NoFrame);
+          text->setMinimumHeight(compactProperties ? 72 : 64);
+          auto* debounceTimer = new QTimer(text);
+          debounceTimer->setSingleShot(true);
+          QObject::connect(text,
+                           &QTextEdit::textChanged,
+                           text,
+                           [owner = m_owner,
+                            text,
+                            valueItem,
+                            debounceTimer,
+                            panelId = panel.id,
+                            propertyId = property.id]() {
+                             if (owner == nullptr || propertyId.empty() || debounceTimer == nullptr) {
+                               return;
+                             }
+                             debounceTimer->start(kQtSliderEditDebounceMs);
+                             if (valueItem != nullptr && text != nullptr) {
+                               valueItem->setText(text->toPlainText());
+                               valueItem->setToolTip(text->toPlainText());
+                             }
+                           });
+          QObject::connect(debounceTimer,
+                           &QTimer::timeout,
+                           debounceTimer,
+                           [owner = m_owner,
+                            text,
+                            panelId = panel.id,
+                            propertyId = property.id]() {
+                             if (owner != nullptr && text != nullptr && !propertyId.empty()) {
+                               owner->emit_dock_property_edit(panelId,
+                                                              propertyId,
+                                                              ToUtf8String(text->toPlainText()));
+                             }
+                           });
+          table->setCellWidget(row, valueColumn, text);
+          const int lineCount = 1 + static_cast<int>(
+              std::count(property.value.begin(), property.value.end(), '\n'));
+          table->setRowHeight(row, std::min(118, 34 + lineCount * 20));
         }
         if (hasUnits) {
           auto* unitItem = new QTableWidgetItem(ToQString(property.unit));

@@ -23,10 +23,12 @@
       const float qtFpsRadius = 0.32f * qtFpsUnitScale;
       const float qtFpsStepHeight = 0.38f * qtFpsUnitScale;
       const float qtFpsSkin = 0.03f * qtFpsUnitScale;
-      const float qtFpsWalkSpeed = ClampFloat(qtCameraMoveUnitsPerSecond,
-                                              1.45f * qtFpsUnitScale,
-                                              6.5f * qtFpsUnitScale);
-      const float qtFpsRunSpeed = qtFpsWalkSpeed * 2.5f;
+      const float qtFpsWalkSpeed = ClampFloat(1.65f * qtFpsUnitScale,
+                                              1.1f,
+                                              4.0f);
+      const float qtFpsRunSpeed = ClampFloat(qtFpsWalkSpeed * 2.35f,
+                                             qtFpsWalkSpeed,
+                                             8.0f);
       const float qtFpsCrouchSpeed = qtFpsWalkSpeed * 0.45f;
       const float qtFpsAirControlScale = 0.45f;
       const float qtFpsGravity = 18.0f * qtFpsUnitScale;
@@ -192,7 +194,8 @@
                            {1.0f, 0.0f, 0.0f});
       };
       auto qtApplyContinuousOrbitCameraMovement = [&](float dtSeconds) {
-        if (qtFpsMode || qtScriptState.playing || dtSeconds <= 0.0f) {
+        if (qtFpsMode || qtIsPlayMode() || qtLiveEditViewportInputArmed() ||
+            dtSeconds <= 0.0f) {
           return;
         }
         if (qtKeyActive(kQtKeyControl) || qtKeyActive(17) ||
@@ -338,26 +341,8 @@
       qtSetFpsMode = [&](bool enabled,
                          vkpt::core::FrameIndex frameIndex,
                          std::string_view source) {
-        if (enabled) {
-          qtFpsMode = false;
-          qtFpsPlayer = {};
-          qtDiscardFpsMovementResults();
-          qtSetViewportMouseLocked(false);
-          qtSetViewportCursor(vkpt::platform::QtViewportCursor::Default);
-          qtSyncViewportAssetDropMode();
-          ui_runtime_state.active_viewport_tool = vkpt::editor::ViewportTool::Select;
-          ui_runtime_state.status_message = "fps movement disabled in static mode";
-          PushUiEvent(ui_event_log,
-                      "viewport_camera_mode",
-                      "viewport",
-                      std::string(source),
-                      frameIndex,
-                      {},
-                      "disabled",
-                      ui_runtime_state.status_message);
-          qtDockPanelsDirty = true;
-          updateQtSelectionOverlay();
-          return;
+        if (enabled && qtScriptState.playing) {
+          qtSetGameMode(false, frameIndex, source);
         }
         if (qtFpsMode == enabled && (!enabled || qtFpsPlayer.initialized)) {
           return;
@@ -376,6 +361,8 @@
           qtRightMouseDown = false;
           qtMiddleMouseDown = false;
           qtPotentialClick = false;
+          ResetViewportMouseClick(qtMouseClickState);
+          qtClickDragPixels = 0.0f;
           qtPendingFpsLookDx = 0.0f;
           qtPendingFpsLookDy = 0.0f;
           qtGizmoDrag = {};
@@ -610,8 +597,10 @@
         }
       };
       auto qtApplyViewportPick = [&](float x, float y, vkpt::core::FrameIndex frameIndex) {
-        if (qtFpsMode) {
+        if (qtFpsMode || qtIsPlayMode() || qtLiveEditViewportInputArmed()) {
           qtPotentialClick = false;
+          ResetViewportMouseClick(qtMouseClickState);
+          qtClickDragPixels = 0.0f;
           qtGizmoDrag = {};
           qtHoveredGizmoHit = std::nullopt;
           updateQtSelectionOverlay();
@@ -760,16 +749,19 @@
         }
         constexpr std::string_view kScenePrefix = "asset.scene.";
         constexpr std::string_view kModelPrefix = "asset.model.";
-        if (activation.viewport_drop && (qtFpsMode || qtScriptState.playing)) {
+        if (activation.viewport_drop &&
+            (qtFpsMode || qtIsPlayMode() || qtLiveEditViewportInputArmed())) {
           ui_runtime_state.focused_panel = "asset_browser";
           ui_runtime_state.status_message =
-              "viewport model drop ignored: gameplay mode owns the canvas";
+              "viewport model drop ignored: play mode owns the canvas";
           ui_runtime_state.last_warning_or_error = ui_runtime_state.status_message;
           qtDockPanelsDirty = true;
           PushUiEvent(ui_event_log,
                       "asset_browser_viewport_drop_ignored",
                       "asset_browser",
-                      qtScriptState.playing ? "game_mode" : "fps",
+                      qtIsPlayMode()
+                          ? "play_mode"
+                          : (qtLiveEditViewportInputArmed() ? "live_edit_input" : "fps"),
                       frameIndex,
                       {},
                       activation.row_id,
@@ -778,7 +770,8 @@
                      "app",
                      "Qt viewport asset drop ignored outside editor mode",
                      {{"row_id", activation.row_id},
-                      {"game_mode", qtScriptState.playing ? "true" : "false"},
+                      {"runtime_mode", std::string(qtRuntimeModeName())},
+                      {"play_mode", qtIsPlayMode() ? "true" : "false"},
                       {"fps_mode", qtFpsMode ? "true" : "false"}});
           return true;
         }

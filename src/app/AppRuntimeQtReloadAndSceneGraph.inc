@@ -262,6 +262,7 @@
         qtScriptState.bindings = qtScriptRuntime->bindings();
         qtScriptState.diagnostics = qtScriptRuntime->diagnostics();
         qtScriptState.variables = qtScriptRuntime->variable_snapshots();
+        qtScriptState.runtime_states = qtScriptRuntime->runtime_states();
         qtScriptState.status = std::string("bindings reloaded") +
             (reason.empty() ? std::string{} : " (" + std::string(reason) + ")");
         qtScriptState.last_hook = "reload";
@@ -747,7 +748,9 @@
               qtAudioSystem->load_scene_audio(qtSceneDocument, RuntimeSceneDisplayName(config.scene_path.value));
             }
             qtDockPanelsDirty = true;
-            qtPreviewStatus = qtScriptState.playing ? "game mode" : "editor mode";
+            qtPreviewStatus = qtIsPlayMode()
+                ? "play mode"
+                : (qtIsLiveEditMode() ? "live edit" : "editor mode");
             logger.log(vkpt::log::Severity::Info,
                        "scripts",
                        "Lua script commands applied incrementally",
@@ -778,14 +781,14 @@
               vkpt::core::FrameIndex frameIndex,
               double dtSeconds,
               std::string_view source) {
-        if (!qtScriptState.playing) {
-          qtScriptState.status = "script dispatch blocked: enter game mode with F1";
+        if (!qtScriptsRunning()) {
+          qtScriptState.status = "script dispatch blocked: press F1 for Play or F2 for Live Edit";
           ui_runtime_state.status_message = qtScriptState.status;
           ui_runtime_state.last_warning_or_error = qtScriptState.status;
           qtDockPanelsDirty = true;
           logger.log(vkpt::log::Severity::Warning,
                      "scripts",
-                     "script dispatch blocked outside game mode",
+                     "script dispatch blocked outside script runtime mode",
                      {{"hook", std::string(vkpt::scripting::to_string(hook))},
                       {"source", std::string(source)}},
                      frameIndex);
@@ -806,13 +809,31 @@
         context.delta_seconds = dtSeconds;
         context.elapsed_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - qtScriptRuntimeStartTime).count();
-        context.scripts_enabled = qtScriptState.playing && qtScriptState.scripts_enabled;
-        context.game_mode = qtScriptState.playing;
+        context.scripts_enabled = qtScriptsRunning() && qtScriptState.scripts_enabled;
+        context.game_mode = qtIsPlayMode();
+        context.runtime.mode = std::string(qtRuntimeModeName());
+        context.runtime.scripts_running = qtScriptsRunning();
         context.benchmark_mode = qtSceneDocument.benchmark.enabled;
         context.allow_benchmark_scripts = qtScriptState.benchmark_scripts_allowed;
-        context.input.active_keys.assign(qtKeysDown.begin(), qtKeysDown.end());
-        context.input.mouse_delta_x = qtPendingFpsLookDx;
-        context.input.mouse_delta_y = qtPendingFpsLookDy;
+        const bool luaInputEnabled = qtIsPlayMode() || qtScriptState.viewport_input_forwarding;
+        context.input.enabled = luaInputEnabled;
+        context.input.viewport_focused = luaInputEnabled;
+        if (luaInputEnabled) {
+          for (const int key : qtKeysDown) {
+            if (key == kQtKeyEscape || key == kQtKeyF1 || key == kQtKeyF2) {
+              continue;
+            }
+            context.input.active_keys.push_back(key);
+          }
+          context.input.mouse_delta_x = qtPendingFpsLookDx;
+          context.input.mouse_delta_y = qtPendingFpsLookDy;
+        }
+        context.editor.canvas_enabled = !qtIsPlayMode();
+        context.editor.is_editing = qtGizmoDrag.active;
+        if (qtGizmoDrag.active && !qtGizmoDrag.entities.empty()) {
+          context.editor.edited_entity_id = qtGizmoDrag.entities.front().entity_id;
+          context.editor.edited_component = "Transform";
+        }
         logger.log(vkpt::log::Severity::Debug,
                    "scripts",
                    "dispatching Lua script hook",
@@ -820,8 +841,10 @@
                     {"source", std::string(source)},
                     {"frame", std::to_string(frameIndex)},
                     {"dt", std::to_string(dtSeconds)},
+                    {"runtime_mode", std::string(qtRuntimeModeName())},
                     {"scripts_enabled", context.scripts_enabled ? "true" : "false"},
-                    {"game_mode", context.game_mode ? "true" : "false"},
+                    {"play_mode", context.game_mode ? "true" : "false"},
+                    {"lua_input_enabled", context.input.enabled ? "true" : "false"},
                     {"lua_compiled_in", qtScriptRuntime->lua_compiled_in() ? "true" : "false"},
                     {"execution_available", qtScriptRuntime->execution_available() ? "true" : "false"},
                     {"active_keys", std::to_string(context.input.active_keys.size())},
@@ -842,6 +865,7 @@
         qtScriptState.bindings = qtScriptRuntime->bindings();
         qtScriptState.diagnostics = qtScriptRuntime->diagnostics();
         qtScriptState.variables = qtScriptRuntime->variable_snapshots();
+        qtScriptState.runtime_states = qtScriptRuntime->runtime_states();
         qtScriptState.last_hook = std::string(vkpt::scripting::to_string(hook));
         qtScriptState.last_frame = frameIndex;
         ++qtScriptState.dispatch_count;
@@ -877,13 +901,13 @@
               vkpt::core::FrameIndex frameIndex,
               double dtSeconds) {
         (void)now;
-        if (!qtScriptState.playing) {
+        if (!qtScriptsRunning()) {
           return false;
         }
         return qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUpdate,
                                     frameIndex,
                                     dtSeconds,
-                                    "game mode");
+                                    qtIsPlayMode() ? "play mode" : "live edit");
       };
       qtReloadEditedScene = [&](std::string_view reason) {
         const auto reloadStart = std::chrono::steady_clock::now();
@@ -952,8 +976,10 @@
             qtMarkOverlayRequiresRenderCatchup();
             qtRenderCoordinator->post_scene(qtScene);
             accumulationReset = true;
-          } else if (!qtUseBg && qtTracerReady) {
-            qtTracerReady = qtTracer->load_scene_snapshot(qtScene) &&
+          } else if (!qtUseBg && qtTracer) {
+            const bool configured = qtTracerReady || qtTracer->configure(qtSettings);
+            qtTracerReady = configured &&
+                            qtTracer->load_scene_snapshot(qtScene) &&
                             qtTracer->build_or_update_acceleration() &&
                             qtTracer->reset_accumulation();
             qtSampleIndex = 0u;

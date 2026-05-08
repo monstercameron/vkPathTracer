@@ -5,12 +5,320 @@
 #include "physics/PhysicsWorld.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <filesystem>
+#include <cstdlib>
+#include <optional>
 #include <sstream>
 #include <utility>
 #include <vector>
 
 namespace vkpt::app {
+namespace {
+
+bool QtDockLooksBool(std::string_view value) {
+  const auto lower = QtDockToLower(std::string(value));
+  return lower == "true" || lower == "false" || lower == "1" || lower == "0";
+}
+
+bool QtDockLooksNumber(std::string_view value) {
+  if (value.empty()) {
+    return false;
+  }
+  char* end = nullptr;
+  const std::string text(value);
+  (void)std::strtod(text.c_str(), &end);
+  return end != text.c_str() && end != nullptr && *end == '\0';
+}
+
+std::optional<double> QtDockParseNumber(std::string_view value) {
+  if (value.empty()) {
+    return std::nullopt;
+  }
+  char* end = nullptr;
+  const std::string text(value);
+  const double parsed = std::strtod(text.c_str(), &end);
+  if (end == text.c_str() || end == nullptr || *end != '\0' || !std::isfinite(parsed)) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+bool QtDockLooksInteger(std::string_view value) {
+  if (value.empty()) {
+    return false;
+  }
+  char* end = nullptr;
+  const std::string text(value);
+  (void)std::strtoll(text.c_str(), &end, 10);
+  return end != text.c_str() && end != nullptr && *end == '\0';
+}
+
+bool QtDockLooksQuotedString(std::string_view value) {
+  return value.size() >= 2u && value.front() == '"' && value.back() == '"';
+}
+
+bool QtDockLooksList(std::string_view value) {
+  return value.size() >= 2u && value.front() == '{' && value.back() == '}';
+}
+
+std::string QtDockUnquoteString(std::string_view value) {
+  if (!QtDockLooksQuotedString(value)) {
+    return std::string(value);
+  }
+  return std::string(value.substr(1u, value.size() - 2u));
+}
+
+std::string QtDockFormatListValue(std::string_view value) {
+  if (!QtDockLooksList(value)) {
+    return std::string(value);
+  }
+  auto cleanItem = [](std::string item) {
+    item = QtTrim(item);
+    const auto equals = item.find('=');
+    if (equals != std::string::npos) {
+      const auto key = QtTrim(std::string_view(item).substr(0u, equals));
+      const auto listIndex = !key.empty() &&
+          std::all_of(key.begin(), key.end(), [](unsigned char ch) {
+            return std::isdigit(ch) != 0;
+          });
+      if (listIndex) {
+        return QtDockUnquoteString(QtTrim(std::string_view(item).substr(equals + 1u)));
+      }
+    }
+    return QtDockUnquoteString(item);
+  };
+  std::string body(value.substr(1u, value.size() - 2u));
+  std::string out;
+  std::string current;
+  bool inString = false;
+  for (char ch : body) {
+    if (ch == '"') {
+      inString = !inString;
+    }
+    if (ch == ',' && !inString) {
+      if (!current.empty()) {
+        if (!out.empty()) {
+          out.push_back('\n');
+        }
+        out += cleanItem(current);
+      }
+      current.clear();
+    } else {
+      current.push_back(ch);
+    }
+  }
+  if (!current.empty()) {
+    if (!out.empty()) {
+      out.push_back('\n');
+    }
+    out += cleanItem(current);
+  }
+  return out.empty() ? "{}" : out;
+}
+
+bool QtDockScriptValueWantsSlider(std::string_view name,
+                                  std::string_view value) {
+  if (!QtDockLooksNumber(value) || QtDockLooksInteger(value)) {
+    return false;
+  }
+  const auto lower = QtDockToLower(std::string(name));
+  return lower.find("min") != std::string::npos ||
+         lower.find("max") != std::string::npos ||
+         lower.find("range") != std::string::npos ||
+         lower.find("volume") != std::string::npos ||
+         lower.find("gain") != std::string::npos ||
+         lower.find("sensitivity") != std::string::npos ||
+         lower.find("pitch") != std::string::npos ||
+         lower.find("yaw") != std::string::npos ||
+         lower.find("distance") != std::string::npos ||
+         lower.find("speed") != std::string::npos ||
+         lower.find("height") != std::string::npos ||
+         lower.find("radius") != std::string::npos ||
+         lower.find("intensity") != std::string::npos ||
+         lower.find("time") != std::string::npos ||
+         lower.find("scale") != std::string::npos ||
+         lower.find("fov") != std::string::npos;
+}
+
+struct QtDockNumericRange {
+  double minimum = 0.0;
+  double maximum = 1.0;
+  double step = 0.01;
+  double default_value = 0.0;
+};
+
+QtDockNumericRange QtDockScriptValueRange(std::string_view name, double value) {
+  const auto lower = QtDockToLower(std::string(name));
+  QtDockNumericRange range;
+  range.default_value = value;
+  if (lower.find("volume") != std::string::npos ||
+      lower.find("gain") != std::string::npos ||
+      (value >= 0.0 && value <= 1.0)) {
+    range.minimum = 0.0;
+    range.maximum = 1.0;
+    range.step = 0.001;
+  } else if (lower.find("pitch") != std::string::npos ||
+             lower.find("yaw") != std::string::npos) {
+    range.minimum = -3.142;
+    range.maximum = 3.142;
+    range.step = 0.001;
+  } else if (lower.find("fov") != std::string::npos) {
+    range.minimum = 1.0;
+    range.maximum = 179.0;
+    range.step = 0.1;
+  } else if (lower.find("sensitivity") != std::string::npos) {
+    range.minimum = 0.0;
+    range.maximum = std::max(0.01, std::abs(value) * 4.0);
+    range.step = 0.0001;
+  } else {
+    const double span = std::max(1.0, std::abs(value) * 2.0);
+    range.minimum = value < 0.0 ? -span : 0.0;
+    range.maximum = value < 0.0 ? span : span;
+    range.step = span >= 100.0 ? 1.0 : 0.01;
+  }
+  return range;
+}
+
+void QtDockAddListGroupedProperty(QtDockPanelContent& panel,
+                                  std::string id,
+                                  std::string_view group,
+                                  std::string_view label,
+                                  std::string value,
+                                  bool enabled) {
+  QtDockProperty property;
+  property.id = std::move(id);
+  property.group = std::string(group);
+  property.label = std::string(label);
+  property.value = std::move(value);
+  property.editor = "list";
+  property.editable = true;
+  property.enabled = enabled;
+  panel.properties.push_back(std::move(property));
+}
+
+void QtDockAddTypedScriptValueProperty(QtDockPanelContent& panel,
+                                       std::string id,
+                                       std::string_view group,
+                                       std::string_view label,
+                                       std::string value,
+                                       bool enabled,
+                                       bool live_value = false) {
+  if (QtDockLooksBool(value)) {
+    QtDockAddToggleGroupedProperty(panel, std::move(id), group, label, QtDockToLower(value) == "true" || value == "1");
+  } else if (QtDockLooksList(value)) {
+    QtDockAddListGroupedProperty(panel, std::move(id), group, label, QtDockFormatListValue(value), enabled);
+    return;
+  } else if (const auto parsed = QtDockParseNumber(value)) {
+    if (QtDockScriptValueWantsSlider(label, value)) {
+      const auto range = QtDockScriptValueRange(label, *parsed);
+      QtDockAddSliderGroupedProperty(panel,
+                                     std::move(id),
+                                     group,
+                                     label,
+                                     *parsed,
+                                     range.minimum,
+                                     range.maximum,
+                                     range.step,
+                                     range.default_value);
+      if (live_value && !panel.properties.empty()) {
+        panel.properties.back().has_default = false;
+        panel.properties.back().default_value = 0.0;
+      }
+    } else {
+      QtDockAddEditableGroupedProperty(panel, std::move(id), group, label, std::move(value));
+      panel.properties.back().editor = "number";
+    }
+  } else {
+    QtDockAddTextGroupedProperty(panel,
+                                 std::move(id),
+                                 group,
+                                 label,
+                                 QtDockUnquoteString(value));
+  }
+  if (!panel.properties.empty()) {
+    panel.properties.back().enabled = enabled;
+  }
+}
+
+void QtDockAddCommandProperty(QtDockPanelContent& panel,
+                              std::string id,
+                              std::string_view group,
+                              std::string_view label,
+                              std::string value,
+                              bool enabled = true) {
+  QtDockProperty property;
+  property.id = std::move(id);
+  property.group = std::string(group);
+  property.label = std::string(label);
+  property.value = std::move(value);
+  property.editor = "button";
+  property.editable = true;
+  property.enabled = enabled;
+  panel.properties.push_back(std::move(property));
+}
+
+void QtDockAddReadOnlyGroupedProperty(QtDockPanelContent& panel,
+                                      std::string id,
+                                      std::string_view group,
+                                      std::string_view label,
+                                      std::string value) {
+  QtDockProperty property;
+  property.id = std::move(id);
+  property.group = std::string(group);
+  property.label = std::string(label);
+  property.value = std::move(value);
+  property.editable = false;
+  property.enabled = true;
+  panel.properties.push_back(std::move(property));
+}
+
+std::string QtDockScriptRuntimeMode(const QtDockScriptRuntimeState* runtime) {
+  if (runtime == nullptr) {
+    return "unavailable";
+  }
+  if (!runtime->mode.empty()) {
+    return runtime->mode;
+  }
+  return runtime->playing ? "play" : "edit";
+}
+
+bool QtDockScriptViewportInputForwarding(const QtDockScriptRuntimeState* runtime) {
+  return runtime != nullptr &&
+         (runtime->viewport_input_forwarding || runtime->playing);
+}
+
+bool QtDockScriptRuntimeScriptsRunning(const QtDockScriptRuntimeState* runtime) {
+  const std::string mode = QtDockScriptRuntimeMode(runtime);
+  return runtime != nullptr &&
+         (runtime->playing || mode == "play" || mode == "live_edit" || mode == "live");
+}
+
+void QtDockAddScriptParamProperty(QtDockPanelContent& panel,
+                                  vkpt::core::StableId entity_id,
+                                  std::string_view name,
+                                  std::string value) {
+  const std::string id = "entity." + std::to_string(entity_id) + ".script.param." + std::string(name);
+  QtDockAddTypedScriptValueProperty(panel, id, "Params", name, std::move(value), true);
+}
+
+void QtDockAddRuntimeVariableProperty(QtDockPanelContent& panel,
+                                      const vkpt::scripting::ScriptVariableSnapshot& variable) {
+  const std::string label =
+      variable.name.empty() ? std::string("unnamed") : variable.name;
+  const std::string id = "script.runtime.variable." + std::to_string(variable.entity) + "." +
+                         variable.scope + "." + label;
+  QtDockAddTypedScriptValueProperty(panel,
+                                    id,
+                                    "#" + std::to_string(variable.entity) + " " + variable.scope,
+                                    label,
+                                    variable.value,
+                                    variable.editable,
+                                    true);
+}
+
+}  // namespace
 
 QtDockPanelContent BuildQtAssetBrowserDock(const vkpt::scene::SceneDocument& document,
                                            const vkpt::pathtracer::RTSceneData& scene,
@@ -119,10 +427,15 @@ QtDockPanelContent BuildQtTimelineDock(const vkpt::scene::SceneDocument& documen
 }
 
 QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
+                                     const vkpt::editor::SelectionState& selection,
                                      const vkpt::editor::UiLayoutDocument& layout,
                                      const QtDockScriptRuntimeState* runtime) {
   auto panel = MakeQtDockPanel(layout, "script_panel", "Scripting", true, 560.0f, 460.0f);
   std::size_t scripted = 0u;
+  const auto selectedEntity = QtPrimarySelectionId(selection);
+  const auto* selectedScriptEntity = FindQtSceneEntity(document, selectedEntity);
+  const bool selectedHasScript = selectedScriptEntity != nullptr &&
+                                 !selectedScriptEntity->script.script.empty();
   for (const auto& entity : document.entities) {
     if (!entity.script.script.empty()) {
       ++scripted;
@@ -136,18 +449,106 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
   QtDockAddToggleGroupedProperty(panel,
                                  "script.runtime.playing",
                                  "Runtime",
-                                 "Game mode (F1)",
-                                 runtime != nullptr && runtime->playing);
-  QtDockAddButtonGroupedProperty(panel, "script.runtime.play", "Controls", "Enter game mode", "Enter");
-  QtDockAddButtonGroupedProperty(panel, "script.runtime.pause", "Controls", "Leave game mode", "Leave");
+                                 "Game mode scripts (F1/F2)",
+                                 QtDockScriptRuntimeScriptsRunning(runtime));
+  const std::string runtimeMode = QtDockScriptRuntimeMode(runtime);
+  const bool liveEditMode = runtimeMode == "live_edit" || runtimeMode == "live";
+  const bool scriptsRunning = liveEditMode || runtimeMode == "play";
+  QtDockAddCommandProperty(panel, "script.runtime.run_live", "Live/Play", "Run Live", "Run Live", !liveEditMode);
+  QtDockAddCommandProperty(panel, "script.runtime.play", "Live/Play", "Play", "Play", runtimeMode != "play");
+  QtDockAddCommandProperty(panel, "script.runtime.stop", "Live/Play", "Stop", "Stop", scriptsRunning);
+  QtDockAddCommandProperty(panel,
+                           "script.runtime.send_viewport_input",
+                           "Live/Play",
+                           "Lock Mouse / Input",
+                           runtime != nullptr && runtime->viewport_input_forwarding ? "Unlock" : "Lock",
+                           liveEditMode);
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.pause", "Controls", "Stop runtime", "Stop");
   QtDockAddButtonGroupedProperty(panel, "script.runtime.step", "Controls", "Step update", "Step");
   QtDockAddButtonGroupedProperty(panel, "script.runtime.reload", "Controls", "Reload bindings", "Reload");
+  QtDockAddCommandProperty(panel,
+                           "script.selection.attach",
+                           "Controls",
+                           "Attach to selection",
+                           "Attach",
+                           selectedScriptEntity != nullptr);
+  QtDockAddCommandProperty(panel,
+                           "script.selection.detach",
+                           "Controls",
+                           "Detach from selection",
+                           "Detach",
+                           selectedHasScript);
+  QtDockAddCommandProperty(panel, "script.actions.new_lua_script", "Controls", "New Lua script", "New");
+  QtDockAddCommandProperty(panel, "script.actions.open_folder", "Controls", "Open script folder", "Open");
+  QtDockAddCommandProperty(panel,
+                           "script.selection.open",
+                           "Controls",
+                           "Open selected script",
+                           "Open",
+                           selectedHasScript);
   QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_on_load", "Hooks", "on_load", "Fire");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_on_spawn", "Hooks", "on_spawn", "Fire");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_on_enable", "Hooks", "on_enable", "Fire");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_on_update", "Hooks", "on_update", "Fire");
   QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_fixed_update", "Hooks", "on_fixed_update", "Fire");
   QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_late_update", "Hooks", "on_late_update", "Fire");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_on_disable", "Hooks", "on_disable", "Fire");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_on_destroy", "Hooks", "on_destroy", "Fire");
+  QtDockAddButtonGroupedProperty(panel, "script.runtime.dispatch_on_unload", "Hooks", "on_unload", "Fire");
 
   QtDockAddProperty(panel, "authored script entities", std::to_string(scripted));
-  QtDockAddProperty(panel, "runtime status", runtime != nullptr ? runtime->status : "runtime unavailable");
+  QtDockAddReadOnlyGroupedProperty(panel,
+                                   "script.runtime.mode",
+                                   "Runtime",
+                                   "runtime mode",
+                                   runtimeMode);
+  QtDockAddReadOnlyGroupedProperty(panel,
+                                   "script.runtime.status",
+                                   "Runtime",
+                                   "runtime status",
+                                   runtime != nullptr ? runtime->status : "runtime unavailable");
+  QtDockAddReadOnlyGroupedProperty(panel,
+                                   "script.runtime.viewport_input",
+                                   "Runtime",
+                                   "viewport input",
+                                   QtDockBool(QtDockScriptViewportInputForwarding(runtime)));
+  if (selectedEntity != 0u) {
+    QtDockAddProperty(panel, "selected entity", std::to_string(selectedEntity));
+  }
+  const auto scriptFiles = QtDockFindAssetFiles(QtDockFindRepoRelativePath("assets/scripts"), {".lua"}, false);
+  if (!scriptFiles.empty()) {
+    QtDockTreeRow scriptGroup;
+    scriptGroup.label = "Available Lua Scripts (" + std::to_string(scriptFiles.size()) + ")";
+    scriptGroup.value = std::to_string(scriptFiles.size()) + " files";
+    scriptGroup.icon = "folder";
+    for (const auto& path : scriptFiles) {
+      auto row = QtDockAssetFileRow("script.asset.",
+                                    path,
+                                    QtDockPrettyStem(path),
+                                    "script",
+                                    false);
+      row.activatable = true;
+      row.value = QtDockDisplayPath(path);
+      scriptGroup.children.push_back(std::move(row));
+    }
+    QtDockAddTreeRow(panel, std::move(scriptGroup));
+  }
+  for (const auto& entity : document.entities) {
+    if (entity.script.script.empty() && entity.script.params.empty()) {
+      continue;
+    }
+    const std::string prefix = "entity." + std::to_string(entity.id) + ".script.";
+    const std::string label = QtEntityDisplayName(entity) + " #" + std::to_string(entity.id);
+    QtDockAddTextGroupedProperty(panel, prefix + "path", label, "Script path", entity.script.script);
+    QtDockAddDropdownGroupedProperty(panel, prefix + "language", label, "Language", entity.script.language, {"lua"});
+    QtDockAddTextGroupedProperty(panel, prefix + "entry", label, "Entry point", entity.script.entry);
+    QtDockAddTextGroupedProperty(panel, prefix + "module_id", label, "Module ID", entity.script.module_id);
+    QtDockAddToggleGroupedProperty(panel, prefix + "enabled", label, "Enabled", entity.script.enabled);
+    QtDockAddToggleGroupedProperty(panel, prefix + "reload_on_save", label, "Reload on save", entity.script.reload_on_save);
+    for (const auto& [name, value] : entity.script.params) {
+      QtDockAddScriptParamProperty(panel, entity.id, name, value);
+    }
+  }
   if (runtime != nullptr) {
     QtDockAddProperty(panel, "lua compiled", QtDockBool(runtime->binding_summary.lua_compiled_in));
     QtDockAddProperty(panel, "execution available", QtDockBool(runtime->binding_summary.execution_available));
@@ -166,6 +567,29 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
                       "last commands",
                       std::to_string(runtime->last_dispatch.command_count_before) + " -> " +
                           std::to_string(runtime->last_dispatch.command_count_after));
+    QtDockAddProperty(panel, "audio backend", runtime->audio.backend_name);
+    QtDockAddProperty(panel, "audio voices", std::to_string(runtime->audio.active_voices));
+    QtDockAddButtonGroupedProperty(panel, "script.audio.play_scene", "Scene Audio", "Play scripted audio", "Play");
+    QtDockAddButtonGroupedProperty(panel, "script.audio.pause_scene", "Scene Audio", "Pause scripted audio", "Pause");
+    for (const auto& bus : runtime->audio.buses) {
+      if (bus.name == "debug") {
+        continue;
+      }
+      QtDockAddSliderGroupedProperty(panel,
+                                     "script.audio.volume." + bus.name,
+                                     "Scene Audio",
+                                     bus.name + " volume",
+                                     bus.volume,
+                                     0.0,
+                                     2.0,
+                                     0.01,
+                                     1.0);
+      QtDockAddToggleGroupedProperty(panel,
+                                     "script.audio.muted." + bus.name,
+                                     "Scene Audio",
+                                     bus.name + " muted",
+                                     bus.muted);
+    }
     std::size_t index = 0u;
     for (const auto& binding : runtime->bindings) {
       QtDockAddProperty(panel,
@@ -174,6 +598,27 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
                             binding.entity_name + " #" + std::to_string(binding.entity) +
                             " " + binding.language + ":" + binding.entry +
                             " " + binding.source);
+      if (!binding.params.empty()) {
+        QtDockAddProperty(panel,
+                          "params " + std::to_string(index),
+                          std::to_string(binding.params.size()) + " authored");
+      }
+    }
+    const std::size_t runtime_state_count = std::min<std::size_t>(runtime->runtime_states.size(), 8u);
+    for (std::size_t i = 0; i < runtime_state_count; ++i) {
+      const auto& state = runtime->runtime_states[i];
+      std::string value = "#" + std::to_string(state.entity) +
+                          " " + std::string(vkpt::scripting::to_string(state.last_hook)) +
+                          " frame=" + std::to_string(state.last_frame) +
+                          " cmds=" + std::to_string(state.command_count) +
+                          " mem=" + std::to_string(state.memory_estimate_bytes);
+      if (!state.skip_reason.empty()) {
+        value += " skip=" + state.skip_reason;
+      }
+      if (!state.last_error.empty()) {
+        value += " error=" + state.last_error;
+      }
+      QtDockAddProperty(panel, "runtime " + std::to_string(i + 1u), value);
     }
     const std::size_t variable_count = std::min<std::size_t>(runtime->variables.size(), 16u);
     if (variable_count > 0u) {
@@ -181,11 +626,7 @@ QtDockPanelContent BuildQtScriptDock(const vkpt::scene::SceneDocument& document,
     }
     for (std::size_t i = 0; i < variable_count; ++i) {
       const auto& variable = runtime->variables[i];
-      QtDockAddProperty(panel,
-                        "var " + std::to_string(i + 1u),
-                        "#" + std::to_string(variable.entity) +
-                            " " + variable.scope + "." + variable.name +
-                            " = " + variable.value);
+      QtDockAddRuntimeVariableProperty(panel, variable);
     }
     const std::size_t diagnostic_count = std::min<std::size_t>(runtime->diagnostics.size(), 6u);
     for (std::size_t i = 0; i < diagnostic_count; ++i) {

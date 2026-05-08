@@ -294,6 +294,35 @@ QtPanelModel BuildTimelinePanelModel(const QtPanelBuildContext& context) {
 
 QtPanelModel BuildScriptingPanelModel(const QtPanelBuildContext& context) {
   auto model = MakeModel("script_panel", "Scripting");
+  const std::string runtimeMode = context.script_runtime_mode.empty()
+      ? std::string("edit")
+      : context.script_runtime_mode;
+  const std::string runtimeStatus = context.script_runtime_status.empty()
+      ? (context.runtime != nullptr && !context.runtime->status_message.empty()
+             ? context.runtime->status_message
+             : std::string("idle"))
+      : context.script_runtime_status;
+
+  AddProperty(model, "script.runtime.mode", "Runtime Mode", runtimeMode, "Runtime");
+  AddProperty(model, "script.runtime.status", "Runtime Status", runtimeStatus, "Runtime");
+  AddProperty(model,
+              "script.runtime.viewport_input",
+              "Viewport Input",
+              BoolText(context.script_viewport_input_forwarding),
+              "Runtime",
+              QtPanelPropertyKind::Toggle);
+  AddProperty(model, "script.runtime.run_live", "Run Live", "Run Live", "Live/Play",
+              QtPanelPropertyKind::Command);
+  AddProperty(model, "script.runtime.play", "Play", "Play", "Live/Play",
+              QtPanelPropertyKind::Command);
+  AddProperty(model, "script.runtime.stop", "Stop", "Stop", "Live/Play",
+              QtPanelPropertyKind::Command);
+  AddProperty(model,
+              "script.runtime.send_viewport_input",
+              "Send Viewport Input",
+              "Send",
+              "Live/Play",
+              QtPanelPropertyKind::Command);
   if (context.document != nullptr) {
     for (const auto& entity : context.document->entities) {
       if (entity.script.script.empty()) {

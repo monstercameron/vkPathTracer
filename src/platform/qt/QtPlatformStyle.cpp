@@ -65,21 +65,33 @@ namespace {
 class QtStartupSplash final : public QWidget {
  public:
   explicit QtStartupSplash()
+      : QtStartupSplash(QStringLiteral("vkPathTracer"),
+                        QStringLiteral("Starting the renderer"),
+                        QStringLiteral("The main viewport will appear after the first resolved frame is ready."),
+                        QStringList{
+                            QStringLiteral("Preparing renderer state"),
+                            QStringLiteral("Loading scene assets"),
+                            QStringLiteral("Building acceleration data"),
+                            QStringLiteral("Compiling display pipeline"),
+                            QStringLiteral("Resolving the first preview frame"),
+                            QStringLiteral("Polishing the viewport handoff"),
+                        }) {}
+
+  QtStartupSplash(QString title, QString subtitle, QString footer, QStringList messages)
       : QWidget(nullptr,
-                Qt::SplashScreen | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint) {
+                Qt::SplashScreen | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint),
+        m_title(std::move(title)),
+        m_subtitle(std::move(subtitle)),
+        m_footer(std::move(footer)),
+        m_messages(std::move(messages)) {
     setObjectName(QStringLiteral("vkpt.qt.startup_splash"));
     setAttribute(Qt::WA_OpaquePaintEvent, true);
     setAutoFillBackground(false);
     resize(640, 360);
 
-    m_messages = QStringList{
-        QStringLiteral("Preparing renderer state"),
-        QStringLiteral("Loading scene assets"),
-        QStringLiteral("Building acceleration data"),
-        QStringLiteral("Compiling display pipeline"),
-        QStringLiteral("Resolving the first preview frame"),
-        QStringLiteral("Polishing the viewport handoff"),
-    };
+    if (m_messages.isEmpty()) {
+      m_messages = QStringList{QStringLiteral("Preparing display handoff")};
+    }
 
     auto* timer = new QTimer(this);
     QObject::connect(timer, &QTimer::timeout, this, [this]() {
@@ -185,7 +197,7 @@ class QtStartupSplash final : public QWidget {
                      titleMetrics.height() + 4.0);
     painter.drawText(titleRect,
                      Qt::AlignLeft | Qt::AlignTop,
-                     QStringLiteral("vkPathTracer"));
+                     m_title.isEmpty() ? QStringLiteral("vkPathTracer") : m_title);
 
     QFont subtitleFont = painter.font();
     subtitleFont.setPixelSize(13);
@@ -199,7 +211,7 @@ class QtStartupSplash final : public QWidget {
                         subtitleMetrics.height() + 4.0);
     painter.drawText(subtitleRect,
                      Qt::AlignLeft | Qt::AlignTop,
-                     QStringLiteral("Starting the renderer"));
+                     m_subtitle.isEmpty() ? QStringLiteral("Loading") : m_subtitle);
 
     QFont progressFont = painter.font();
     progressFont.setPixelSize(13);
@@ -278,7 +290,7 @@ class QtStartupSplash final : public QWidget {
                       panel.bottom() - bar.bottom() - 16.0);
     painter.drawText(footerRect,
                      Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
-                     QStringLiteral("The main viewport will appear after the first resolved frame is ready."));
+                     m_footer);
   }
 
  private:
@@ -288,7 +300,12 @@ class QtStartupSplash final : public QWidget {
     }
     const int messageCount = static_cast<int>(m_messages.size());
     const int index = std::clamp(m_messageIndex, 0, messageCount - 1);
-    return m_messages.at(index);
+    QString suffix;
+    const int dotCount = static_cast<int>((m_tick / 10u) % 4u);
+    for (int i = 0; i < dotCount; ++i) {
+      suffix += QLatin1Char('.');
+    }
+    return m_messages.at(index) + suffix;
   }
 
   static int EstimateProgressForPhase(const QString& phase) {
@@ -331,6 +348,9 @@ class QtStartupSplash final : public QWidget {
     m_targetProgress = std::clamp(std::max(m_targetProgress, nextTarget), 0, 100);
   }
 
+  QString m_title;
+  QString m_subtitle;
+  QString m_footer;
   QString m_phase;
   QStringList m_messages;
   int m_messageIndex = 0;
@@ -346,7 +366,14 @@ QWidget* CreateStartupSplash() {
   return new QtStartupSplash();
 }
 
-void SetStartupSplashPhase(QWidget* splash, QString phase) {
+QWidget* CreateLoadingSplash(QString title, QString subtitle, QString footer, QStringList messages) {
+  return new QtStartupSplash(std::move(title),
+                             std::move(subtitle),
+                             std::move(footer),
+                             std::move(messages));
+}
+
+void SetLoadingSplashPhase(QWidget* splash, QString phase) {
   auto* startupSplash = dynamic_cast<QtStartupSplash*>(splash);
   if (startupSplash == nullptr) {
     return;
@@ -354,7 +381,7 @@ void SetStartupSplashPhase(QWidget* splash, QString phase) {
   startupSplash->setPhase(std::move(phase));
 }
 
-void ShowStartupSplashCentered(QWidget* splash, QWidget* reference) {
+void ShowLoadingSplashCentered(QWidget* splash, QWidget* reference) {
   auto* startupSplash = dynamic_cast<QtStartupSplash*>(splash);
   if (startupSplash == nullptr) {
     return;
@@ -362,12 +389,24 @@ void ShowStartupSplashCentered(QWidget* splash, QWidget* reference) {
   startupSplash->showCentered(reference);
 }
 
-void FinishStartupSplash(QWidget* splash, bool animated) {
+void FinishLoadingSplash(QWidget* splash, bool animated) {
   auto* startupSplash = dynamic_cast<QtStartupSplash*>(splash);
   if (startupSplash == nullptr) {
     return;
   }
   startupSplash->finish(animated);
+}
+
+void SetStartupSplashPhase(QWidget* splash, QString phase) {
+  SetLoadingSplashPhase(splash, std::move(phase));
+}
+
+void ShowStartupSplashCentered(QWidget* splash, QWidget* reference) {
+  ShowLoadingSplashCentered(splash, reference);
+}
+
+void FinishStartupSplash(QWidget* splash, bool animated) {
+  FinishLoadingSplash(splash, animated);
 }
 
 }  // namespace vkpt::platform

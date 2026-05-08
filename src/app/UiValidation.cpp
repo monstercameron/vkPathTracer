@@ -1,5 +1,6 @@
 #include "app/UiValidation.h"
 
+#include "app/RuntimeMode.h"
 #include "app/UiValidationInternal.h"
 #include "assets/SceneAssetLoader.h"
 #include "benchmark/BenchmarkSchema.h"
@@ -135,6 +136,45 @@ bool RunUiModelSmokeTests() {
   };
 
   RunUiCameraAndQtDockSmokeChecks(check_true);
+
+  const auto editMode = GetRuntimeModeCapabilities(RuntimeMode::Edit);
+  check_true("runtime mode edit stable name",
+             RuntimeModeStableName(RuntimeMode::Edit) == kRuntimeModeEditName);
+  check_true("runtime mode edit keeps editor tools",
+             !editMode.scripts_running &&
+             editMode.editor_canvas_enabled &&
+             editMode.dock_panels_editable &&
+             !editMode.mouse_locked &&
+             !editMode.game_input_enabled &&
+             editMode.viewport_pick_enabled &&
+             editMode.gizmo_enabled &&
+             !editMode.lua_input_enabled);
+  const auto liveEditMode = GetRuntimeModeCapabilities(RuntimeMode::LiveEdit);
+  check_true("runtime mode live edit runs scripts without stealing editor input",
+             RuntimeModeStableName(RuntimeMode::LiveEdit) == kRuntimeModeLiveEditName &&
+             liveEditMode.scripts_running &&
+             liveEditMode.editor_canvas_enabled &&
+             liveEditMode.dock_panels_editable &&
+             !liveEditMode.mouse_locked &&
+             !liveEditMode.game_input_enabled &&
+             liveEditMode.viewport_pick_enabled &&
+             liveEditMode.gizmo_enabled &&
+             !liveEditMode.lua_input_enabled);
+  const auto playMode = GetRuntimeModeCapabilities(RuntimeMode::Play);
+  check_true("runtime mode play routes input to game",
+             RuntimeModeStableName(RuntimeMode::Play) == kRuntimeModePlayName &&
+             playMode.scripts_running &&
+             !playMode.editor_canvas_enabled &&
+             !playMode.dock_panels_editable &&
+             playMode.mouse_locked &&
+             playMode.game_input_enabled &&
+             !playMode.viewport_pick_enabled &&
+             !playMode.gizmo_enabled &&
+             playMode.lua_input_enabled);
+  check_true("runtime mode stable name parsing",
+             RuntimeModeFromStableName(kRuntimeModeLiveEditName) == RuntimeMode::LiveEdit &&
+             RuntimeModeFromStableName("missing", RuntimeMode::Play) == RuntimeMode::Play &&
+             IsRuntimeModeStableName(kRuntimeModePlayName));
 
   const auto menu = BuildDefaultMenuBar();
   const std::initializer_list<std::string_view> requiredTopLevels = {
@@ -474,7 +514,57 @@ bool RunUiModelSmokeTests() {
   const auto script_detach = MakeMenuCommand("scripts.detach_script_from_selection", "menu");
   check_true("scripts.detach_script_from_selection command", script_detach.kind == EditorCommandKind::kDetachScript);
   const auto script_new = MakeMenuCommand("scripts.new_lua_script", "menu");
-  check_true("scripts.new_lua_script currently unsupported by model", script_new.kind == EditorCommandKind::kUnsupportedUiAction);
+  check_true("scripts.new_lua_script command", script_new.kind == EditorCommandKind::kAttachScript);
+
+  {
+    vkpt::scene::SceneDocument scriptPanelDoc;
+    vkpt::scene::SceneEntityDefinition scriptPanelEntity;
+    scriptPanelEntity.id = 515;
+    scriptPanelEntity.name = "Script Panel Model Probe";
+    scriptPanelEntity.script.script = "assets/scripts/probe.lua";
+    scriptPanelEntity.script.language = "lua";
+    scriptPanelDoc.entities.push_back(scriptPanelEntity);
+
+    SelectionState scriptPanelSelection = CreateDefaultSelectionState();
+    scriptPanelSelection.selected_entity_ids = {scriptPanelEntity.id};
+    scriptPanelSelection.active_primary_entity = scriptPanelEntity.id;
+
+    QtPanelBuildContext scriptPanelContext;
+    scriptPanelContext.document = &scriptPanelDoc;
+    scriptPanelContext.selection = &scriptPanelSelection;
+    scriptPanelContext.script_runtime_mode = "play";
+    scriptPanelContext.script_runtime_status = "script panel smoke";
+    scriptPanelContext.script_viewport_input_forwarding = true;
+
+    const auto scriptPanelModel = BuildScriptingPanelModel(scriptPanelContext);
+    auto has_script_panel_property = [&](std::string_view id,
+                                         QtPanelPropertyKind kind) {
+      return std::any_of(scriptPanelModel.properties.begin(),
+                         scriptPanelModel.properties.end(),
+                         [&](const QtPanelProperty& property) {
+                           return std::string_view(property.id) == id && property.kind == kind;
+                         });
+    };
+    auto has_script_panel_value = [&](std::string_view id,
+                                      std::string_view value) {
+      return std::any_of(scriptPanelModel.properties.begin(),
+                         scriptPanelModel.properties.end(),
+                         [&](const QtPanelProperty& property) {
+                           return std::string_view(property.id) == id &&
+                                  std::string_view(property.value) == value;
+                         });
+    };
+    check_true("qt script panel model exposes future live play actions",
+               has_script_panel_property("script.runtime.run_live", QtPanelPropertyKind::Command) &&
+               has_script_panel_property("script.runtime.play", QtPanelPropertyKind::Command) &&
+               has_script_panel_property("script.runtime.stop", QtPanelPropertyKind::Command) &&
+               has_script_panel_property("script.runtime.send_viewport_input", QtPanelPropertyKind::Command));
+    check_true("qt script panel model exposes runtime mode status and viewport input",
+               has_script_panel_value("script.runtime.mode", "play") &&
+               has_script_panel_value("script.runtime.status", "script panel smoke") &&
+               has_script_panel_property("script.runtime.viewport_input", QtPanelPropertyKind::Toggle) &&
+               has_script_panel_value("script.runtime.viewport_input", "true"));
+  }
 
   RunUiBenchmarkStatusSmokeChecks(check_true, selection);
 

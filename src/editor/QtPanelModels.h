@@ -72,6 +72,9 @@ struct QtPanelBuildContext {
   const StatusBarModel* status_bar = nullptr;
   std::vector<AssetPreviewCard> asset_cards;
   std::vector<ScriptLifecycleHookState> script_hooks;
+  std::string script_runtime_mode;
+  std::string script_runtime_status;
+  bool script_viewport_input_forwarding = false;
   std::vector<UiReleaseGateItem> release_gates;
   std::vector<std::string> diagnostics_log;
   std::vector<std::string> benchmark_history;

@@ -153,9 +153,9 @@ std::vector<vkpt::editor::UiReleaseGateItem> BuildUiReleaseGateEvidence() {
   MarkReleaseGate(checklist, "assets.import", false,
                   "Asset drop validation and import command contracts exist",
                   "requires importer runtime and asset browser widget");
-  MarkReleaseGate(checklist, "lua.attach", false,
-                  "Attach/Detach script command payloads exist and script lifecycle model is deterministic",
-                  "requires Lua runtime/editor binding");
+  MarkReleaseGate(checklist, "lua.attach", true,
+                  "Attach/Detach script command payloads exist; script components replay through scene commands; Qt scripting panel shows bindings, params, diagnostics, runtime state, and variable snapshots",
+                  {});
   MarkReleaseGate(checklist, "logs.errors", false,
                   "UiEventLog serializes model events for crash artifacts",
                   "requires visible log panel consuming the diagnostics ring buffer");

@@ -40,6 +40,7 @@
 #include <QFont>
 #include <QFontMetricsF>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGuiApplication>
 #include <QHeaderView>
 #include <QHBoxLayout>

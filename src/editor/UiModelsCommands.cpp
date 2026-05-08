@@ -194,6 +194,11 @@ EditorCommand MakeMenuCommand(std::string_view action_id, std::string_view sourc
              action_id == "benchmark.open_artifacts" ||
              action_id == "benchmark.export_csv_json") {
     make_unsupported("benchmark artifact action requires benchmark runtime wiring");
+  } else if (action_id == "scripts.new_lua_script") {
+    command.kind = EditorCommandKind::kAttachScript;
+    AttachScriptCommand payload;
+    payload.script_path = "assets/scripts/new_lua_script.lua";
+    command.payload = payload;
   } else if (action_id == "scripts.attach_script_to_selection") {
     command.kind = EditorCommandKind::kAttachScript;
     command.payload = AttachScriptCommand{};
@@ -233,8 +238,7 @@ EditorCommand MakeMenuCommand(std::string_view action_id, std::string_view sourc
              action_id == "edit.reparent_selection" ||
               action_id.starts_with("view.") || action_id.starts_with("render.") ||
               action_id.starts_with("tools.") || action_id.starts_with("help.") ||
-              action_id.starts_with("scripts.") ||
-              action_id.starts_with("scripts.new_lua_script")) {
+              action_id.starts_with("scripts.")) {
     make_unsupported("action requires unimplemented editor runtime");
   } else {
     make_unsupported("unknown or unsupported menu action");
