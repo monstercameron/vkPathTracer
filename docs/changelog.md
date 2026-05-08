@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-05-08 (session 41)
+
+### Snapshot-bus architecture migration commit map
+
+- `b17323b` docs: Described the snapshot-bus migration plan, runtime ownership model, channel table, thread contracts, determinism context, and JSON log schema.
+- `3f0acf0` core: Added observability contracts, structured logging, metrics, trace, health, REPL, lock-free sync primitives, diagnostics status/crash-ring reporting, and job health/determinism smoke coverage.
+- `47a31cf` scene: Added immutable render scene snapshots, snapshot ring publication/reader tracking, scene status/dirty-entity contracts, frame lifecycle metadata, and scene contract coverage.
+- `0b90007` audio: Added realtime audio command channels, an audio device abstraction, snapshot-driven listener/spatialization state, callback telemetry, bus controls, and health metrics.
+- `ba228c7` physics: Added physics command/delta channel types, lifecycle/status telemetry, deterministic flow IDs, sync/step metrics, and a physics contract smoke.
+- `64d8d40` scripting: Added script hook and command channels, deterministic script-thread plumbing, command queue draining into world commands, hook timing/instruction metrics, and script dispatch coverage.
+- `6a15956` render: Added tile-based render submission, snapshot-aware coordinator flow, history transition planning, multi-GPU accumulation helpers, Vulkan/D3D12 backend introspection contracts, shared push constants, and backend/snapshot smoke tests.
+- `6d8b53b` platform: Added explicit platform/window/input status contracts, non-destructive event reads, queue watermarks, deterministic input sources, platform factory status reporting, and platform smoke coverage.
+- `d7ba3a4` app: Wired observability, status-file snapshots, deterministic/snapshot-bus CLI flags, Qt stress-gate orchestration, runtime snapshot publication, asset load telemetry, dock validation updates, and viewport picking integration.
+- `93b1412` app: Throttled expensive Qt dock panel rebuilds during rapid transform-publish bursts so large scenes do not freeze the UI mid-drag or script/physics motion while status updates remain cheap.
+- `be97477` build: Registered the snapshot-bus smoke targets, observability/job/platform/script/physics/render contract tests, shader push-constant dependency, and the updated CI acceptance smoke plan.
+
 ## 2026-05-08 (session 40)
 
 ### Scene script bootstrap and Lua structure
