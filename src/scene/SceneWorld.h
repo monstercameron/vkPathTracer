@@ -18,11 +18,13 @@ namespace vkpt::scene {
 
 class SceneDocument;
 
-enum class WorldSystemPhase : std::uint8_t {
-  PreFrame,
-  Input,
-  ScriptEarly,
-  PhysicsFixed,
+  enum class WorldSystemPhase : std::uint8_t {
+    PreFrame,
+    Input,
+    ScriptEarly,
+    ScriptFixed,
+    ScriptLate,
+    PhysicsFixed,
   TransformAssembly,
   SceneCommandApply,
   RenderExtract,

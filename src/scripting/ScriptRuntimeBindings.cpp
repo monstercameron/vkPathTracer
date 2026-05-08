@@ -23,6 +23,12 @@ bool IsSupportedLanguage(std::string_view language) {
   return language.empty() || language == "lua";
 }
 
+std::string ScriptVariableOverrideKey(vkpt::core::StableEntityId entity,
+                                      std::string_view scope,
+                                      std::string_view name) {
+  return std::to_string(entity) + "|" + std::string(scope) + "|" + std::string(name);
+}
+
 }  // namespace
 
 std::string_view to_string(ScriptLifecycleHook hook) {
@@ -86,8 +92,10 @@ std::vector<ScriptBinding> BuildScriptBindings(const vkpt::scene::SceneWorld& wo
     binding.source = script.script;
     binding.language = script.language.empty() ? "lua" : script.language;
     binding.entry = script.entry.empty() ? "default" : script.entry;
+    binding.module_id = script.module_id.empty() ? binding.entry : script.module_id;
     binding.enabled = script.enabled;
     binding.reload_on_save = script.reload_on_save;
+    binding.params = script.params;
     bindings.push_back(std::move(binding));
   }
 
@@ -123,6 +131,8 @@ ScriptBindingSummary EcsScriptRuntime::reload_bindings(const vkpt::scene::SceneW
   // Source paths can resolve differently after reload, so bytecode is rebuilt on demand.
   m_lua_bytecode_cache.clear();
   m_variable_snapshots.clear();
+  m_runtime_states.clear();
+  m_disabled_until_reload.clear();
   const auto summary = SummarizeScriptBindings(m_bindings, lua_compiled_in(), execution_available());
   vkpt::log::Logger::instance().log(
       vkpt::log::Severity::Info,
@@ -148,6 +158,50 @@ const std::vector<ScriptDiagnostic>& EcsScriptRuntime::diagnostics() const {
 
 const std::vector<ScriptVariableSnapshot>& EcsScriptRuntime::variable_snapshots() const {
   return m_variable_snapshots;
+}
+
+bool EcsScriptRuntime::set_variable_override(vkpt::core::StableEntityId entity,
+                                             std::string_view scope,
+                                             std::string_view name,
+                                             std::string_view value) {
+  if (entity == 0u || scope.empty() || name.empty()) {
+    return false;
+  }
+  ScriptVariableOverride overrideValue;
+  overrideValue.entity = entity;
+  overrideValue.scope = std::string(scope);
+  overrideValue.name = std::string(name);
+  overrideValue.value = std::string(value);
+  m_variable_overrides[ScriptVariableOverrideKey(entity, scope, name)] = std::move(overrideValue);
+  return true;
+}
+
+void EcsScriptRuntime::clear_variable_overrides(vkpt::core::StableEntityId entity) {
+  if (entity == 0u) {
+    m_variable_overrides.clear();
+    return;
+  }
+  for (auto it = m_variable_overrides.begin(); it != m_variable_overrides.end();) {
+    if (it->second.entity == entity) {
+      it = m_variable_overrides.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+std::vector<ScriptVariableOverride> EcsScriptRuntime::variable_overrides() const {
+  std::vector<ScriptVariableOverride> out;
+  out.reserve(m_variable_overrides.size());
+  for (const auto& [_, overrideValue] : m_variable_overrides) {
+    (void)_;
+    out.push_back(overrideValue);
+  }
+  return out;
+}
+
+const std::vector<ScriptBindingRuntimeState>& EcsScriptRuntime::runtime_states() const {
+  return m_runtime_states;
 }
 
 bool EcsScriptRuntime::lua_compiled_in() const {

@@ -15,6 +15,9 @@ class SceneDocument {
  public:
   /// Author-facing metadata and schema version carried through load/export.
   SceneMetadata metadata;
+  /// Optional scene-level bootstrap script, represented like an entity script block.
+  bool has_scene_script = false;
+  ScriptComponent scene_script;
   /// External model or texture references that may expand into document entities.
   std::vector<SceneAssetDefinition> assets;
   std::vector<SceneMaterialDefinition> materials;

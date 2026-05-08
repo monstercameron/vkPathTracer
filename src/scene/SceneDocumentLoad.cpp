@@ -52,6 +52,39 @@ bool IsStandaloneImageLikeAsset(const SceneAssetDefinition& asset) {
           type == "environment/sky" || type == "environment_sky");
 }
 
+void ReadScriptComponent(const JsonValue& object, ScriptComponent& script) {
+  if (object.kind != JsonValue::Kind::Object) {
+    return;
+  }
+  // `path` is a legacy alias. Export normalizes the field back to `source`.
+  read_string(object, "source", script.script);
+  if (script.script.empty()) {
+    read_string(object, "path", script.script);
+  }
+  read_string(object, "language", script.language);
+  read_string(object, "entry", script.entry);
+  read_string(object, "module", script.module_id);
+  read_string(object, "module_id", script.module_id);
+  read_bool(object, "enabled", script.enabled);
+  read_bool(object, "reload_on_save", script.reload_on_save);
+  if (const auto paramsNode = object.object.find("params");
+      paramsNode != object.object.end() &&
+      paramsNode->second.kind == JsonValue::Kind::Object) {
+    script.params.clear();
+    for (const auto& [key, value] : paramsNode->second.object) {
+      if (value.kind == JsonValue::Kind::String) {
+        script.params[key] = value.string;
+      } else if (value.kind == JsonValue::Kind::Number) {
+        script.params[key] = std::to_string(value.number);
+      } else if (value.kind == JsonValue::Kind::Boolean) {
+        script.params[key] = value.boolean ? "true" : "false";
+      } else {
+        script.params[key] = stringify(value, false);
+      }
+    }
+  }
+}
+
 void ResolveStandaloneAssetUris(SceneDocument& document, const std::filesystem::path& scene_path) {
   const auto sceneDir = scene_path.has_parent_path()
                             ? scene_path.parent_path()
@@ -106,6 +139,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
       !require_kind_if_present("transforms", JsonValue::Kind::Array) ||
       !require_kind_if_present("cameras", JsonValue::Kind::Array) ||
       !require_kind_if_present("lights", JsonValue::Kind::Array) ||
+      !require_kind_if_present("scene_script", JsonValue::Kind::Object) ||
       !require_kind_if_present("benchmark", JsonValue::Kind::Object)) {
     return vkpt::core::Result<SceneDocument>::error(vkpt::core::ErrorCode::InvalidArgument);
   }
@@ -117,6 +151,11 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
     read_string(metadataNode->second, "scene_name", doc.metadata.scene_name);
     read_string(metadataNode->second, "author", doc.metadata.author);
     read_string(metadataNode->second, "created", doc.metadata.created);
+  }
+
+  if (const auto scriptNode = rootObj.object.find("scene_script"); scriptNode != rootObj.object.end()) {
+    doc.has_scene_script = true;
+    ReadScriptComponent(scriptNode->second, doc.scene_script);
   }
 
   if (const auto assetsNode = rootObj.object.find("assets"); assetsNode != rootObj.object.end() &&
@@ -360,15 +399,7 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         }
       }
       if (const auto scriptNode = item.object.find("script"); scriptNode != item.object.end()) {
-        // `path` is a legacy alias. Export normalizes the field back to `source`.
-        read_string(scriptNode->second, "source", entity.script.script);
-        if (entity.script.script.empty()) {
-          read_string(scriptNode->second, "path", entity.script.script);
-        }
-        read_string(scriptNode->second, "language", entity.script.language);
-        read_string(scriptNode->second, "entry", entity.script.entry);
-        read_bool(scriptNode->second, "enabled", entity.script.enabled);
-        read_bool(scriptNode->second, "reload_on_save", entity.script.reload_on_save);
+        ReadScriptComponent(scriptNode->second, entity.script);
       }
       if (const auto listenerNode = item.object.find("audio_listener"); listenerNode != item.object.end()) {
         entity.has_audio_listener = true;
@@ -525,6 +556,19 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
     report("metadata schema is empty");
   } else if (metadata.schema != "1.0") {
     report("unsupported schema " + metadata.schema);
+  }
+  if (has_scene_script && (!scene_script.script.empty() || !scene_script.params.empty())) {
+    if (!scene_script.language.empty() && scene_script.language != "lua") {
+      report("scene script language is unsupported");
+    }
+    for (const auto& [key, value] : scene_script.params) {
+      if (key.empty()) {
+        report("scene script parameter key is empty");
+      }
+      if (value.size() > 4096u) {
+        report("scene script parameter value is too large");
+      }
+    }
   }
 
   for (const auto& asset : assets) {
@@ -753,6 +797,19 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
     if (entity.has_camera && !valid_camera_values(entity.camera)) {
       report("entity camera has invalid clip/fov " + std::to_string(entity.id));
     }
+    if (!entity.script.script.empty() || !entity.script.params.empty()) {
+      if (!entity.script.language.empty() && entity.script.language != "lua") {
+        report("entity script language is unsupported " + std::to_string(entity.id));
+      }
+      for (const auto& [key, value] : entity.script.params) {
+        if (key.empty()) {
+          report("entity script parameter key is empty " + std::to_string(entity.id));
+        }
+        if (value.size() > 4096u) {
+          report("entity script parameter value is too large " + std::to_string(entity.id));
+        }
+      }
+    }
     if (entity.has_audio_emitter) {
       if (entity.audio_emitter.event.empty()) {
         report("entity audio emitter event is empty " + std::to_string(entity.id));
@@ -855,7 +912,8 @@ bool SceneDocument::validate(std::vector<std::string>* issues) const {
 bool SceneDocument::has_section(std::string_view name) const {
   return name == "schema" || name == "metadata" || name == "assets" || name == "materials" ||
       name == "geometry" || name == "sdf_primitives" || name == "particle_emitters" || name == "entities" ||
-      name == "transforms" || name == "cameras" || name == "lights" || name == "benchmark";
+      name == "transforms" || name == "cameras" || name == "lights" || name == "scene_script" ||
+      name == "benchmark";
 }
 
 }  // namespace vkpt::scene

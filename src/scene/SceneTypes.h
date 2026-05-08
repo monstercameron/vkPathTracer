@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -145,8 +146,10 @@ struct ScriptComponent {
   std::string script;
   std::string language = "lua";
   std::string entry = "default";
+  std::string module_id = "default";
   bool enabled = true;
   bool reload_on_save = true;
+  std::unordered_map<std::string, std::string> params;
 };
 
 struct AudioListenerComponent {

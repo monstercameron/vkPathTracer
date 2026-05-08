@@ -300,7 +300,8 @@ vkpt::core::Result<SceneWorld> SceneDocument::to_world() const {
     if (entity.has_physics_body && !world.set_component(id, ComponentKind::PhysicsBody, entity.physics_body)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
-    if (!entity.script.script.empty() && !world.set_component(id, ComponentKind::Script, entity.script)) {
+    if ((!entity.script.script.empty() || !entity.script.params.empty()) &&
+        !world.set_component(id, ComponentKind::Script, entity.script)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
     }
     if (entity.has_audio_listener && !world.set_component(id, ComponentKind::AudioListener, entity.audio_listener)) {

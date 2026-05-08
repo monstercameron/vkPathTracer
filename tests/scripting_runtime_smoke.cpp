@@ -1,3 +1,4 @@
+#include "app/RuntimeMode.h"
 #include "scene/Scene.h"
 #include "scripting/ScriptRuntime.h"
 #include "audio/AudioSystem.h"
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <new>
@@ -124,9 +126,269 @@ vkpt::scene::Vec3 RotateByQuat(const vkpt::scene::Vec3& value, const vkpt::scene
   return nullptr;
 }
 
+vkpt::scripting::ScriptExecutionContext MakeScriptContextFromRuntimeMode(
+    vkpt::app::RuntimeMode mode,
+    vkpt::core::FrameIndex frame) {
+  const auto capabilities = vkpt::app::GetRuntimeModeCapabilities(mode);
+  vkpt::scripting::ScriptExecutionContext context;
+  context.game_mode = capabilities.scripts_running;
+  context.frame = frame;
+  context.delta_seconds = 1.0 / 60.0;
+  context.runtime.mode = std::string(vkpt::app::RuntimeModeStableName(mode));
+  context.runtime.scripts_running = capabilities.scripts_running;
+  context.input.enabled = capabilities.lua_input_enabled;
+  context.editor.canvas_enabled = capabilities.editor_canvas_enabled;
+  return context;
+}
+
+bool CheckRuntimeModeCapabilityContract() {
+  using vkpt::app::RuntimeMode;
+
+  const auto edit = vkpt::app::GetRuntimeModeCapabilities(RuntimeMode::Edit);
+  const auto live_edit = vkpt::app::GetRuntimeModeCapabilities(RuntimeMode::LiveEdit);
+  const auto play = vkpt::app::GetRuntimeModeCapabilities(RuntimeMode::Play);
+
+  if (!Check(!edit.scripts_running &&
+                 edit.editor_canvas_enabled &&
+                 edit.dock_panels_editable &&
+                 !edit.mouse_locked &&
+                 !edit.game_input_enabled &&
+                 edit.viewport_pick_enabled &&
+                 edit.gizmo_enabled &&
+                 !edit.lua_input_enabled,
+             "Edit mode should expose editor controls while keeping scripts and game input off") ||
+      !Check(live_edit.scripts_running &&
+                 live_edit.editor_canvas_enabled &&
+                 live_edit.dock_panels_editable &&
+                 !live_edit.mouse_locked &&
+                 !live_edit.game_input_enabled &&
+                 live_edit.viewport_pick_enabled &&
+                 live_edit.gizmo_enabled &&
+                 !live_edit.lua_input_enabled,
+             "LiveEdit mode should run scripts while preserving editor input by default") ||
+      !Check(play.scripts_running &&
+                 !play.editor_canvas_enabled &&
+                 !play.dock_panels_editable &&
+                 play.mouse_locked &&
+                 play.game_input_enabled &&
+                 !play.viewport_pick_enabled &&
+                 !play.gizmo_enabled &&
+                 play.lua_input_enabled,
+             "Play mode should run scripts with game input and editor controls disabled")) {
+    return false;
+  }
+
+  const auto edit_context = MakeScriptContextFromRuntimeMode(RuntimeMode::Edit, 30);
+  const auto live_edit_context = MakeScriptContextFromRuntimeMode(RuntimeMode::LiveEdit, 31);
+  const auto play_context = MakeScriptContextFromRuntimeMode(RuntimeMode::Play, 32);
+  if (!Check(!edit_context.game_mode &&
+                 edit_context.runtime.mode == vkpt::app::kRuntimeModeEditName &&
+                 edit_context.input.enabled == false &&
+                 edit_context.editor.canvas_enabled,
+             "Edit mode should derive a non-running script context") ||
+      !Check(live_edit_context.game_mode &&
+                 live_edit_context.runtime.mode == vkpt::app::kRuntimeModeLiveEditName &&
+                 live_edit_context.runtime.scripts_running &&
+                 live_edit_context.input.enabled == false &&
+                 live_edit_context.editor.canvas_enabled,
+             "LiveEdit mode should derive a script-running context with Lua input off") ||
+      !Check(play_context.game_mode &&
+                 play_context.runtime.mode == vkpt::app::kRuntimeModePlayName &&
+                 play_context.runtime.scripts_running &&
+                 play_context.input.enabled &&
+                 !play_context.editor.canvas_enabled,
+             "Play mode should derive a script-running context with Lua input on")) {
+    return false;
+  }
+
+  return true;
+}
+
+bool CheckLiveEditScriptingContract() {
+#ifndef PT_ENABLE_LUA
+  return true;
+#else
+  const auto live_edit_probe_path =
+      std::filesystem::temp_directory_path() / "vkpt_live_edit_dispatch_probe.lua";
+  {
+    std::ofstream live_edit_probe_file(live_edit_probe_path, std::ios::binary);
+    if (!Check(static_cast<bool>(live_edit_probe_file),
+               "live edit dispatch probe script should be writable")) {
+      return false;
+    }
+    live_edit_probe_file << R"lua(
+return {
+  on_update = function(self, ctx)
+    if ctx.runtime == nil or ctx.runtime.mode ~= "live_edit" then
+      error("expected live_edit runtime")
+    end
+    if ctx.runtime.scripts_running ~= true then
+      error("expected live edit scripts to be running")
+    end
+    if ctx.input == nil or ctx.input.enabled ~= false then
+      error("expected live edit Lua input to stay disabled")
+    end
+    if ctx.editor == nil or ctx.editor.canvas_enabled ~= true then
+      error("expected live edit editor canvas to stay enabled")
+    end
+    if ctx.editor.is_editing ~= true or ctx.editor.edited_entity_id ~= self:id() or ctx.editor.edited_component ~= "Transform" then
+      error("expected selected transform edit metadata")
+    end
+    local transform = self:get_transform()
+    if transform == nil then
+      error("missing transform")
+    end
+    transform.translation.x = transform.translation.x + 1.25
+    transform.translation.y = transform.translation.y + 2.5
+    transform.translation.z = transform.translation.z + 3.75
+    self:set_transform(transform)
+  end
+}
+)lua";
+  }
+
+  vkpt::scene::SceneWorld live_edit_world;
+  const auto selected_entity =
+      live_edit_world.create_entity("live_edit_selected_transform", 220);
+  vkpt::scene::TransformComponent authored_transform;
+  authored_transform.translation = {1.0f, 2.0f, 3.0f};
+  if (!Check(live_edit_world.set_transform(selected_entity,
+                                           authored_transform,
+                                           vkpt::scene::TransformAuthority::Authored,
+                                           "document",
+                                           0),
+             "live edit selected entity should accept authored transform")) {
+    std::error_code remove_error;
+    std::filesystem::remove(live_edit_probe_path, remove_error);
+    return false;
+  }
+
+  vkpt::scene::TransformComponent editor_transform = authored_transform;
+  editor_transform.translation = {11.0f, 22.0f, 33.0f};
+  constexpr vkpt::core::FrameIndex kLiveEditFrame = 41;
+  if (!Check(live_edit_world.set_transform(selected_entity,
+                                           editor_transform,
+                                           vkpt::scene::TransformAuthority::EditorControlled,
+                                           "gizmo",
+                                           kLiveEditFrame),
+             "manual editor transform should be accepted before live edit script tick")) {
+    std::error_code remove_error;
+    std::filesystem::remove(live_edit_probe_path, remove_error);
+    return false;
+  }
+
+  vkpt::scene::ScriptComponent live_edit_script;
+  live_edit_script.script = live_edit_probe_path.generic_string();
+  if (!Check(live_edit_world.set_component(selected_entity,
+                                           vkpt::scene::ComponentKind::Script,
+                                           live_edit_script),
+             "live edit selected entity should accept script component")) {
+    std::error_code remove_error;
+    std::filesystem::remove(live_edit_probe_path, remove_error);
+    return false;
+  }
+
+  auto live_edit_runtime = vkpt::scripting::CreateScriptRuntime();
+  const auto live_edit_bindings = live_edit_runtime->reload_bindings(live_edit_world);
+  if (!Check(live_edit_bindings.binding_count == 1u &&
+                 live_edit_bindings.runnable_count == 1u,
+             "live edit probe should expose one runnable script binding")) {
+    std::error_code remove_error;
+    std::filesystem::remove(live_edit_probe_path, remove_error);
+    return false;
+  }
+
+  auto live_edit_context =
+      MakeScriptContextFromRuntimeMode(vkpt::app::RuntimeMode::LiveEdit,
+                                       kLiveEditFrame);
+  live_edit_context.game_mode = false;
+  live_edit_context.editor.is_editing = true;
+  live_edit_context.editor.edited_entity_id = selected_entity;
+  live_edit_context.editor.edited_component = "Transform";
+
+  vkpt::scene::WorldCommandBuffer live_edit_commands;
+  const auto live_edit_dispatch = live_edit_runtime->dispatch_hook(
+      live_edit_world,
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      live_edit_context,
+      live_edit_commands);
+  const auto* live_edit_write =
+      FindSetTransform(live_edit_commands, selected_entity);
+  std::error_code remove_error;
+  std::filesystem::remove(live_edit_probe_path, remove_error);
+
+  if (!Check(live_edit_dispatch.hook_call_count == 1u,
+             "LiveEdit dispatch should execute without the legacy game-mode latch") ||
+      !Check(!live_edit_dispatch.game_mode_blocked,
+             "explicit LiveEdit runtime mode should not be blocked by game-mode state") ||
+      !Check(live_edit_dispatch.diagnostics.empty(),
+             "LiveEdit dispatch should not report probe diagnostics") ||
+      !Check(live_edit_write != nullptr,
+             "LiveEdit script should emit a selected entity transform write") ||
+      !Check(live_edit_write != nullptr &&
+                 std::abs(live_edit_write->transform.translation.x - 12.25f) < 0.001f &&
+                 std::abs(live_edit_write->transform.translation.y - 24.5f) < 0.001f &&
+                 std::abs(live_edit_write->transform.translation.z - 36.75f) < 0.001f,
+             "self:get_transform should see the manual editor transform before the script tick") ||
+      !Check(live_edit_write != nullptr &&
+                 live_edit_write->authority == vkpt::scene::TransformAuthority::ScriptControlled &&
+                 live_edit_write->frame == kLiveEditFrame,
+             "LiveEdit script transform writes should carry script authority and frame metadata")) {
+    return false;
+  }
+
+  if (!Check(static_cast<bool>(live_edit_commands.replay(live_edit_world)),
+             "LiveEdit script transform command should replay into the model world")) {
+    return false;
+  }
+  const auto* selected_record = live_edit_world.get_entity(selected_entity);
+  if (!Check(selected_record != nullptr &&
+                 selected_record->transform.has_value() &&
+                 std::abs(selected_record->transform->translation.x - 12.25f) < 0.001f &&
+                 std::abs(selected_record->transform->translation.y - 24.5f) < 0.001f &&
+                 std::abs(selected_record->transform->translation.z - 36.75f) < 0.001f,
+             "replayed LiveEdit script write should update selected entity editor-facing state")) {
+    return false;
+  }
+
+  return true;
+#endif
+}
+
+[[maybe_unused]] const vkpt::scene::WorldCommandBuffer::AssignLightCommand* FindAssignLight(
+    const vkpt::scene::WorldCommandBuffer& commands,
+    vkpt::core::StableId entity_id) {
+  for (const auto& command : commands.commands()) {
+    if (const auto* assign_light =
+            std::get_if<vkpt::scene::WorldCommandBuffer::AssignLightCommand>(&command.payload);
+        assign_light != nullptr && assign_light->id == entity_id) {
+      return assign_light;
+    }
+  }
+  return nullptr;
+}
+
+[[maybe_unused]] const vkpt::scene::WorldCommandBuffer::AssignCameraCommand* FindAssignCamera(
+    const vkpt::scene::WorldCommandBuffer& commands,
+    vkpt::core::StableId entity_id) {
+  for (const auto& command : commands.commands()) {
+    if (const auto* assign_camera =
+            std::get_if<vkpt::scene::WorldCommandBuffer::AssignCameraCommand>(&command.payload);
+        assign_camera != nullptr && assign_camera->id == entity_id) {
+      return assign_camera;
+    }
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 int RunScriptingRuntimeSmoke() {
+  if (!CheckRuntimeModeCapabilityContract() ||
+      !CheckLiveEditScriptingContract()) {
+    return 1;
+  }
+
   // This smoke test exercises the full scripting path at integration scale:
   // binding discovery, optional Lua execution, scene conversion, and emitted world commands.
   std::vector<std::string> contract_diagnostics;
@@ -206,6 +468,21 @@ int RunScriptingRuntimeSmoke() {
     return 1;
   }
 
+  vkpt::scene::WorldCommandBuffer benchmark_commands;
+  vkpt::scripting::ScriptExecutionContext benchmark_context;
+  benchmark_context.game_mode = true;
+  benchmark_context.benchmark_mode = true;
+  benchmark_context.allow_benchmark_scripts = false;
+  benchmark_context.frame = 6;
+  const auto benchmark_summary = runtime->dispatch_hook(
+      world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, benchmark_context, benchmark_commands);
+  if (!Check(benchmark_summary.benchmark_blocked,
+             "dispatch should report benchmark script blocking by default") ||
+      !Check(benchmark_summary.command_count_after == 0u,
+             "benchmark-blocked scripts should emit no commands")) {
+    return 1;
+  }
+
   vkpt::scene::WorldCommandBuffer commands;
   vkpt::scripting::ScriptExecutionContext context;
   context.game_mode = true;
@@ -227,6 +504,558 @@ int RunScriptingRuntimeSmoke() {
   }
 #else
   if (!Check(dispatch_summary.skipped_count == 2u, "stub runtime should skip runnable and disabled scripts")) {
+    return 1;
+  }
+#endif
+
+  vkpt::scene::SceneWorld param_world;
+  const auto param_entity = param_world.create_entity("param_probe", 120);
+  vkpt::scene::TransformComponent param_transform;
+  param_world.set_transform(param_entity, param_transform);
+  vkpt::scene::ScriptComponent param_script;
+  param_script.script = "assets/scripts/script_param_probe.lua";
+  param_script.params["offset_x"] = "2.5";
+  if (!param_world.set_component(param_entity, vkpt::scene::ComponentKind::Script, param_script)) {
+    return 1;
+  }
+  auto param_runtime = vkpt::scripting::CreateScriptRuntime();
+  const auto param_binding_summary = param_runtime->reload_bindings(param_world);
+  if (!Check(param_binding_summary.binding_count == 1u,
+             "param probe should expose one binding") ||
+      !Check(param_runtime->bindings().front().params.at("offset_x") == "2.5",
+             "script params should carry into runtime bindings")) {
+    return 1;
+  }
+  vkpt::scripting::ScriptExecutionContext param_context;
+  param_context.game_mode = true;
+  param_context.frame = 8;
+  param_context.delta_seconds = 1.0 / 60.0;
+  vkpt::scene::WorldCommandBuffer param_commands;
+  const auto param_dispatch = param_runtime->dispatch_hook(
+      param_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, param_context, param_commands);
+#ifdef PT_ENABLE_LUA
+  auto has_param_snapshot = [&](std::string_view scope,
+                                std::string_view name,
+                                std::string_view value) {
+    return std::any_of(param_runtime->variable_snapshots().begin(),
+                       param_runtime->variable_snapshots().end(),
+                       [&](const vkpt::scripting::ScriptVariableSnapshot& variable) {
+                         return variable.entity == param_entity &&
+                                variable.scope == scope &&
+                                variable.name == name &&
+                                variable.value == value;
+                       });
+  };
+  const auto* param_write = FindSetTransform(param_commands, param_entity);
+  if (!Check(param_dispatch.hook_call_count == 1u,
+             "param probe Lua script should execute") ||
+      !Check(param_write != nullptr && std::abs(param_write->transform.translation.x - 2.5f) < 0.001f,
+             "ctx.params should be visible to Lua scripts") ||
+      !Check(!param_runtime->runtime_states().empty() &&
+                 param_runtime->runtime_states().front().command_count >= 1u,
+             "runtime state should record command count") ||
+      !Check(has_param_snapshot("script", "live_frame", "8"),
+             "runtime script variable snapshot should expose the latest frame value")) {
+    return 1;
+  }
+  param_context.frame = 9;
+  vkpt::scene::WorldCommandBuffer param_next_commands;
+  const auto param_next_dispatch = param_runtime->dispatch_hook(
+      param_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, param_context, param_next_commands);
+  if (!Check(param_next_dispatch.hook_call_count == 1u,
+             "param probe second dispatch should execute") ||
+      !Check(has_param_snapshot("script", "live_frame", "9"),
+             "runtime script variable snapshot should update on each dispatch")) {
+    return 1;
+  }
+  if (!Check(param_runtime->set_variable_override(param_entity, "upvalue", "offset_x", "4.75"),
+             "runtime variable overrides should accept editable values")) {
+    return 1;
+  }
+  param_context.frame = 10;
+  vkpt::scene::WorldCommandBuffer param_override_commands;
+  const auto param_override_dispatch = param_runtime->dispatch_hook(
+      param_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, param_context, param_override_commands);
+  const auto* param_override_write = FindSetTransform(param_override_commands, param_entity);
+  if (!Check(param_override_dispatch.hook_call_count == 1u,
+             "runtime variable override dispatch should execute") ||
+      !Check(param_override_write != nullptr &&
+                 std::abs(param_override_write->transform.translation.x - 4.75f) < 0.001f,
+             "runtime variable overrides should flow into Lua ctx.params")) {
+    return 1;
+  }
+
+  const auto context_probe_path =
+      std::filesystem::temp_directory_path() / "vkpt_context_metadata_probe.lua";
+  {
+    std::ofstream context_probe_file(context_probe_path, std::ios::binary);
+    if (!Check(static_cast<bool>(context_probe_file),
+               "context metadata probe script should be writable")) {
+      return 1;
+    }
+    context_probe_file << R"lua(
+return {
+  on_update = function(self, ctx)
+    local transform = self:get_transform()
+    if transform == nil then
+      error("missing transform")
+    end
+    transform.translation.x = ctx.runtime ~= nil and ctx.runtime.mode == "edit_preview" and 1.0 or (ctx.runtime ~= nil and ctx.runtime.mode == "play" and 7.0 or -1.0)
+    transform.translation.y = ctx.runtime ~= nil and ctx.runtime.scripts_running == true and 2.0 or -2.0
+    transform.translation.z = ctx.input ~= nil and ctx.input.enabled == false and 3.0 or (ctx.input ~= nil and ctx.input.enabled == true and 8.0 or -3.0)
+    transform.scale.x = ctx.editor ~= nil and ctx.editor.canvas_enabled == false and 4.0 or (ctx.editor ~= nil and ctx.editor.canvas_enabled == true and 9.0 or -4.0)
+    transform.scale.y = ctx.editor ~= nil and ctx.editor.is_editing == true and 5.0 or (ctx.editor ~= nil and ctx.editor.is_editing == false and 10.0 or -5.0)
+    transform.scale.z = ctx.editor ~= nil and ctx.editor.edited_entity_id == self:id() and ctx.editor.edited_component == "Transform" and 6.0 or (ctx.editor ~= nil and ctx.editor.edited_entity_id == 0 and ctx.editor.edited_component == "" and 11.0 or -6.0)
+    self:set_transform(transform)
+  end
+}
+)lua";
+  }
+
+  vkpt::scene::SceneWorld context_probe_world;
+  const auto context_probe_entity =
+      context_probe_world.create_entity("context_metadata_probe", 123);
+  vkpt::scene::TransformComponent context_probe_transform;
+  context_probe_world.set_transform(context_probe_entity, context_probe_transform);
+  vkpt::scene::ScriptComponent context_probe_script;
+  context_probe_script.script = context_probe_path.generic_string();
+  context_probe_world.set_component(context_probe_entity,
+                                    vkpt::scene::ComponentKind::Script,
+                                    context_probe_script);
+  auto context_probe_runtime = vkpt::scripting::CreateScriptRuntime();
+  context_probe_runtime->reload_bindings(context_probe_world);
+  vkpt::scripting::ScriptExecutionContext context_probe_context;
+  context_probe_context.game_mode = true;
+  context_probe_context.frame = 11;
+  context_probe_context.runtime.mode = "edit_preview";
+  context_probe_context.runtime.scripts_running = true;
+  context_probe_context.input.enabled = false;
+  context_probe_context.editor.canvas_enabled = false;
+  context_probe_context.editor.is_editing = true;
+  context_probe_context.editor.edited_entity_id = context_probe_entity;
+  context_probe_context.editor.edited_component = "Transform";
+  vkpt::scene::WorldCommandBuffer context_probe_commands;
+  const auto context_probe_dispatch = context_probe_runtime->dispatch_hook(
+      context_probe_world,
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      context_probe_context,
+      context_probe_commands);
+  const auto* context_probe_write =
+      FindSetTransform(context_probe_commands, context_probe_entity);
+  if (!Check(context_probe_dispatch.hook_call_count == 1u,
+             "context metadata probe Lua script should execute") ||
+      !Check(context_probe_dispatch.diagnostics.empty(),
+             "context metadata probe should not report diagnostics") ||
+      !Check(context_probe_write != nullptr &&
+                 std::abs(context_probe_write->transform.translation.x - 1.0f) < 0.001f &&
+                 std::abs(context_probe_write->transform.translation.y - 2.0f) < 0.001f &&
+                 std::abs(context_probe_write->transform.translation.z - 3.0f) < 0.001f &&
+                 std::abs(context_probe_write->transform.scale.x - 4.0f) < 0.001f &&
+                 std::abs(context_probe_write->transform.scale.y - 5.0f) < 0.001f &&
+                 std::abs(context_probe_write->transform.scale.z - 6.0f) < 0.001f,
+             "ctx.runtime, ctx.input.enabled, and ctx.editor should be visible to Lua scripts")) {
+    return 1;
+  }
+
+  vkpt::scripting::ScriptExecutionContext context_probe_default_context;
+  context_probe_default_context.game_mode = true;
+  context_probe_default_context.frame = 12;
+  vkpt::scene::WorldCommandBuffer context_probe_default_commands;
+  const auto context_probe_default_dispatch = context_probe_runtime->dispatch_hook(
+      context_probe_world,
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      context_probe_default_context,
+      context_probe_default_commands);
+  const auto* context_probe_default_write =
+      FindSetTransform(context_probe_default_commands, context_probe_entity);
+  if (!Check(context_probe_default_dispatch.hook_call_count == 1u,
+             "context metadata default runtime probe should execute") ||
+      !Check(context_probe_default_write != nullptr &&
+                 std::abs(context_probe_default_write->transform.translation.x - 7.0f) < 0.001f &&
+                 std::abs(context_probe_default_write->transform.translation.y - 2.0f) < 0.001f &&
+                 std::abs(context_probe_default_write->transform.translation.z - 8.0f) < 0.001f &&
+                 std::abs(context_probe_default_write->transform.scale.x - 9.0f) < 0.001f &&
+                 std::abs(context_probe_default_write->transform.scale.y - 10.0f) < 0.001f &&
+                 std::abs(context_probe_default_write->transform.scale.z - 11.0f) < 0.001f,
+             "ctx.runtime should default game_mode scripts to play metadata")) {
+    return 1;
+  }
+  std::error_code context_probe_remove_error;
+  std::filesystem::remove(context_probe_path, context_probe_remove_error);
+#else
+  if (!Check(param_dispatch.hook_call_count == 0u,
+             "no-Lua param probe should not execute")) {
+    return 1;
+  }
+#endif
+
+  vkpt::scene::SceneDocument param_roundtrip_document;
+  vkpt::scene::SceneEntityDefinition param_roundtrip_entity;
+  param_roundtrip_entity.id = 130;
+  param_roundtrip_entity.name = "Script Param Roundtrip";
+  param_roundtrip_entity.script.script = "assets/scripts/script_param_probe.lua";
+  param_roundtrip_entity.script.module_id = "roundtrip";
+  param_roundtrip_entity.script.params["speed"] = "3.25";
+  param_roundtrip_entity.script.params["enabled"] = "true";
+  param_roundtrip_document.entities.push_back(param_roundtrip_entity);
+  const auto param_roundtrip_loaded =
+      vkpt::scene::SceneDocument::load_from_text(param_roundtrip_document.to_json(false));
+  const auto* param_roundtrip_entity_loaded = param_roundtrip_loaded &&
+          !param_roundtrip_loaded.value().entities.empty()
+      ? &param_roundtrip_loaded.value().entities.front()
+      : nullptr;
+  if (!Check(static_cast<bool>(param_roundtrip_loaded),
+             "script params should parse after JSON roundtrip") ||
+      !Check(param_roundtrip_loaded.value().entities.size() == 1u &&
+                 param_roundtrip_entity_loaded != nullptr &&
+                 param_roundtrip_entity_loaded->script.module_id == "roundtrip" &&
+                 param_roundtrip_entity_loaded->script.params.at("speed") == "3.25" &&
+                 param_roundtrip_entity_loaded->script.params.at("enabled") == "true",
+             "script params and module id should survive JSON roundtrip")) {
+    return 1;
+  }
+
+  const auto scene_script_loaded = vkpt::scene::SceneDocument::load_from_text(R"json({
+    "schema": "1.0",
+    "scene_script": {
+      "path": "assets/scripts/scene_bootstrap.lua",
+      "language": "lua",
+      "entry": "init_scene",
+      "module": "bootstrap",
+      "enabled": false,
+      "reload_on_save": false,
+      "params": {
+        "difficulty": "hard",
+        "spawn_count": 3,
+        "show_debug": true
+      }
+    },
+    "entities": []
+  })json");
+  if (!Check(static_cast<bool>(scene_script_loaded),
+             "top-level scene script should parse") ||
+      !Check(scene_script_loaded.value().has_scene_script,
+             "scene script presence should be tracked") ||
+      !Check(scene_script_loaded.value().scene_script.script == "assets/scripts/scene_bootstrap.lua" &&
+                 scene_script_loaded.value().scene_script.entry == "init_scene" &&
+                 scene_script_loaded.value().scene_script.module_id == "bootstrap" &&
+                 !scene_script_loaded.value().scene_script.enabled &&
+                 !scene_script_loaded.value().scene_script.reload_on_save &&
+                 scene_script_loaded.value().scene_script.params.at("difficulty") == "hard" &&
+                 scene_script_loaded.value().scene_script.params.at("spawn_count") == "3.000000" &&
+                 scene_script_loaded.value().scene_script.params.at("show_debug") == "true",
+             "scene script should use entity script compatibility fields")) {
+    return 1;
+  }
+  const auto scene_script_json = scene_script_loaded.value().to_json(false);
+  const auto scene_script_roundtrip = vkpt::scene::SceneDocument::load_from_text(scene_script_json);
+  if (!Check(scene_script_json.find("\"scene_script\"") != std::string::npos &&
+                 scene_script_json.find("\"source\"") != std::string::npos &&
+                 scene_script_json.find("\"path\"") == std::string::npos,
+             "scene script export should normalize path to source") ||
+      !Check(static_cast<bool>(scene_script_roundtrip) &&
+                 scene_script_roundtrip.value().has_scene_script &&
+                 scene_script_roundtrip.value().scene_script.script ==
+                     "assets/scripts/scene_bootstrap.lua" &&
+                 scene_script_roundtrip.value().scene_script.module_id == "bootstrap" &&
+                 scene_script_roundtrip.value().scene_script.params.at("spawn_count") == "3.000000",
+             "scene script should survive JSON roundtrip")) {
+    return 1;
+  }
+  const auto legacy_scene_loaded = vkpt::scene::SceneDocument::load_from_text(R"json({
+    "schema": "1.0",
+    "entities": []
+  })json");
+  if (!Check(static_cast<bool>(legacy_scene_loaded),
+             "legacy scene without scene script should still parse") ||
+      !Check(!legacy_scene_loaded.value().has_scene_script,
+             "legacy scene should not synthesize a scene script") ||
+      !Check(legacy_scene_loaded.value().to_json(false).find("\"scene_script\"") == std::string::npos,
+             "legacy scene export should omit absent scene script") ||
+      !Check(legacy_scene_loaded.value().has_section("scene_script"),
+             "scene document schema should advertise scene_script")) {
+    return 1;
+  }
+
+#ifdef PT_ENABLE_LUA
+  vkpt::scene::SceneWorld sun_world;
+  const auto sun_entity = sun_world.create_entity("warehouse_sun_probe", 131);
+  vkpt::scene::TransformComponent sun_transform;
+  sun_world.set_transform(sun_entity, sun_transform);
+  vkpt::scene::LightComponent sun_light;
+  sun_light.type = "spot";
+  sun_world.set_component(sun_entity, vkpt::scene::ComponentKind::Light, sun_light);
+  vkpt::scene::ScriptComponent sun_script;
+  sun_script.script = "assets/scripts/warehouse_time_of_day_sun.lua";
+  sun_script.params["time_of_day_hour"] = "12.0";
+  sun_script.params["sunrise_hour"] = "6.0";
+  sun_script.params["sunset_hour"] = "18.0";
+  sun_script.params["max_elevation_degrees"] = "60.0";
+  sun_script.params["azimuth_start_degrees"] = "0.0";
+  sun_script.params["azimuth_end_degrees"] = "0.0";
+  sun_script.params["sun_distance_meters"] = "20.0";
+  sun_script.params["sun_intensity"] = "1200.0";
+  sun_world.set_component(sun_entity, vkpt::scene::ComponentKind::Script, sun_script);
+  auto sun_runtime = vkpt::scripting::CreateScriptRuntime();
+  const auto sun_binding_summary = sun_runtime->reload_bindings(sun_world);
+  if (!Check(sun_binding_summary.binding_count == 1u,
+             "warehouse sun script should expose one binding") ||
+      !Check(sun_runtime->bindings().front().params.at("sun_intensity") == "1200.0",
+             "warehouse sun params should flow into runtime binding")) {
+    return 1;
+  }
+  vkpt::scripting::ScriptExecutionContext sun_context;
+  sun_context.game_mode = true;
+  sun_context.frame = 11;
+  sun_context.delta_seconds = 1.0 / 60.0;
+  vkpt::scene::WorldCommandBuffer sun_commands;
+  const auto sun_dispatch = sun_runtime->dispatch_hook(
+      sun_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, sun_context, sun_commands);
+  const auto* sun_transform_write = FindSetTransform(sun_commands, sun_entity);
+  const auto* sun_light_write = FindAssignLight(sun_commands, sun_entity);
+  if (!Check(sun_dispatch.hook_call_count == 1u,
+             "warehouse sun Lua script should execute") ||
+      !Check(sun_dispatch.diagnostics.empty(),
+             "warehouse sun Lua script should not report diagnostics") ||
+      !Check(sun_transform_write != nullptr &&
+                 sun_transform_write->transform.translation.y > 18.5f &&
+                 std::abs(sun_transform_write->transform.translation.z - 10.0f) < 0.25f,
+             "warehouse sun params should drive the authored sun transform") ||
+      !Check(sun_light_write != nullptr &&
+                 sun_light_write->light.type == "spot" &&
+                 sun_light_write->light.intensity > 1000.0f &&
+                 sun_light_write->light.intensity < 1050.0f &&
+                 sun_light_write->light.direction.y < -0.8f,
+             "warehouse sun params should drive the authored light output")) {
+    return 1;
+  }
+
+  vkpt::scene::SceneWorld fps_camera_world;
+  const auto fps_camera_entity = fps_camera_world.create_entity("Generic FPS Camera", 150);
+  vkpt::scene::TransformComponent fps_camera_transform;
+  fps_camera_transform.translation = {0.0f, 1.72f, 0.0f};
+  fps_camera_world.set_transform(fps_camera_entity, fps_camera_transform);
+  vkpt::scene::CameraComponent fps_camera_component;
+  fps_camera_component.fov = 55.0f;
+  fps_camera_component.focus_distance = 3.0f;
+  fps_camera_world.set_component(fps_camera_entity,
+                                 vkpt::scene::ComponentKind::Camera,
+                                 fps_camera_component);
+  vkpt::scene::ScriptComponent fps_camera_script;
+  fps_camera_script.script = "assets/scripts/generic_fps_camera.lua";
+  fps_camera_script.params["movement_mode"] = "walk";
+  fps_camera_script.params["walk_speed"] = "6.0";
+  fps_camera_script.params["fixed_y"] = "1.72";
+  fps_camera_script.params["fov"] = "66.0";
+  fps_camera_script.params["focus_distance"] = "9.0";
+  fps_camera_script.params["show_controls"] = "true";
+  fps_camera_script.params["controls_panel_id"] = "151";
+  fps_camera_script.params["controls_panel_name"] = "FPS Camera Controls Panel";
+  fps_camera_world.set_component(fps_camera_entity,
+                                 vkpt::scene::ComponentKind::Script,
+                                 fps_camera_script);
+  auto fps_camera_runtime = vkpt::scripting::CreateScriptRuntime();
+  const auto fps_camera_summary = fps_camera_runtime->reload_bindings(fps_camera_world);
+  if (!Check(fps_camera_summary.binding_count == 1u,
+             "generic FPS camera script should expose one binding") ||
+      !Check(PathExists(FindRepoFile(fps_camera_script.script)),
+             "generic FPS camera script source should exist")) {
+    return 1;
+  }
+  vkpt::scripting::ScriptExecutionContext fps_camera_context;
+  fps_camera_context.game_mode = true;
+  fps_camera_context.benchmark_mode = true;
+  fps_camera_context.allow_benchmark_scripts = true;
+  fps_camera_context.frame = 21;
+  fps_camera_context.delta_seconds = 1.0 / 60.0;
+  fps_camera_context.input.active_keys = {'W'};
+  fps_camera_context.input.mouse_delta_x = 80.0f;
+  fps_camera_context.input.mouse_delta_y = -20.0f;
+  vkpt::scene::WorldCommandBuffer fps_camera_commands;
+  const auto fps_camera_dispatch = fps_camera_runtime->dispatch_hook(
+      fps_camera_world,
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      fps_camera_context,
+      fps_camera_commands);
+  const auto* fps_camera_move = FindSetTransform(fps_camera_commands, fps_camera_entity);
+  const auto* fps_camera_settings = FindAssignCamera(fps_camera_commands, fps_camera_entity);
+  bool created_fps_panel = false;
+  bool set_fps_panel = false;
+  for (const auto& command : fps_camera_commands.commands()) {
+    if (const auto* create_entity =
+            std::get_if<vkpt::scene::WorldCommandBuffer::CreateEntityCommand>(&command.payload);
+        create_entity != nullptr &&
+        create_entity->requested_id == 151u &&
+        create_entity->name == "FPS Camera Controls Panel") {
+      created_fps_panel = true;
+    }
+    if (const auto* set_component =
+            std::get_if<vkpt::scene::WorldCommandBuffer::SetComponentCommand>(&command.payload);
+        set_component != nullptr &&
+        set_component->id == 151u &&
+        set_component->kind == vkpt::scene::ComponentKind::UiPanel) {
+      set_fps_panel = true;
+    }
+  }
+  if (!Check(fps_camera_dispatch.hook_call_count == 1u,
+             "generic FPS camera Lua script should execute") ||
+      !Check(fps_camera_dispatch.diagnostics.empty(),
+             "generic FPS camera Lua script should not report diagnostics") ||
+      !Check(fps_camera_move != nullptr &&
+                 fps_camera_move->transform.translation.z < -0.01f &&
+                 std::abs(fps_camera_move->transform.translation.y - 1.72f) < 0.001f,
+             "generic FPS camera should move forward while preserving fixed eye height") ||
+      !Check(fps_camera_move != nullptr &&
+                 RotateByQuat({0.0f, 0.0f, -1.0f}, fps_camera_move->transform.rotation).x > 0.05f,
+             "generic FPS camera mouse look should yaw the camera") ||
+      !Check(fps_camera_settings != nullptr &&
+                 std::abs(fps_camera_settings->camera.fov - 66.0f) < 0.001f &&
+                 std::abs(fps_camera_settings->camera.focus_distance - 9.0f) < 0.001f,
+             "generic FPS camera params should drive camera lens settings") ||
+      !Check(created_fps_panel && set_fps_panel,
+             "generic FPS camera should be able to spawn a scriptable controls panel")) {
+    return 1;
+  }
+
+  const auto lowest_lod_scene_path = FindRepoFile("game/scenes/relay_yard_lowest_lod_demo.json");
+  auto lowest_lod_document_result =
+      vkpt::scene::SceneDocument::load_from_file(lowest_lod_scene_path.string());
+  if (!Check(static_cast<bool>(lowest_lod_document_result),
+             "lowest-LOD military warehouse scene should load")) {
+    return 1;
+  }
+  std::vector<std::string> lowest_lod_issues;
+  if (!Check(lowest_lod_document_result.value().validate(&lowest_lod_issues),
+             "lowest-LOD military warehouse scene should validate")) {
+    for (const auto& issue : lowest_lod_issues) {
+      std::cerr << "  scene issue: " << issue << "\n";
+    }
+    return 1;
+  }
+  bool warehouse_camera_has_fps_script = false;
+  for (const auto& entity : lowest_lod_document_result.value().entities) {
+    if (entity.id == 9900u &&
+        entity.has_camera &&
+        entity.script.script == "assets/scripts/generic_fps_camera.lua" &&
+        entity.script.params.contains("walk_speed")) {
+      warehouse_camera_has_fps_script = true;
+    }
+  }
+  if (!Check(warehouse_camera_has_fps_script,
+             "lowest-LOD warehouse camera should be attached to the generic FPS script")) {
+    return 1;
+  }
+  auto lowest_lod_world_result = lowest_lod_document_result.value().to_world();
+  if (!Check(static_cast<bool>(lowest_lod_world_result),
+             "lowest-LOD military warehouse scene should convert to ECS world")) {
+    return 1;
+  }
+  auto lowest_lod_runtime = vkpt::scripting::CreateScriptRuntime();
+  const auto lowest_lod_summary = lowest_lod_runtime->reload_bindings(lowest_lod_world_result.value());
+  if (!Check(lowest_lod_summary.binding_count >= 2u,
+             "lowest-LOD warehouse should expose sun and FPS camera script bindings")) {
+    return 1;
+  }
+  vkpt::scripting::ScriptExecutionContext lowest_lod_context;
+  lowest_lod_context.game_mode = true;
+  lowest_lod_context.benchmark_mode = true;
+  lowest_lod_context.allow_benchmark_scripts = true;
+  lowest_lod_context.frame = 22;
+  lowest_lod_context.delta_seconds = 1.0 / 60.0;
+  lowest_lod_context.input.active_keys = {'W'};
+  lowest_lod_context.input.mouse_delta_x = 60.0f;
+  vkpt::scene::WorldCommandBuffer lowest_lod_commands;
+  const auto lowest_lod_dispatch = lowest_lod_runtime->dispatch_hook(
+      lowest_lod_world_result.value(),
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      lowest_lod_context,
+      lowest_lod_commands);
+  const auto* warehouse_camera_move = FindSetTransform(lowest_lod_commands, 9900u);
+  if (!Check(lowest_lod_dispatch.hook_call_count >= 2u,
+             "lowest-LOD warehouse game-mode dispatch should execute both Lua bindings") ||
+      !Check(warehouse_camera_move != nullptr &&
+                 warehouse_camera_move->transform.translation.z < 14.2f,
+             "lowest-LOD warehouse FPS camera script should move the attached camera")) {
+    return 1;
+  }
+
+  const auto scripts_dir = FindRepoFile("assets/scripts");
+  if (!Check(PathExists(scripts_dir), "assets/scripts should exist for Lua syntax smoke")) {
+    return 1;
+  }
+  std::vector<std::filesystem::path> lua_script_files;
+  for (const auto& entry : std::filesystem::directory_iterator(scripts_dir)) {
+    if (entry.is_regular_file() && entry.path().extension() == ".lua") {
+      lua_script_files.push_back(entry.path());
+    }
+  }
+  std::sort(lua_script_files.begin(), lua_script_files.end());
+  if (!Check(lua_script_files.size() >= 10u,
+             "Lua syntax smoke should see the authored gameplay scripts")) {
+    return 1;
+  }
+  for (const auto& script_path : lua_script_files) {
+    vkpt::scene::SceneWorld syntax_world;
+    const auto syntax_entity = syntax_world.create_entity("syntax_probe", 140);
+    vkpt::scene::ScriptComponent syntax_script;
+    syntax_script.script = script_path.generic_string();
+    syntax_world.set_component(syntax_entity, vkpt::scene::ComponentKind::Script, syntax_script);
+    auto syntax_runtime = vkpt::scripting::CreateScriptRuntime();
+    syntax_runtime->reload_bindings(syntax_world);
+    vkpt::scripting::ScriptExecutionContext syntax_context;
+    syntax_context.game_mode = true;
+    syntax_context.frame = 12;
+    vkpt::scene::WorldCommandBuffer syntax_commands;
+    const auto syntax_dispatch = syntax_runtime->dispatch_hook(
+        syntax_world, vkpt::scripting::ScriptLifecycleHook::OnFixedUpdate, syntax_context, syntax_commands);
+    if (!Check(syntax_dispatch.diagnostics.empty(),
+               "Lua script should load without syntax diagnostics: " + script_path.generic_string())) {
+      return 1;
+    }
+  }
+
+  vkpt::scene::SceneWorld budget_world;
+  const auto budget_entity = budget_world.create_entity("budget_probe", 121);
+  vkpt::scene::ScriptComponent budget_script;
+  budget_script.script = "assets/scripts/script_budget_probe.lua";
+  budget_world.set_component(budget_entity, vkpt::scene::ComponentKind::Script, budget_script);
+  auto budget_runtime = vkpt::scripting::CreateScriptRuntime();
+  budget_runtime->reload_bindings(budget_world);
+  vkpt::scripting::ScriptExecutionContext budget_context;
+  budget_context.game_mode = true;
+  budget_context.frame = 9;
+  budget_context.instruction_budget = 1000;
+  vkpt::scene::WorldCommandBuffer budget_commands;
+  const auto budget_dispatch = budget_runtime->dispatch_hook(
+      budget_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, budget_context, budget_commands);
+  if (!Check(budget_dispatch.hook_call_count == 0u,
+             "budget probe should be interrupted before completing") ||
+      !Check(!budget_runtime->runtime_states().empty() &&
+                 budget_runtime->runtime_states().front().disabled_until_reload,
+             "instruction budget failure should disable binding until reload")) {
+    return 1;
+  }
+  const auto budget_dispatch_again = budget_runtime->dispatch_hook(
+      budget_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, budget_context, budget_commands);
+  if (!Check(budget_dispatch_again.skipped_count == 1u,
+             "budget-disabled binding should skip until reload")) {
+    return 1;
+  }
+
+  vkpt::scene::SceneWorld sandbox_world;
+  const auto sandbox_entity = sandbox_world.create_entity("sandbox_probe", 122);
+  vkpt::scene::ScriptComponent sandbox_script;
+  sandbox_script.script = "assets/scripts/script_sandbox_probe.lua";
+  sandbox_world.set_component(sandbox_entity, vkpt::scene::ComponentKind::Script, sandbox_script);
+  auto sandbox_runtime = vkpt::scripting::CreateScriptRuntime();
+  sandbox_runtime->reload_bindings(sandbox_world);
+  vkpt::scene::WorldCommandBuffer sandbox_commands;
+  const auto sandbox_dispatch = sandbox_runtime->dispatch_hook(
+      sandbox_world, vkpt::scripting::ScriptLifecycleHook::OnUpdate, budget_context, sandbox_commands);
+  if (!Check(sandbox_dispatch.hook_call_count == 0u,
+             "sandbox probe should fail instead of requiring modules") ||
+      !Check(!sandbox_dispatch.diagnostics.empty(),
+             "sandbox probe should report structured diagnostics")) {
     return 1;
   }
 #endif
@@ -1056,10 +1885,10 @@ int RunScriptingRuntimeSmoke() {
              "audio demo should declare audio events") ||
       !Check(!audio_diag.buses.empty(),
              "audio diagnostics should expose mixer bus state") ||
-      !Check(audio_diag.event_history_size >= 1u,
-             "audio diagnostics should expose event history") ||
-      !Check(audio_diag.play_requests >= 1u,
-             "audio demo autoplay emitter should post an ambience event")) {
+      !Check(audio_diag.event_history_size == 0u,
+             "audio demo should not autoplay scene audio before Lua starts") ||
+      !Check(audio_diag.play_requests == 0u,
+             "audio demo sound should be started by Lua game-mode hooks")) {
     vkpt::audio::SetGlobalAudioSystem(nullptr);
     return 1;
   }
@@ -1109,7 +1938,23 @@ int RunScriptingRuntimeSmoke() {
   audio_context.delta_seconds = 1.0 / 60.0;
   audio_context.elapsed_seconds = 3.0;
   audio_context.input.active_keys = {'W', ' '};
-  const auto requests_before_lua = audio_system->diagnostics().play_requests;
+#ifdef PT_ENABLE_LUA
+  const auto requests_before_enable = audio_system->diagnostics().play_requests;
+  vkpt::scene::WorldCommandBuffer audio_enable_commands;
+  const auto audio_enable_dispatch =
+      audio_runtime->dispatch_hook(audio_world,
+                                   vkpt::scripting::ScriptLifecycleHook::OnEnable,
+                                   audio_context,
+                                   audio_enable_commands);
+  if (!Check(audio_enable_dispatch.hook_call_count == 1u,
+             "audio Lua demo should dispatch one enable hook") ||
+      !Check(audio_system->diagnostics().play_requests > requests_before_enable,
+             "audio Lua on_enable should start ambience audio")) {
+    vkpt::audio::SetGlobalAudioSystem(nullptr);
+    return 1;
+  }
+#endif
+  [[maybe_unused]] const auto requests_before_lua = audio_system->diagnostics().play_requests;
   const auto audio_dispatch = audio_runtime->dispatch_hook(audio_world,
                                                           vkpt::scripting::ScriptLifecycleHook::OnUpdate,
                                                           audio_context,

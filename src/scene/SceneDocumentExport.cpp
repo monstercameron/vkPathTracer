@@ -119,6 +119,23 @@ std::string SceneDocument::to_json(bool pretty) const {
     value.object["lines"] = string_list_value(panel.lines);
     return value;
   };
+  auto script_value = [&](const ScriptComponent& script) {
+    JsonValue value = object_value();
+    value.object["source"] = string_value(script.script);
+    value.object["language"] = string_value(script.language);
+    value.object["entry"] = string_value(script.entry);
+    value.object["module_id"] = string_value(script.module_id);
+    value.object["enabled"] = bool_value(script.enabled);
+    value.object["reload_on_save"] = bool_value(script.reload_on_save);
+    if (!script.params.empty()) {
+      JsonValue paramsNode = object_value();
+      for (const auto& [key, paramValue] : script.params) {
+        paramsNode.object[key] = string_value(paramValue);
+      }
+      value.object["params"] = std::move(paramsNode);
+    }
+    return value;
+  };
 
   JsonValue root;
   root.kind = JsonValue::Kind::Object;
@@ -131,6 +148,10 @@ std::string SceneDocument::to_json(bool pretty) const {
   metadataNode.object["author"] = string_value(metadata.author);
   metadataNode.object["created"] = string_value(metadata.created);
   root.object["metadata"] = metadataNode;
+
+  if (has_scene_script || !scene_script.script.empty() || !scene_script.params.empty()) {
+    root.object["scene_script"] = script_value(scene_script);
+  }
 
   JsonValue assetsNode = array_value();
   assetsNode.array.reserve(assets.size());
@@ -352,13 +373,7 @@ std::string SceneDocument::to_json(bool pretty) const {
       item.object["physics"] = std::move(physicsNode);
     }
     if (!entity.script.script.empty()) {
-      JsonValue scriptNode = object_value();
-      scriptNode.object["source"] = string_value(entity.script.script);
-      scriptNode.object["language"] = string_value(entity.script.language);
-      scriptNode.object["entry"] = string_value(entity.script.entry);
-      scriptNode.object["enabled"] = bool_value(entity.script.enabled);
-      scriptNode.object["reload_on_save"] = bool_value(entity.script.reload_on_save);
-      item.object["script"] = std::move(scriptNode);
+      item.object["script"] = script_value(entity.script);
     }
     if (entity.has_audio_listener) {
       JsonValue listenerNode = object_value();

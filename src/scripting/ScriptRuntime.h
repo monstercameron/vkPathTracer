@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <unordered_map>
 #include <vector>
 
@@ -33,13 +34,27 @@ enum class ScriptDiagnosticSeverity : std::uint8_t {
 };
 
 struct ScriptExecutionContext {
+  struct RuntimeState {
+    /// Empty means derive the legacy runtime mode from game_mode.
+    std::string mode;
+    bool scripts_running = false;
+  };
+
   struct InputState {
+    bool enabled = true;
     /// Host key codes currently active for this frame.
     std::vector<int> active_keys;
     float mouse_delta_x = 0.0f;
     float mouse_delta_y = 0.0f;
     float mouse_wheel_delta = 0.0f;
     bool viewport_focused = true;
+  };
+
+  struct EditorState {
+    bool canvas_enabled = true;
+    bool is_editing = false;
+    vkpt::core::StableEntityId edited_entity_id = 0;
+    std::string edited_component;
   };
 
   vkpt::core::FrameIndex frame = 0;
@@ -50,12 +65,16 @@ struct ScriptExecutionContext {
   bool deterministic = false;
   /// Global runtime gate. Disabled scripts are counted but hook bodies are not executed.
   bool scripts_enabled = true;
-  /// Game-mode gate. Hosts must opt into script execution for interactive/runtime play.
+  /// Legacy game-mode latch. New hosts should prefer runtime.mode/runtime.scripts_running.
   bool game_mode = false;
   /// Benchmark mode blocks script execution unless allow_benchmark_scripts is also true.
   bool benchmark_mode = false;
   bool allow_benchmark_scripts = false;
+  std::size_t instruction_budget = 250000;
+  std::size_t memory_budget_bytes = 2 * 1024 * 1024;
+  RuntimeState runtime;
   InputState input;
+  EditorState editor;
 };
 
 /// Runtime binding produced from an entity ScriptComponent.
@@ -66,8 +85,10 @@ struct ScriptBinding {
   std::string source;
   std::string language = "lua";
   std::string entry = "default";
+  std::string module_id = "default";
   bool enabled = true;
   bool reload_on_save = true;
+  std::unordered_map<std::string, std::string> params;
 };
 
 struct ScriptBindingSummary {
@@ -97,6 +118,26 @@ struct ScriptVariableSnapshot {
   std::string name;
   std::string value;
   bool editable = false;
+};
+
+struct ScriptVariableOverride {
+  vkpt::core::StableEntityId entity = 0;
+  std::string scope;
+  std::string name;
+  std::string value;
+};
+
+struct ScriptBindingRuntimeState {
+  vkpt::core::StableEntityId entity = 0;
+  std::string source;
+  ScriptLifecycleHook last_hook = ScriptLifecycleHook::OnLoad;
+  vkpt::core::FrameIndex last_frame = 0;
+  std::string last_error;
+  std::string skip_reason;
+  std::uint64_t hook_duration_ns = 0;
+  std::size_t command_count = 0;
+  std::size_t memory_estimate_bytes = 0;
+  bool disabled_until_reload = false;
 };
 
 struct ScriptDispatchSummary {
@@ -130,6 +171,13 @@ class IScriptRuntime {
   virtual const std::vector<ScriptBinding>& bindings() const = 0;
   virtual const std::vector<ScriptDiagnostic>& diagnostics() const = 0;
   virtual const std::vector<ScriptVariableSnapshot>& variable_snapshots() const = 0;
+  virtual bool set_variable_override(vkpt::core::StableEntityId entity,
+                                     std::string_view scope,
+                                     std::string_view name,
+                                     std::string_view value) = 0;
+  virtual void clear_variable_overrides(vkpt::core::StableEntityId entity = 0) = 0;
+  virtual std::vector<ScriptVariableOverride> variable_overrides() const = 0;
+  virtual const std::vector<ScriptBindingRuntimeState>& runtime_states() const = 0;
   virtual bool lua_compiled_in() const = 0;
   virtual bool execution_available() const = 0;
 };
@@ -144,6 +192,13 @@ class EcsScriptRuntime final : public IScriptRuntime {
   const std::vector<ScriptBinding>& bindings() const override;
   const std::vector<ScriptDiagnostic>& diagnostics() const override;
   const std::vector<ScriptVariableSnapshot>& variable_snapshots() const override;
+  bool set_variable_override(vkpt::core::StableEntityId entity,
+                             std::string_view scope,
+                             std::string_view name,
+                             std::string_view value) override;
+  void clear_variable_overrides(vkpt::core::StableEntityId entity = 0) override;
+  std::vector<ScriptVariableOverride> variable_overrides() const override;
+  const std::vector<ScriptBindingRuntimeState>& runtime_states() const override;
   bool lua_compiled_in() const override;
   bool execution_available() const override;
 
@@ -151,7 +206,10 @@ class EcsScriptRuntime final : public IScriptRuntime {
   std::vector<ScriptBinding> m_bindings;
   std::vector<ScriptDiagnostic> m_diagnostics;
   std::vector<ScriptVariableSnapshot> m_variable_snapshots;
+  std::vector<ScriptBindingRuntimeState> m_runtime_states;
+  std::unordered_set<std::string> m_disabled_until_reload;
   std::unordered_map<std::string, std::string> m_lua_bytecode_cache;
+  std::unordered_map<std::string, ScriptVariableOverride> m_variable_overrides;
 };
 
 /// Scan the world in stable entity order and create runnable script bindings.

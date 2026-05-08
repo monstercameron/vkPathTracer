@@ -1,11 +1,14 @@
 #include "scripting/ScriptRuntime.h"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include "audio/AudioSystem.h"
@@ -23,6 +26,52 @@ namespace {
 
 bool IsSupportedLanguage(std::string_view language) {
   return language.empty() || language == "lua";
+}
+
+std::string TrimCopy(std::string_view text) {
+  std::size_t begin = 0u;
+  while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
+    ++begin;
+  }
+  std::size_t end = text.size();
+  while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1u])) != 0) {
+    --end;
+  }
+  return std::string(text.substr(begin, end - begin));
+}
+
+std::string LowerSnakeCopy(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  bool lastSeparator = false;
+  for (const unsigned char c : text) {
+    if (std::isalnum(c) != 0) {
+      out.push_back(static_cast<char>(std::tolower(c)));
+      lastSeparator = false;
+    } else if (!lastSeparator && !out.empty()) {
+      out.push_back('_');
+      lastSeparator = true;
+    }
+  }
+  while (!out.empty() && out.back() == '_') {
+    out.pop_back();
+  }
+  return out;
+}
+
+std::string ScriptVariableOverrideKey(vkpt::core::StableEntityId entity,
+                                      std::string_view scope,
+                                      std::string_view name) {
+  return std::to_string(entity) + "|" + std::string(scope) + "|" + std::string(name);
+}
+
+const ScriptVariableOverride* FindVariableOverride(
+    const std::unordered_map<std::string, ScriptVariableOverride>& overrides,
+    vkpt::core::StableEntityId entity,
+    std::string_view scope,
+    std::string_view name) {
+  const auto it = overrides.find(ScriptVariableOverrideKey(entity, scope, name));
+  return it == overrides.end() ? nullptr : &it->second;
 }
 
 ScriptDiagnostic MakeDiagnostic(ScriptDiagnosticSeverity severity,
@@ -86,6 +135,38 @@ struct LuaHostContext {
   vkpt::core::StableEntityId next_entity_id = 1;
   std::unordered_set<vkpt::core::StableEntityId> reserved_entity_ids;
 };
+
+struct LuaMemoryBudget {
+  std::size_t used = 0;
+  std::size_t peak = 0;
+  std::size_t limit = 0;
+};
+
+void* LuaBudgetAllocator(void* ud, void* ptr, std::size_t osize, std::size_t nsize) {
+  auto* budget = static_cast<LuaMemoryBudget*>(ud);
+  if (nsize == 0) {
+    if (ptr != nullptr && budget != nullptr) {
+      budget->used -= std::min(budget->used, osize);
+    }
+    std::free(ptr);
+    return nullptr;
+  }
+  const auto current = budget == nullptr ? 0u : budget->used;
+  const auto next = current - std::min(current, osize) + nsize;
+  if (budget != nullptr && budget->limit != 0 && next > budget->limit) {
+    return nullptr;
+  }
+  void* out = std::realloc(ptr, nsize);
+  if (out != nullptr && budget != nullptr) {
+    budget->used = next;
+    budget->peak = std::max(budget->peak, budget->used);
+  }
+  return out;
+}
+
+void LuaInstructionBudgetHook(lua_State* lua, lua_Debug*) {
+  luaL_error(lua, "instruction budget exceeded");
+}
 
 LuaHostContext* Host(lua_State* lua) {
   return static_cast<LuaHostContext*>(lua_touserdata(lua, lua_upvalueindex(1)));
@@ -168,6 +249,54 @@ std::string LuaScalarValueText(lua_State* lua, int index) {
     return "nil";
   }
   return {};
+}
+
+void PushLuaOverrideValue(lua_State* lua, std::string_view text) {
+  const std::string trimmed = TrimCopy(text);
+  std::string lower = trimmed;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (lower == "true" || lower == "false") {
+    lua_pushboolean(lua, lower == "true" ? 1 : 0);
+    return;
+  }
+  if (lower == "nil" || lower == "null") {
+    lua_pushnil(lua);
+    return;
+  }
+  if (trimmed.find('\n') != std::string::npos) {
+    lua_newtable(lua);
+    std::size_t begin = 0u;
+    lua_Integer index = 1;
+    while (begin <= trimmed.size()) {
+      const auto end = trimmed.find('\n', begin);
+      const auto item = TrimCopy(trimmed.substr(begin, end == std::string::npos
+                                                         ? std::string_view::npos
+                                                         : end - begin));
+      if (!item.empty()) {
+        PushLuaOverrideValue(lua, item);
+        lua_seti(lua, -2, index++);
+      }
+      if (end == std::string::npos) {
+        break;
+      }
+      begin = end + 1u;
+    }
+    return;
+  }
+  char* parseEnd = nullptr;
+  const double parsed = std::strtod(trimmed.c_str(), &parseEnd);
+  if (parseEnd != trimmed.c_str() && parseEnd != nullptr && *parseEnd == '\0' &&
+      std::isfinite(parsed)) {
+    lua_pushnumber(lua, parsed);
+    return;
+  }
+  if (trimmed.size() >= 2u && trimmed.front() == '"' && trimmed.back() == '"') {
+    lua_pushlstring(lua, trimmed.data() + 1, trimmed.size() - 2u);
+    return;
+  }
+  lua_pushlstring(lua, trimmed.data(), trimmed.size());
 }
 
 bool LuaInspectableValue(lua_State* lua, int index) {
@@ -636,6 +765,28 @@ void PushStringList(lua_State* lua, const std::vector<std::string>& lines) {
   }
 }
 
+void PushScriptParams(lua_State* lua,
+                      const ScriptBinding& binding,
+                      const std::unordered_map<std::string, ScriptVariableOverride>& overrides) {
+  lua_newtable(lua);
+  for (const auto& [key, value] : binding.params) {
+    lua_pushstring(lua, value.c_str());
+    lua_setfield(lua, -2, key.c_str());
+  }
+  for (const auto& [_, overrideValue] : overrides) {
+    (void)_;
+    if (overrideValue.entity != binding.entity || overrideValue.name.empty()) {
+      continue;
+    }
+    const std::string key = LowerSnakeCopy(overrideValue.name);
+    if (key.empty()) {
+      continue;
+    }
+    lua_pushstring(lua, overrideValue.value.c_str());
+    lua_setfield(lua, -2, key.c_str());
+  }
+}
+
 void PushUiPanel(lua_State* lua, const vkpt::scene::UiPanelComponent& panel) {
   lua_newtable(lua);
   lua_pushstring(lua, panel.panel_id.c_str());
@@ -1021,6 +1172,109 @@ int LuaWorldDestroyEntity(lua_State* lua) {
   return 0;
 }
 
+int LuaWorldHasComponent(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr || host->world == nullptr) {
+    lua_pushboolean(lua, 0);
+    return 1;
+  }
+  vkpt::core::StableEntityId entity_id = 0;
+  if (lua_istable(lua, 2)) {
+    entity_id = LuaSelfEntity(lua, 2);
+  } else if (lua_isinteger(lua, 2) || lua_isnumber(lua, 2)) {
+    entity_id = static_cast<vkpt::core::StableEntityId>(lua_tointeger(lua, 2));
+  }
+  const auto* entity = host->world->get_entity(entity_id);
+  bool has = false;
+  if (entity != nullptr) {
+    std::string name;
+    if (lua_isstring(lua, 3)) {
+      name = lua_tostring(lua, 3);
+    } else if (lua_istable(lua, 2)) {
+      name = LuaStringField(lua, 2, "component");
+    }
+    has = (name == "transform" && entity->transform.has_value()) ||
+          (name == "camera" && entity->camera.has_value()) ||
+          (name == "light" && entity->light.has_value()) ||
+          (name == "physics" && entity->physics_body.has_value()) ||
+          (name == "script" && entity->script.has_value()) ||
+          (name == "ui_panel" && entity->ui_panel.has_value());
+  }
+  lua_pushboolean(lua, has ? 1 : 0);
+  return 1;
+}
+
+int LuaWorldReparentEntity(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr || host->commands == nullptr) {
+    return 0;
+  }
+  const auto child = lua_istable(lua, 2)
+                         ? LuaSelfEntity(lua, 2)
+                         : static_cast<vkpt::core::StableEntityId>(std::max<lua_Integer>(0, lua_tointeger(lua, 2)));
+  const auto parent = lua_istable(lua, 3)
+                          ? LuaSelfEntity(lua, 3)
+                          : static_cast<vkpt::core::StableEntityId>(std::max<lua_Integer>(0, lua_tointeger(lua, 3)));
+  const bool preserve = lua_isnoneornil(lua, 4) ? true : lua_toboolean(lua, 4) != 0;
+  if (child != 0) {
+    host->commands->add_reparent_entity(child, parent, preserve);
+  }
+  return 0;
+}
+
+int LuaWorldReorderEntity(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr || host->commands == nullptr) {
+    return 0;
+  }
+  const auto moved = static_cast<vkpt::core::StableEntityId>(std::max<lua_Integer>(0, lua_tointeger(lua, 2)));
+  const auto before = static_cast<vkpt::core::StableEntityId>(std::max<lua_Integer>(0, lua_tointeger(lua, 3)));
+  const auto after = static_cast<vkpt::core::StableEntityId>(std::max<lua_Integer>(0, lua_tointeger(lua, 4)));
+  if (moved != 0) {
+    host->commands->add_reorder_sibling(moved, before, after);
+  }
+  return 0;
+}
+
+int LuaWorldRemoveComponent(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr || host->commands == nullptr || !lua_isstring(lua, 3)) {
+    return 0;
+  }
+  const auto entity_id = lua_istable(lua, 2)
+                             ? LuaSelfEntity(lua, 2)
+                             : static_cast<vkpt::core::StableEntityId>(std::max<lua_Integer>(0, lua_tointeger(lua, 2)));
+  const std::string component = lua_tostring(lua, 3);
+  if (entity_id == 0) {
+    return 0;
+  }
+  if (component == "script") {
+    host->commands->add_remove_component(entity_id, vkpt::scene::ComponentKind::Script);
+  } else if (component == "ui_panel") {
+    host->commands->add_remove_component(entity_id, vkpt::scene::ComponentKind::UiPanel);
+  } else if (component == "light") {
+    host->commands->add_remove_component(entity_id, vkpt::scene::ComponentKind::Light);
+  } else if (component == "camera") {
+    host->commands->add_remove_component(entity_id, vkpt::scene::ComponentKind::Camera);
+  }
+  return 0;
+}
+
+int LuaWorldAssignMaterial(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr || host->commands == nullptr) {
+    return 0;
+  }
+  const auto entity_id = lua_istable(lua, 2)
+                             ? LuaSelfEntity(lua, 2)
+                             : static_cast<vkpt::core::StableEntityId>(std::max<lua_Integer>(0, lua_tointeger(lua, 2)));
+  const auto material_id = static_cast<vkpt::core::StableEntityId>(std::max<lua_Integer>(0, lua_tointeger(lua, 3)));
+  if (entity_id != 0 && material_id != 0) {
+    host->commands->add_assign_material(entity_id, material_id);
+  }
+  return 0;
+}
+
 int LuaWorldSpawnEntity(lua_State* lua) {
   auto* host = Host(lua);
   if (host == nullptr || host->commands == nullptr || !lua_istable(lua, 2)) {
@@ -1197,6 +1451,40 @@ void PushWorldTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "spawn_entity");
   PushHostClosure(lua, host, LuaWorldDestroyEntity);
   lua_setfield(lua, -2, "destroy_entity");
+  PushHostClosure(lua, host, LuaWorldHasComponent);
+  lua_setfield(lua, -2, "has_component");
+  PushHostClosure(lua, host, LuaWorldReparentEntity);
+  lua_setfield(lua, -2, "reparent_entity");
+  PushHostClosure(lua, host, LuaWorldReorderEntity);
+  lua_setfield(lua, -2, "reorder_entity");
+  PushHostClosure(lua, host, LuaWorldRemoveComponent);
+  lua_setfield(lua, -2, "remove_component");
+  PushHostClosure(lua, host, LuaWorldAssignMaterial);
+  lua_setfield(lua, -2, "assign_material");
+}
+
+std::string ResolvedRuntimeMode(const ScriptExecutionContext& context) {
+  if (!context.runtime.mode.empty()) {
+    return context.runtime.mode;
+  }
+  return context.game_mode ? "play" : "edit";
+}
+
+bool ResolvedRuntimeScriptsRunning(const ScriptExecutionContext& context) {
+  if (context.runtime.scripts_running) {
+    return true;
+  }
+  const auto mode = ResolvedRuntimeMode(context);
+  return context.game_mode || mode == "play" || mode == "live_edit";
+}
+
+void PushRuntimeTable(lua_State* lua, const ScriptExecutionContext& context) {
+  lua_newtable(lua);
+  const auto mode = ResolvedRuntimeMode(context);
+  lua_pushlstring(lua, mode.data(), mode.size());
+  lua_setfield(lua, -2, "mode");
+  lua_pushboolean(lua, ResolvedRuntimeScriptsRunning(context) ? 1 : 0);
+  lua_setfield(lua, -2, "scripts_running");
 }
 
 void PushInputTable(lua_State* lua, LuaHostContext& host) {
@@ -1206,6 +1494,8 @@ void PushInputTable(lua_State* lua, LuaHostContext& host) {
   PushHostClosure(lua, host, LuaInputMouseDelta);
   lua_setfield(lua, -2, "mouse_delta");
   const auto& input = host.context == nullptr ? ScriptExecutionContext::InputState{} : host.context->input;
+  lua_pushboolean(lua, input.enabled ? 1 : 0);
+  lua_setfield(lua, -2, "enabled");
   lua_pushnumber(lua, input.mouse_delta_x);
   lua_setfield(lua, -2, "mouse_delta_x");
   lua_pushnumber(lua, input.mouse_delta_y);
@@ -1214,6 +1504,20 @@ void PushInputTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "mouse_wheel_delta");
   lua_pushboolean(lua, input.viewport_focused ? 1 : 0);
   lua_setfield(lua, -2, "viewport_focused");
+}
+
+void PushEditorTable(lua_State* lua, const ScriptExecutionContext& context) {
+  lua_newtable(lua);
+  lua_pushboolean(lua, context.editor.canvas_enabled ? 1 : 0);
+  lua_setfield(lua, -2, "canvas_enabled");
+  lua_pushboolean(lua, context.editor.is_editing ? 1 : 0);
+  lua_setfield(lua, -2, "is_editing");
+  lua_pushinteger(lua, static_cast<lua_Integer>(context.editor.edited_entity_id));
+  lua_setfield(lua, -2, "edited_entity_id");
+  lua_pushlstring(lua,
+                  context.editor.edited_component.data(),
+                  context.editor.edited_component.size());
+  lua_setfield(lua, -2, "edited_component");
 }
 
 int LuaAudioPostEvent(lua_State* lua) {
@@ -1314,9 +1618,13 @@ void PushAudioTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "stop");
 }
 
-void PushContextTable(lua_State* lua, LuaHostContext& host) {
+void PushContextTable(lua_State* lua,
+                      LuaHostContext& host,
+                      const std::unordered_map<std::string, ScriptVariableOverride>& overrides) {
   lua_newtable(lua);
   const auto& context = *host.context;
+  lua_pushinteger(lua, static_cast<lua_Integer>(host.binding == nullptr ? 0u : host.binding->entity));
+  lua_setfield(lua, -2, "entity_id");
   lua_pushinteger(lua, static_cast<lua_Integer>(context.frame));
   lua_setfield(lua, -2, "frame");
   lua_pushnumber(lua, context.elapsed_seconds);
@@ -1329,10 +1637,20 @@ void PushContextTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "fixed_delta_seconds");
   lua_pushboolean(lua, context.deterministic ? 1 : 0);
   lua_setfield(lua, -2, "deterministic");
+  PushRuntimeTable(lua, context);
+  lua_setfield(lua, -2, "runtime");
+  if (host.binding != nullptr) {
+    PushScriptParams(lua, *host.binding, overrides);
+  } else {
+    lua_newtable(lua);
+  }
+  lua_setfield(lua, -2, "params");
   PushWorldTable(lua, host);
   lua_setfield(lua, -2, "world");
   PushInputTable(lua, host);
   lua_setfield(lua, -2, "input");
+  PushEditorTable(lua, context);
+  lua_setfield(lua, -2, "editor");
   PushAudioTable(lua, host);
   lua_setfield(lua, -2, "audio");
 }
@@ -1353,8 +1671,12 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
                     std::vector<ScriptDiagnostic>& dispatch_diagnostics,
                     std::vector<ScriptDiagnostic>& runtime_diagnostics,
                     std::vector<ScriptVariableSnapshot>& variable_snapshots,
-                    std::unordered_map<std::string, std::string>& bytecode_cache) {
-  auto lua = luaL_newstate();
+                    ScriptBindingRuntimeState& runtime_state,
+                    std::unordered_map<std::string, std::string>& bytecode_cache,
+                    const std::unordered_map<std::string, ScriptVariableOverride>& variable_overrides) {
+  LuaMemoryBudget memory_budget;
+  memory_budget.limit = context.memory_budget_bytes;
+  auto lua = lua_newstate(LuaBudgetAllocator, &memory_budget);
   if (lua == nullptr) {
     LuaHostContext host;
     host.world = &world;
@@ -1377,8 +1699,22 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
   host.dispatch_diagnostics = &dispatch_diagnostics;
   host.runtime_diagnostics = &runtime_diagnostics;
   host.next_entity_id = NextEntityId(world);
+  runtime_state.entity = binding.entity;
+  runtime_state.source = binding.source;
+  runtime_state.last_hook = hook;
+  runtime_state.last_frame = context.frame;
+  runtime_state.command_count = commands.commands().size();
+  runtime_state.last_error.clear();
+  runtime_state.skip_reason.clear();
+  const auto hook_start = std::chrono::steady_clock::now();
 
   OpenSafeLuaLibraries(lua);
+  if (context.instruction_budget > 0) {
+    lua_sethook(lua,
+                LuaInstructionBudgetHook,
+                LUA_MASKCOUNT,
+                static_cast<int>(std::min<std::size_t>(context.instruction_budget, 1000000u)));
+  }
   const auto script_path = ResolveScriptPath(binding.source);
   const auto chunk_name = "@" + script_path.generic_string();
   const auto cache_key = script_path.generic_string();
@@ -1398,12 +1734,14 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
       AddLuaDiagnostic(host,
                        ScriptDiagnosticSeverity::Error,
                        "script source could not be read: " + script_path.generic_string());
+      runtime_state.last_error = "script source could not be read";
       lua_close(lua);
       return false;
     }
 
     if (luaL_loadbufferx(lua, script_text->data(), script_text->size(), chunk_name.c_str(), "t") != LUA_OK) {
-      AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "script compile failed: " + LuaErrorText(lua));
+      runtime_state.last_error = "script compile failed: " + LuaErrorText(lua);
+      AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
       lua_close(lua);
       return false;
     }
@@ -1413,14 +1751,27 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
     }
   }
   if (lua_pcall(lua, 0, 1, 0) != LUA_OK) {
-    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "script load failed: " + LuaErrorText(lua));
+    runtime_state.last_error = "script load failed: " + LuaErrorText(lua);
+    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
     lua_close(lua);
     return false;
   }
   if (!lua_istable(lua, -1)) {
-    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "script must return a table");
+    runtime_state.last_error = "script must return a table";
+    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
     lua_close(lua);
     return false;
+  }
+
+  const int script_table = lua_absindex(lua, -1);
+  for (const auto& [_, overrideValue] : variable_overrides) {
+    (void)_;
+    if (overrideValue.entity != binding.entity || overrideValue.scope != "script" ||
+        overrideValue.name.empty()) {
+      continue;
+    }
+    PushLuaOverrideValue(lua, overrideValue.value);
+    lua_setfield(lua, script_table, overrideValue.name.c_str());
   }
 
   lua_getfield(lua, -1, std::string(to_string(hook)).c_str());
@@ -1430,24 +1781,52 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
     return false;
   }
   if (!lua_isfunction(lua, -1)) {
-    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "script hook is not a function");
+    runtime_state.last_error = "script hook is not a function";
+    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
     lua_close(lua);
     return false;
+  }
+  const int hook_function = lua_absindex(lua, -1);
+  for (int i = 1;; ++i) {
+    const char* name = lua_getupvalue(lua, hook_function, i);
+    if (name == nullptr) {
+      break;
+    }
+    const bool hasOverride = std::string_view{name} != "_ENV" &&
+        FindVariableOverride(variable_overrides, binding.entity, "upvalue", name) != nullptr;
+    lua_pop(lua, 1);
+    if (!hasOverride) {
+      continue;
+    }
+    const auto* overrideValue = FindVariableOverride(variable_overrides, binding.entity, "upvalue", name);
+    PushLuaOverrideValue(lua, overrideValue->value);
+    (void)lua_setupvalue(lua, hook_function, i);
   }
   lua_pushvalue(lua, -1);
   const int hook_function_ref = luaL_ref(lua, LUA_REGISTRYINDEX);
   PushEntityObject(lua, host, binding.entity);
-  PushContextTable(lua, host);
+  PushContextTable(lua, host, variable_overrides);
   if (lua_pcall(lua, 2, 0, 0) != LUA_OK) {
-    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, "script hook failed: " + LuaErrorText(lua));
+    runtime_state.last_error = "script hook failed: " + LuaErrorText(lua);
+    if (runtime_state.last_error.find("instruction budget exceeded") != std::string::npos) {
+      runtime_state.disabled_until_reload = true;
+    }
+    AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
     luaL_unref(lua, LUA_REGISTRYINDEX, hook_function_ref);
+    runtime_state.memory_estimate_bytes = memory_budget.peak;
     lua_close(lua);
     return false;
   }
+  lua_sethook(lua, nullptr, 0, 0);
   lua_rawgeti(lua, LUA_REGISTRYINDEX, hook_function_ref);
   CaptureLuaScriptVariables(lua, -2, -1, binding, hook, context, variable_snapshots);
   lua_pop(lua, 1);
   luaL_unref(lua, LUA_REGISTRYINDEX, hook_function_ref);
+  const auto hook_end = std::chrono::steady_clock::now();
+  runtime_state.hook_duration_ns = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(hook_end - hook_start).count());
+  runtime_state.command_count = commands.commands().size() - runtime_state.command_count;
+  runtime_state.memory_estimate_bytes = memory_budget.peak;
   vkpt::log::Logger::instance().log(
       vkpt::log::Severity::Debug,
       "scripts",
@@ -1465,6 +1844,19 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
 
 #endif  // PT_ENABLE_LUA
 
+std::string BindingSignature(const std::vector<ScriptBinding>& bindings) {
+  std::ostringstream out;
+  for (const auto& binding : bindings) {
+    out << binding.entity << "|" << binding.source << "|" << binding.language << "|" << binding.entry << "|"
+        << binding.module_id << "|" << (binding.enabled ? "1" : "0") << "|"
+        << (binding.reload_on_save ? "1" : "0") << ";";
+    for (const auto& [key, value] : binding.params) {
+      out << key << "=" << value << ";";
+    }
+  }
+  return out.str();
+}
+
 }  // namespace
 
 ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWorld& world,
@@ -1472,10 +1864,11 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
                                                       const ScriptExecutionContext& context,
                                                       vkpt::scene::WorldCommandBuffer& commands) {
   const auto current_bindings = BuildScriptBindings(world);
-  if (current_bindings.size() != m_bindings.size()) {
+  if (BindingSignature(current_bindings) != BindingSignature(m_bindings)) {
     // Entity/script topology changes invalidate stable dispatch order and compiled bytecode assumptions.
     m_bindings = current_bindings;
     m_lua_bytecode_cache.clear();
+    m_disabled_until_reload.clear();
   }
 
   ScriptDispatchSummary summary;
@@ -1486,31 +1879,54 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
   summary.lua_compiled_in = lua_compiled_in();
   summary.execution_available = execution_available();
   summary.scripts_disabled = !context.scripts_enabled;
-  summary.game_mode_blocked = !context.game_mode;
+  summary.game_mode_blocked = !ResolvedRuntimeScriptsRunning(context);
   summary.benchmark_blocked = context.benchmark_mode && !context.allow_benchmark_scripts;
   m_variable_snapshots.clear();
+  m_runtime_states.clear();
 
   for (const auto& binding : m_bindings) {
+    ScriptBindingRuntimeState runtime_state;
+    runtime_state.entity = binding.entity;
+    runtime_state.source = binding.source;
+    runtime_state.last_hook = hook;
+    runtime_state.last_frame = context.frame;
+    const auto disabled_key = std::to_string(binding.entity) + ":" + binding.source;
     if (!binding.enabled || !IsSupportedLanguage(binding.language)) {
+      runtime_state.skip_reason = !binding.enabled ? "disabled" : "unsupported language";
       ++summary.skipped_count;
+      m_runtime_states.push_back(std::move(runtime_state));
       continue;
     }
 
     ++summary.runnable_count;
 
     if (summary.scripts_disabled) {
+      runtime_state.skip_reason = "scripts disabled";
       ++summary.skipped_count;
+      m_runtime_states.push_back(std::move(runtime_state));
       continue;
     }
     if (summary.game_mode_blocked) {
+      runtime_state.skip_reason = "game mode required";
       ++summary.skipped_count;
+      m_runtime_states.push_back(std::move(runtime_state));
       continue;
     }
     if (summary.benchmark_blocked) {
+      runtime_state.skip_reason = "benchmark blocked";
       ++summary.skipped_count;
+      m_runtime_states.push_back(std::move(runtime_state));
+      continue;
+    }
+    if (m_disabled_until_reload.contains(disabled_key)) {
+      runtime_state.skip_reason = "disabled until reload";
+      runtime_state.disabled_until_reload = true;
+      ++summary.skipped_count;
+      m_runtime_states.push_back(std::move(runtime_state));
       continue;
     }
     if (!summary.execution_available) {
+      runtime_state.skip_reason = "Lua execution unavailable";
       ++summary.skipped_count;
       auto diagnostic = MakeDiagnostic(ScriptDiagnosticSeverity::Warning,
                                        hook,
@@ -1520,6 +1936,7 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
       LogDiagnostic(diagnostic);
       summary.diagnostics.push_back(diagnostic);
       m_diagnostics.push_back(std::move(diagnostic));
+      m_runtime_states.push_back(std::move(runtime_state));
       continue;
     }
 
@@ -1532,11 +1949,18 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
                        summary.diagnostics,
                        m_diagnostics,
                        m_variable_snapshots,
-                       m_lua_bytecode_cache)) {
+                       runtime_state,
+                       m_lua_bytecode_cache,
+                       m_variable_overrides)) {
       ++summary.hook_call_count;
     }
+    if (runtime_state.disabled_until_reload) {
+      m_disabled_until_reload.insert(disabled_key);
+    }
+    m_runtime_states.push_back(std::move(runtime_state));
 #else
     ++summary.hook_call_count;
+    m_runtime_states.push_back(std::move(runtime_state));
 #endif
   }
 

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -293,6 +294,7 @@ struct RuntimeVoice {
   float pan = 0.0f;
   float gain = 1.0f;
   float priority = 0.5f;
+  double cursor_frame = 0.0;
 
 #if defined(PT_ENABLE_MINIAUDIO)
   ma_sound sound{};
@@ -305,6 +307,7 @@ struct RuntimeVoice {
   RuntimeVoice& operator=(const RuntimeVoice&) = delete;
   ~RuntimeVoice() {
     if (sound_initialized) {
+      ma_sound_stop(&sound);
       ma_sound_uninit(&sound);
     }
     if (buffer_initialized) {
@@ -339,18 +342,29 @@ class EngineAudioSystem final : public IAudioSystem {
 
 #if defined(PT_ENABLE_MINIAUDIO)
     if (m_diag.backend_name == "miniaudio") {
-      ma_engine_config engineConfig = ma_engine_config_init();
-      engineConfig.channels = m_config.channels;
-      engineConfig.sampleRate = m_config.sample_rate;
-      engineConfig.listenerCount = 1;
-      engineConfig.periodSizeInFrames = m_config.buffer_frames;
-      const ma_result result = ma_engine_init(&engineConfig, &m_engine);
+      ma_device_config deviceConfig = ma_device_config_init(ma_device_type_playback);
+      deviceConfig.playback.format = ma_format_f32;
+      deviceConfig.playback.channels = m_config.channels;
+      deviceConfig.sampleRate = m_config.sample_rate;
+      deviceConfig.periodSizeInFrames = m_config.buffer_frames;
+      deviceConfig.dataCallback = &EngineAudioSystem::miniaudio_data_callback;
+      deviceConfig.pUserData = this;
+      const ma_result result = ma_device_init(nullptr, &deviceConfig, &m_device);
       if (result == MA_SUCCESS) {
-        m_engineInitialized = true;
-        m_diag.device_name = "miniaudio default device";
-        ma_engine_set_volume(&m_engine, m_config.muted ? 0.0f : 1.0f);
+        const ma_result startResult = ma_device_start(&m_device);
+        if (startResult == MA_SUCCESS) {
+          m_deviceInitialized = true;
+          m_hardwarePlaybackEnabled = true;
+          m_diag.device_name = "miniaudio playback device";
+        } else {
+          ma_device_uninit(&m_device);
+          m_diag.last_error = "ma_device_start failed: " + std::to_string(static_cast<int>(startResult));
+          vkpt::log::Logger::instance().log(vkpt::log::Severity::Warning, "audio", m_diag.last_error);
+          m_diag.backend_name = "noop";
+          m_diag.device_name = "no output device";
+        }
       } else {
-        m_diag.last_error = "ma_engine_init failed: " + std::to_string(static_cast<int>(result));
+        m_diag.last_error = "ma_device_init failed: " + std::to_string(static_cast<int>(result));
         vkpt::log::Logger::instance().log(vkpt::log::Severity::Warning, "audio", m_diag.last_error);
         m_diag.backend_name = "noop";
         m_diag.device_name = "no output device";
@@ -377,32 +391,39 @@ class EngineAudioSystem final : public IAudioSystem {
   }
 
   void shutdown() override {
-    std::lock_guard lock(m_mutex);
-    if (!m_initialized) {
-      return;
-    }
-    m_voices.clear();
-    append_history_locked("shutdown");
+    bool hadDevice = false;
+    {
+      std::lock_guard lock(m_mutex);
+      if (!m_initialized) {
+        return;
+      }
+      clear_runtime_voices_locked();
+      append_history_locked("shutdown");
 #if defined(PT_ENABLE_MINIAUDIO)
-    if (m_engineInitialized) {
-      ma_engine_uninit(&m_engine);
-      m_engineInitialized = false;
+      hadDevice = m_deviceInitialized;
+      m_deviceInitialized = false;
+      m_hardwarePlaybackEnabled = false;
+#endif
+      m_initialized = false;
+      m_diag.initialized = false;
+      m_diag.active_voices = 0u;
+      m_diag.state = "shutdown";
+    }
+#if defined(PT_ENABLE_MINIAUDIO)
+    if (hadDevice) {
+      ma_device_uninit(&m_device);
     }
 #endif
-    m_initialized = false;
-    m_diag.initialized = false;
-    m_diag.active_voices = 0u;
-    m_diag.state = "shutdown";
     vkpt::log::Logger::instance().log(vkpt::log::Severity::Info, "audio", "audio system shutdown");
   }
 
   bool load_scene_audio(const vkpt::scene::SceneDocument& document,
                         std::string_view scene_path) override {
     std::lock_guard lock(m_mutex);
+    clear_runtime_voices_locked();
     m_clips.clear();
     m_clipByUri.clear();
     m_events.clear();
-    m_voices.clear();
     m_eventHistory.clear();
     initialize_buses_locked();
     m_nextVoiceGeneration = 1u;
@@ -442,6 +463,10 @@ class EngineAudioSystem final : public IAudioSystem {
       } else {
         event.bus = "sfx";
       }
+      vkpt::log::Logger::instance().log(vkpt::log::Severity::Debug,
+                                         "audio",
+                                         "loading scene audio asset",
+                                         {{"uri", asset.uri}, {"event", event.name}});
       event.priority = default_priority_for_bus(event.bus);
       if (eventAsset || streamAsset || !asset.name.empty()) {
         auto& stored = m_events[event.name];
@@ -458,6 +483,11 @@ class EngineAudioSystem final : public IAudioSystem {
     for (const auto& entity : document.entities) {
       if (entity.has_audio_emitter && entity.audio_emitter.enabled &&
           entity.audio_emitter.autoplay && !entity.audio_emitter.event.empty()) {
+        vkpt::log::Logger::instance().log(
+            vkpt::log::Severity::Debug,
+            "audio",
+            "starting autoplay audio emitter",
+            {{"event", entity.audio_emitter.event}, {"entity", std::to_string(entity.id)}});
         AudioPostEventDesc desc;
         desc.event_name = entity.audio_emitter.event;
         desc.entity = entity.id;
@@ -512,6 +542,12 @@ class EngineAudioSystem final : public IAudioSystem {
       }
     }
     m_diag.active_voices = active_voice_count_locked();
+  }
+
+  void stop_all() override {
+    std::lock_guard lock(m_mutex);
+    clear_runtime_voices_locked();
+    append_history_locked("stop_all");
   }
 
   void set_listener(const AudioListenerState& listener) override {
@@ -633,6 +669,38 @@ class EngineAudioSystem final : public IAudioSystem {
         clip.file_path = resolved.generic_string();
         clip.sample_rate = m_config.sample_rate;
         clip.channels = m_config.channels;
+#if defined(PT_ENABLE_MINIAUDIO)
+        vkpt::log::Logger::instance().log(vkpt::log::Severity::Debug,
+                                           "audio",
+                                           "decoding audio file",
+                                           {{"uri", std::string(uri)},
+                                            {"path", clip.file_path}});
+        ma_decoder_config decoderConfig =
+            ma_decoder_config_init(ma_format_f32, m_config.channels, m_config.sample_rate);
+        ma_uint64 frameCount = 0;
+        void* pcmFrames = nullptr;
+        const ma_result decodeResult =
+            ma_decode_file(clip.file_path.c_str(), &decoderConfig, &frameCount, &pcmFrames);
+        if (decodeResult == MA_SUCCESS && pcmFrames != nullptr && frameCount > 0) {
+          const auto sampleCount =
+              static_cast<std::size_t>(frameCount) * static_cast<std::size_t>(clip.channels);
+          const auto* samples = static_cast<const float*>(pcmFrames);
+          clip.samples.assign(samples, samples + sampleCount);
+          ma_free(pcmFrames, nullptr);
+        } else {
+          if (pcmFrames != nullptr) {
+            ma_free(pcmFrames, nullptr);
+          }
+          m_diag.last_error = "audio decode failed, using generated placeholder: " +
+                              resolved.generic_string() + " result=" +
+                              std::to_string(static_cast<int>(decodeResult));
+          vkpt::log::Logger::instance().log(vkpt::log::Severity::Warning, "audio", m_diag.last_error);
+          clip = GenerateToneClip("tone:decode_failed", m_config.sample_rate);
+          clip.uri = std::string(uri);
+          clip.name = EventNameFromUri(uri);
+          clip.file_path = resolved.generic_string();
+        }
+#endif
       }
     }
 
@@ -707,6 +775,7 @@ class EngineAudioSystem final : public IAudioSystem {
         }
         if (*victim) {
           (*victim)->stolen = true;
+          stop_voice_locked(**victim);
           ++m_diag.stolen_voices;
         }
         m_voices.erase(victim);
@@ -727,8 +796,7 @@ class EngineAudioSystem final : public IAudioSystem {
 
     const auto position = desc.has_position ? desc.position : vkpt::scene::Vec3{};
     const auto spatial = CalculateSpatialMix(m_listener, position, event.min_distance, event.max_distance);
-    const float busGain = bus.muted ? 0.0f : bus.volume * BusDefaultGain(busName);
-    const float volume = std::max(0.0f, desc.volume * event.volume * busGain * (voice->spatial ? spatial.gain : 1.0f));
+    const float volume = std::max(0.0f, desc.volume * event.volume * (voice->spatial ? spatial.gain : 1.0f));
     const float pitch = std::clamp(desc.pitch * event.pitch, 0.25f, 4.0f);
     voice->volume = volume;
     voice->pitch = pitch;
@@ -741,6 +809,23 @@ class EngineAudioSystem final : public IAudioSystem {
       m_diag.active_voices = active_voice_count_locked();
       return handle;
     }
+
+#if defined(PT_ENABLE_MINIAUDIO)
+    m_voices.push_back(std::move(voice));
+    m_diag.active_voices = active_voice_count_locked();
+    vkpt::log::Logger::instance().log(
+        vkpt::log::Severity::Debug,
+        "audio",
+        "audio event queued",
+        {{"event", event.name},
+         {"entity", std::to_string(desc.entity)},
+         {"clip", clipIt->second.uri},
+         {"bus", busName},
+         {"spatial", m_voices.back()->spatial ? "true" : "false"},
+         {"loop", m_voices.back()->loop ? "true" : "false"},
+         {"hardware", m_hardwarePlaybackEnabled ? "true" : "false"}});
+    return handle;
+#endif
 
     if (!start_voice_locked(*voice, clipIt->second, volume, pitch, event.min_distance, event.max_distance, position)) {
       ++m_diag.failed_play_requests;
@@ -769,16 +854,97 @@ class EngineAudioSystem final : public IAudioSystem {
   }
 
   void set_listener_locked(const AudioListenerState& listener) {
-#if defined(PT_ENABLE_MINIAUDIO)
-    if (m_engineInitialized) {
-      ma_engine_listener_set_position(&m_engine, 0, listener.position.x, listener.position.y, listener.position.z);
-      ma_engine_listener_set_direction(&m_engine, 0, listener.forward.x, listener.forward.y, listener.forward.z);
-      ma_engine_listener_set_world_up(&m_engine, 0, listener.up.x, listener.up.y, listener.up.z);
-    }
-#else
     (void)listener;
-#endif
   }
+
+#if defined(PT_ENABLE_MINIAUDIO)
+  static void miniaudio_data_callback(ma_device* device,
+                                      void* output,
+                                      const void* input,
+                                      ma_uint32 frameCount) {
+    (void)input;
+    if (output == nullptr || device == nullptr) {
+      return;
+    }
+
+    const auto outputChannels = std::max<ma_uint32>(1u, device->playback.channels);
+    auto* out = static_cast<float*>(output);
+    std::memset(out, 0, static_cast<std::size_t>(frameCount) *
+                           static_cast<std::size_t>(outputChannels) *
+                           sizeof(float));
+
+    auto* self = static_cast<EngineAudioSystem*>(device->pUserData);
+    if (self != nullptr) {
+      self->mix_device_output(out, frameCount, outputChannels);
+    }
+  }
+
+  void mix_device_output(float* out, ma_uint32 frameCount, ma_uint32 outputChannels) {
+    std::lock_guard lock(m_mutex);
+    if (!m_hardwarePlaybackEnabled || m_config.muted || out == nullptr || frameCount == 0u) {
+      return;
+    }
+
+    for (auto& voice : m_voices) {
+      if (!voice || !voice->playing) {
+        continue;
+      }
+      const auto clipIt = m_clips.find(voice->clip);
+      if (clipIt == m_clips.end()) {
+        voice->playing = false;
+        continue;
+      }
+
+      const auto& clip = clipIt->second;
+      const auto clipFrames = clip.frame_count();
+      if (clip.samples.empty() || clip.channels == 0u || clipFrames == 0u) {
+        voice->playing = false;
+        continue;
+      }
+
+      const double pitchStep = std::max(0.01, static_cast<double>(voice->pitch));
+      const auto busIt = m_buses.find(voice->bus);
+      const float busGain = busIt == m_buses.end()
+          ? BusDefaultGain(voice->bus)
+          : (busIt->second.muted ? 0.0f : busIt->second.volume * BusDefaultGain(busIt->second.name));
+      for (ma_uint32 frame = 0; frame < frameCount; ++frame) {
+        if (voice->cursor_frame >= static_cast<double>(clipFrames)) {
+          if (voice->loop) {
+            voice->cursor_frame = std::fmod(voice->cursor_frame, static_cast<double>(clipFrames));
+          } else {
+            voice->playing = false;
+            break;
+          }
+        }
+
+        const auto sourceFrame = static_cast<std::size_t>(voice->cursor_frame);
+        const auto sourceBase = sourceFrame * static_cast<std::size_t>(clip.channels);
+        const auto destBase = static_cast<std::size_t>(frame) * static_cast<std::size_t>(outputChannels);
+        for (ma_uint32 channel = 0; channel < outputChannels; ++channel) {
+          const auto sourceChannel =
+              std::min<std::size_t>(channel, static_cast<std::size_t>(clip.channels - 1u));
+          float channelGain = voice->volume * busGain;
+          if (outputChannels >= 2u) {
+            if (channel == 0u && voice->pan > 0.0f) {
+              channelGain *= 1.0f - std::clamp(voice->pan, 0.0f, 1.0f);
+            } else if (channel == 1u && voice->pan < 0.0f) {
+              channelGain *= 1.0f + std::clamp(voice->pan, -1.0f, 0.0f);
+            }
+          }
+          out[destBase + channel] += clip.samples[sourceBase + sourceChannel] * channelGain;
+        }
+        voice->cursor_frame += pitchStep;
+      }
+    }
+
+    const auto sampleCount = static_cast<std::size_t>(frameCount) *
+                             static_cast<std::size_t>(outputChannels);
+    for (std::size_t i = 0; i < sampleCount; ++i) {
+      out[i] = std::clamp(out[i], -1.0f, 1.0f);
+    }
+    ++m_diag.mixed_buffers;
+  }
+#endif
 
   bool start_voice_locked(RuntimeVoice& voice,
                           const ClipDef& clip,
@@ -788,65 +954,15 @@ class EngineAudioSystem final : public IAudioSystem {
                           float maxDistance,
                           const vkpt::scene::Vec3& position) {
 #if defined(PT_ENABLE_MINIAUDIO)
-    if (!m_engineInitialized) {
-      m_diag.last_error = "miniaudio engine is not initialized";
-      return false;
-    }
-
-    ma_uint32 flags = MA_SOUND_FLAG_DECODE;
-    if (!voice.spatial) {
-      flags |= MA_SOUND_FLAG_NO_SPATIALIZATION;
-    }
-
-    ma_result result = MA_SUCCESS;
-    if (clip.generated) {
-      if (clip.samples.empty() || clip.channels == 0) {
-        m_diag.last_error = "generated audio clip has no samples: " + clip.uri;
-        return false;
-      }
-      ma_audio_buffer_config bufferConfig = ma_audio_buffer_config_init(
-          ma_format_f32,
-          clip.channels,
-          static_cast<ma_uint64>(clip.frame_count()),
-          const_cast<float*>(clip.samples.data()),
-          nullptr);
-      result = ma_audio_buffer_init(&bufferConfig, &voice.buffer);
-      if (result != MA_SUCCESS) {
-        m_diag.last_error = "ma_audio_buffer_init failed: " + std::to_string(static_cast<int>(result));
-        return false;
-      }
-      voice.buffer_initialized = true;
-      result = ma_sound_init_from_data_source(&m_engine, &voice.buffer, flags, nullptr, &voice.sound);
-    } else {
-      result = ma_sound_init_from_file(&m_engine, clip.file_path.c_str(), flags, nullptr, nullptr, &voice.sound);
-    }
-
-    if (result != MA_SUCCESS) {
-      m_diag.last_error = "ma_sound init failed for " + clip.uri + ": " +
-                          std::to_string(static_cast<int>(result));
-      vkpt::log::Logger::instance().log(vkpt::log::Severity::Warning, "audio", m_diag.last_error);
-      return false;
-    }
-    voice.sound_initialized = true;
-    ma_sound_set_volume(&voice.sound, volume);
-    ma_sound_set_pitch(&voice.sound, pitch);
-    ma_sound_set_looping(&voice.sound, voice.loop ? MA_TRUE : MA_FALSE);
-    if (voice.spatial) {
-      ma_sound_set_spatialization_enabled(&voice.sound, MA_TRUE);
-      ma_sound_set_position(&voice.sound, position.x, position.y, position.z);
-      ma_sound_set_min_distance(&voice.sound, std::max(0.001f, minDistance));
-      ma_sound_set_max_distance(&voice.sound, std::max(minDistance + 0.001f, maxDistance));
-      ma_sound_set_attenuation_model(&voice.sound, ma_attenuation_model_linear);
-    } else {
-      ma_sound_set_spatialization_enabled(&voice.sound, MA_FALSE);
-    }
-
-    result = ma_sound_start(&voice.sound);
-    if (result != MA_SUCCESS) {
-      m_diag.last_error = "ma_sound_start failed: " + std::to_string(static_cast<int>(result));
-      return false;
-    }
-    return true;
+    (void)voice;
+    (void)clip;
+    (void)volume;
+    (void)pitch;
+    (void)minDistance;
+    (void)maxDistance;
+    (void)position;
+    m_diag.last_error = "legacy ma_sound playback path is disabled";
+    return false;
 #else
     (void)voice;
     (void)clip;
@@ -905,6 +1021,16 @@ class EngineAudioSystem final : public IAudioSystem {
 #endif
   }
 
+  void clear_runtime_voices_locked() {
+    for (auto& voice : m_voices) {
+      if (voice) {
+        stop_voice_locked(*voice);
+      }
+    }
+    m_voices.clear();
+    m_diag.active_voices = 0u;
+  }
+
   bool voice_finished_locked(const RuntimeVoice& voice) const {
     if (!voice.playing) {
       return true;
@@ -931,8 +1057,9 @@ class EngineAudioSystem final : public IAudioSystem {
   std::uint32_t m_nextVoiceGeneration = 1u;
   AudioDiagnostics m_diag;
 #if defined(PT_ENABLE_MINIAUDIO)
-  ma_engine m_engine{};
-  bool m_engineInitialized = false;
+  ma_device m_device{};
+  bool m_deviceInitialized = false;
+  bool m_hardwarePlaybackEnabled = false;
 #endif
 };
 

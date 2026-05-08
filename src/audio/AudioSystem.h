@@ -142,6 +142,7 @@ class IAudioSystem : public IAudioDiagnostics {
                                 std::string_view scene_path) = 0;
   virtual AudioVoiceHandle post_event(const AudioPostEventDesc& desc) = 0;
   virtual void stop(AudioVoiceHandle handle) = 0;
+  virtual void stop_all() = 0;
   virtual void set_listener(const AudioListenerState& listener) = 0;
   virtual void set_bus_volume(std::string_view bus, float volume) = 0;
   virtual void set_bus_muted(std::string_view bus, bool muted) = 0;
