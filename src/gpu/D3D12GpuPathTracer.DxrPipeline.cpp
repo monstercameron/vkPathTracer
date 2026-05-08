@@ -88,7 +88,7 @@ bool D3D12GpuPathTracer::compile_dxil(const std::string& path, std::vector<uint8
 
   // Runtime defines keep the DXR shader feature set aligned with benchmark
   // toggles without requiring multiple checked-in DXIL variants.
-  const bool dxrShadowRays = ParseEnvBool("PT_D3D12_DXR_SHADOW_RAYS", false);
+  const bool dxrShadowRays = ParseEnvBool("PT_D3D12_DXR_SHADOW_RAYS", true);
   const wchar_t* shadowRayDefine =
       dxrShadowRays ? L"-DPT_D3D12_DXR_SHADOW_RAYS=1" : L"-DPT_D3D12_DXR_SHADOW_RAYS=0";
   LPCWSTR args[] = { L"-T", L"lib_6_3", L"-HV", L"2021", L"-O3", shadowRayDefine };
@@ -186,7 +186,7 @@ bool D3D12GpuPathTracer::create_dxr_pipeline() {
   // The raygen shader owns the path loop, so TraceRay recursion depth stays at
   // one unless hardware shadow rays are compiled in. In that mode the closest-hit
   // shader traces a secondary visibility ray, which requires one nested level.
-  const bool dxrShadowRays = ParseEnvBool("PT_D3D12_DXR_SHADOW_RAYS", false);
+  const bool dxrShadowRays = ParseEnvBool("PT_D3D12_DXR_SHADOW_RAYS", true);
 
   // Compile DXIL library
   std::vector<uint8_t> dxil;
