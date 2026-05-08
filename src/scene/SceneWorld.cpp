@@ -7,6 +7,7 @@
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -16,7 +17,92 @@ namespace vkpt::scene {
 
 using namespace detail;
 
+namespace {
+
+vkpt::core::Status SceneOk(std::string message = {}) {
+  return vkpt::core::Status::ok(std::move(message));
+}
+
+vkpt::core::Status SceneError(vkpt::core::StatusCode code, std::string message) {
+  return vkpt::core::Status::error(code, std::move(message));
+}
+
+vkpt::core::Status MissingEntityStatus(std::string_view operation,
+                                       vkpt::core::StableId id) {
+  VKP_LOG(Warn,
+          "scene",
+          "operation_failed",
+          "operation",
+          operation,
+          "reason",
+          "missing_entity",
+          "entity",
+          id,
+          "flow_id",
+          id);
+  return SceneError(vkpt::core::StatusCode::InvalidArgument,
+                    std::string(operation) + " rejected: entity " +
+                        std::to_string(id) + " does not exist");
+}
+
+std::string_view ComponentKindName(ComponentKind kind) {
+  switch (kind) {
+    case ComponentKind::Identity:
+      return "Identity";
+    case ComponentKind::Transform:
+      return "Transform";
+    case ComponentKind::Hierarchy:
+      return "Hierarchy";
+    case ComponentKind::Camera:
+      return "Camera";
+    case ComponentKind::Light:
+      return "Light";
+    case ComponentKind::MeshRenderer:
+      return "MeshRenderer";
+    case ComponentKind::SdfPrimitive:
+      return "SDFPrimitive";
+    case ComponentKind::MaterialOverride:
+      return "MaterialOverride";
+    case ComponentKind::PhysicsBody:
+      return "PhysicsBody";
+    case ComponentKind::Script:
+      return "Script";
+    case ComponentKind::AudioListener:
+      return "AudioListener";
+    case ComponentKind::AudioEmitter:
+      return "AudioEmitter";
+    case ComponentKind::UiPanel:
+      return "UiPanel";
+    case ComponentKind::BenchmarkTag:
+      return "BenchmarkTag";
+    case ComponentKind::Count:
+      break;
+  }
+  return "Unknown";
+}
+
+vkpt::core::Status ComponentMismatchStatus(ComponentKind kind) {
+  return SceneError(vkpt::core::StatusCode::InvalidArgument,
+                    "component payload does not match " +
+                        std::string(ComponentKindName(kind)));
+}
+
+vkpt::core::Status BoolStatus(bool ok,
+                              vkpt::core::StatusCode code,
+                              std::string message) {
+  return ok ? SceneOk(std::move(message)) : SceneError(code, std::move(message));
+}
+
+}  // namespace
+
 vkpt::core::StableId SceneWorld::create_entity(std::string_view name, vkpt::core::StableId stable_hint) {
+  vkpt::core::contracts::assert_state(
+      "SceneWorld::create_entity",
+      lifecycle_state(),
+      {vkpt::core::contracts::ComponentLifecycle::Uninitialized,
+       vkpt::core::contracts::ComponentLifecycle::Ready,
+       vkpt::core::contracts::ComponentLifecycle::Degraded});
+  const bool wasEmpty = m_entities_order.empty();
   auto id = stable_hint == 0 ? m_nextStableId++ : stable_hint;
   if (m_entities.contains(id)) {
     if (stable_hint != 0) {
@@ -40,16 +126,34 @@ vkpt::core::StableId SceneWorld::create_entity(std::string_view name, vkpt::core
   if (id >= m_nextStableId) {
     m_nextStableId = id + 1;
   }
+  if (wasEmpty) {
+    VKP_LIFECYCLE_STARTED("scene",
+                          "flow_id",
+                          id,
+                          "entity_count",
+                          static_cast<std::uint64_t>(m_entities_order.size()));
+  }
+  VKP_LIFECYCLE_CONFIG("scene",
+                       "flow_id",
+                       id,
+                       "entity_count",
+                       static_cast<std::uint64_t>(m_entities_order.size()));
   return id;
 }
 
-bool SceneWorld::destroy_entity(vkpt::core::StableId id) {
+vkpt::core::Status SceneWorld::destroy_entity(vkpt::core::StableId id) {
+  vkpt::core::contracts::assert_state(
+      "SceneWorld::destroy_entity",
+      lifecycle_state(),
+      {vkpt::core::contracts::ComponentLifecycle::Uninitialized,
+       vkpt::core::contracts::ComponentLifecycle::Ready,
+       vkpt::core::contracts::ComponentLifecycle::Degraded});
   const auto it = m_entities.find(id);
   if (it == m_entities.end()) {
-    return false;
+    return MissingEntityStatus("destroy_entity", id);
   }
   if (!it->second.alive) {
-    return false;
+    return MissingEntityStatus("destroy_entity", id);
   }
   it->second.alive = false;
   m_entities_order.erase(std::remove(m_entities_order.begin(), m_entities_order.end(), id), m_entities_order.end());
@@ -69,12 +173,21 @@ bool SceneWorld::destroy_entity(vkpt::core::StableId id) {
   }
   m_transformAuthority.erase(id);
   m_worldTransforms.erase(id);
-  return true;
+  if (m_entities_order.empty()) {
+    VKP_LIFECYCLE_STOPPED("scene", "flow_id", id);
+  }
+  return SceneOk("entity destroyed");
 }
 
 bool SceneWorld::entity_exists(vkpt::core::StableId id) const {
   const auto it = m_entities.find(id);
   return it != m_entities.end() && it->second.alive;
+}
+
+vkpt::core::contracts::ComponentLifecycle SceneWorld::lifecycle_state() const noexcept {
+  return m_entities_order.empty()
+      ? vkpt::core::contracts::ComponentLifecycle::Uninitialized
+      : vkpt::core::contracts::ComponentLifecycle::Ready;
 }
 
 bool SceneWorld::set_identity(vkpt::core::StableId id, const IdentityComponent& component) {
@@ -154,12 +267,18 @@ bool SceneWorld::set_hierarchy_parent(vkpt::core::StableId child,
   return true;
 }
 
-bool SceneWorld::reparent_entity(vkpt::core::StableId child,
-                                 vkpt::core::StableId parent,
-                                 bool preserve_world_transform) {
+vkpt::core::Status SceneWorld::reparent_entity(vkpt::core::StableId child,
+                                               vkpt::core::StableId parent,
+                                               bool preserve_world_transform) {
+  vkpt::core::contracts::assert_state(
+      "SceneWorld::reparent_entity",
+      lifecycle_state(),
+      {vkpt::core::contracts::ComponentLifecycle::Uninitialized,
+       vkpt::core::contracts::ComponentLifecycle::Ready,
+       vkpt::core::contracts::ComponentLifecycle::Degraded});
   auto* childRecord = get_entity(child);
   if (!childRecord) {
-    return false;
+    return MissingEntityStatus("reparent_entity", child);
   }
 
   std::optional<TransformComponent> preservedLocalTransform;
@@ -170,12 +289,13 @@ bool SceneWorld::reparent_entity(vkpt::core::StableId child,
     if (parent != 0) {
       const auto* parentRecord = get_entity(parent);
       if (!parentRecord) {
-        return false;
+        return MissingEntityStatus("reparent_entity parent", parent);
       }
       const auto parentWorld = compute_world_transform_unchecked(parentRecord);
       const auto parentInverse = inverse_affine_matrix(parentWorld.world_matrix);
       if (!parentInverse.has_value()) {
-        return false;
+        return SceneError(vkpt::core::StatusCode::InvalidArgument,
+                          "reparent_entity rejected: parent transform is not invertible");
       }
       localMatrix = multiply_matrix(parentInverse.value(), before.world_matrix);
     }
@@ -183,7 +303,8 @@ bool SceneWorld::reparent_entity(vkpt::core::StableId child,
   }
 
   if (!set_hierarchy_parent(child, parent)) {
-    return false;
+    return SceneError(vkpt::core::StatusCode::InvalidArgument,
+                      "reparent_entity rejected: invalid hierarchy relationship");
   }
   if (preservedLocalTransform.has_value()) {
     if (auto* updated = get_entity(child)) {
@@ -191,7 +312,7 @@ bool SceneWorld::reparent_entity(vkpt::core::StableId child,
       mark_dirty_recursive(child);
     }
   }
-  return true;
+  return SceneOk("entity reparented");
 }
 
 bool SceneWorld::reorder_entity(vkpt::core::StableId moved,
@@ -256,104 +377,115 @@ bool SceneWorld::destroy_subtree(vkpt::core::StableId id) {
       return false;
     }
   }
-  return destroy_entity(id);
+  return static_cast<bool>(destroy_entity(id));
 }
 
-bool SceneWorld::set_component(vkpt::core::StableId id, ComponentKind kind, const ComponentVariant& component) {
+vkpt::core::Status SceneWorld::set_component(vkpt::core::StableId id, ComponentKind kind, const ComponentVariant& component) {
   return add_component(id, kind, component);
 }
 
-bool SceneWorld::add_component(vkpt::core::StableId id, ComponentKind kind, const ComponentVariant& component) {
+vkpt::core::Status SceneWorld::add_component(vkpt::core::StableId id, ComponentKind kind, const ComponentVariant& component) {
+  vkpt::core::contracts::assert_state(
+      "SceneWorld::add_component",
+      lifecycle_state(),
+      {vkpt::core::contracts::ComponentLifecycle::Uninitialized,
+       vkpt::core::contracts::ComponentLifecycle::Ready,
+       vkpt::core::contracts::ComponentLifecycle::Degraded});
   auto* record = get_entity(id);
   if (!record) {
-    return false;
+    return MissingEntityStatus("add_component", id);
   }
   switch (kind) {
     case ComponentKind::Identity:
       if (const auto* value = std::get_if<IdentityComponent>(&component)) {
-        return set_identity(id, *value);
+        return BoolStatus(set_identity(id, *value),
+                          vkpt::core::StatusCode::InternalError,
+                          "identity component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::Transform:
       if (const auto* value = std::get_if<TransformComponent>(&component)) {
         record->transform = *value;
         mark_dirty_recursive(id);
-        return true;
+        return SceneOk("transform component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::Hierarchy:
       if (const auto* value = std::get_if<HierarchyComponent>(&component)) {
-        return set_hierarchy_parent(id, value->parent, value->sibling_order);
+        return BoolStatus(set_hierarchy_parent(id, value->parent, value->sibling_order),
+                          vkpt::core::StatusCode::InvalidArgument,
+                          "hierarchy component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::Camera:
       if (const auto* value = std::get_if<CameraComponent>(&component)) {
         record->camera = *value;
-        return true;
+        return SceneOk("camera component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::Light:
       if (const auto* value = std::get_if<LightComponent>(&component)) {
         record->light = *value;
-        return true;
+        return SceneOk("light component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::MeshRenderer:
       if (const auto* value = std::get_if<MeshRendererComponent>(&component)) {
         record->mesh_renderer = *value;
-        return true;
+        return SceneOk("mesh renderer component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::SdfPrimitive:
       if (const auto* value = std::get_if<SdfPrimitiveComponent>(&component)) {
         record->sdf_primitive = *value;
-        return true;
+        return SceneOk("sdf primitive component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::MaterialOverride:
       if (const auto* value = std::get_if<MaterialOverrideComponent>(&component)) {
         record->material_override = *value;
-        return true;
+        return SceneOk("material override component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::PhysicsBody:
       if (const auto* value = std::get_if<PhysicsBodyComponent>(&component)) {
         record->physics_body = *value;
-        return true;
+        return SceneOk("physics body component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::Script:
       if (const auto* value = std::get_if<ScriptComponent>(&component)) {
         record->script = *value;
-        return true;
+        return SceneOk("script component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::AudioListener:
       if (const auto* value = std::get_if<AudioListenerComponent>(&component)) {
         record->audio_listener = *value;
-        return true;
+        return SceneOk("audio listener component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::AudioEmitter:
       if (const auto* value = std::get_if<AudioEmitterComponent>(&component)) {
         record->audio_emitter = *value;
-        return true;
+        return SceneOk("audio emitter component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::UiPanel:
       if (const auto* value = std::get_if<UiPanelComponent>(&component)) {
         record->ui_panel = *value;
-        return true;
+        return SceneOk("ui panel component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     case ComponentKind::BenchmarkTag:
       if (const auto* value = std::get_if<BenchmarkTagComponent>(&component)) {
         record->benchmark_tag = *value;
-        return true;
+        return SceneOk("benchmark tag component set");
       }
-      return false;
+      return ComponentMismatchStatus(kind);
     default:
-      return false;
+      return SceneError(vkpt::core::StatusCode::Unsupported,
+                        "unsupported component kind");
   }
 }
 
@@ -551,6 +683,139 @@ std::vector<vkpt::core::StableId> SceneWorld::query(ComponentKind kind) const {
   return out;
 }
 
+std::vector<vkpt::core::StableId> SceneWorld::dirty_entities() const {
+  std::vector<vkpt::core::StableId> out;
+  out.reserve(m_entities_order.size());
+  for (const auto id : m_entities_order) {
+    const auto* entity = get_entity(id);
+    if (entity != nullptr && entity->transform.has_value() && entity->transform->dirty) {
+      out.push_back(id);
+    }
+  }
+  return out;
+}
+
+void SceneWorld::set_determinism(const vkpt::core::DeterminismContext& context) {
+  vkpt::core::contracts::assert_state(
+      "SceneWorld::set_determinism",
+      lifecycle_state(),
+      {vkpt::core::contracts::ComponentLifecycle::Uninitialized,
+       vkpt::core::contracts::ComponentLifecycle::Ready,
+       vkpt::core::contracts::ComponentLifecycle::Degraded});
+  const auto previous = m_determinismContext;
+  m_determinismContext = context;
+  vkpt::core::EmitDeterminismChangedIfNeeded("scene", previous, m_determinismContext);
+}
+
+vkpt::core::DeterminismContext SceneWorld::determinism_context() const {
+  return m_determinismContext;
+}
+
+SceneWorldStatus SceneWorld::status() const {
+  SceneWorldStatus out;
+  out.entity_count = static_cast<std::uint64_t>(m_entities_order.size());
+  out.dirty_entity_count = static_cast<std::uint64_t>(dirty_entities().size());
+  out.transform_cache_count = static_cast<std::uint64_t>(m_worldTransforms.size());
+  out.authority_conflicts_total =
+      static_cast<std::uint64_t>(m_authority_conflicts.size());
+  out.lifecycle = out.entity_count == 0u
+      ? vkpt::core::contracts::ComponentLifecycle::Uninitialized
+      : vkpt::core::contracts::ComponentLifecycle::Ready;
+  out.deterministic = m_determinismContext.enabled;
+  out.determinism_base_seed = m_determinismContext.base_seed;
+  out.determinism_frame_index = m_determinismContext.frame_index;
+  out.determinism_scenario_id = m_determinismContext.scenario_id;
+  out.current_flow_id = m_determinismContext.frame_index;
+  if (out.authority_conflicts_total != 0u) {
+    out.health = vkpt::core::contracts::SubsystemHealth::Degraded;
+    out.health_reason = "authority_conflicts";
+  }
+  return out;
+}
+
+vkpt::core::health::Report EvaluateSceneWorldHealth(
+    const SceneWorldStatus& status) {
+  using vkpt::core::health::Report;
+  using vkpt::core::health::Status;
+
+  if (!status.last_error.empty()) {
+    return Report{Status::Failed, status.last_error};
+  }
+  if (status.authority_conflicts_total != 0u) {
+    return Report{
+        Status::Degraded,
+        "authority_conflicts=" + std::to_string(status.authority_conflicts_total)};
+  }
+  return Report{Status::Ok,
+                status.health_reason.empty() ? "ok" : status.health_reason};
+}
+
+std::shared_ptr<vkpt::core::health::IHealthProbe>
+SceneWorld::create_health_probe() const {
+  class SceneWorldHealthProbe final : public vkpt::core::health::IHealthProbe {
+   public:
+    explicit SceneWorldHealthProbe(const SceneWorld* world) : m_world(world) {}
+
+    std::string name() const override { return "scene"; }
+
+    vkpt::core::health::Report check() override {
+      if (m_world == nullptr) {
+        return {vkpt::core::health::Status::Failed, "scene world unavailable"};
+      }
+      return EvaluateSceneWorldHealth(m_world->status());
+    }
+
+   private:
+    const SceneWorld* m_world = nullptr;
+  };
+
+  return std::make_shared<SceneWorldHealthProbe>(this);
+}
+
+vkpt::core::contracts::SubsystemStatus ToSubsystemStatus(
+    const SceneWorldStatus& status) {
+  auto out = vkpt::core::contracts::MakeSubsystemStatus(status.name,
+                                                       status.health);
+  out.last_error = status.last_error;
+  out.set_custom("lifecycle",
+                 std::string(vkpt::core::contracts::ComponentLifecycleName(
+                     status.lifecycle)));
+  out.set_custom("health_reason", status.health_reason);
+  out.set_custom("entity_count", std::to_string(status.entity_count));
+  out.set_custom("dirty_entity_count",
+                 std::to_string(status.dirty_entity_count));
+  out.set_custom("transform_cache_count",
+                 std::to_string(status.transform_cache_count));
+  out.set_custom("authority_conflicts_total",
+                 std::to_string(status.authority_conflicts_total));
+  out.set_custom("deterministic", status.deterministic ? "true" : "false");
+  out.set_custom("determinism_base_seed",
+                 std::to_string(status.determinism_base_seed));
+  out.set_custom("determinism_frame_index",
+                 std::to_string(status.determinism_frame_index));
+  out.set_custom("determinism_scenario_id", status.determinism_scenario_id);
+  out.set_custom("current_flow_id", std::to_string(status.current_flow_id));
+  return out;
+}
+
+std::string FormatSceneWorldStatus(const SceneWorldStatus& status) {
+  std::ostringstream out;
+  out << "scene status: "
+      << vkpt::core::contracts::SubsystemHealthName(status.health)
+      << "\n  lifecycle: "
+      << vkpt::core::contracts::ComponentLifecycleName(status.lifecycle)
+      << "\n  entities: " << status.entity_count
+      << "\n  dirty_entities: " << status.dirty_entity_count
+      << "\n  transform_cache: " << status.transform_cache_count
+      << "\n  authority_conflicts: " << status.authority_conflicts_total
+      << "\n  deterministic: " << (status.deterministic ? "true" : "false")
+      << "\n  current_flow_id: " << status.current_flow_id;
+  if (!status.last_error.empty()) {
+    out << "\n  last_error: " << status.last_error;
+  }
+  return out.str();
+}
+
 void SceneWorld::mark_dirty_recursive(vkpt::core::StableId id) {
   auto* entity = get_entity(id);
   if (!entity) {
@@ -615,6 +880,15 @@ void SceneWorld::normalize_sibling_order(vkpt::core::StableId parent) {
 }
 
 void SceneWorld::clear() {
+  vkpt::core::contracts::assert_state(
+      "SceneWorld::clear",
+      lifecycle_state(),
+      {vkpt::core::contracts::ComponentLifecycle::Uninitialized,
+       vkpt::core::contracts::ComponentLifecycle::Ready,
+       vkpt::core::contracts::ComponentLifecycle::Degraded,
+       vkpt::core::contracts::ComponentLifecycle::ShuttingDown});
+  const bool hadEntities = !m_entities_order.empty();
+  const auto lastFlowId = hadEntities ? m_entities_order.back() : 0u;
   m_entities.clear();
   m_entities_order.clear();
   m_children.clear();
@@ -623,6 +897,9 @@ void SceneWorld::clear() {
   m_authority_conflicts.clear();
   m_nextStableId = 1;
   m_nextHandle = 1;
+  if (hadEntities) {
+    VKP_LIFECYCLE_STOPPED("scene", "flow_id", lastFlowId);
+  }
 }
 
 }  // namespace vkpt::scene

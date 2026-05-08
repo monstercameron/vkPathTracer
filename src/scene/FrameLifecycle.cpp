@@ -82,7 +82,9 @@ void FrameLifecycleController::end_stage(FrameStage stage) {
     return;
   }
   const auto end_ns = monotonic_ns();
-  m_timings.push_back(FrameStageTiming{m_context.frame, stage, m_stageStartNs, end_ns});
+  const FrameStageTiming timing{m_context.frame, stage, m_stageStartNs, end_ns};
+  m_timings.push_back(timing);
+  RecordFrameStageTimingTelemetry(timing);
   m_stageOpen = false;
   vkpt::log::Logger::instance().log(vkpt::log::Severity::Debug, "frame", "stage end",
                                     {{"stage", std::string(to_string(stage))},
@@ -100,6 +102,7 @@ void FrameLifecycleController::end_frame() {
 
 void FrameLifecycleController::clear_history() {
   m_timings.clear();
+  ClearLatestFrameStageTimings();
 }
 
 WorldSystemScheduler::WorldSystemScheduler(std::vector<WorldSystemPhase> phaseOrder) {

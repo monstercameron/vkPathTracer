@@ -7,20 +7,48 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 
 namespace vkpt::scene {
 
 using namespace detail;
 
-bool SceneWorld::set_transform(vkpt::core::StableId id,
-                              const TransformComponent& transform,
-                              TransformAuthority authority,
-                              std::string_view writer,
-                              vkpt::core::FrameIndex frame) {
+namespace {
+
+std::string_view TransformAuthorityName(TransformAuthority authority) {
+  switch (authority) {
+    case TransformAuthority::BenchmarkFrozen:
+      return "BenchmarkFrozen";
+    case TransformAuthority::PhysicsControlled:
+      return "PhysicsControlled";
+    case TransformAuthority::ScriptControlled:
+      return "ScriptControlled";
+    case TransformAuthority::EditorControlled:
+      return "EditorControlled";
+    case TransformAuthority::Authored:
+      return "Authored";
+    case TransformAuthority::Count:
+      break;
+  }
+  return "Authored";
+}
+
+}  // namespace
+
+vkpt::core::Status SceneWorld::set_transform(vkpt::core::StableId id,
+                                             const TransformComponent& transform,
+                                             TransformAuthority authority,
+                                             std::string_view writer,
+                                             vkpt::core::FrameIndex frame) {
   auto* record = get_entity(id);
   if (!record) {
-    return false;
+    return vkpt::core::Status::error(
+        vkpt::core::StatusCode::InvalidArgument,
+        "set_transform rejected: entity " + std::to_string(id) +
+            " does not exist");
   }
+  vkpt::core::Status accepted_status =
+      vkpt::core::Status::ok("transform applied");
   const auto existing = m_transformAuthority.find(id);
   if (existing != m_transformAuthority.end() && existing->second.frame == frame) {
     // Same-frame writers arbitrate by authority rank, then stable writer name for deterministic ties.
@@ -32,23 +60,34 @@ bool SceneWorld::set_transform(vkpt::core::StableId id,
     const bool tie_loses = next_rank == previous_rank && writer_conflict && writer.compare(existing_writer) > 0;
     if (writer_conflict || lower_authority) {
       const auto selected = (lower_authority || tie_loses) ? existing->second.authority : authority;
+      const std::string rejected_writer =
+          (lower_authority || tie_loses) ? std::string(writer) : existing->second.writer;
+      const std::string selected_writer =
+          (lower_authority || tie_loses) ? existing->second.writer : std::string(writer);
       m_authority_conflicts.push_back(
           {id, existing->second.writer, std::string(writer), selected, frame});
+      accepted_status.warnings.push_back("transform authority conflict: rejected writer '" +
+                                         rejected_writer + "', selected writer '" +
+                                         selected_writer + "'");
       vkpt::log::Logger::instance().log(vkpt::log::Severity::Warning, "scene", "transform authority conflict",
-                                         {{"entity", std::to_string(id)},
+                                          {{"entity", std::to_string(id)},
                                           {"writer_a", existing->second.writer},
                                           {"writer_b", std::string(writer)},
-                                          {"selected", std::string(to_string(selected))},
+                                          {"selected", std::string(TransformAuthorityName(selected))},
                                           {"frame", std::to_string(frame)}});
     }
     if (lower_authority || tie_loses) {
-      return false;
+      auto rejected = vkpt::core::Status::error(
+          vkpt::core::StatusCode::Busy,
+          "set_transform rejected by transform authority arbitration");
+      rejected.warnings = std::move(accepted_status.warnings);
+      return rejected;
     }
   }
   record->transform = transform;
   m_transformAuthority[id] = {authority, frame, std::string(writer)};
   mark_dirty_recursive(id);
-  return true;
+  return accepted_status;
 }
 
 WorldTransform SceneWorld::compute_world_transform_unchecked(const EntityRecord* entity) const {
