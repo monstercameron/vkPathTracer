@@ -434,12 +434,13 @@ if(PT_ENABLE_VULKAN)
 
   # Compile pathtrace.comp → pathtrace.spv into <binary>/shaders/
   set(PT_SHADER_SRC "${CMAKE_SOURCE_DIR}/src/shaders/gpu/pathtrace.comp")
+  set(PT_PUSH_CONSTANT_SCHEMA "${CMAKE_SOURCE_DIR}/src/gpu/PathTracePushConstants.inc")
   set(PT_SHADER_SPV "${CMAKE_BINARY_DIR}/bin/shaders/pathtrace.spv")
   file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/bin/shaders")
   add_custom_command(
     OUTPUT  "${PT_SHADER_SPV}"
-    COMMAND "${GLSLC}" -fshader-stage=comp "${PT_SHADER_SRC}" -o "${PT_SHADER_SPV}"
-    DEPENDS "${PT_SHADER_SRC}"
+    COMMAND "${GLSLC}" -fshader-stage=comp "-I${CMAKE_SOURCE_DIR}/src" "${PT_SHADER_SRC}" -o "${PT_SHADER_SPV}"
+    DEPENDS "${PT_SHADER_SRC}" "${PT_PUSH_CONSTANT_SCHEMA}"
     COMMENT "Compiling pathtrace.comp → pathtrace.spv"
     VERBATIM)
   add_custom_target(pt_shaders ALL DEPENDS "${PT_SHADER_SPV}")
@@ -455,6 +456,15 @@ set(PT_CPU_SOURCES
   # Core/runtime services
   src/core/Assert.cpp
   src/core/Config.cpp
+  # Observability stack (Track A, SYSTEM.md Phase 0)
+  src/core/Observability.cpp
+  src/core/cli/Flags.cpp
+  src/core/health/Health.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/core/metrics/UiInputLatency.cpp
+  src/core/repl/Repl.cpp
+  src/core/trace/Trace.cpp
   src/diagnostics/CrashHooks.cpp
   src/diagnostics/CrashRecorder.cpp
   src/diagnostics/StatusFile.cpp
@@ -502,7 +512,9 @@ set(PT_CPU_SOURCES
   src/scene/Scene.cpp
   src/scene/SceneDocumentExport.cpp
   src/scene/SceneDocumentLoad.cpp
+  src/scene/SceneSnapshot.cpp
   src/scene/SceneScriptBootstrap.cpp
+  src/scene/SnapshotRing.cpp
   src/scene/SceneWorld.cpp
   src/scene/SceneWorldExtraction.cpp
   src/scene/WorldCommandBuffer.cpp
@@ -530,7 +542,10 @@ set(PT_CPU_SOURCES
   src/shaders/SdfShaderInventory.cpp
   src/render/DebugViews.cpp
   src/render/FrameHandoff.cpp
+  src/render/HistoryTransition.cpp
+  src/render/MultiGpuAccumulation.cpp
   src/render/RenderCoordinator.cpp
+  src/render/TileScheduler.cpp
   src/render/interface/RenderContracts.cpp
   src/render/backends/BackendFactory.cpp
   src/render/backends/D3D12BackendPlanner.cpp
@@ -795,6 +810,118 @@ add_executable(ptdoctor
 target_compile_features(ptdoctor PRIVATE cxx_std_23)
 
 # ---- focused smoke targets ---------------------------------------------------
+# Track A — observability stack regression test (SYSTEM.md Phase 0.6).
+# Self-contained: only depends on the new src/core/{sync,log,metrics,trace,
+# health,cli,repl}/ modules and the Observability bootstrap.
+add_executable(pt_observability_smoke EXCLUDE_FROM_ALL
+  tests/observability_smoke.cpp
+  src/core/Observability.cpp
+  src/core/cli/Flags.cpp
+  src/core/health/Health.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/core/metrics/UiInputLatency.cpp
+  src/core/repl/Repl.cpp
+  src/core/trace/Trace.cpp
+  src/diagnostics/CrashRecorder.cpp
+  src/scene/Json.cpp
+)
+
+target_include_directories(pt_observability_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+  "${CMAKE_BINARY_DIR}/generated"
+)
+
+target_compile_features(pt_observability_smoke PRIVATE cxx_std_23)
+
+find_package(Threads REQUIRED)
+target_link_libraries(pt_observability_smoke PRIVATE Threads::Threads)
+
+add_executable(pt_job_health_smoke EXCLUDE_FROM_ALL
+  tests/job_health_smoke.cpp
+  src/core/log/Log.cpp
+  src/core/health/Health.cpp
+  src/core/metrics/Metrics.cpp
+  src/jobs/JobSystem.cpp
+)
+
+target_include_directories(pt_job_health_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_job_health_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_job_health_smoke PRIVATE Threads::Threads)
+
+add_executable(pt_determinism_propagation_smoke EXCLUDE_FROM_ALL
+  tests/determinism_propagation_smoke.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/jobs/JobSystem.cpp
+)
+
+target_include_directories(pt_determinism_propagation_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_determinism_propagation_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_determinism_propagation_smoke PRIVATE Threads::Threads)
+
+add_executable(pt_platform_contract_smoke EXCLUDE_FROM_ALL
+  tests/platform_contract_smoke.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/platform/HeadlessPlatform.cpp
+  src/platform/PlatformFactory.cpp
+)
+
+target_include_directories(pt_platform_contract_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_platform_contract_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_platform_contract_smoke PRIVATE Threads::Threads)
+
+add_executable(pt_vulkan_backend_snapshot_smoke EXCLUDE_FROM_ALL
+  tests/vulkan_backend_snapshot_smoke.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/core/metrics/UiInputLatency.cpp
+  src/render/backends/FrameGraph.cpp
+  src/render/backends/VulkanBackend.cpp
+  src/render/interface/RenderContracts.cpp
+  src/scene/SnapshotRing.cpp
+)
+
+target_include_directories(pt_vulkan_backend_snapshot_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_vulkan_backend_snapshot_smoke PRIVATE cxx_std_23)
+
+if(PT_ENABLE_VULKAN)
+  add_executable(pt_vulkan_gpu_submission_contract EXCLUDE_FROM_ALL
+    tests/vulkan_gpu_path_tracer_submission_contract.cpp
+    src/gpu/VulkanGpuPathTracer.cpp
+    src/pathtracer/FilmBuffer.cpp
+    src/pathtracer/PathTracer.cpp
+  )
+
+  target_include_directories(pt_vulkan_gpu_submission_contract PRIVATE
+    "${CMAKE_SOURCE_DIR}/src"
+    ${Vulkan_INCLUDE_DIRS}
+  )
+
+  target_link_libraries(pt_vulkan_gpu_submission_contract PRIVATE
+    ${Vulkan_LIBRARIES}
+  )
+
+  target_compile_definitions(pt_vulkan_gpu_submission_contract PRIVATE
+    PT_ENABLE_VULKAN
+  )
+
+  target_compile_features(pt_vulkan_gpu_submission_contract PRIVATE cxx_std_23)
+endif()
+
 add_executable(pt_scripting_smoke EXCLUDE_FROM_ALL
   tests/scripting_runtime_smoke.cpp
   src/assets/AssetImporters.cpp
@@ -807,11 +934,22 @@ add_executable(pt_scripting_smoke EXCLUDE_FROM_ALL
   src/assets/SceneAssetObjLoader.cpp
   src/assets/SceneAssetGltfLoader.cpp
   src/audio/AudioSystem.cpp
+  src/cpu/BvhTriangleIntersector.cpp
+  src/cpu/CpuFeatures.cpp
+  src/cpu/ParallelBvhBuilder.cpp
+  src/core/health/Health.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/core/metrics/UiInputLatency.cpp
+  src/jobs/JobSystem.cpp
+  src/pathtracer/CpuBvhAccelerator.cpp
   src/pathtracer/SceneConversion.cpp
   src/physics/PhysicsWorld.cpp
   src/scene/SceneDocumentLoad.cpp
+  src/scene/SceneSnapshot.cpp
   src/scene/SceneWorld.cpp
   src/scene/SceneWorldExtraction.cpp
+  src/scene/SnapshotRing.cpp
   src/scene/WorldCommandBuffer.cpp
   src/scripting/ScriptRuntime.cpp
   src/scripting/ScriptRuntimeBindings.cpp
@@ -843,6 +981,53 @@ if(PT_ENABLE_AUDIO)
   target_compile_definitions(pt_scripting_smoke PRIVATE PT_ENABLE_AUDIO)
 endif()
 
+add_executable(pt_physics_contract_smoke EXCLUDE_FROM_ALL
+  tests/physics_contract_smoke.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/physics/PhysicsWorld.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
+)
+
+target_include_directories(pt_physics_contract_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_physics_contract_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_physics_contract_smoke PRIVATE Threads::Threads)
+
+if(PT_ENABLE_JOLT)
+  target_link_libraries(pt_physics_contract_smoke PRIVATE ${PT_JOLT_TARGET})
+  target_compile_definitions(pt_physics_contract_smoke PRIVATE
+    PT_ENABLE_JOLT
+    PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
+endif()
+
+add_executable(pt_script_dispatch_contract_smoke EXCLUDE_FROM_ALL
+  tests/script_dispatch_contract_smoke.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/jobs/JobSystem.cpp
+  src/scripting/ScriptRuntime.cpp
+  src/scripting/ScriptRuntimeBindings.cpp
+)
+
+target_include_directories(pt_script_dispatch_contract_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_script_dispatch_contract_smoke PRIVATE cxx_std_23)
+
+if(PT_ENABLE_LUA)
+  target_link_libraries(pt_script_dispatch_contract_smoke PRIVATE ${PT_LUA_TARGET})
+  target_compile_definitions(pt_script_dispatch_contract_smoke PRIVATE PT_ENABLE_LUA)
+endif()
+
 add_executable(pt_editor_override_tracker_smoke EXCLUDE_FROM_ALL
   tests/editor_override_tracker_smoke.cpp
 )
@@ -857,6 +1042,20 @@ foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(pt_editor_override_tracker_smoke PRIVATE ${feature})
 endforeach()
 
+add_executable(pt_scene_contract_smoke EXCLUDE_FROM_ALL
+  tests/scene_contract_smoke.cpp
+  src/core/log/Log.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
+)
+
+target_include_directories(pt_scene_contract_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_scene_contract_smoke PRIVATE cxx_std_23)
+
 add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
   tests/scene_script_bootstrap_smoke.cpp
   src/assets/AssetImporters.cpp
@@ -865,6 +1064,9 @@ add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
   src/assets/SceneAssetLoaderSupport.cpp
   src/assets/SceneAssetObjLoader.cpp
   src/assets/SceneAssetGltfLoader.cpp
+  src/core/health/Health.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
   src/pathtracer/SceneConversion.cpp
   src/physics/PhysicsWorld.cpp
   src/scene/Json.cpp
@@ -889,6 +1091,54 @@ if(PT_ENABLE_JOLT)
     PT_ENABLE_JOLT
     PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
 endif()
+
+add_executable(pt_snapshot_bus_smoke EXCLUDE_FROM_ALL
+  tests/snapshot_bus_smoke.cpp
+  src/cpu/BvhTriangleIntersector.cpp
+  src/cpu/CpuFeatures.cpp
+  src/cpu/ParallelBvhBuilder.cpp
+  src/cpu/TiledCpuPathTracer.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/core/metrics/UiInputLatency.cpp
+  src/diagnostics/CrashRecorder.cpp
+  src/jobs/JobSystem.cpp
+  src/pathtracer/CpuBvhAccelerator.cpp
+  src/pathtracer/FilmBuffer.cpp
+  src/pathtracer/PathTracer.cpp
+  src/pathtracer/ScalarCpuPathTracer.cpp
+  src/pathtracer/ScalarCpuPathTracer.Intersect.cpp
+  src/pathtracer/ScalarCpuPathTracerJobs.cpp
+  src/pathtracer/ScalarCpuPathTracer.Render.cpp
+  src/render/FrameHandoff.cpp
+  src/render/HistoryTransition.cpp
+  src/render/RenderCoordinator.cpp
+  src/render/TileScheduler.cpp
+  src/render/backends/FrameGraph.cpp
+  src/scene/SceneSnapshot.cpp
+  src/scene/SnapshotRing.cpp
+)
+
+target_include_directories(pt_snapshot_bus_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+  "${CMAKE_BINARY_DIR}/generated"
+)
+
+target_compile_features(pt_snapshot_bus_smoke PRIVATE cxx_std_23)
+
+add_executable(pt_multi_gpu_accumulation_smoke EXCLUDE_FROM_ALL
+  tests/multi_gpu_accumulation_smoke.cpp
+  src/pathtracer/FilmBuffer.cpp
+  src/render/FrameHandoff.cpp
+  src/render/MultiGpuAccumulation.cpp
+  src/render/TileScheduler.cpp
+)
+
+target_include_directories(pt_multi_gpu_accumulation_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_multi_gpu_accumulation_smoke PRIVATE cxx_std_23)
 
 # Drag-throughput smoke for the D3D12 path tracer. Built only when D3D12 is
 # enabled because the test is a thin wrapper around D3D12GpuPathTracer; the

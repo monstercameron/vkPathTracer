@@ -56,9 +56,13 @@ Goal: catch broken headers/interfaces quickly without requiring a GPU.
   - Run: `tools/ui_qt_smoke.ps1 -NoBuild -DisabledBuildDir build/presets/desktop-clang-debug` or `bash tools/ui_qt_smoke.sh --no-build --disabled-build-dir build/presets/desktop-clang-debug`
   - Pass: Qt-disabled UI model smoke passes; Qt bounded-window checks pass or skip cleanly when Qt is unavailable.
 
+- **acceptance-proof-smokes**
+  - Run: `cmake --build --preset desktop-clang-debug --target pt_observability_smoke pt_snapshot_bus_smoke pt_scripting_smoke pt_multi_gpu_accumulation_smoke pt_job_health_smoke pt_platform_contract_smoke`, then run the six produced executables.
+  - Pass: observability validates lifecycle/heartbeat/anomaly event triplets, metrics-dock scrape/rate/sparkline source contract, bounded per-thread cadence with zero logger ring drops, bounded headless UI/sim metric limits, REPL script-list/status dispatch, and the selected hot-path audit; snapshot bus emits matching three-run `determinism.snapshot.outputs_hash` streams; scripting/audio reports no no-op callback or stream-ring underruns during the bounded short soak; multi-GPU accumulation verifies the hardware-independent scheduler/accumulation scaling contract; jobs health fails only on stale over-capacity queues with idle workers; platform contract verifies non-destructive event reads, explicit drains, platform status, queue watermarks, and deterministic input sources.
+
 - **sanitizers (optional)**
   - Run: `desktop-clang-asan` and `desktop-clang-tsan` builds where supported.
-  - Pass: configure/build completes; runtime smoke can be optional.
+  - Pass: configure/build completes; runtime smoke can be optional. On Windows `x86_64-pc-windows-msvc`, `desktop-clang-tsan` is expected to remain blocked until Clang supports `-fsanitize=thread` for that target or CI provides a Linux/self-hosted TSan runner.
 
 ### Optional GPU jobs (manual / self-hosted)
 
