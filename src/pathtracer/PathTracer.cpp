@@ -119,13 +119,12 @@ bool same_material(const vkpt::pathtracer::RTMaterial& lhs,
          lhs.normal_texture_index == rhs.normal_texture_index;
 }
 
-bool same_instance(const vkpt::pathtracer::RTInstance& lhs,
-                   const vkpt::pathtracer::RTInstance& rhs) {
+bool same_instance_except_material(const vkpt::pathtracer::RTInstance& lhs,
+                                   const vkpt::pathtracer::RTInstance& rhs) {
   return lhs.entity_id == rhs.entity_id &&
          lhs.geometry_id == rhs.geometry_id &&
          lhs.first_triangle == rhs.first_triangle &&
          lhs.triangle_count == rhs.triangle_count &&
-         lhs.material_index == rhs.material_index &&
          lhs.flags == rhs.flags &&
          lhs.transform_revision == rhs.transform_revision &&
          lhs.local_first_vertex == rhs.local_first_vertex &&
@@ -436,6 +435,21 @@ bool ApplySceneDeltaUpdate(PathTracerSceneSnapshot& scene, const RTSceneDeltaUpd
       return false;
     }
   }
+  for (const auto& instanceMaterial : update.instance_materials) {
+    uint32_t instanceIndex = instanceMaterial.instance_index;
+    if (instanceIndex >= scene.instances.size() && instanceMaterial.entity_id != 0u) {
+      for (std::size_t index = 0; index < scene.instances.size(); ++index) {
+        if (scene.instances[index].entity_id == instanceMaterial.entity_id) {
+          instanceIndex = static_cast<uint32_t>(index);
+          break;
+        }
+      }
+    }
+    if (instanceIndex >= scene.instances.size() ||
+        instanceMaterial.material_index >= scene.materials.size()) {
+      return false;
+    }
+  }
 
   bool changed = false;
   for (const auto& material : update.materials) {
@@ -445,6 +459,21 @@ bool ApplySceneDeltaUpdate(PathTracerSceneSnapshot& scene, const RTSceneDeltaUpd
   for (const auto& light : update.lights) {
     scene.lights[light.light_index] = light.light;
     changed = true;
+  }
+  for (const auto& instanceMaterial : update.instance_materials) {
+    uint32_t instanceIndex = instanceMaterial.instance_index;
+    if (instanceIndex >= scene.instances.size() && instanceMaterial.entity_id != 0u) {
+      for (std::size_t index = 0; index < scene.instances.size(); ++index) {
+        if (scene.instances[index].entity_id == instanceMaterial.entity_id) {
+          instanceIndex = static_cast<uint32_t>(index);
+          break;
+        }
+      }
+    }
+    if (scene.instances[instanceIndex].material_index != instanceMaterial.material_index) {
+      scene.instances[instanceIndex].material_index = instanceMaterial.material_index;
+      changed = true;
+    }
   }
   if (update.environment_color_changed) {
     scene.environment_color = update.environment_color;
@@ -478,6 +507,22 @@ void MergeSceneDeltaUpdates(RTSceneDeltaUpdate& dst, const RTSceneDeltaUpdate& s
   for (const auto& light : src.lights) {
     mergeLight(light);
   }
+  auto mergeInstanceMaterial = [&](const RTInstanceMaterialUpdate& update) {
+    for (auto& existing : dst.instance_materials) {
+      const bool sameInstance =
+          (update.instance_index != vkpt::pathtracer::kInvalidRTInstanceIndex &&
+           existing.instance_index == update.instance_index) ||
+          (update.entity_id != 0u && existing.entity_id == update.entity_id);
+      if (sameInstance) {
+        existing = update;
+        return;
+      }
+    }
+    dst.instance_materials.push_back(update);
+  };
+  for (const auto& instanceMaterial : src.instance_materials) {
+    mergeInstanceMaterial(instanceMaterial);
+  }
   if (src.environment_color_changed) {
     dst.environment_color_changed = true;
     dst.environment_color = src.environment_color;
@@ -492,7 +537,7 @@ std::optional<RTSceneDeltaUpdate> BuildSceneDeltaUpdate(const PathTracerSceneSna
       before.indices == after.indices &&
       same_vector(before.local_vertices, after.local_vertices, same_vec3) &&
       before.local_indices == after.local_indices &&
-      same_vector(before.instances, after.instances, same_instance) &&
+      same_vector(before.instances, after.instances, same_instance_except_material) &&
       same_vector(before.tessellation_requests, after.tessellation_requests, same_tessellation_request) &&
       same_vector(before.sdf_primitives, after.sdf_primitives, same_sdf) &&
       before.textures == after.textures &&
@@ -517,6 +562,14 @@ std::optional<RTSceneDeltaUpdate> BuildSceneDeltaUpdate(const PathTracerSceneSna
       delta.lights.push_back(RTLightUpdate{
           static_cast<uint32_t>(index),
           after.lights[index]});
+    }
+  }
+  for (std::size_t index = 0; index < before.instances.size(); ++index) {
+    if (before.instances[index].material_index != after.instances[index].material_index) {
+      delta.instance_materials.push_back(RTInstanceMaterialUpdate{
+          after.instances[index].entity_id,
+          static_cast<uint32_t>(index),
+          after.instances[index].material_index});
     }
   }
   if (!same_vec3(before.environment_color, after.environment_color)) {

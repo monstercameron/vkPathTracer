@@ -428,9 +428,16 @@ struct RTLightUpdate {
   RTHitLight light{};
 };
 
+struct RTInstanceMaterialUpdate {
+  vkpt::core::StableId entity_id = 0;
+  uint32_t instance_index = kInvalidRTInstanceIndex;
+  uint32_t material_index = 0u;
+};
+
 struct RTSceneDeltaUpdate {
   std::vector<RTMaterialUpdate> materials;
   std::vector<RTLightUpdate> lights;
+  std::vector<RTInstanceMaterialUpdate> instance_materials;
   bool environment_color_changed = false;
   Vec3 environment_color{};
 };
