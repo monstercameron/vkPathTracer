@@ -124,12 +124,18 @@ bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   m_settings   = s;
   m_configured = true;
   m_filmPixels = static_cast<uint32_t>(filmPixels);
-  m_film.resize(s.width, s.height);
+  // The D3D12 backend keeps accumulation in the GPU UAV (m_filmBuf) and
+  // only the resolve_settings on m_film matter for HDR fallbacks; no code
+  // path writes per-pixel samples into m_film, so we leave its CPU buffers
+  // empty rather than allocating ~20 bytes/pixel that we'll never use.
+  m_film.resize(0u, 0u);
   m_film.set_resolve_settings(s.film_resolve);
-  m_film.clear();
   m_counters          = {};
   m_hasScene          = false;
   m_sceneUploaded     = false;
+  m_ldrResolve.rgba8.clear();
+  m_ldrResolve.width = 0u;
+  m_ldrResolve.height = 0u;
   m_raysPerPixelPerDispatch = SelectRaysPerPixelPerDispatch(s);
   m_readbackInterval = SelectReadbackInterval(s);
   const bool interactivePreview = s.spp == std::numeric_limits<uint32_t>::max();
@@ -160,6 +166,36 @@ bool D3D12GpuPathTracer::configure(const vkpt::pathtracer::RenderSettings& s) {
   LogDebug(cfg.str());
   destroy_film_buffer();
   return create_film_buffer();
+}
+
+bool D3D12GpuPathTracer::update_render_settings(const vkpt::pathtracer::RenderSettings& s) {
+  if (!m_valid || !m_configured || s.width == 0u || s.height == 0u) {
+    return false;
+  }
+  if (s.width != m_settings.width || s.height != m_settings.height ||
+      !m_filmBuf || !m_ldrBuf || !m_denoiseBuf || !m_guideBuf ||
+      !m_temporalBuf || !m_temporalHistoryBuf || !m_prevGuideBuf) {
+    return false;
+  }
+
+  m_settings = s;
+  m_raysPerPixelPerDispatch = SelectRaysPerPixelPerDispatch(s);
+  m_readbackInterval = SelectReadbackInterval(s);
+  const bool interactivePreview = s.spp == std::numeric_limits<uint32_t>::max();
+  m_forceReadbackEverySample =
+      interactivePreview || ParseEnvBool("PT_D3D12_FORCE_READBACK_EVERY_SAMPLE", false);
+  m_dynamicInstanceTransformsAllowed = ParseEnvBool("PT_D3D12_DYNAMIC_INSTANCE_TRANSFORMS", true);
+  m_film.set_resolve_settings(s.film_resolve);
+  if (m_hasScene) {
+    m_film.set_resolve_settings(
+        vkpt::pathtracer::CameraAdjustedFilmResolveSettings(m_settings.film_resolve, m_sceneData));
+  }
+  m_temporalHistoryValid = false;
+  m_ldrResolve.rgba8.clear();
+  m_ldrResolve.width = 0u;
+  m_ldrResolve.height = 0u;
+  LogDebug("D3D12 render settings updated without scene rebuild");
+  return true;
 }
 
 }  // namespace vkpt::gpu

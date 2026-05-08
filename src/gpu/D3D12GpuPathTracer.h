@@ -80,6 +80,8 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer {
 
   /// Allocates film resources and records render settings for subsequent uploads.
   bool configure(const vkpt::pathtracer::RenderSettings& s) override;
+  /// Updates constants-only settings without rebuilding scene buffers when possible.
+  bool update_render_settings(const vkpt::pathtracer::RenderSettings& s) override;
   /// Stores a CPU scene snapshot; call build_or_update_acceleration() to upload it.
   bool load_scene_snapshot(const vkpt::pathtracer::RTSceneData& scene) override;
   /// Packs scene data into shader layouts, uploads buffers, and builds DXR AS if enabled.

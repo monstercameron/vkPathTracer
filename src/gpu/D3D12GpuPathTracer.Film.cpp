@@ -16,10 +16,13 @@ bool D3D12GpuPathTracer::reset_accumulation() {
     return false;
   }
 
-  m_film.clear();
+  // The D3D12 backend accumulates in the GPU UAV (m_filmBuf); the shader
+  // overwrites accumulator slots when it sees sample_index == 0, so there is
+  // no CPU-side clear to perform. m_film is a vestigial CPU FilmBuffer that
+  // resolve_hdr() returns; nothing in the D3D12 path writes to it, so clearing
+  // it would memset tens of megabytes of unused buffers per drag tick.
   m_counters = {};
   m_temporalHistoryValid = false;
-  m_ldrResolve = {};
   m_lastSampleIdx = 0u;
   LogDebug("reset_accumulation complete");
   return true;

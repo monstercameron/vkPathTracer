@@ -342,15 +342,23 @@ void RenderCoordinator::run(std::stop_token stop,
     // the generation, resets accumulation, and clears stale display frames.
     if (commands.settings) {
       settings = std::move(commands.settings->settings);
-      if (commands.settings->scene) {
+      const bool hasReplacementScene = commands.settings->scene.has_value();
+      if (hasReplacementScene) {
         scene = std::move(*commands.settings->scene);
       }
       ++generation;
       sample = 0u;
-      if (!tracer->configure(settings) ||
-          !tracer->load_scene_snapshot(scene) ||
-          !tracer->build_or_update_acceleration() ||
-          !tracer->reset_accumulation()) {
+      bool settingsApplied = false;
+      if (!hasReplacementScene) {
+        settingsApplied =
+            tracer->update_render_settings(settings) &&
+            tracer->reset_accumulation();
+      }
+      if (!settingsApplied &&
+          (!tracer->configure(settings) ||
+           !tracer->load_scene_snapshot(scene) ||
+           !tracer->build_or_update_acceleration() ||
+           !tracer->reset_accumulation())) {
         mark_failed("render coordinator settings update failed");
         break;
       }

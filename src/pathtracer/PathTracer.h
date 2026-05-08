@@ -776,6 +776,10 @@ class IPathTracer {
 
   virtual bool configure(const RenderSettings& settings) = 0;
   virtual bool configure(const PathTraceSettings& settings) { return configure(MakeRenderSettings(settings)); }
+  // Applies render settings without invalidating uploaded scene data when a
+  // backend can do so. Callers should fall back to configure/load/build when
+  // this returns false.
+  virtual bool update_render_settings(const RenderSettings& /*settings*/) { return false; }
   virtual bool load_scene_snapshot(const RTSceneData& scene) = 0;
   virtual bool build_or_update_acceleration() = 0;
   virtual bool reset_accumulation() = 0;
