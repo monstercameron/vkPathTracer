@@ -87,6 +87,8 @@ struct ScriptExecutionContext {
     bool enabled = true;
     /// Host key codes currently active for this frame.
     std::vector<int> active_keys;
+    /// Host mouse button codes currently active for this frame: 0 left, 1 right, 2 middle.
+    std::vector<int> active_mouse_buttons;
     float mouse_delta_x = 0.0f;
     float mouse_delta_y = 0.0f;
     float mouse_wheel_delta = 0.0f;

@@ -986,7 +986,8 @@
         const std::string requestedModeName(RuntimeModeStableName(mode));
         logger.log(vkpt::log::Severity::Info,
                    "scripts",
-                   "runtime mode toggle requested",
+                   "runtime mode toggle requested: " + std::string(source) +
+                       " -> " + requestedModeName,
                    {{"requested_mode", requestedModeName},
                     {"source", std::string(source)},
                     {"runtime_mode_before", std::string(qtRuntimeModeName())},
@@ -1002,6 +1003,7 @@
         if (requestedScriptsRunning && qtScriptRuntime && !qtScriptRuntime->execution_available()) {
           qtScriptState.scripts_enabled = true;
           qtScriptState.playing = false;
+          qtPlayModeFramePacingActive = false;
           qtScriptState.mode = std::string(kRuntimeModeEditName);
           qtScriptState.status = "runtime mode unavailable: Lua execution is not compiled in";
           ui_runtime_state.status_message = qtScriptState.status;
@@ -1043,6 +1045,7 @@
         const bool modeChanged = qtRuntimeModeName() != requestedModeName;
         qtScriptState.mode = requestedModeName;
         qtScriptState.playing = requestedPlayMode;
+        qtPlayModeFramePacingActive = requestedPlayMode;
         if (mode != RuntimeMode::LiveEdit || modeChanged) {
           qtScriptState.viewport_input_forwarding = false;
         }
@@ -1051,16 +1054,105 @@
         }
         qtScriptState.benchmark_scripts_allowed = requestedScriptsRunning;
         if (requestedScriptsRunning && !wasScriptsRunning) {
-          qtSyncPhysicsFromSceneDocument();
-          qtReloadScriptsFromDocument(requestedPlayMode ? "play mode enter" : "live edit enter");
-          qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLoad,
-                               frameIndex,
-                               0.0,
-                               requestedPlayMode ? "play mode load" : "live edit load");
-          qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnEnable,
-                               frameIndex,
-                               0.0,
-                               requestedPlayMode ? "play mode enter" : "live edit enter");
+          try {
+            logger.log(vkpt::log::Severity::Info,
+                       "scripts",
+                       "runtime mode startup step",
+                       {{"requested_mode", requestedModeName},
+                        {"step", "sync_physics_begin"},
+                        {"source", std::string(source)}},
+                       frameIndex);
+            qtSyncPhysicsFromSceneDocument();
+            logger.log(vkpt::log::Severity::Info,
+                       "scripts",
+                       "runtime mode startup step",
+                       {{"requested_mode", requestedModeName},
+                        {"step", "sync_physics_done"},
+                        {"source", std::string(source)}},
+                       frameIndex);
+            const bool reloadOk = qtReloadScriptsFromDocument(
+                requestedPlayMode ? "play mode enter" : "live edit enter");
+            logger.log(vkpt::log::Severity::Info,
+                       "scripts",
+                       "runtime mode startup step",
+                       {{"requested_mode", requestedModeName},
+                        {"step", reloadOk ? "reload_scripts_done" : "reload_scripts_failed"},
+                        {"source", std::string(source)}},
+                       frameIndex);
+            if (!reloadOk) {
+              qtScriptState.scripts_enabled = false;
+              qtScriptState.playing = false;
+              qtPlayModeFramePacingActive = false;
+              qtScriptState.mode = std::string(kRuntimeModeEditName);
+              qtScriptState.status = "runtime mode startup failed: script reload";
+              ui_runtime_state.status_message = qtScriptState.status;
+              ui_runtime_state.last_warning_or_error = qtScriptState.status;
+              qtDockPanelsDirty = true;
+              return;
+            }
+            qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnLoad,
+                                 frameIndex,
+                                 0.0,
+                                 requestedPlayMode ? "play mode load" : "live edit load");
+            logger.log(vkpt::log::Severity::Info,
+                       "scripts",
+                       "runtime mode startup step",
+                       {{"requested_mode", requestedModeName},
+                        {"step", "on_load_done"},
+                        {"source", std::string(source)}},
+                       frameIndex);
+            qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnEnable,
+                                 frameIndex,
+                                 0.0,
+                                 requestedPlayMode ? "play mode enter" : "live edit enter");
+            logger.log(vkpt::log::Severity::Info,
+                       "scripts",
+                       "runtime mode startup step",
+                       {{"requested_mode", requestedModeName},
+                        {"step", "on_enable_done"},
+                        {"source", std::string(source)}},
+                       frameIndex);
+          } catch (const std::exception& error) {
+            qtScriptState.scripts_enabled = false;
+            qtScriptState.playing = false;
+            qtPlayModeFramePacingActive = false;
+            qtScriptState.mode = std::string(kRuntimeModeEditName);
+            qtScriptState.status =
+                std::string("runtime mode startup fault; scripts disabled: ") + error.what();
+            ui_runtime_state.status_message = qtScriptState.status;
+            ui_runtime_state.last_warning_or_error = qtScriptState.status;
+            if (qtAudioSystem) {
+              qtAudioSystem->stop_all();
+            }
+            qtDockPanelsDirty = true;
+            logger.log(vkpt::log::Severity::Error,
+                       "scripts",
+                       "runtime mode startup failed; scripts disabled",
+                       {{"requested_mode", requestedModeName},
+                        {"source", std::string(source)},
+                        {"error", error.what()}},
+                       frameIndex);
+            return;
+          } catch (...) {
+            qtScriptState.scripts_enabled = false;
+            qtScriptState.playing = false;
+            qtPlayModeFramePacingActive = false;
+            qtScriptState.mode = std::string(kRuntimeModeEditName);
+            qtScriptState.status = "runtime mode startup fault; scripts disabled";
+            ui_runtime_state.status_message = qtScriptState.status;
+            ui_runtime_state.last_warning_or_error = qtScriptState.status;
+            if (qtAudioSystem) {
+              qtAudioSystem->stop_all();
+            }
+            qtDockPanelsDirty = true;
+            logger.log(vkpt::log::Severity::Error,
+                       "scripts",
+                       "runtime mode startup failed with unknown exception; scripts disabled",
+                       {{"requested_mode", requestedModeName},
+                        {"source", std::string(source)}},
+                       frameIndex);
+            return;
+          }
         }
         qtPendingFpsLookDx = 0.0f;
         qtPendingFpsLookDy = 0.0f;
@@ -1090,7 +1182,8 @@
         qtDockPanelsDirty = true;
         logger.log(vkpt::log::Severity::Info,
                    "scripts",
-                   "runtime mode toggle applied",
+                   "runtime mode toggle applied: " + std::string(source) +
+                       " -> " + std::string(qtRuntimeModeName()),
                    {{"runtime_mode", std::string(qtRuntimeModeName())},
                     {"play_mode", qtScriptState.playing ? "true" : "false"},
                     {"scripts_running", qtScriptsRunning() ? "true" : "false"},

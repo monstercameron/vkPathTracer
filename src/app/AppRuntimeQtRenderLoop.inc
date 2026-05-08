@@ -11,11 +11,11 @@
       };
 
       auto qtCurrentInputMode = [&]() -> QtInputMode {
-        if (qtFpsMode) {
-          return QtInputMode::FpsCamera;
-        }
         if (qtIsPlayMode() || qtLiveEditViewportInputArmed()) {
           return QtInputMode::GameMode;
+        }
+        if (qtFpsMode) {
+          return QtInputMode::FpsCamera;
         }
         return QtInputMode::Editor;
       };
@@ -681,15 +681,32 @@
           qtPendingPanDx = 0.0f;
           qtPendingPanDy = 0.0f;
         }
+        const bool qtCoalesceBackgroundPublishesThisFrame =
+            qtUseBg && qtRenderCoordinator && (qtIsPlayMode() || qtFpsMode);
+        qtDeferBackgroundSnapshotPublishes = qtCoalesceBackgroundPublishesThisFrame;
         qtApplyContinuousOrbitCameraMovement(qtInputDt);
+        const auto _vkp_after_orbit = std::chrono::steady_clock::now();
         qtApplyContinuousFpsMovement(qtInputDt);
+        const auto _vkp_after_fps = std::chrono::steady_clock::now();
         const bool qtScriptDispatched = qtApplyGameModeScripts(qtFrameStart, qtFrameCount, qtInputDt);
+        const auto _vkp_after_scripts = std::chrono::steady_clock::now();
         if (qtScriptDispatched && qtScriptsRunning() && !qtFpsMode) {
           qtPendingFpsLookDx = 0.0f;
           qtPendingFpsLookDy = 0.0f;
         }
         qtApplyPhysicsSimulation(qtFrameStart);
         const auto qtAfterPhysics = std::chrono::steady_clock::now();
+        qtFlushDeferredBackgroundSnapshot();
+        qtDeferBackgroundSnapshotPublishes = false;
+        const auto qtAfterSnapshotFlush = std::chrono::steady_clock::now();
+        VKP_METRIC_OBSERVE("vkp.qt.fps_movement_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(_vkp_after_fps - _vkp_after_orbit).count());
+        VKP_METRIC_OBSERVE("vkp.qt.scripts_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(_vkp_after_scripts - _vkp_after_fps).count());
+        VKP_METRIC_OBSERVE("vkp.qt.physics_apply_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(qtAfterPhysics - _vkp_after_scripts).count());
+        VKP_METRIC_OBSERVE("vkp.qt.snapshot_flush_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(qtAfterSnapshotFlush - qtAfterPhysics).count());
         if (qtAudioSystem) {
           const auto audioForward = qtCameraForward();
           vkpt::audio::AudioListenerState listener;
@@ -894,6 +911,27 @@
         qtProfileFrameMs += qtProfileCurrentFrameMs;
         qtProfileMaxFrameMs = std::max(qtProfileMaxFrameMs, qtProfileCurrentFrameMs);
         ++qtProfileFrames;
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.loop_poll_us",
+            static_cast<std::uint64_t>(std::max(0.0, qtThisFramePollMs * 1000.0)));
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.loop_input_us",
+            static_cast<std::uint64_t>(std::max(0.0, qtThisFrameInputMs * 1000.0)));
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.loop_physics_us",
+            static_cast<std::uint64_t>(std::max(0.0, qtThisFramePhysicsMs * 1000.0)));
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.loop_selection_us",
+            static_cast<std::uint64_t>(std::max(0.0, qtThisFrameSelectionMs * 1000.0)));
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.loop_render_us",
+            static_cast<std::uint64_t>(std::max(0.0, qtThisFrameRenderMs * 1000.0)));
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.loop_ui_us",
+            static_cast<std::uint64_t>(std::max(0.0, qtThisFrameUiMs * 1000.0)));
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.loop_frame_work_us",
+            static_cast<std::uint64_t>(std::max(0.0, qtProfileCurrentFrameMs * 1000.0)));
         // Live drag-fps diagnostic. While a gizmo drag is active, log the
         // per-phase breakdown for any frame that overruns 1.5x the target. The
         // user can drag once and the log will show which phase ate the budget
@@ -931,14 +969,21 @@
         if (qtFrameDuration < frameTarget) {
           const auto paceStart = std::chrono::steady_clock::now();
           SleepUntilFrameTarget(qtFrameStart + frameTarget);
-          qtProfilePaceWaitMs +=
+          const double qtPaceWaitMs =
               std::chrono::duration<double, std::milli>(
                   std::chrono::steady_clock::now() - paceStart).count();
+          qtProfilePaceWaitMs += qtPaceWaitMs;
+          VKP_METRIC_OBSERVE(
+              "vkp.qt.loop_pace_wait_us",
+              static_cast<std::uint64_t>(std::max(0.0, qtPaceWaitMs * 1000.0)));
         } else {
           ++qtProfileLateFrames;
-          qtProfileMaxLateMs = std::max(
-              qtProfileMaxLateMs,
-              std::chrono::duration<double, std::milli>(qtFrameDuration - frameTarget).count());
+          const double qtLateMs =
+              std::chrono::duration<double, std::milli>(qtFrameDuration - frameTarget).count();
+          qtProfileMaxLateMs = std::max(qtProfileMaxLateMs, qtLateMs);
+          VKP_METRIC_OBSERVE(
+              "vkp.qt.loop_late_us",
+              static_cast<std::uint64_t>(std::max(0.0, qtLateMs * 1000.0)));
         }
         // Pace the UI/event loop so input and overlay updates do not busy-spin.
       }

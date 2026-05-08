@@ -3,58 +3,168 @@
                          vkpt::pathtracer::InstanceTransformUpdateOptions)>
           qtPublishInstanceTransformUpdates;
       uint32_t qtScriptTransformRevision = 1u;
+      auto qtNearlyEqual = [](float lhs, float rhs) {
+        return std::fabs(lhs - rhs) <= 1.0e-4f;
+      };
+      auto qtVecNearlyEqual =
+          [&](const vkpt::scene::Vec3& lhs, const vkpt::scene::Vec3& rhs) {
+        return qtNearlyEqual(lhs.x, rhs.x) &&
+               qtNearlyEqual(lhs.y, rhs.y) &&
+               qtNearlyEqual(lhs.z, rhs.z);
+      };
+      auto qtQuatNearlyEqual =
+          [&](const vkpt::scene::Quat& lhs, const vkpt::scene::Quat& rhs) {
+        const bool direct =
+            qtNearlyEqual(lhs.x, rhs.x) &&
+            qtNearlyEqual(lhs.y, rhs.y) &&
+            qtNearlyEqual(lhs.z, rhs.z) &&
+            qtNearlyEqual(lhs.w, rhs.w);
+        const bool negated =
+            qtNearlyEqual(lhs.x, -rhs.x) &&
+            qtNearlyEqual(lhs.y, -rhs.y) &&
+            qtNearlyEqual(lhs.z, -rhs.z) &&
+            qtNearlyEqual(lhs.w, -rhs.w);
+        return direct || negated;
+      };
+      auto qtTransformNearlyEqual =
+          [&](const vkpt::scene::TransformComponent& lhs,
+              const vkpt::scene::TransformComponent& rhs) {
+        return qtVecNearlyEqual(lhs.translation, rhs.translation) &&
+               qtQuatNearlyEqual(lhs.rotation, rhs.rotation) &&
+               qtVecNearlyEqual(lhs.scale, rhs.scale);
+      };
+      auto qtLightNearlyEqual =
+          [&](const vkpt::scene::LightComponent& lhs,
+              const vkpt::scene::LightComponent& rhs) {
+        return lhs.type == rhs.type &&
+               qtVecNearlyEqual(lhs.color, rhs.color) &&
+               qtNearlyEqual(lhs.intensity, rhs.intensity) &&
+               qtNearlyEqual(lhs.radius, rhs.radius) &&
+               qtVecNearlyEqual(lhs.direction, rhs.direction) &&
+               qtNearlyEqual(lhs.beam_angle_degrees, rhs.beam_angle_degrees) &&
+               qtNearlyEqual(lhs.blend, rhs.blend);
+      };
+      auto qtCameraNearlyEqual =
+          [&](const vkpt::scene::CameraComponent& lhs,
+              const vkpt::scene::CameraComponent& rhs) {
+        return qtNearlyEqual(lhs.fov, rhs.fov) &&
+               qtNearlyEqual(lhs.focal_length_mm, rhs.focal_length_mm) &&
+               qtNearlyEqual(lhs.sensor_width_mm, rhs.sensor_width_mm) &&
+               qtNearlyEqual(lhs.sensor_height_mm, rhs.sensor_height_mm) &&
+               qtNearlyEqual(lhs.aperture_radius, rhs.aperture_radius) &&
+               qtNearlyEqual(lhs.focus_distance, rhs.focus_distance) &&
+               qtNearlyEqual(lhs.f_stop, rhs.f_stop) &&
+               qtNearlyEqual(lhs.shutter_seconds, rhs.shutter_seconds) &&
+               qtNearlyEqual(lhs.iso, rhs.iso) &&
+               qtNearlyEqual(lhs.exposure_compensation, rhs.exposure_compensation) &&
+               qtNearlyEqual(lhs.white_balance_kelvin, rhs.white_balance_kelvin) &&
+               lhs.iris_blade_count == rhs.iris_blade_count &&
+               qtNearlyEqual(lhs.iris_rotation_degrees, rhs.iris_rotation_degrees) &&
+               qtNearlyEqual(lhs.iris_roundness, rhs.iris_roundness) &&
+               qtNearlyEqual(lhs.anamorphic_squeeze, rhs.anamorphic_squeeze);
+      };
+      auto qtBuildRtMaterialIndexById = [&]() {
+        std::unordered_map<vkpt::core::StableId, uint32_t> materialIndexById;
+        materialIndexById.reserve(qtSceneDocument.materials.size());
+        for (std::size_t index = 0; index < qtSceneDocument.materials.size(); ++index) {
+          const auto id = qtSceneDocument.materials[index].id;
+          if (id != 0u) {
+            materialIndexById.emplace(id, static_cast<uint32_t>(index));
+          }
+        }
+        return materialIndexById;
+      };
       struct QtInstanceTransformBuildResult {
         std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> updates;
         bool unsupported_instances = false;
       };
+      auto qtBuildTransformAffectedEntityIds =
+          [&](const std::unordered_set<vkpt::core::StableId>& transformTouchedIds,
+              const std::unordered_map<vkpt::core::StableId,
+                                       const vkpt::scene::SceneEntityDefinition*>&
+                  entitiesById) {
+        std::unordered_set<vkpt::core::StableId> affectedIds = transformTouchedIds;
+        if (affectedIds.empty()) {
+          return affectedIds;
+        }
+
+        std::unordered_map<vkpt::core::StableId,
+                           std::vector<vkpt::core::StableId>>
+            childrenByParent;
+        childrenByParent.reserve(entitiesById.size());
+        for (const auto& [id, entity] : entitiesById) {
+          (void)id;
+          if (entity != nullptr &&
+              entity->has_hierarchy &&
+              entity->hierarchy.parent != 0u) {
+            childrenByParent[entity->hierarchy.parent].push_back(entity->id);
+          }
+        }
+
+        std::vector<vkpt::core::StableId> stack(transformTouchedIds.begin(),
+                                                transformTouchedIds.end());
+        while (!stack.empty()) {
+          const auto parent = stack.back();
+          stack.pop_back();
+          const auto childrenIt = childrenByParent.find(parent);
+          if (childrenIt == childrenByParent.end()) {
+            continue;
+          }
+          for (const auto child : childrenIt->second) {
+            if (affectedIds.insert(child).second) {
+              stack.push_back(child);
+            }
+          }
+        }
+        return affectedIds;
+      };
       auto qtBuildInstanceTransformUpdatesForTouchedEntities =
           [&](const std::unordered_set<vkpt::core::StableId>& transformTouchedIds,
               uint32_t baseFlags,
-              uint32_t& transformRevision) {
+              uint32_t& transformRevision,
+              const vkpt::scene::SceneWorld* world = nullptr,
+              const std::unordered_map<vkpt::core::StableId,
+                                       const vkpt::scene::SceneEntityDefinition*>*
+                  entityIndex = nullptr,
+              const std::unordered_set<vkpt::core::StableId>* affectedIds = nullptr) {
         QtInstanceTransformBuildResult result;
         if (transformTouchedIds.empty()) {
           return result;
         }
 
-        std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneEntityDefinition*>
-            entitiesById;
-        entitiesById.reserve(qtSceneDocument.entities.size());
-        for (const auto& entity : qtSceneDocument.entities) {
-          entitiesById.emplace(entity.id, &entity);
+        std::unordered_map<vkpt::core::StableId,
+                           const vkpt::scene::SceneEntityDefinition*>
+            localEntitiesById;
+        const auto* entitiesById = entityIndex;
+        if (entitiesById == nullptr) {
+          localEntitiesById.reserve(qtSceneDocument.entities.size());
+          for (const auto& entity : qtSceneDocument.entities) {
+            localEntitiesById.emplace(entity.id, &entity);
+          }
+          entitiesById = &localEntitiesById;
+        }
+        std::optional<std::unordered_set<vkpt::core::StableId>> localAffectedIds;
+        const auto* affectedTransformIds = affectedIds;
+        if (affectedTransformIds == nullptr) {
+          localAffectedIds =
+              qtBuildTransformAffectedEntityIds(transformTouchedIds, *entitiesById);
+          affectedTransformIds = &*localAffectedIds;
         }
 
-        auto hasTouchedTransformAncestor =
-            [&](const vkpt::scene::SceneEntityDefinition& entity) {
-          if (transformTouchedIds.contains(entity.id)) {
-            return true;
-          }
-          std::unordered_set<vkpt::core::StableId> visited;
-          vkpt::core::StableId parent =
-              entity.has_hierarchy ? entity.hierarchy.parent : 0u;
-          while (parent != 0u && visited.insert(parent).second) {
-            if (transformTouchedIds.contains(parent)) {
-              return true;
-            }
-            const auto parentIt = entitiesById.find(parent);
-            if (parentIt == entitiesById.end()) {
-              break;
-            }
-            const auto* parentEntity = parentIt->second;
-            parent = parentEntity->has_hierarchy ? parentEntity->hierarchy.parent : 0u;
-          }
-          return false;
-        };
-
         result.updates.reserve(qtScene.instances.size());
-        const auto worldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
-        const auto* world = worldSnapshot ? &worldSnapshot.value() : nullptr;
+        std::optional<vkpt::scene::SceneWorld> localWorldSnapshot;
+        const auto* resolvedWorld = world;
+        if (resolvedWorld == nullptr) {
+          localWorldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
+          resolvedWorld = localWorldSnapshot ? &localWorldSnapshot.value() : nullptr;
+        }
         for (std::size_t index = 0; index < qtScene.instances.size(); ++index) {
           const auto& instance = qtScene.instances[index];
-          const auto entityIt = entitiesById.find(instance.entity_id);
-          if (entityIt == entitiesById.end() || entityIt->second == nullptr) {
+          const auto entityIt = entitiesById->find(instance.entity_id);
+          if (entityIt == entitiesById->end() || entityIt->second == nullptr) {
             continue;
           }
-          if (!hasTouchedTransformAncestor(*entityIt->second)) {
+          if (!affectedTransformIds->contains(entityIt->second->id)) {
             continue;
           }
           const bool dynamicCompatible =
@@ -66,7 +176,7 @@
             continue;
           }
           const auto worldTransform =
-              ResolveEntityWorldTransform(*entityIt->second, world);
+              ResolveEntityWorldTransform(*entityIt->second, resolvedWorld);
           vkpt::pathtracer::RTInstanceTransformUpdate update;
           update.entity_id = instance.entity_id;
           update.instance_index = static_cast<uint32_t>(index);
@@ -225,6 +335,20 @@
       bool qtViewportPickablesRefreshPending = false;
       constexpr auto kQtTransformPickablesRefreshInterval =
           std::chrono::milliseconds(100);
+      constexpr std::uint64_t kQtPickablesMutationGraceNs =
+          250u * 1000000ull;  // 250ms
+      auto qtDeferTransformPickablesRefresh = [&]() {
+        if (qtGizmoDrag.active ||
+            qtFpsMode ||
+            qtIsPlayMode() ||
+            qtLiveEditViewportInputArmed()) {
+          return true;
+        }
+        const auto nowNs = vkpt::core::metrics::UiInputLatencyNowNs();
+        return qtLastMutationPublishNs != 0u &&
+               nowNs > qtLastMutationPublishNs &&
+               (nowNs - qtLastMutationPublishNs) < kQtPickablesMutationGraceNs;
+      };
       auto qtSetViewportPickablesFromSnapshot =
           [&](vkpt::scene::RenderSceneSnapshot::Ptr snapshot) {
         if (snapshot) {
@@ -279,6 +403,13 @@
         const bool topologyChanged =
             snapshot->topology_revision != qtViewportPickablesTopologyRevision;
         if (!topologyChanged) {
+          if (qtDeferTransformPickablesRefresh()) {
+            qtViewportPickablesSnapshot = snapshot;
+            qtViewportPickablesSnapshotGeneration = snapshot->generation;
+            qtViewportPickablesTransformRevision = snapshot->transform_revision;
+            qtViewportPickablesRefreshPending = true;
+            return;
+          }
           const auto now = std::chrono::steady_clock::now();
           if (qtLastViewportPickablesRefresh !=
                   std::chrono::steady_clock::time_point{} &&
@@ -313,6 +444,9 @@
       auto qtMaybeRefreshPendingViewportPickables =
           [&](std::chrono::steady_clock::time_point now) {
         if (!qtViewportPickablesRefreshPending || qtGizmoDrag.active) {
+          return;
+        }
+        if (qtDeferTransformPickablesRefresh()) {
           return;
         }
         if (qtLastViewportPickablesRefresh == std::chrono::steady_clock::time_point{} ||
@@ -371,16 +505,222 @@
         }
         return runtimeWorld;
       };
+      std::optional<vkpt::scene::SceneScriptRuntimeWorld> qtScriptRuntimeWorldCache;
+      bool qtScriptRuntimeWorldCacheFallback = false;
+      auto qtStoreScriptRuntimeWorldCache =
+          [&](vkpt::scene::SceneScriptRuntimeWorld runtimeWorld, bool enableFallback)
+              -> vkpt::scene::SceneScriptRuntimeWorld& {
+        qtScriptRuntimeWorldCacheFallback = enableFallback;
+        qtScriptRuntimeWorldCache = std::move(runtimeWorld);
+        return *qtScriptRuntimeWorldCache;
+      };
+      auto qtRebuildCachedScriptRuntimeWorld =
+          [&](bool enableFallback)
+              -> vkpt::core::Result<vkpt::scene::SceneScriptRuntimeWorld*> {
+        auto worldResult = qtBuildScriptRuntimeWorld(enableFallback);
+        if (!worldResult) {
+          qtScriptRuntimeWorldCache.reset();
+          return vkpt::core::Result<vkpt::scene::SceneScriptRuntimeWorld*>::error(
+              worldResult.error());
+        }
+        auto& cached =
+            qtStoreScriptRuntimeWorldCache(std::move(worldResult.value()), enableFallback);
+        return vkpt::core::Result<vkpt::scene::SceneScriptRuntimeWorld*>::ok(&cached);
+      };
+      auto qtGetCachedScriptRuntimeWorld =
+          [&](bool enableFallback)
+              -> vkpt::core::Result<vkpt::scene::SceneScriptRuntimeWorld*> {
+        if (!qtScriptRuntimeWorldCache ||
+            qtScriptRuntimeWorldCacheFallback != enableFallback) {
+          return qtRebuildCachedScriptRuntimeWorld(enableFallback);
+        }
+        return vkpt::core::Result<vkpt::scene::SceneScriptRuntimeWorld*>::ok(
+            &*qtScriptRuntimeWorldCache);
+      };
+      auto qtReplayScriptCommandsIntoRuntimeWorldCache =
+          [&](const vkpt::scene::WorldCommandBuffer& commands) {
+        if (!qtScriptRuntimeWorldCache || commands.commands().empty()) {
+          return;
+        }
+        auto replayResult = commands.replay(qtScriptRuntimeWorldCache->world);
+        if (!replayResult) {
+          qtScriptRuntimeWorldCache.reset();
+          logger.log(vkpt::log::Severity::Warning,
+                     "scripts",
+                     "script runtime world cache invalidated after command replay failed",
+                     {{"commands", std::to_string(commands.commands().size())}},
+                     qtFrameCount);
+        }
+      };
+      auto qtNormalizeScriptLightType = [](std::string_view type) {
+        std::string out;
+        out.reserve(type.size());
+        bool lastUnderscore = false;
+        for (const char ch : type) {
+          const auto c = static_cast<unsigned char>(ch);
+          if (std::isalnum(c)) {
+            out.push_back(static_cast<char>(std::tolower(c)));
+            lastUnderscore = false;
+          } else if (!lastUnderscore && !out.empty()) {
+            out.push_back('_');
+            lastUnderscore = true;
+          }
+        }
+        while (!out.empty() && out.back() == '_') {
+          out.pop_back();
+        }
+        return out;
+      };
+      auto qtScriptLightIsEnvironment = [&](std::string_view type) {
+        const auto normalized = qtNormalizeScriptLightType(type);
+        return normalized == "environment" ||
+               normalized == "environment_sky" ||
+               normalized == "environment_hdri" ||
+               normalized == "environmenthdri" ||
+               normalized == "hdri" ||
+               normalized == "hdri_sky" ||
+               normalized == "open_sky" ||
+               normalized == "sky";
+      };
+      auto qtScriptLightIsSpot = [&](std::string_view type) {
+        const auto normalized = qtNormalizeScriptLightType(type);
+        return normalized == "spot" ||
+               normalized == "spot_light" ||
+               normalized == "spotlight";
+      };
+      auto qtEntityVisiblePath =
+          [&](const vkpt::scene::SceneEntityDefinition& entity,
+              const std::unordered_map<vkpt::core::StableId,
+                                       const vkpt::scene::SceneEntityDefinition*>&
+                  entitiesById) {
+        const auto* current = &entity;
+        std::unordered_set<vkpt::core::StableId> visited;
+        for (std::size_t depth = 0u;
+             current != nullptr && depth <= entitiesById.size() &&
+             visited.insert(current->id).second;
+             ++depth) {
+          if (!current->visible) {
+            return false;
+          }
+          if (!current->has_hierarchy || current->hierarchy.parent == 0u) {
+            return true;
+          }
+          const auto parentIt = entitiesById.find(current->hierarchy.parent);
+          current = parentIt == entitiesById.end() ? nullptr : parentIt->second;
+        }
+        return true;
+      };
+      auto qtBuildRtLightIndexByEntity =
+          [&](const std::unordered_map<vkpt::core::StableId,
+                                       const vkpt::scene::SceneEntityDefinition*>&
+                  entitiesById) {
+        std::unordered_map<vkpt::core::StableId, std::uint32_t> lightIndexByEntity;
+        lightIndexByEntity.reserve(qtSceneDocument.entities.size());
+        std::unordered_set<vkpt::core::StableId> ecsLightIds;
+        ecsLightIds.reserve(qtSceneDocument.entities.size());
+        std::uint32_t lightIndex = 0u;
+        for (const auto& entity : qtSceneDocument.entities) {
+          if (!entity.has_light) {
+            continue;
+          }
+          ecsLightIds.insert(entity.id);
+          if (!qtScriptLightIsEnvironment(entity.light.type)) {
+            lightIndexByEntity.emplace(entity.id, lightIndex++);
+          }
+        }
+        for (const auto& light : qtSceneDocument.lights) {
+          if (ecsLightIds.contains(light.id) ||
+              qtScriptLightIsEnvironment(light.light.type)) {
+            continue;
+          }
+          lightIndexByEntity.emplace(light.id, lightIndex++);
+        }
+        (void)entitiesById;
+        return lightIndexByEntity;
+      };
+      auto qtBuildScriptLightDelta =
+          [&](const std::unordered_set<vkpt::core::StableId>& lightTouchedIds,
+              const vkpt::scene::SceneWorld* world,
+              const std::unordered_map<vkpt::core::StableId,
+                                       const vkpt::scene::SceneEntityDefinition*>&
+                  entitiesById,
+              const std::unordered_map<vkpt::core::StableId, std::uint32_t>&
+                  lightIndexByEntity)
+              -> std::optional<vkpt::pathtracer::RTSceneDeltaUpdate> {
+        if (lightTouchedIds.empty()) {
+          return vkpt::pathtracer::RTSceneDeltaUpdate{};
+        }
+        vkpt::pathtracer::RTSceneDeltaUpdate delta;
+        delta.lights.reserve(lightTouchedIds.size());
+        for (const auto lightId : lightTouchedIds) {
+          const auto entityIt = entitiesById.find(lightId);
+          if (entityIt == entitiesById.end() ||
+              entityIt->second == nullptr ||
+              !entityIt->second->has_light) {
+            return std::nullopt;
+          }
+          const auto& entity = *entityIt->second;
+          const auto indexIt = lightIndexByEntity.find(lightId);
+          if (indexIt == lightIndexByEntity.end() ||
+              indexIt->second >= qtScene.lights.size() ||
+              qtScriptLightIsEnvironment(entity.light.type)) {
+            return std::nullopt;
+          }
+
+          auto rtLight = qtScene.lights[indexIt->second];
+          bool hasTransform = entity.has_transform;
+          vkpt::scene::TransformComponent transform =
+              entity.has_transform ? entity.transform : vkpt::scene::TransformComponent{};
+          if (entity.has_transform && entity.has_hierarchy &&
+              entity.hierarchy.parent != 0u) {
+            transform = ResolveEntityWorldTransform(entity, world);
+          }
+          rtLight.position =
+              hasTransform ? ToPtVec3(transform.translation)
+                           : vkpt::pathtracer::Vec3{0.0f, 1.8f, 0.0f};
+          rtLight.color = ToPtVec3(entity.light.color);
+          rtLight.intensity =
+              qtEntityVisiblePath(entity, entitiesById)
+                  ? std::max(0.0f, entity.light.intensity)
+                  : 0.0f;
+          rtLight.radius = std::max(0.0f, entity.light.radius);
+          auto direction = ToPtVec3(entity.light.direction);
+          if (PtLength(direction) <= 1.0e-4f) {
+            direction = hasTransform
+                ? RotatePointByQuat({0.0f, 0.0f, -1.0f}, transform.rotation)
+                : vkpt::pathtracer::Vec3{0.0f, -1.0f, 0.0f};
+          }
+          rtLight.direction = PtNormalize(direction, {0.0f, -1.0f, 0.0f});
+          if (qtScriptLightIsSpot(entity.light.type)) {
+            const float innerHalfDegrees =
+                std::clamp(entity.light.beam_angle_degrees * 0.5f, 1.0f, 89.0f);
+            const float outerHalfDegrees = std::clamp(
+                innerHalfDegrees * (1.0f + std::max(0.0f, entity.light.blend)),
+                innerHalfDegrees + 0.25f,
+                89.5f);
+            constexpr float kPi = 3.14159265358979323846f;
+            rtLight.spot_inner_cos = std::cos(innerHalfDegrees * kPi / 180.0f);
+            rtLight.spot_outer_cos = std::cos(outerHalfDegrees * kPi / 180.0f);
+          } else {
+            rtLight.spot_inner_cos = -1.0f;
+            rtLight.spot_outer_cos = -1.0f;
+          }
+          delta.lights.push_back(
+              vkpt::pathtracer::RTLightUpdate{indexIt->second, rtLight});
+        }
+        return delta;
+      };
       auto qtReloadScriptsFromDocument = [&](std::string_view reason) {
-        auto worldResult = qtBuildScriptRuntimeWorld(qtScriptsRunning());
+        auto worldResult = qtRebuildCachedScriptRuntimeWorld(qtScriptsRunning());
         if (!worldResult) {
           qtScriptState.status = "world build failed";
           ui_runtime_state.last_warning_or_error = "script reload failed: world build";
           qtDockPanelsDirty = true;
           return false;
         }
-        auto world = std::move(worldResult.value().world);
-        world.recompute_world_transforms();
+        auto& world = worldResult.value()->world;
+        // Binding reload only scans script components. Building the world
+        // transform cache here makes reloads O(scene size) with no consumer.
         qtScriptState.binding_summary = qtScriptRuntime->reload_bindings(world);
         qtScriptState.bindings = qtScriptRuntime->bindings();
         qtScriptState.diagnostics = qtScriptRuntime->diagnostics();
@@ -394,17 +734,24 @@
         return true;
       };
       bool qtSkipScriptReloadForSceneReload = false;
+      std::chrono::steady_clock::time_point qtLastDirectScriptSnapshotPublish{};
+      constexpr auto kQtPlayModeDirectSnapshotInterval =
+          std::chrono::milliseconds(1000);
       auto qtApplyScriptCommandsToDocument =
           [&](const vkpt::scene::WorldCommandBuffer& commands) {
         if (commands.commands().empty()) {
           return false;
         }
+        const auto applyStart = std::chrono::steady_clock::now();
         std::size_t createCount = 0u;
         std::size_t destroyCount = 0u;
         std::size_t setTransformCount = 0u;
         std::size_t assignCameraCount = 0u;
         std::size_t assignLightCount = 0u;
+        std::size_t assignMaterialCount = 0u;
         std::unordered_set<vkpt::core::StableId> transformTouchedIds;
+        std::unordered_set<vkpt::core::StableId> lightTouchedIds;
+        std::unordered_set<vkpt::core::StableId> materialTouchedIds;
         bool cameraStateTouched = false;
         bool cameraTransformTouched = false;
         bool fullSceneReloadNeeded = false;
@@ -414,15 +761,43 @@
         bool touchesHeroRoot = false;
         bool touchesActionCamera = false;
         bool touchesActionLight = false;
+        std::unordered_map<vkpt::core::StableId, const vkpt::scene::SceneEntityDefinition*>
+            sceneEntitiesById;
+        sceneEntitiesById.reserve(qtSceneDocument.entities.size());
+        for (const auto& entity : qtSceneDocument.entities) {
+          if (entity.id != 0u) {
+            sceneEntitiesById.emplace(entity.id, &entity);
+          }
+        }
+        const auto existingLightIndexByEntity =
+            qtBuildRtLightIndexByEntity(sceneEntitiesById);
+        const auto rtMaterialIndexById = qtBuildRtMaterialIndexById();
+        auto canPatchExistingLightEntity = [&](vkpt::core::StableId id) {
+          const auto entityIt = sceneEntitiesById.find(id);
+          return entityIt != sceneEntitiesById.end() &&
+                 entityIt->second != nullptr &&
+                 entityIt->second->has_light &&
+                 existingLightIndexByEntity.contains(id) &&
+                 !qtScriptLightIsEnvironment(entityIt->second->light.type);
+        };
+        auto markLightTouched = [&](vkpt::core::StableId id) {
+          if (canPatchExistingLightEntity(id)) {
+            lightTouchedIds.insert(id);
+          } else {
+            fullSceneReloadNeeded = true;
+          }
+        };
         auto markTransformTouched = [&](vkpt::core::StableId id) {
           transformTouchedIds.insert(id);
           touchesHeroRoot = touchesHeroRoot || id == 9110u;
           touchesActionCamera = touchesActionCamera || id == 9101u;
           if (auto* entity = qtFindEntity(id)) {
             cameraTransformTouched = cameraTransformTouched || entity->has_camera;
-            fullSceneReloadNeeded = fullSceneReloadNeeded ||
-                                    entity->has_light ||
-                                    entity->has_sdf_primitive;
+            if (entity->has_light) {
+              markLightTouched(id);
+            }
+            fullSceneReloadNeeded =
+                fullSceneReloadNeeded || entity->has_sdf_primitive;
           }
         };
         auto classifyComponentMutation =
@@ -469,70 +844,138 @@
             using T = std::decay_t<decltype(payload)>;
             if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::CreateEntityCommand>) {
               ++createCount;
-              fullSceneReloadNeeded = true;
+              // Script-spawned UI/helper entities do not touch the render scene.
+              // Component commands that add render-visible data still mark the
+              // batch for reload below.
+              fullSceneReloadNeeded =
+                  fullSceneReloadNeeded || payload.requested_id == 0u;
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::DestroyEntityCommand>) {
               ++destroyCount;
               fullSceneReloadNeeded = true;
               scriptBindingsDirty = true;
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::SetComponentCommand> ||
                                  std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AddComponentCommand>) {
-              classifyComponentMutation(payload.id, payload.kind, false);
+              bool componentChanged = true;
+              if (payload.kind == vkpt::scene::ComponentKind::Transform) {
+                const auto* transform =
+                    std::get_if<vkpt::scene::TransformComponent>(&payload.component);
+                const auto entityIt = sceneEntitiesById.find(payload.id);
+                componentChanged =
+                    transform == nullptr ||
+                    entityIt == sceneEntitiesById.end() ||
+                    entityIt->second == nullptr ||
+                    !entityIt->second->has_transform ||
+                    !qtTransformNearlyEqual(entityIt->second->transform, *transform);
+              }
+              if (componentChanged) {
+                classifyComponentMutation(payload.id, payload.kind, false);
+              }
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::RemoveComponentCommand>) {
               classifyComponentMutation(payload.id, payload.kind, true);
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::SetTransformCommand>) {
               ++setTransformCount;
-              markTransformTouched(payload.id);
+              const auto entityIt = sceneEntitiesById.find(payload.id);
+              const bool transformChanged =
+                  entityIt == sceneEntitiesById.end() ||
+                  entityIt->second == nullptr ||
+                  !entityIt->second->has_transform ||
+                  !qtTransformNearlyEqual(entityIt->second->transform, payload.transform);
+              if (transformChanged) {
+                markTransformTouched(payload.id);
+              }
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::ReparentEntityCommand>) {
               fullSceneReloadNeeded = true;
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignMaterialCommand>) {
-              fullSceneReloadNeeded = true;
+              ++assignMaterialCount;
+              const auto entityIt = sceneEntitiesById.find(payload.id);
+              const auto* entity =
+                  entityIt == sceneEntitiesById.end() ? nullptr : entityIt->second;
+              const bool materialKnown = rtMaterialIndexById.contains(payload.material_id);
+              if (entity == nullptr) {
+                fullSceneReloadNeeded = true;
+              } else if (entity->has_mesh) {
+                const bool materialChanged = entity->mesh.material_id != payload.material_id;
+                const auto instanceIt = qtRtInstanceIndexByEntity.find(payload.id);
+                const bool canPatchInstanceMaterial =
+                    materialChanged &&
+                    materialKnown &&
+                    instanceIt != qtRtInstanceIndexByEntity.end() &&
+                    instanceIt->second < qtScene.instances.size() &&
+                    qtScene.instances[instanceIt->second].has_flag(
+                        vkpt::pathtracer::kRTInstanceFlagDynamicTransform);
+                if (canPatchInstanceMaterial) {
+                  materialTouchedIds.insert(payload.id);
+                } else if (materialChanged) {
+                  fullSceneReloadNeeded = true;
+                }
+              } else if (entity->has_sdf_primitive) {
+                const bool materialChanged =
+                    entity->material.material_id != payload.material_id;
+                fullSceneReloadNeeded = fullSceneReloadNeeded || materialChanged;
+              }
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignCameraCommand>) {
               ++assignCameraCount;
-              cameraStateTouched = true;
+              const auto entityIt = sceneEntitiesById.find(payload.id);
+              const bool cameraChanged =
+                  entityIt == sceneEntitiesById.end() ||
+                  entityIt->second == nullptr ||
+                  !entityIt->second->has_camera ||
+                  !qtCameraNearlyEqual(entityIt->second->camera, payload.camera);
+              cameraStateTouched = cameraStateTouched || cameraChanged;
               touchesActionCamera = touchesActionCamera || payload.id == 9101u;
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignLightCommand>) {
               ++assignLightCount;
-              fullSceneReloadNeeded = true;
+              const auto entityIt = sceneEntitiesById.find(payload.id);
+              const bool lightChanged =
+                  entityIt == sceneEntitiesById.end() ||
+                  entityIt->second == nullptr ||
+                  !entityIt->second->has_light ||
+                  !qtLightNearlyEqual(entityIt->second->light, payload.light);
+              const bool canPatchExistingLight =
+                  lightChanged &&
+                  entityIt != sceneEntitiesById.end() &&
+                  entityIt->second != nullptr &&
+                  entityIt->second->has_light &&
+                  existingLightIndexByEntity.contains(payload.id) &&
+                  !qtScriptLightIsEnvironment(payload.light.type);
+              if (lightChanged) {
+                if (canPatchExistingLight) {
+                  lightTouchedIds.insert(payload.id);
+                } else {
+                  fullSceneReloadNeeded = true;
+                }
+              }
               touchesActionLight = touchesActionLight || payload.id == 9103u;
             }
           }, command.payload);
         }
-        auto hasTouchedTransformAncestor =
-            [&](const vkpt::scene::SceneEntityDefinition& entity) {
-          if (transformTouchedIds.contains(entity.id)) {
-            return true;
-          }
-          std::unordered_set<vkpt::core::StableId> visited;
-          vkpt::core::StableId parent =
-              entity.has_hierarchy ? entity.hierarchy.parent : 0u;
-          while (parent != 0u && visited.insert(parent).second) {
-            if (transformTouchedIds.contains(parent)) {
-              return true;
-            }
-            const auto parentIt = std::find_if(
-                qtSceneDocument.entities.begin(),
-                qtSceneDocument.entities.end(),
-                [&](const vkpt::scene::SceneEntityDefinition& candidate) {
-                  return candidate.id == parent;
-                });
-            if (parentIt == qtSceneDocument.entities.end()) {
-              break;
-            }
-            parent = parentIt->has_hierarchy ? parentIt->hierarchy.parent : 0u;
-          }
-          return false;
-        };
+        const auto applyClassifyEnd = std::chrono::steady_clock::now();
+        const auto transformAffectedIds =
+            qtBuildTransformAffectedEntityIds(transformTouchedIds, sceneEntitiesById);
+        bool transformRenderInstanceTouched = false;
         if (!transformTouchedIds.empty()) {
           for (const auto& entity : qtSceneDocument.entities) {
-            if ((entity.has_light || entity.has_sdf_primitive) &&
-                hasTouchedTransformAncestor(entity)) {
-              fullSceneReloadNeeded = true;
+            if (transformAffectedIds.contains(entity.id)) {
+              if (entity.has_light) {
+                markLightTouched(entity.id);
+              }
+              if (entity.has_sdf_primitive) {
+                fullSceneReloadNeeded = true;
+              }
             }
-            if (entity.has_camera && hasTouchedTransformAncestor(entity)) {
+            if (entity.has_camera && transformAffectedIds.contains(entity.id)) {
               cameraTransformTouched = true;
             }
-            if (entity.has_physics_body && hasTouchedTransformAncestor(entity)) {
+            if (entity.has_physics_body && transformAffectedIds.contains(entity.id)) {
               physicsTransformTouched = true;
+            }
+          }
+          for (const auto& instance : qtScene.instances) {
+            const auto entityIt = sceneEntitiesById.find(instance.entity_id);
+            if (entityIt != sceneEntitiesById.end() && entityIt->second != nullptr &&
+                transformAffectedIds.contains(entityIt->second->id)) {
+              transformRenderInstanceTouched = true;
+              break;
             }
           }
         }
@@ -541,11 +984,15 @@
                    "applying Lua script commands to scene document",
                    {{"commands", std::to_string(commands.commands().size())},
                     {"create", std::to_string(createCount)},
-                    {"destroy", std::to_string(destroyCount)},
-                    {"set_transform", std::to_string(setTransformCount)},
-                    {"assign_camera", std::to_string(assignCameraCount)},
-                    {"assign_light", std::to_string(assignLightCount)},
-                    {"transform_entities", std::to_string(transformTouchedIds.size())},
+                     {"destroy", std::to_string(destroyCount)},
+                     {"set_transform", std::to_string(setTransformCount)},
+                     {"assign_camera", std::to_string(assignCameraCount)},
+                     {"assign_light", std::to_string(assignLightCount)},
+                     {"assign_material", std::to_string(assignMaterialCount)},
+                     {"transform_entities", std::to_string(transformTouchedIds.size())},
+                     {"light_entities", std::to_string(lightTouchedIds.size())},
+                     {"material_entities", std::to_string(materialTouchedIds.size())},
+                    {"transform_render_instance_touched", transformRenderInstanceTouched ? "true" : "false"},
                     {"camera_state_touched", cameraStateTouched ? "true" : "false"},
                     {"camera_transform_touched", cameraTransformTouched ? "true" : "false"},
                     {"physics_transform_touched", physicsTransformTouched ? "true" : "false"},
@@ -723,11 +1170,14 @@
               }
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::SetTransformCommand>) {
               auto& entity = qtEnsureSceneObjectEntity(payload.id, "Script Entity");
-              entity.has_transform = true;
-              entity.transform = payload.transform;
-              entity.transform.dirty = true;
-              qtRemoveLegacyTransformEntry(payload.id);
-              changed = true;
+              if (!entity.has_transform ||
+                  !qtTransformNearlyEqual(entity.transform, payload.transform)) {
+                entity.has_transform = true;
+                entity.transform = payload.transform;
+                entity.transform.dirty = true;
+                qtRemoveLegacyTransformEntry(payload.id);
+                changed = true;
+              }
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::ReparentEntityCommand>) {
               if (auto* entity = qtFindEntity(payload.child)) {
                 entity->has_hierarchy = true;
@@ -739,25 +1189,35 @@
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignMaterialCommand>) {
               if (auto* entity = qtFindEntity(payload.id)) {
                 if (entity->has_mesh) {
-                  entity->mesh.material_id = payload.material_id;
+                  if (entity->mesh.material_id != payload.material_id) {
+                    entity->mesh.material_id = payload.material_id;
+                    changed = true;
+                  }
                 } else {
-                  entity->material.material_id = payload.material_id;
+                  if (entity->material.material_id != payload.material_id) {
+                    entity->material.material_id = payload.material_id;
+                    changed = true;
+                  }
                 }
-                changed = true;
               }
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignLightCommand>) {
               auto& entity = qtEnsureSceneObjectEntity(payload.id, "Script Light");
-              entity.has_light = true;
-              entity.light = payload.light;
-              changed = true;
+              if (!entity.has_light || !qtLightNearlyEqual(entity.light, payload.light)) {
+                entity.has_light = true;
+                entity.light = payload.light;
+                changed = true;
+              }
             } else if constexpr (std::is_same_v<T, vkpt::scene::WorldCommandBuffer::AssignCameraCommand>) {
               auto& entity = qtEnsureSceneObjectEntity(payload.id, "Script Camera");
-              entity.has_camera = true;
-              entity.camera = payload.camera;
-              changed = true;
+              if (!entity.has_camera || !qtCameraNearlyEqual(entity.camera, payload.camera)) {
+                entity.has_camera = true;
+                entity.camera = payload.camera;
+                changed = true;
+              }
             }
           }, command.payload);
         }
+        const auto applyMutationEnd = std::chrono::steady_clock::now();
 
         if (!changed) {
           logger.log(vkpt::log::Severity::Warning,
@@ -765,34 +1225,199 @@
                      "Lua script commands did not mutate scene document",
                      {{"commands", std::to_string(commands.commands().size())}},
                      qtFrameCount);
+          VKP_METRIC_OBSERVE(
+              "vkp.qt.script_command_apply_us",
+              std::chrono::duration_cast<std::chrono::microseconds>(
+                  std::chrono::steady_clock::now() - applyStart).count());
           return false;
         }
+        qtReplayScriptCommandsIntoRuntimeWorldCache(commands);
+        const auto applyReplayEnd = std::chrono::steady_clock::now();
 
         if (!fullSceneReloadNeeded) {
+          std::optional<vkpt::scene::SceneWorld> scriptCommandWorldSnapshot;
+          auto scriptCommandWorld = [&]() -> const vkpt::scene::SceneWorld* {
+            if (!scriptCommandWorldSnapshot) {
+              const auto worldStart = std::chrono::steady_clock::now();
+              scriptCommandWorldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
+              VKP_METRIC_OBSERVE(
+                  "vkp.qt.script_world_snapshot_us",
+                  std::chrono::duration_cast<std::chrono::microseconds>(
+                      std::chrono::steady_clock::now() - worldStart).count());
+            }
+            return scriptCommandWorldSnapshot ? &scriptCommandWorldSnapshot.value() : nullptr;
+          };
           bool incrementalOk = true;
           bool postedTransforms = false;
           bool postedCamera = false;
+          bool postedLightDelta = false;
+          bool scriptTransformSnapshotDirty = false;
+          bool scriptCameraSnapshotDirty = false;
+          bool scriptMaterialSnapshotDirty = false;
+          bool directTransformSnapshotDirty = false;
+          bool directCameraSnapshotDirty = false;
+          bool directMaterialSnapshotDirty = false;
+          std::vector<vkpt::pathtracer::RTInstanceMaterialUpdate> materialUpdates;
           std::size_t transformUpdateCount = 0u;
+          std::size_t lightUpdateCount = 0u;
+          std::size_t materialUpdateCount = 0u;
 
-          if (!transformTouchedIds.empty()) {
+          if (!materialTouchedIds.empty()) {
+            materialUpdates.reserve(materialTouchedIds.size());
+            for (const auto id : materialTouchedIds) {
+              const auto entityIt = sceneEntitiesById.find(id);
+              const auto instanceIt = qtRtInstanceIndexByEntity.find(id);
+              if (entityIt == sceneEntitiesById.end() ||
+                  entityIt->second == nullptr ||
+                  !entityIt->second->has_mesh ||
+                  instanceIt == qtRtInstanceIndexByEntity.end() ||
+                  instanceIt->second >= qtScene.instances.size()) {
+                incrementalOk = false;
+                break;
+              }
+              const auto materialIt =
+                  rtMaterialIndexById.find(entityIt->second->mesh.material_id);
+              if (materialIt == rtMaterialIndexById.end()) {
+                incrementalOk = false;
+                break;
+              }
+              if (qtScene.instances[instanceIt->second].material_index ==
+                  materialIt->second) {
+                continue;
+              }
+              vkpt::pathtracer::RTInstanceMaterialUpdate update;
+              update.entity_id = id;
+              update.instance_index = static_cast<uint32_t>(instanceIt->second);
+              update.material_index = materialIt->second;
+              materialUpdates.push_back(update);
+            }
+            materialUpdateCount = materialUpdates.size();
+          }
+
+          if (!transformTouchedIds.empty() && transformRenderInstanceTouched) {
             auto transformBuild = qtBuildInstanceTransformUpdatesForTouchedEntities(
                 transformTouchedIds,
                 0u,
-                qtScriptTransformRevision);
+                qtScriptTransformRevision,
+                scriptCommandWorld(),
+                &sceneEntitiesById,
+                &transformAffectedIds);
             transformUpdateCount = transformBuild.updates.size();
             incrementalOk = incrementalOk && !transformBuild.unsupported_instances;
 
             if (incrementalOk && !transformBuild.updates.empty()) {
-              incrementalOk = qtPublishInstanceTransformUpdates &&
-                              qtPublishInstanceTransformUpdates(
-                                  transformBuild.updates,
-                                  vkpt::pathtracer::MakeStandardTransformUpdateOptions(
-                                      vkpt::pathtracer::RenderUpdateReason::ScriptTransformMotion,
-                                      qtFrameCount,
-                                      "qt-script"));
+              if (qtUseBg && qtRenderCoordinator) {
+                incrementalOk = vkpt::pathtracer::ApplyInstanceTransformUpdates(
+                    qtScene,
+                    transformBuild.updates,
+                    vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly);
+                if (incrementalOk) {
+                  scriptTransformSnapshotDirty = true;
+                  qtScheduleViewportPickablesRefresh(false);
+                  qtMarkTransformDockPanelsDirty(false);
+                }
+              } else {
+                incrementalOk = false;
+                if (!qtUseBg && qtTracerReady) {
+                  const auto transformOptions =
+                      vkpt::pathtracer::MakeStandardTransformUpdateOptions(
+                          vkpt::pathtracer::RenderUpdateReason::ScriptTransformMotion,
+                          qtFrameCount,
+                          "qt-script");
+                  const auto plan =
+                      qtTracer->plan_instance_transform_update(transformBuild.updates,
+                                                               transformOptions);
+                  if (vkpt::pathtracer::TransformUpdateStatusAllowedByPolicy(
+                          plan.status,
+                          transformOptions.fallback_policy) &&
+                      plan.can_apply_without_full_fallback()) {
+                    const auto result =
+                        qtTracer->apply_instance_transform_update(transformBuild.updates,
+                                                                  transformOptions);
+                    incrementalOk = result.applied() &&
+                        vkpt::pathtracer::ApplyInstanceTransformUpdates(
+                            qtScene,
+                            transformBuild.updates,
+                            vkpt::pathtracer::RTInstanceTransformApplyMode::MetadataOnly);
+                    if (incrementalOk) {
+                      directTransformSnapshotDirty = true;
+                      qtScheduleViewportPickablesRefresh(false);
+                      qtMarkTransformDockPanelsDirty(false);
+                    }
+                  }
+                } else {
+                  incrementalOk = qtPublishInstanceTransformUpdates &&
+                                  qtPublishInstanceTransformUpdates(
+                                      transformBuild.updates,
+                                      vkpt::pathtracer::MakeStandardTransformUpdateOptions(
+                                          vkpt::pathtracer::RenderUpdateReason::ScriptTransformMotion,
+                                          qtFrameCount,
+                                          "qt-script"));
+                }
+              }
               postedTransforms = incrementalOk;
             }
           }
+          const auto applyTransformEnd = std::chrono::steady_clock::now();
+
+          if (incrementalOk && !lightTouchedIds.empty()) {
+            const auto lightDelta =
+                qtBuildScriptLightDelta(lightTouchedIds,
+                                        scriptCommandWorld(),
+                                        sceneEntitiesById,
+                                        existingLightIndexByEntity);
+            incrementalOk = lightDelta.has_value();
+            if (incrementalOk) {
+              lightUpdateCount = lightDelta->lights.size();
+              if (!lightDelta->lights.empty() ||
+                  lightDelta->environment_color_changed ||
+                  !lightDelta->materials.empty()) {
+                incrementalOk =
+                    vkpt::pathtracer::ApplySceneDeltaUpdate(qtScene, *lightDelta);
+                if (incrementalOk && qtUseBg && qtRenderCoordinator) {
+                  scriptMaterialSnapshotDirty = true;
+                  postedLightDelta = true;
+                } else if (incrementalOk && !qtUseBg && qtTracerReady) {
+                  incrementalOk = qtTracer->update_scene_delta(*lightDelta);
+                  if (incrementalOk) {
+                    directMaterialSnapshotDirty = true;
+                    postedLightDelta = true;
+                  }
+                } else {
+                  incrementalOk = false;
+                }
+                if (postedLightDelta) {
+                  qtPublishedSample.store(0u, std::memory_order_relaxed);
+                  qtPublishedRays.store(0u, std::memory_order_relaxed);
+                }
+              } else {
+                postedLightDelta = true;
+              }
+            }
+          }
+          const auto applyLightEnd = std::chrono::steady_clock::now();
+
+          if (incrementalOk && !materialUpdates.empty()) {
+            vkpt::pathtracer::RTSceneDeltaUpdate materialDelta;
+            materialDelta.instance_materials = materialUpdates;
+            incrementalOk =
+                vkpt::pathtracer::ApplySceneDeltaUpdate(qtScene, materialDelta);
+            if (incrementalOk && qtUseBg && qtRenderCoordinator) {
+              scriptMaterialSnapshotDirty = true;
+            } else if (incrementalOk && !qtUseBg && qtTracerReady) {
+              incrementalOk = qtTracer->update_scene_delta(materialDelta);
+              if (incrementalOk) {
+                directMaterialSnapshotDirty = true;
+              }
+            } else {
+              incrementalOk = false;
+            }
+            if (incrementalOk) {
+              qtPublishedSample.store(0u, std::memory_order_relaxed);
+              qtPublishedRays.store(0u, std::memory_order_relaxed);
+            }
+          }
+          const auto applyMaterialEnd = std::chrono::steady_clock::now();
 
           if (incrementalOk && (cameraStateTouched || cameraTransformTouched)) {
             auto* activeCamera = qtFindActiveCameraEntity();
@@ -816,9 +1441,10 @@
               qtScene.camera_anamorphic_squeeze = camera.anamorphic_squeeze;
 
               if (cameraTransformTouched && activeCamera->has_transform) {
-                const auto worldSnapshot = BuildSceneWorldSnapshot(qtSceneDocument);
-                const auto* world = worldSnapshot ? &worldSnapshot.value() : nullptr;
-                const auto transform = ResolveEntityWorldTransform(*activeCamera, world);
+                vkpt::scene::TransformComponent transform = activeCamera->transform;
+                if (activeCamera->has_hierarchy && activeCamera->hierarchy.parent != 0u) {
+                  transform = ResolveEntityWorldTransform(*activeCamera, scriptCommandWorld());
+                }
                 qtScene.camera_position = ToPtVec3(transform.translation);
                 const auto forward = PtNormalize(
                     RotatePointByQuat({0.0f, 0.0f, -1.0f}, transform.rotation),
@@ -842,7 +1468,7 @@
               qtPublishedRays.store(0u, std::memory_order_relaxed);
               const auto cameraState = vkpt::pathtracer::ExtractCameraState(qtScene);
               if (qtUseBg && qtRenderCoordinator) {
-                qtPublishRenderSnapshotForBackground(false, false, true, false);
+                scriptCameraSnapshotDirty = true;
                 postedCamera = true;
               } else if (!qtUseBg && qtTracerReady) {
                 bool cameraOk = qtTracer->update_camera_state(cameraState);
@@ -850,14 +1476,55 @@
                   cameraOk = qtTracer->load_scene_snapshot(qtScene) &&
                              qtTracer->build_or_update_acceleration();
                 }
-                qtTracerReady = cameraOk && qtTracer->reset_accumulation();
-                qtSampleIndex = 0u;
-                postedCamera = qtTracerReady;
-                if (postedCamera) {
-                  (void)qtPublishRenderSnapshot(false, false, true, false);
+                incrementalOk = cameraOk;
+                postedCamera = incrementalOk;
+                if (incrementalOk) {
+                  directCameraSnapshotDirty = true;
                 }
               } else {
                 incrementalOk = false;
+              }
+            }
+          }
+          const auto applyCameraEnd = std::chrono::steady_clock::now();
+
+          if (incrementalOk) {
+            if (qtUseBg && qtRenderCoordinator &&
+                (scriptTransformSnapshotDirty ||
+                 scriptCameraSnapshotDirty ||
+                 scriptMaterialSnapshotDirty)) {
+              qtPublishRenderSnapshotForBackground(false,
+                                                   scriptTransformSnapshotDirty,
+                                                   scriptCameraSnapshotDirty,
+                                                   scriptMaterialSnapshotDirty);
+              qtPublishedSample.store(0u, std::memory_order_relaxed);
+              qtPublishedRays.store(0u, std::memory_order_relaxed);
+            }
+            if (!qtUseBg && qtTracerReady &&
+                (directTransformSnapshotDirty ||
+                 directCameraSnapshotDirty ||
+                 directMaterialSnapshotDirty)) {
+              qtTracerReady = qtTracer->reset_accumulation();
+              incrementalOk = qtTracerReady;
+              qtSampleIndex = 0u;
+              if (incrementalOk) {
+                const auto now = std::chrono::steady_clock::now();
+                const bool throttleSnapshot = qtIsPlayMode();
+                const bool publishSnapshot =
+                    !throttleSnapshot ||
+                    qtLastDirectScriptSnapshotPublish ==
+                        std::chrono::steady_clock::time_point{} ||
+                    now - qtLastDirectScriptSnapshotPublish >=
+                        kQtPlayModeDirectSnapshotInterval;
+                if (publishSnapshot) {
+                  (void)qtPublishRenderSnapshot(false,
+                                                directTransformSnapshotDirty,
+                                                directCameraSnapshotDirty,
+                                                directMaterialSnapshotDirty);
+                  qtLastDirectScriptSnapshotPublish = now;
+                }
+                qtPublishedSample.store(0u, std::memory_order_relaxed);
+                qtPublishedRays.store(0u, std::memory_order_relaxed);
               }
             }
           }
@@ -879,16 +1546,53 @@
             logger.log(vkpt::log::Severity::Info,
                        "scripts",
                        "Lua script commands applied incrementally",
-                       {{"commands", std::to_string(commands.commands().size())},
-                        {"transform_updates", postedTransforms ? "true" : "false"},
-                        {"transform_update_count", std::to_string(transformUpdateCount)},
+                        {{"commands", std::to_string(commands.commands().size())},
+                         {"transform_updates", postedTransforms ? "true" : "false"},
+                         {"transform_update_count", std::to_string(transformUpdateCount)},
+                         {"light_delta", postedLightDelta ? "true" : "false"},
+                        {"light_update_count", std::to_string(lightUpdateCount)},
+                        {"material_update_count", std::to_string(materialUpdateCount)},
                         {"camera_update", postedCamera ? "true" : "false"},
                         {"script_bindings_reloaded", scriptBindingsDirty ? "true" : "false"}},
                        qtFrameCount);
+            const auto applyEnd = std::chrono::steady_clock::now();
+            VKP_METRIC_OBSERVE(
+                "vkp.qt.script_command_classify_us",
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    applyClassifyEnd - applyStart).count());
+            VKP_METRIC_OBSERVE(
+                "vkp.qt.script_command_mutate_us",
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    applyMutationEnd - applyClassifyEnd).count());
+            VKP_METRIC_OBSERVE(
+                "vkp.qt.script_command_replay_us",
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    applyReplayEnd - applyMutationEnd).count());
+            VKP_METRIC_OBSERVE(
+                "vkp.qt.script_command_transform_us",
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    applyTransformEnd - applyReplayEnd).count());
+            VKP_METRIC_OBSERVE(
+                "vkp.qt.script_command_light_us",
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    applyLightEnd - applyTransformEnd).count());
+            VKP_METRIC_OBSERVE(
+                "vkp.qt.script_command_material_us",
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    applyMaterialEnd - applyLightEnd).count());
+            VKP_METRIC_OBSERVE(
+                "vkp.qt.script_command_camera_us",
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    applyCameraEnd - applyMaterialEnd).count());
+            VKP_METRIC_OBSERVE(
+                "vkp.qt.script_command_apply_us",
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    applyEnd - applyStart).count());
             return true;
           }
         }
 
+        const auto reloadStart = std::chrono::steady_clock::now();
         if (qtReloadEditedScene) {
           const bool previousSkipScriptReload = qtSkipScriptReloadForSceneReload;
           qtSkipScriptReloadForSceneReload = !scriptBindingsDirty;
@@ -902,6 +1606,27 @@
                    "Lua script commands applied and scene reloaded",
                    {{"commands", std::to_string(commands.commands().size())}},
                    qtFrameCount);
+        const auto applyEnd = std::chrono::steady_clock::now();
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_command_classify_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                applyClassifyEnd - applyStart).count());
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_command_mutate_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                applyMutationEnd - applyClassifyEnd).count());
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_command_replay_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                applyReplayEnd - applyMutationEnd).count());
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_command_reload_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                applyEnd - reloadStart).count());
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_command_apply_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                applyEnd - applyStart).count());
         return true;
       };
       auto qtDispatchScriptHook =
@@ -922,15 +1647,36 @@
                      frameIndex);
           return false;
         }
-        auto worldResult = qtBuildScriptRuntimeWorld(qtScriptsRunning());
-        if (!worldResult) {
-          qtScriptState.status = "dispatch failed: world build";
-          ui_runtime_state.last_warning_or_error = qtScriptState.status;
-          qtDockPanelsDirty = true;
-          return false;
+        try {
+        const auto dispatchStart = std::chrono::steady_clock::now();
+        std::optional<vkpt::scene::SceneScriptRuntimeWorld> transientRuntimeWorld;
+        vkpt::scene::SceneScriptRuntimeWorld* runtimeWorld = nullptr;
+        if (qtIsPlayMode()) {
+          auto worldResult = qtGetCachedScriptRuntimeWorld(qtScriptsRunning());
+          if (!worldResult) {
+            qtScriptState.status = "dispatch failed: world build";
+            ui_runtime_state.last_warning_or_error = qtScriptState.status;
+            qtDockPanelsDirty = true;
+            return false;
+          }
+          runtimeWorld = worldResult.value();
+        } else {
+          auto worldResult = qtBuildScriptRuntimeWorld(qtScriptsRunning());
+          if (!worldResult) {
+            qtScriptState.status = "dispatch failed: world build";
+            ui_runtime_state.last_warning_or_error = qtScriptState.status;
+            qtDockPanelsDirty = true;
+            return false;
+          }
+          transientRuntimeWorld = std::move(worldResult.value());
+          runtimeWorld = &*transientRuntimeWorld;
         }
-        auto world = std::move(worldResult.value().world);
-        world.recompute_world_transforms();
+        const auto dispatchWorldEnd = std::chrono::steady_clock::now();
+        auto& world = runtimeWorld->world;
+        // Script bindings and Lua entity APIs read local component state.
+        // Recomputing the full transform cache here costs O(scene size) every
+        // OnUpdate and is only needed by callers that explicitly query world
+        // transforms, which the scripting API does not expose.
         vkpt::scene::WorldCommandBuffer commands;
         vkpt::scripting::ScriptExecutionContext context;
         context.frame = frameIndex;
@@ -960,6 +1706,15 @@
           }
           context.input.mouse_delta_x = qtPendingFpsLookDx;
           context.input.mouse_delta_y = qtPendingFpsLookDy;
+          if (qtLeftMouseDown) {
+            context.input.active_mouse_buttons.push_back(0);
+          }
+          if (qtRightMouseDown) {
+            context.input.active_mouse_buttons.push_back(1);
+          }
+          if (qtMiddleMouseDown) {
+            context.input.active_mouse_buttons.push_back(2);
+          }
         }
         context.editor.canvas_enabled = !qtIsPlayMode();
         context.editor.is_editing = qtGizmoDrag.active;
@@ -967,6 +1722,7 @@
           context.editor.edited_entity_id = qtGizmoDrag.entities.front().entity_id;
           context.editor.edited_component = "Transform";
         }
+        const auto dispatchContextEnd = std::chrono::steady_clock::now();
         logger.log(vkpt::log::Severity::Debug,
                    "scripts",
                    "dispatching Lua script hook",
@@ -981,6 +1737,8 @@
                     {"lua_compiled_in", qtScriptRuntime->lua_compiled_in() ? "true" : "false"},
                     {"execution_available", qtScriptRuntime->execution_available() ? "true" : "false"},
                     {"active_keys", std::to_string(context.input.active_keys.size())},
+                    {"active_mouse_buttons",
+                     std::to_string(context.input.active_mouse_buttons.size())},
                     {"mouse_delta_x", std::to_string(context.input.mouse_delta_x)},
                     {"mouse_delta_y", std::to_string(context.input.mouse_delta_y)},
                     {"b_down", qtKeyActive('B') ? "true" : "false"},
@@ -991,6 +1749,7 @@
                    frameIndex);
         qtScriptState.last_dispatch =
             qtScriptRuntime->dispatch_hook(world, hook, context, commands);
+        const auto dispatchLuaEnd = std::chrono::steady_clock::now();
         qtScriptState.binding_summary = vkpt::scripting::SummarizeScriptBindings(
             qtScriptRuntime->bindings(),
             qtScriptRuntime->lua_compiled_in(),
@@ -1006,10 +1765,13 @@
             std::string(source) + " " + qtScriptState.last_hook +
             " runnable=" + std::to_string(qtScriptState.last_dispatch.runnable_count) +
             " skipped=" + std::to_string(qtScriptState.last_dispatch.skipped_count);
+        const auto dispatchStateEnd = std::chrono::steady_clock::now();
+        const auto dispatchApplyStart = std::chrono::steady_clock::now();
         if (!commands.commands().empty()) {
           qtScriptState.status += " commands=" + std::to_string(commands.commands().size());
           qtApplyScriptCommandsToDocument(commands);
         }
+        const auto dispatchApplyEnd = std::chrono::steady_clock::now();
         logger.log(vkpt::log::Severity::Info,
                    "scripts",
                    "Lua script hook dispatch completed",
@@ -1025,22 +1787,116 @@
                    frameIndex);
         ui_runtime_state.status_message = qtScriptState.status;
         qtDockPanelsDirty = true;
+        const auto dispatchEnd = std::chrono::steady_clock::now();
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_world_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                dispatchWorldEnd - dispatchStart).count());
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_context_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                dispatchContextEnd - dispatchWorldEnd).count());
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_lua_dispatch_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                dispatchLuaEnd - dispatchContextEnd).count());
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_state_sync_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                dispatchStateEnd - dispatchLuaEnd).count());
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_apply_commands_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                dispatchApplyEnd - dispatchApplyStart).count());
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.script_total_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                dispatchEnd - dispatchStart).count());
         return true;
+        } catch (const std::exception& error) {
+          const std::string hookName(vkpt::scripting::to_string(hook));
+          const std::string sourceName(source);
+          qtScriptState.scripts_enabled = false;
+          qtScriptState.playing = false;
+          qtScriptState.mode = std::string(kRuntimeModeEditName);
+          qtScriptState.last_hook = hookName;
+          qtScriptState.last_frame = frameIndex;
+          qtScriptState.status =
+              std::string("script runtime fault; scripts disabled: ") + error.what();
+          ui_runtime_state.status_message = qtScriptState.status;
+          ui_runtime_state.last_warning_or_error = qtScriptState.status;
+          qtDockPanelsDirty = true;
+          qtSyncViewportAssetDropMode();
+          logger.log(vkpt::log::Severity::Error,
+                     "scripts",
+                     "script dispatch failed; scripts disabled",
+                     {{"hook", hookName},
+                      {"source", sourceName},
+                      {"error", error.what()}},
+                     frameIndex);
+          return false;
+        } catch (...) {
+          const std::string hookName(vkpt::scripting::to_string(hook));
+          const std::string sourceName(source);
+          qtScriptState.scripts_enabled = false;
+          qtScriptState.playing = false;
+          qtScriptState.mode = std::string(kRuntimeModeEditName);
+          qtScriptState.last_hook = hookName;
+          qtScriptState.last_frame = frameIndex;
+          qtScriptState.status = "script runtime fault; scripts disabled";
+          ui_runtime_state.status_message = qtScriptState.status;
+          ui_runtime_state.last_warning_or_error = qtScriptState.status;
+          qtDockPanelsDirty = true;
+          qtSyncViewportAssetDropMode();
+          logger.log(vkpt::log::Severity::Error,
+                     "scripts",
+                     "script dispatch failed with unknown exception; scripts disabled",
+                     {{"hook", hookName},
+                      {"source", sourceName}},
+                     frameIndex);
+          return false;
+        }
       };
       (void)qtDispatchScriptHook;
       qtReloadScriptsFromDocument("startup");
+      // Lua OnUpdate dispatch still runs on the UI thread. Use a post-dispatch
+      // cooldown so a slow hook/application pass does not immediately cause
+      // another script pass on the next rendered frame.
+      double qtScriptHookAccumulatorSeconds = 0.0;
+      constexpr double kQtScriptHookTargetIntervalSeconds = 1.0 / 30.0;
+      constexpr double kQtScriptHookMaxDispatchDtSeconds = 0.10;
+      std::chrono::steady_clock::time_point qtNextScriptHookTime{};
       auto qtApplyGameModeScripts =
           [&](std::chrono::steady_clock::time_point now,
               vkpt::core::FrameIndex frameIndex,
               double dtSeconds) {
-        (void)now;
         if (!qtScriptsRunning()) {
+          qtScriptHookAccumulatorSeconds = 0.0;
+          qtNextScriptHookTime = {};
           return false;
         }
-        return qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUpdate,
-                                    frameIndex,
-                                    dtSeconds,
-                                    qtIsPlayMode() ? "play mode" : "live edit");
+        qtScriptHookAccumulatorSeconds = std::min(
+            qtScriptHookAccumulatorSeconds + std::max(0.0, dtSeconds),
+            kQtScriptHookMaxDispatchDtSeconds);
+        if (qtNextScriptHookTime != std::chrono::steady_clock::time_point{} &&
+            now < qtNextScriptHookTime) {
+          return false;
+        }
+        if (qtScriptHookAccumulatorSeconds < kQtScriptHookTargetIntervalSeconds) {
+          return false;
+        }
+        const double dispatchedDt =
+            std::min(qtScriptHookAccumulatorSeconds, kQtScriptHookMaxDispatchDtSeconds);
+        qtScriptHookAccumulatorSeconds = 0.0;
+        const bool dispatched =
+            qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+                                 frameIndex,
+                                 dispatchedDt,
+                                 qtIsPlayMode() ? "play mode" : "live edit");
+        qtNextScriptHookTime = std::chrono::steady_clock::now() +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(kQtScriptHookTargetIntervalSeconds));
+        return dispatched;
       };
       qtReloadEditedScene = [&](std::string_view reason) {
         const auto reloadStart = std::chrono::steady_clock::now();

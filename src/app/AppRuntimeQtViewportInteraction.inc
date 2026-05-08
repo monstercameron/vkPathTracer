@@ -234,7 +234,7 @@
         applyQtCameraPose("wasd move");
       };
       auto qtApplyContinuousFpsMovement = [&](float dtSeconds) {
-        if (!qtFpsMode || dtSeconds <= 0.0f) {
+        if (!qtFpsMode || qtIsPlayMode() || dtSeconds <= 0.0f) {
           return;
         }
         if (!qtFpsPlayer.initialized) {

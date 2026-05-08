@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -2002,6 +2003,36 @@ std::vector<int> LuaKeyCandidates(lua_State* lua, int index) {
   return candidates;
 }
 
+std::vector<int> LuaMouseButtonCandidates(lua_State* lua, int index) {
+  std::vector<int> candidates;
+  if (lua_isinteger(lua, index) || lua_isnumber(lua, index)) {
+    candidates.push_back(static_cast<int>(lua_tointeger(lua, index)));
+    return candidates;
+  }
+  if (!lua_isstring(lua, index)) {
+    return candidates;
+  }
+
+  std::string button = TrimCopy(lua_tostring(lua, index));
+  std::transform(button.begin(), button.end(), button.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (button == "left" || button == "primary" || button == "fire" ||
+      button == "mouse0" || button == "button0") {
+    candidates.push_back(0);
+  } else if (button == "right" || button == "secondary" || button == "ads" ||
+             button == "aim" || button == "mouse1" || button == "button1") {
+    candidates.push_back(1);
+  } else if (button == "middle" || button == "mouse2" || button == "button2") {
+    candidates.push_back(2);
+  } else if (button == "back" || button == "mouse3" || button == "button3") {
+    candidates.push_back(3);
+  } else if (button == "forward" || button == "mouse4" || button == "button4") {
+    candidates.push_back(4);
+  }
+  return candidates;
+}
+
 int LuaInputKeyDown(lua_State* lua) {
   auto* host = Host(lua);
   if (host == nullptr || host->context == nullptr) {
@@ -2014,6 +2045,26 @@ int LuaInputKeyDown(lua_State* lua) {
     if (std::find(host->context->input.active_keys.begin(),
                   host->context->input.active_keys.end(),
                   candidate) != host->context->input.active_keys.end()) {
+      down = true;
+      break;
+    }
+  }
+  lua_pushboolean(lua, down ? 1 : 0);
+  return 1;
+}
+
+int LuaInputMouseDown(lua_State* lua) {
+  auto* host = Host(lua);
+  if (host == nullptr || host->context == nullptr) {
+    lua_pushboolean(lua, 0);
+    return 1;
+  }
+  const auto candidates = LuaMouseButtonCandidates(lua, 2);
+  bool down = false;
+  for (const auto candidate : candidates) {
+    if (std::find(host->context->input.active_mouse_buttons.begin(),
+                  host->context->input.active_mouse_buttons.end(),
+                  candidate) != host->context->input.active_mouse_buttons.end()) {
       down = true;
       break;
     }
@@ -2106,6 +2157,8 @@ void PushInputTable(lua_State* lua, LuaHostContext& host) {
   lua_newtable(lua);
   PushHostClosure(lua, host, LuaInputKeyDown);
   lua_setfield(lua, -2, "key_down");
+  PushHostClosure(lua, host, LuaInputMouseDown);
+  lua_setfield(lua, -2, "mouse_down");
   PushHostClosure(lua, host, LuaInputMouseDelta);
   lua_setfield(lua, -2, "mouse_delta");
   const auto& input = host.context == nullptr ? ScriptExecutionContext::InputState{} : host.context->input;
@@ -2119,6 +2172,21 @@ void PushInputTable(lua_State* lua, LuaHostContext& host) {
   lua_setfield(lua, -2, "mouse_wheel_delta");
   lua_pushboolean(lua, input.viewport_focused ? 1 : 0);
   lua_setfield(lua, -2, "viewport_focused");
+  const bool left_down = std::find(input.active_mouse_buttons.begin(),
+                                   input.active_mouse_buttons.end(),
+                                   0) != input.active_mouse_buttons.end();
+  const bool right_down = std::find(input.active_mouse_buttons.begin(),
+                                    input.active_mouse_buttons.end(),
+                                    1) != input.active_mouse_buttons.end();
+  const bool middle_down = std::find(input.active_mouse_buttons.begin(),
+                                     input.active_mouse_buttons.end(),
+                                     2) != input.active_mouse_buttons.end();
+  lua_pushboolean(lua, left_down ? 1 : 0);
+  lua_setfield(lua, -2, "mouse_left_down");
+  lua_pushboolean(lua, right_down ? 1 : 0);
+  lua_setfield(lua, -2, "mouse_right_down");
+  lua_pushboolean(lua, middle_down ? 1 : 0);
+  lua_setfield(lua, -2, "mouse_middle_down");
 }
 
 void PushEditorTable(lua_State* lua, const ScriptExecutionContext& context) {
@@ -2749,7 +2817,8 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
        {"hook", std::string(to_string(hook))},
        {"source", binding.source},
        {"commands_after", std::to_string(commands.commands().size())},
-       {"active_keys", std::to_string(context.input.active_keys.size())}},
+       {"active_keys", std::to_string(context.input.active_keys.size())},
+       {"active_mouse_buttons", std::to_string(context.input.active_mouse_buttons.size())}},
       context.frame);
   SetCurrentHost(lua, nullptr);
   return true;
@@ -2911,20 +2980,46 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
   auto run_lua_binding = [&](std::size_t index, const ScriptBinding& binding) {
     auto& result = binding_results[index];
 #ifdef PT_ENABLE_LUA
-    if (ExecuteLuaHook(binding,
-                       world,
-                       hook,
-                       context,
-                       result.commands,
-                       result.dispatch_diagnostics,
-                       result.runtime_diagnostics,
-                       result.variable_snapshots,
-                       result.runtime_state,
-                       m_lua_state_pool->impl(),
-                       m_lua_bytecode_cache,
-                       m_lua_cache_mutex,
-                       m_variable_overrides)) {
-      result.hook_called = true;
+    try {
+      if (ExecuteLuaHook(binding,
+                         world,
+                         hook,
+                         context,
+                         result.commands,
+                         result.dispatch_diagnostics,
+                         result.runtime_diagnostics,
+                         result.variable_snapshots,
+                         result.runtime_state,
+                         m_lua_state_pool->impl(),
+                         m_lua_bytecode_cache,
+                         m_lua_cache_mutex,
+                         m_variable_overrides)) {
+        result.hook_called = true;
+      }
+    } catch (const std::exception& ex) {
+      result.commands.clear();
+      result.runtime_state.last_error = std::string("script host exception: ") + ex.what();
+      result.runtime_state.disabled_until_reload = true;
+      auto diagnostic = MakeDiagnostic(ScriptDiagnosticSeverity::Error,
+                                       hook,
+                                       binding,
+                                       context,
+                                       result.runtime_state.last_error);
+      LogDiagnostic(diagnostic);
+      result.dispatch_diagnostics.push_back(diagnostic);
+      result.runtime_diagnostics.push_back(std::move(diagnostic));
+    } catch (...) {
+      result.commands.clear();
+      result.runtime_state.last_error = "script host exception: unknown exception";
+      result.runtime_state.disabled_until_reload = true;
+      auto diagnostic = MakeDiagnostic(ScriptDiagnosticSeverity::Error,
+                                       hook,
+                                       binding,
+                                       context,
+                                       result.runtime_state.last_error);
+      LogDiagnostic(diagnostic);
+      result.dispatch_diagnostics.push_back(diagnostic);
+      result.runtime_diagnostics.push_back(std::move(diagnostic));
     }
     result.disabled_until_reload = result.runtime_state.disabled_until_reload;
 #else
