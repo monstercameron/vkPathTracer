@@ -1292,6 +1292,62 @@ if(PT_ENABLE_JOLT)
     PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
 endif()
 
+# Phase 5 Part B: hero hit demo smoke. Drives the full
+# script -> animation -> ragdoll authority arbitration loop end-to-end against
+# a synthesized SceneWorld. Validates hero_hit_demo.json parses, the script
+# fires enable_ragdoll() near t=2s, the ragdoll seeds from the current
+# animation pose, takes the requested impulse, and lands cleanly on the
+# floor (no NaNs).
+add_executable(pt_hero_hit_demo_smoke EXCLUDE_FROM_ALL
+  tests/hero_hit_demo_smoke.cpp
+  src/animation/AnimationAuthority.cpp
+  src/animation/AnimationClip.cpp
+  src/animation/AnimationSampler.cpp
+  src/animation/Skeleton.cpp
+  src/assets/AssetImporters.cpp
+  src/assets/AssetImportersTexture.cpp
+  src/assets/SceneAssetLoader.cpp
+  src/assets/SceneAssetLoaderSupport.cpp
+  src/assets/SceneAssetObjLoader.cpp
+  src/assets/SceneAssetGltfLoader.cpp
+  src/core/health/Health.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/jobs/JobSystem.cpp
+  src/physics/PhysicsWorld.cpp
+  src/physics/Ragdoll.cpp
+  src/pathtracer/SceneConversion.cpp
+  src/scene/Json.cpp
+  src/scene/Scene.cpp
+  src/scene/SceneDocumentExport.cpp
+  src/scene/SceneDocumentLoad.cpp
+  src/scene/SceneScriptBootstrap.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
+  src/scripting/ScriptRuntime.cpp
+  src/scripting/ScriptRuntimeBindings.cpp
+)
+
+target_include_directories(pt_hero_hit_demo_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_hero_hit_demo_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_hero_hit_demo_smoke PRIVATE Threads::Threads)
+
+if(PT_ENABLE_LUA)
+  target_link_libraries(pt_hero_hit_demo_smoke PRIVATE ${PT_LUA_TARGET})
+  target_compile_definitions(pt_hero_hit_demo_smoke PRIVATE PT_ENABLE_LUA)
+endif()
+
+if(PT_ENABLE_JOLT)
+  target_link_libraries(pt_hero_hit_demo_smoke PRIVATE ${PT_JOLT_TARGET})
+  target_compile_definitions(pt_hero_hit_demo_smoke PRIVATE
+    PT_ENABLE_JOLT
+    PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
+endif()
+
 add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
   tests/scene_script_bootstrap_smoke.cpp
   src/assets/AssetImporters.cpp

@@ -1,0 +1,175 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Hero Hit Demo",
+    "author": "vkPathTracer",
+    "created": "2026-05-09"
+  },
+  "assets": [
+    {
+      "id": 9501,
+      "type": "model/gltf",
+      "uri": "../models/low_poly_hero/character.gltf",
+      "name": "Hero Character",
+      "parent": 9400,
+      "sibling_order": 1,
+      "disable_imported_animation": false,
+      "transform": {
+        "translation": [0.0, 1.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    }
+  ],
+  "materials": [
+    {
+      "id": 9301,
+      "name": "Demo floor",
+      "family": "diffuse",
+      "albedo": [0.42, 0.42, 0.45],
+      "roughness": 0.85
+    }
+  ],
+  "geometry": [
+    {
+      "id": 9201,
+      "name": "demo_floor_box",
+      "primitive": "triangle",
+      "material_id": 9301,
+      "vertices": [
+        [-6.0, 0.0, -6.0],
+        [6.0, 0.0, -6.0],
+        [6.0, 0.0, 6.0],
+        [-6.0, 0.0, 6.0]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    }
+  ],
+  "entities": [
+    {
+      "id": 9400,
+      "name": "Hero Hit Demo Root",
+      "hierarchy": {
+        "parent": 0,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 9402,
+      "name": "Demo Camera",
+      "transform": {
+        "translation": [0.0, 2.0, 5.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "camera": {
+        "fov": 45.0,
+        "near_plane": 0.05,
+        "far_plane": 80.0
+      },
+      "hierarchy": {
+        "parent": 9400,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 9403,
+      "name": "Demo Floor",
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "mesh": {
+        "mesh_id": 9201,
+        "material_id": 9301
+      },
+      "physics": {
+        "enabled": true,
+        "mass": 1.0,
+        "dynamic": false,
+        "body_type": "static",
+        "shape": "box",
+        "friction": 0.7,
+        "restitution": 0.0
+      },
+      "hierarchy": {
+        "parent": 9400,
+        "sibling_order": 2
+      }
+    },
+    {
+      "id": 9404,
+      "name": "Key Light",
+      "transform": {
+        "translation": [3.0, 5.0, 3.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [1.0, 0.96, 0.92],
+        "intensity": 28.0,
+        "radius": 0.6
+      },
+      "hierarchy": {
+        "parent": 9400,
+        "sibling_order": 3
+      }
+    },
+    {
+      "id": 9405,
+      "name": "Fill Light",
+      "transform": {
+        "translation": [-2.5, 4.0, 2.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [0.85, 0.92, 1.0],
+        "intensity": 14.0,
+        "radius": 0.45
+      },
+      "hierarchy": {
+        "parent": 9400,
+        "sibling_order": 4
+      }
+    },
+    {
+      "id": 9501,
+      "name": "Hero Character",
+      "transform": {
+        "translation": [0.0, 1.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "ragdoll": {
+        "active": false,
+        "capsule_radius_scale": 0.05,
+        "spine_capsule_radius": 0.10,
+        "head_capsule_radius": 0.12,
+        "density": 1000.0,
+        "self_collision": false
+      },
+      "animation": {
+        "clip_name": "idle",
+        "speed": 1.0,
+        "loop": true,
+        "paused": false
+      },
+      "script": {
+        "source": "assets/scripts/user/hero_hit_demo.lua",
+        "language": "lua",
+        "entry": "default",
+        "module_id": "hero_hit_demo",
+        "enabled": true,
+        "reload_on_save": true
+      },
+      "hierarchy": {
+        "parent": 9400,
+        "sibling_order": 1
+      }
+    }
+  ]
+}
