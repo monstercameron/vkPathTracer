@@ -2,12 +2,16 @@
 #include "app/QtDockPanelsInternal.h"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <sstream>
+#include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace vkpt::app {
@@ -224,7 +228,21 @@ std::string QtDockPathString(const std::filesystem::path& path) {
 }
 
 std::filesystem::path QtDockAbsoluteNormalizedPath(std::string_view path) {
-  std::filesystem::path candidate{std::string(path)};
+  // Hot path for QtDockSamePath, called once per scene-library entry inside
+  // BuildQtAssetBrowserDock. weakly_canonical does multiple stat() syscalls;
+  // cache by input string.
+  static std::mutex mtx;
+  static std::unordered_map<std::string, std::filesystem::path> cache;
+
+  std::string key(path);
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (const auto it = cache.find(key); it != cache.end()) {
+      return it->second;
+    }
+  }
+
+  std::filesystem::path candidate{key};
   std::error_code ec;
   if (candidate.is_relative()) {
     candidate = std::filesystem::current_path(ec) / candidate;
@@ -233,34 +251,97 @@ std::filesystem::path QtDockAbsoluteNormalizedPath(std::string_view path) {
   if (ec) {
     normalized = std::filesystem::absolute(candidate, ec);
   }
-  return ec ? candidate.lexically_normal() : normalized.lexically_normal();
+  auto result = ec ? candidate.lexically_normal() : normalized.lexically_normal();
+
+  std::lock_guard<std::mutex> lock(mtx);
+  cache.emplace(std::move(key), result);
+  return result;
 }
 
 std::string QtDockDisplayPath(const std::filesystem::path& path) {
+  // Called once per asset-library entry inside BuildQtAssetBrowserDock.
+  // current_path() + relative() each issue syscalls, so cache by the input
+  // path's normalized string. Working directory is stable across the
+  // process lifetime in practice — we rebuild the cache whenever cwd
+  // changes by capturing it as part of the key.
+  static std::mutex mtx;
+  static std::unordered_map<std::string, std::string> cache;
+  static std::string cached_cwd;
+
   std::error_code ec;
   const auto cwd = std::filesystem::current_path(ec);
+  std::string cwdString = ec ? std::string{} : cwd.generic_string();
+  const std::string pathKey = path.generic_string();
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (cwdString != cached_cwd) {
+      cache.clear();
+      cached_cwd = cwdString;
+    } else if (const auto it = cache.find(pathKey); it != cache.end()) {
+      return it->second;
+    }
+  }
+
+  std::string out;
   if (!ec) {
     const auto relative = std::filesystem::relative(path, cwd, ec);
     if (!ec && !relative.empty()) {
       const auto text = QtDockPathString(relative);
       if (!text.starts_with("..")) {
-        return text;
+        out = text;
       }
     }
   }
-  return QtDockPathString(path);
+  if (out.empty()) {
+    out = QtDockPathString(path);
+  }
+
+  std::lock_guard<std::mutex> lock(mtx);
+  cache.emplace(pathKey, out);
+  return out;
 }
 
 std::filesystem::path QtDockFindRepoRelativePath(const std::filesystem::path& relativePath) {
+  // Repo layout doesn't change at runtime; resolve once per (cwd, relative)
+  // pair. Without this cache every dock rebuild re-walks 8 parent dirs and
+  // does an `exists()` syscall per level, just to point at assets/ or game/.
+  struct CacheKey {
+    std::string cwd;
+    std::string rel;
+    bool operator==(const CacheKey& other) const noexcept {
+      return cwd == other.cwd && rel == other.rel;
+    }
+  };
+  struct CacheKeyHash {
+    std::size_t operator()(const CacheKey& key) const noexcept {
+      return std::hash<std::string>{}(key.cwd) ^
+             (std::hash<std::string>{}(key.rel) << 1u);
+    }
+  };
+  static std::mutex mtx;
+  static std::unordered_map<CacheKey, std::filesystem::path, CacheKeyHash> cache;
+
   std::error_code ec;
-  auto current = std::filesystem::current_path(ec);
+  auto cwd = std::filesystem::current_path(ec);
   if (ec) {
     return relativePath;
   }
+
+  CacheKey key{cwd.generic_string(), relativePath.generic_string()};
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (const auto it = cache.find(key); it != cache.end()) {
+      return it->second;
+    }
+  }
+
+  auto current = cwd;
+  std::filesystem::path resolved = relativePath;
   for (int i = 0; i < 8; ++i) {
     const auto candidate = (current / relativePath).lexically_normal();
     if (std::filesystem::exists(candidate, ec) && !ec) {
-      return candidate;
+      resolved = candidate;
+      break;
     }
     ec.clear();
     if (!current.has_parent_path() || current.parent_path() == current) {
@@ -268,7 +349,10 @@ std::filesystem::path QtDockFindRepoRelativePath(const std::filesystem::path& re
     }
     current = current.parent_path();
   }
-  return relativePath;
+
+  std::lock_guard<std::mutex> lock(mtx);
+  cache.emplace(std::move(key), resolved);
+  return resolved;
 }
 
 bool QtDockSamePath(std::string_view lhs, std::string_view rhs) {
@@ -294,9 +378,60 @@ std::vector<std::filesystem::path> QtDockFindAssetFiles(
     const std::filesystem::path& root,
     std::initializer_list<std::string_view> extensions,
     bool recursive) {
+  // Asset directory listings are the dominant cost of the dock-panel rebuild
+  // when game/models/lods (88+ files) and assets/scenes (28+ files) get
+  // walked every refresh: each file becomes a stat() and (in debug builds)
+  // a heap allocation for the lexically_normal path. The asset/script
+  // directories are stable across the 500ms-throttled rebuild cadence, so
+  // cache results with a short TTL keyed on (root, ext-set, recursive).
+  // Refreshing every 3 seconds keeps the panel reactive to user-added
+  // scenes/scripts without paying the recursive scan on every refresh.
+  struct CacheKey {
+    std::string root;
+    std::string ext_signature;
+    bool recursive;
+    bool operator==(const CacheKey& other) const noexcept {
+      return recursive == other.recursive && root == other.root &&
+             ext_signature == other.ext_signature;
+    }
+  };
+  struct CacheKeyHash {
+    std::size_t operator()(const CacheKey& key) const noexcept {
+      return std::hash<std::string>{}(key.root) ^
+             (std::hash<std::string>{}(key.ext_signature) << 1u) ^
+             (key.recursive ? 0x9E3779B9u : 0u);
+    }
+  };
+  struct CacheEntry {
+    std::vector<std::filesystem::path> files;
+    std::chrono::steady_clock::time_point captured_at{};
+  };
+  static std::mutex mtx;
+  static std::unordered_map<CacheKey, CacheEntry, CacheKeyHash> cache;
+  constexpr auto kTtl = std::chrono::seconds(10);
+
+  std::string ext_signature;
+  ext_signature.reserve(64u);
+  for (const auto ext : extensions) {
+    ext_signature.append(ext);
+    ext_signature.push_back('|');
+  }
+  CacheKey key{root.generic_string(), std::move(ext_signature), recursive};
+  const auto now = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (const auto it = cache.find(key); it != cache.end()) {
+      if (now - it->second.captured_at < kTtl) {
+        return it->second.files;
+      }
+    }
+  }
+
   std::vector<std::filesystem::path> files;
   std::error_code ec;
   if (!std::filesystem::exists(root, ec) || ec || !std::filesystem::is_directory(root, ec) || ec) {
+    std::lock_guard<std::mutex> lock(mtx);
+    cache[key] = CacheEntry{files, now};
     return files;
   }
 
@@ -328,6 +463,9 @@ std::vector<std::filesystem::path> QtDockFindAssetFiles(
   std::sort(files.begin(), files.end(), [](const auto& lhs, const auto& rhs) {
     return QtDockPathString(lhs) < QtDockPathString(rhs);
   });
+
+  std::lock_guard<std::mutex> lock(mtx);
+  cache[key] = CacheEntry{files, now};
   return files;
 }
 
@@ -354,28 +492,69 @@ std::string QtDockPrettyStem(const std::filesystem::path& path) {
 }
 
 std::string QtDockReadSceneDisplayName(const std::filesystem::path& path) {
+  // Reading + JSON-parsing every scene file on every dock refresh dominates
+  // BuildQtAssetBrowserDock when the scene library is large (28+ scenes in
+  // the representative_acceptance_scene gate). Cache the parsed metadata
+  // name keyed on (path, last_write_time) so unchanged files are free.
+  struct CacheEntry {
+    std::filesystem::file_time_type mtime{};
+    std::string display_name;
+  };
+  static std::mutex mtx;
+  static std::unordered_map<std::string, CacheEntry> cache;
+
+  const auto pathKey = path.generic_string();
+  std::error_code ec;
+  const auto mtime = std::filesystem::last_write_time(path, ec);
+  if (!ec) {
+    std::lock_guard<std::mutex> lock(mtx);
+    if (const auto it = cache.find(pathKey);
+        it != cache.end() && it->second.mtime == mtime) {
+      return it->second.display_name;
+    }
+  }
+
+  std::string result;
   std::ifstream file(path);
   if (!file) {
-    return QtDockPrettyStem(path);
+    result = QtDockPrettyStem(path);
+  } else {
+    // Read at most a few KiB and look for "scene_name": "<value>" with a
+    // narrow string scan instead of a full JsonParser pass. Authored scenes
+    // place metadata at the top of the file, so this avoids parsing the
+    // entire (potentially megabyte-sized) document just to harvest a label.
+    // Falls back to QtDockPrettyStem when the substring search fails or
+    // the file lacks the metadata.
+    constexpr std::size_t kPrefixBytes = 8u * 1024u;
+    std::string prefix(kPrefixBytes, '\0');
+    file.read(prefix.data(), static_cast<std::streamsize>(kPrefixBytes));
+    prefix.resize(static_cast<std::size_t>(file.gcount()));
+    const auto sceneNameKey = std::string_view{"\"scene_name\""};
+    auto pos = prefix.find(sceneNameKey);
+    if (pos != std::string::npos) {
+      pos += sceneNameKey.size();
+      while (pos < prefix.size() &&
+             (prefix[pos] == ' ' || prefix[pos] == ':' || prefix[pos] == '\t')) {
+        ++pos;
+      }
+      if (pos < prefix.size() && prefix[pos] == '"') {
+        ++pos;
+        const auto end = prefix.find('"', pos);
+        if (end != std::string::npos && end > pos) {
+          result.assign(prefix, pos, end - pos);
+        }
+      }
+    }
+    if (result.empty()) {
+      result = QtDockPrettyStem(path);
+    }
   }
-  std::ostringstream buffer;
-  buffer << file.rdbuf();
-  const auto root = vkpt::scene::JsonParser::parse(buffer.str());
-  if (!root || root->kind != vkpt::scene::JsonValue::Kind::Object) {
-    return QtDockPrettyStem(path);
+
+  if (!ec) {
+    std::lock_guard<std::mutex> lock(mtx);
+    cache[pathKey] = CacheEntry{mtime, result};
   }
-  const auto metadataIt = root->object.find("metadata");
-  if (metadataIt == root->object.end() ||
-      metadataIt->second.kind != vkpt::scene::JsonValue::Kind::Object) {
-    return QtDockPrettyStem(path);
-  }
-  const auto nameIt = metadataIt->second.object.find("scene_name");
-  if (nameIt == metadataIt->second.object.end() ||
-      nameIt->second.kind != vkpt::scene::JsonValue::Kind::String ||
-      nameIt->second.string.empty()) {
-    return QtDockPrettyStem(path);
-  }
-  return nameIt->second.string;
+  return result;
 }
 
 QtDockTreeRow QtDockAssetFileRow(std::string idPrefix,
