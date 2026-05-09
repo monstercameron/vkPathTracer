@@ -297,6 +297,7 @@ struct ScriptingStatus {
   std::size_t active_scripts = 0;
   std::uint64_t hooks_fired_total = 0;
   std::uint64_t budget_kills_total = 0;
+  std::uint64_t wall_clock_kills_total = 0;
   vkpt::core::StableEntityId last_error_script_id = 0;
   vkpt::core::FrameIndex last_frame = 0;
   std::uint64_t current_flow_id = 0u;
@@ -311,6 +312,22 @@ vkpt::core::contracts::SubsystemStatus ToSubsystemStatus(
     const ScriptingStatus& status);
 std::string FormatScriptingStatus(const ScriptingStatus& status);
 
+// IScriptRuntime lifecycle contract (uses ComponentLifecycle from
+// ScriptingStatus.lifecycle):
+//
+// state\method     reload_bindings  dispatch_hook  dispatch_hook_snapshot  set_variable_override  status  bindings/diagnostics/runtime_states  shutdown(dtor)
+// Uninitialized    ->Ready          ->Ready (no-op)  ->Ready (no-op)        noop                    ok      empty                                noop
+// Ready            ok               ok             ok                       ok                     ok      ok                                   ->Uninitialized
+// Busy             error            error          error                    ok                     ok      ok                                   ->Uninitialized
+// Degraded         ok               ok (skip-killed) ok                     ok                     ok      ok                                   ->Uninitialized
+// Failed           ok               error          error                    error                  ok      ok                                   ->Uninitialized
+// ShuttingDown     illegal          illegal        illegal                  noop                   ok      ok                                   noop
+//
+// reload_bindings()/dispatch_hook() are owner-thread synchronous; they must not
+// be called concurrently for the same runtime. Variable-override mutations and
+// status reads are safe in any non-shutdown state. dispatch_hook_snapshot()
+// inherits the same contract as dispatch_hook() and adds command-snapshot
+// publication.
 class IScriptRuntime {
  public:
   virtual ~IScriptRuntime() = default;

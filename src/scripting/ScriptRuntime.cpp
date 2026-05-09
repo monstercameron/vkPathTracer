@@ -422,6 +422,14 @@ struct LuaInstructionBudget {
   std::size_t interval = 0;
   std::size_t executed = 0;
   bool exceeded = false;
+  // Wall-clock deadline for this dispatch_hook invocation. Captured at hook
+  // entry alongside the per-script instruction/memory budget state. The
+  // count-hook checks std::chrono::steady_clock::now() against this deadline
+  // every sample interval and raises luaL_error so the existing budget-kill
+  // path disables the script via m_disabled_until_reload.
+  std::chrono::steady_clock::time_point wall_clock_deadline{};
+  std::chrono::milliseconds wall_clock_budget_ms{0};
+  bool wall_clock_exceeded = false;
 };
 
 constexpr const char* kLuaHostContextRegistryKey = "vkpt.current_host_context";
@@ -456,10 +464,28 @@ void LuaInstructionBudgetHook(lua_State* lua, lua_Debug*) {
   if (auto* host = Host(lua); host != nullptr && host->instruction_budget != nullptr) {
     auto& budget = *host->instruction_budget;
     budget.executed += budget.interval;
-    if (budget.limit == 0 || budget.executed < budget.limit) {
+    const bool instructions_exceeded =
+        budget.limit != 0 && budget.executed >= budget.limit;
+    const bool wall_clock_active = budget.wall_clock_budget_ms.count() > 0;
+    const bool wall_clock_exceeded =
+        wall_clock_active &&
+        std::chrono::steady_clock::now() >= budget.wall_clock_deadline;
+    if (!instructions_exceeded && !wall_clock_exceeded) {
       return;
     }
-    budget.exceeded = true;
+    if (instructions_exceeded) {
+      budget.exceeded = true;
+      // Instruction budget takes priority over wall-clock when both trip on
+      // the same sample so existing tests that exercise the infinite-loop
+      // probe continue to see budget_exceeded_type == "instructions".
+      luaL_error(lua, "instruction budget exceeded");
+      return;
+    }
+    budget.wall_clock_exceeded = true;
+    luaL_error(lua,
+               "wall-clock budget exceeded (>%llums)",
+               static_cast<unsigned long long>(budget.wall_clock_budget_ms.count()));
+    return;
   }
   luaL_error(lua, "instruction budget exceeded");
 }
@@ -1201,6 +1227,11 @@ vkpt::scene::TransformComponent EntityTransformOrDefault(const vkpt::scene::Scen
   return {};
 }
 
+// === Entity bindings ===========================================================
+// Namespace: ctx.<entity>.* (methods on per-entity handle tables).
+// Type errors: luaL_argerror — wrong Lua type for a user argument is a programming error.
+// Missing object: returns nil (or 0 for material id) — entity destroyed or component absent.
+// Returns: component table | string | integer | nil | void.
 int LuaEntityId(lua_State* lua) {
   lua_pushinteger(lua, static_cast<lua_Integer>(LuaSelfEntity(lua, 1)));
   return 1;
@@ -1239,9 +1270,12 @@ int LuaEntityGetTransform(lua_State* lua) {
 }
 
 int LuaEntitySetTransform(lua_State* lua) {
+  if (!lua_istable(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected transform table");
+  }
   auto* host = Host(lua);
   const auto entity_id = LuaSelfEntity(lua, 1);
-  if (host == nullptr || host->commands == nullptr || entity_id == 0 || !lua_istable(lua, 2)) {
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
     return 0;
   }
   const auto transform = LuaTransform(lua, 2, EntityTransformOrDefault(host->world, entity_id));
@@ -1254,9 +1288,12 @@ int LuaEntitySetTransform(lua_State* lua) {
 }
 
 int LuaEntitySetName(lua_State* lua) {
+  if (!lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected string name");
+  }
   auto* host = Host(lua);
   const auto entity_id = LuaSelfEntity(lua, 1);
-  if (host == nullptr || host->commands == nullptr || host->world == nullptr || entity_id == 0 || !lua_isstring(lua, 2)) {
+  if (host == nullptr || host->commands == nullptr || host->world == nullptr || entity_id == 0) {
     return 0;
   }
   vkpt::scene::IdentityComponent identity;
@@ -1271,16 +1308,22 @@ int LuaEntitySetName(lua_State* lua) {
 }
 
 int LuaEntityLog(lua_State* lua) {
+  if (!lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected string message");
+  }
   auto* host = Host(lua);
-  if (host != nullptr && lua_isstring(lua, 2)) {
+  if (host != nullptr) {
     AddLuaDiagnostic(*host, ScriptDiagnosticSeverity::Info, lua_tostring(lua, 2));
   }
   return 0;
 }
 
 int LuaEntitySetDebugValue(lua_State* lua) {
+  if (!lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected string value");
+  }
   auto* host = Host(lua);
-  if (host != nullptr && lua_isstring(lua, 2)) {
+  if (host != nullptr) {
     AddLuaDiagnostic(*host, ScriptDiagnosticSeverity::Info,
                      std::string("debug ") + lua_tostring(lua, 2));
   }
@@ -1304,9 +1347,12 @@ int LuaEntityGetLight(lua_State* lua) {
 }
 
 int LuaEntitySetLight(lua_State* lua) {
+  if (!lua_istable(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected light table");
+  }
   auto* host = Host(lua);
   const auto entity_id = LuaSelfEntity(lua, 1);
-  if (host == nullptr || host->commands == nullptr || entity_id == 0 || !lua_istable(lua, 2)) {
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
     return 0;
   }
   vkpt::scene::LightComponent fallback;
@@ -1336,9 +1382,12 @@ int LuaEntityGetCamera(lua_State* lua) {
 }
 
 int LuaEntitySetCamera(lua_State* lua) {
+  if (!lua_istable(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected camera table");
+  }
   auto* host = Host(lua);
   const auto entity_id = LuaSelfEntity(lua, 1);
-  if (host == nullptr || host->commands == nullptr || entity_id == 0 || !lua_istable(lua, 2)) {
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
     return 0;
   }
   vkpt::scene::CameraComponent fallback;
@@ -1408,9 +1457,12 @@ int LuaEntityGetUiPanel(lua_State* lua) {
 }
 
 int LuaEntitySetUiPanel(lua_State* lua) {
+  if (!lua_istable(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected ui_panel table");
+  }
   auto* host = Host(lua);
   const auto entity_id = LuaSelfEntity(lua, 1);
-  if (host == nullptr || host->commands == nullptr || entity_id == 0 || !lua_istable(lua, 2)) {
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
     return 0;
   }
   vkpt::scene::UiPanelComponent fallback;
@@ -1478,7 +1530,20 @@ vkpt::core::StableEntityId AllocateScriptEntityId(LuaHostContext& host) {
   return id;
 }
 
+// === World bindings ============================================================
+// Namespace: ctx.world.*
+// Type errors: luaL_argerror — wrong Lua type is a programming error.
+// Missing object: returns nil / empty table / void — entity destroyed or absent.
+// Returns: entity table | entity-list table | bool | nil | void.
 int LuaWorldFindEntity(lua_State* lua) {
+  if (lua_isnumber(lua, 2)) {
+    const auto value = lua_tonumber(lua, 2);
+    if (!std::isfinite(value)) {
+      return luaL_argerror(lua, 2, "expected finite number");
+    }
+  } else if (!lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected entity id (number) or name (string)");
+  }
   auto* host = Host(lua);
   if (host == nullptr || host->world == nullptr) {
     lua_pushnil(lua);
@@ -1508,6 +1573,15 @@ int LuaWorldFindEntity(lua_State* lua) {
 }
 
 int LuaWorldChildrenOf(lua_State* lua) {
+  if (!lua_isnoneornil(lua, 2)) {
+    if (lua_isnumber(lua, 2)) {
+      if (!std::isfinite(lua_tonumber(lua, 2))) {
+        return luaL_argerror(lua, 2, "expected finite number");
+      }
+    } else if (!lua_istable(lua, 2)) {
+      return luaL_argerror(lua, 2, "expected entity table or numeric id");
+    }
+  }
   auto* host = Host(lua);
   if (host == nullptr || host->world == nullptr) {
     lua_newtable(lua);
@@ -1530,6 +1604,13 @@ int LuaWorldChildrenOf(lua_State* lua) {
 }
 
 int LuaWorldDestroyEntity(lua_State* lua) {
+  if (lua_isnumber(lua, 2)) {
+    if (!std::isfinite(lua_tonumber(lua, 2))) {
+      return luaL_argerror(lua, 2, "expected finite number");
+    }
+  } else if (!lua_istable(lua, 2) && !lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected entity table, numeric id, or name");
+  }
   auto* host = Host(lua);
   if (host == nullptr || host->commands == nullptr) {
     return 0;
@@ -1556,6 +1637,16 @@ int LuaWorldDestroyEntity(lua_State* lua) {
 }
 
 int LuaWorldHasComponent(lua_State* lua) {
+  if (lua_isnumber(lua, 2)) {
+    if (!std::isfinite(lua_tonumber(lua, 2))) {
+      return luaL_argerror(lua, 2, "expected finite number");
+    }
+  } else if (!lua_istable(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected entity table or numeric id");
+  }
+  if (!lua_isnoneornil(lua, 3) && !lua_isstring(lua, 3)) {
+    return luaL_argerror(lua, 3, "expected component name string");
+  }
   auto* host = Host(lua);
   if (host == nullptr || host->world == nullptr) {
     lua_pushboolean(lua, 0);
@@ -1588,6 +1679,22 @@ int LuaWorldHasComponent(lua_State* lua) {
 }
 
 int LuaWorldReparentEntity(lua_State* lua) {
+  if (!lua_istable(lua, 2)) {
+    if (!lua_isnumber(lua, 2)) {
+      return luaL_argerror(lua, 2, "expected entity table or numeric id");
+    }
+    if (!std::isfinite(lua_tonumber(lua, 2))) {
+      return luaL_argerror(lua, 2, "expected finite number");
+    }
+  }
+  if (!lua_isnoneornil(lua, 3) && !lua_istable(lua, 3)) {
+    if (!lua_isnumber(lua, 3)) {
+      return luaL_argerror(lua, 3, "expected parent entity table or numeric id");
+    }
+    if (!std::isfinite(lua_tonumber(lua, 3))) {
+      return luaL_argerror(lua, 3, "expected finite number");
+    }
+  }
   auto* host = Host(lua);
   if (host == nullptr || host->commands == nullptr) {
     return 0;
@@ -1606,6 +1713,17 @@ int LuaWorldReparentEntity(lua_State* lua) {
 }
 
 int LuaWorldReorderEntity(lua_State* lua) {
+  for (int idx = 2; idx <= 4; ++idx) {
+    if (lua_isnoneornil(lua, idx)) {
+      continue;
+    }
+    if (!lua_isnumber(lua, idx)) {
+      return luaL_argerror(lua, idx, "expected numeric entity id");
+    }
+    if (!std::isfinite(lua_tonumber(lua, idx))) {
+      return luaL_argerror(lua, idx, "expected finite number");
+    }
+  }
   auto* host = Host(lua);
   if (host == nullptr || host->commands == nullptr) {
     return 0;
@@ -1620,8 +1738,19 @@ int LuaWorldReorderEntity(lua_State* lua) {
 }
 
 int LuaWorldRemoveComponent(lua_State* lua) {
+  if (!lua_istable(lua, 2)) {
+    if (!lua_isnumber(lua, 2)) {
+      return luaL_argerror(lua, 2, "expected entity table or numeric id");
+    }
+    if (!std::isfinite(lua_tonumber(lua, 2))) {
+      return luaL_argerror(lua, 2, "expected finite number");
+    }
+  }
+  if (!lua_isstring(lua, 3)) {
+    return luaL_argerror(lua, 3, "expected component name string");
+  }
   auto* host = Host(lua);
-  if (host == nullptr || host->commands == nullptr || !lua_isstring(lua, 3)) {
+  if (host == nullptr || host->commands == nullptr) {
     return 0;
   }
   const auto entity_id = lua_istable(lua, 2)
@@ -1644,6 +1773,20 @@ int LuaWorldRemoveComponent(lua_State* lua) {
 }
 
 int LuaWorldAssignMaterial(lua_State* lua) {
+  if (!lua_istable(lua, 2)) {
+    if (!lua_isnumber(lua, 2)) {
+      return luaL_argerror(lua, 2, "expected entity table or numeric id");
+    }
+    if (!std::isfinite(lua_tonumber(lua, 2))) {
+      return luaL_argerror(lua, 2, "expected finite number");
+    }
+  }
+  if (!lua_isnumber(lua, 3)) {
+    return luaL_argerror(lua, 3, "expected numeric material id");
+  }
+  if (!std::isfinite(lua_tonumber(lua, 3))) {
+    return luaL_argerror(lua, 3, "expected finite number");
+  }
   auto* host = Host(lua);
   if (host == nullptr || host->commands == nullptr) {
     return 0;
@@ -1659,8 +1802,11 @@ int LuaWorldAssignMaterial(lua_State* lua) {
 }
 
 int LuaWorldSpawnEntity(lua_State* lua) {
+  if (!lua_istable(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected spawn definition table");
+  }
   auto* host = Host(lua);
-  if (host == nullptr || host->commands == nullptr || !lua_istable(lua, 2)) {
+  if (host == nullptr || host->commands == nullptr) {
     lua_pushnil(lua);
     return 1;
   }
@@ -1810,11 +1956,20 @@ void PushSystemDescriptor(lua_State* lua,
   lua_setfield(lua, -2, "source");
 }
 
+// === Context bindings ==========================================================
+// Namespace: ctx.* (top-level callables: diagnostic, include).
+// Type errors: luaL_argerror — wrong Lua type is a programming error.
+// Missing object: returns nil / void — host context unavailable.
+// Returns: chunk return value | void.
 int LuaInclude(lua_State* lua) {
-  auto* host = Host(lua);
   const int source_index = lua_isstring(lua, 2) ? 2 : (lua_isstring(lua, 1) ? 1 : 0);
-  if (host == nullptr || source_index == 0) {
-    return luaL_error(lua, "include requires a script source path");
+  if (source_index == 0) {
+    return luaL_argerror(lua, lua_isnoneornil(lua, 2) ? 1 : 2,
+                         "include requires a script source path string");
+  }
+  auto* host = Host(lua);
+  if (host == nullptr) {
+    return luaL_error(lua, "include requires a host context");
   }
   const std::string source = lua_tostring(lua, source_index);
   const auto path = ResolveScriptPath(source);
@@ -1837,6 +1992,11 @@ int LuaInclude(lua_State* lua) {
   return 1;
 }
 
+// === Scene bindings ============================================================
+// Namespace: ctx.scene.*
+// Type errors: luaL_argerror — wrong Lua type is a programming error.
+// Missing object: returns nil / empty table / false — entity destroyed or system absent.
+// Returns: entity table | entity-list table | bool | nil | void.
 int LuaSceneMainCamera(lua_State* lua) {
   auto* host = Host(lua);
   if (host == nullptr || host->world == nullptr) {
@@ -1859,8 +2019,11 @@ int LuaSceneFindEntity(lua_State* lua) {
 }
 
 int LuaSceneEntitiesWithComponent(lua_State* lua) {
+  if (!lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected component name string");
+  }
   auto* host = Host(lua);
-  if (host == nullptr || host->world == nullptr || !lua_isstring(lua, 2)) {
+  if (host == nullptr || host->world == nullptr) {
     lua_newtable(lua);
     return 1;
   }
@@ -1878,13 +2041,26 @@ int LuaSceneEntitiesWithComponent(lua_State* lua) {
 }
 
 int LuaSceneEnsureScript(lua_State* lua) {
+  if (lua_isnumber(lua, 2)) {
+    if (!std::isfinite(lua_tonumber(lua, 2))) {
+      return luaL_argerror(lua, 2, "expected finite number");
+    }
+  } else if (!lua_istable(lua, 2) && !lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected entity table, numeric id, or name");
+  }
+  if (!lua_isstring(lua, 3)) {
+    return luaL_argerror(lua, 3, "expected script source string");
+  }
+  if (!lua_isnoneornil(lua, 4) && !lua_istable(lua, 4)) {
+    return luaL_argerror(lua, 4, "expected params table or nil");
+  }
   auto* host = Host(lua);
   if (host == nullptr || host->commands == nullptr || host->world == nullptr) {
     lua_pushboolean(lua, 0);
     return 1;
   }
   const auto entity_id = LuaEntityArgument(lua, *host, 2);
-  if (entity_id == 0 || !lua_isstring(lua, 3)) {
+  if (entity_id == 0) {
     lua_pushboolean(lua, 0);
     return 1;
   }
@@ -1926,9 +2102,13 @@ int LuaSceneEnsureScript(lua_State* lua) {
 }
 
 int LuaSceneUseSystem(lua_State* lua) {
-  auto* host = Host(lua);
   const int module_index = lua_isstring(lua, 2) ? 2 : (lua_isstring(lua, 1) ? 1 : 0);
-  if (host == nullptr || module_index == 0) {
+  if (module_index == 0) {
+    return luaL_argerror(lua, lua_isnoneornil(lua, 2) ? 1 : 2,
+                         "expected module name string");
+  }
+  auto* host = Host(lua);
+  if (host == nullptr) {
     lua_pushnil(lua);
     return 1;
   }
@@ -1946,6 +2126,13 @@ int LuaSceneUseSystem(lua_State* lua) {
 }
 
 int LuaSceneRegisterInteractable(lua_State* lua) {
+  if (lua_isnumber(lua, 2)) {
+    if (!std::isfinite(lua_tonumber(lua, 2))) {
+      return luaL_argerror(lua, 2, "expected finite number");
+    }
+  } else if (!lua_istable(lua, 2) && !lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected entity table, numeric id, or name");
+  }
   auto* host = Host(lua);
   if (host == nullptr) {
     lua_pushboolean(lua, 0);
@@ -1967,12 +2154,18 @@ int LuaSceneRegisterInteractable(lua_State* lua) {
 }
 
 int LuaContextDiagnostic(lua_State* lua) {
+  const int level_index = lua_istable(lua, 1) ? 2 : 1;
+  const int message_index = level_index + 1;
+  if (!lua_isnoneornil(lua, level_index) && !lua_isstring(lua, level_index)) {
+    return luaL_argerror(lua, level_index, "expected severity string (info|warning|error)");
+  }
+  if (!lua_isnoneornil(lua, message_index) && !lua_isstring(lua, message_index)) {
+    return luaL_argerror(lua, message_index, "expected message string");
+  }
   auto* host = Host(lua);
   if (host == nullptr) {
     return 0;
   }
-  const int level_index = lua_istable(lua, 1) ? 2 : 1;
-  const int message_index = level_index + 1;
   std::string level = lua_isstring(lua, level_index) ? lua_tostring(lua, level_index) : "info";
   std::transform(level.begin(), level.end(), level.begin(), [](unsigned char c) {
     return static_cast<char>(std::tolower(c));
@@ -2055,7 +2248,19 @@ std::vector<int> LuaMouseButtonCandidates(lua_State* lua, int index) {
   return candidates;
 }
 
+// === Input bindings ============================================================
+// Namespace: ctx.input.* (callable methods only; static fields skip arg validation).
+// Type errors: luaL_argerror — wrong Lua type is a programming error.
+// Missing object: returns false (no host context); unknown keys/buttons match nothing.
+// Returns: bool | table.
 int LuaInputKeyDown(lua_State* lua) {
+  if (lua_isnumber(lua, 2)) {
+    if (!std::isfinite(lua_tonumber(lua, 2))) {
+      return luaL_argerror(lua, 2, "expected finite number");
+    }
+  } else if (!lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected key code (number) or name (string)");
+  }
   auto* host = Host(lua);
   if (host == nullptr || host->context == nullptr) {
     lua_pushboolean(lua, 0);
@@ -2076,6 +2281,13 @@ int LuaInputKeyDown(lua_State* lua) {
 }
 
 int LuaInputMouseDown(lua_State* lua) {
+  if (lua_isnumber(lua, 2)) {
+    if (!std::isfinite(lua_tonumber(lua, 2))) {
+      return luaL_argerror(lua, 2, "expected finite number");
+    }
+  } else if (!lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected button code (number) or name (string)");
+  }
   auto* host = Host(lua);
   if (host == nullptr || host->context == nullptr) {
     lua_pushboolean(lua, 0);
@@ -2111,8 +2323,6 @@ void PushWorldTable(lua_State* lua, LuaHostContext& host) {
   lua_newtable(lua);
   PushHostClosure(lua, host, LuaWorldFindEntity);
   lua_setfield(lua, -2, "find_entity");
-  PushHostClosure(lua, host, LuaWorldFindEntity);
-  lua_setfield(lua, -2, "entity");
   PushHostClosure(lua, host, LuaWorldChildrenOf);
   lua_setfield(lua, -2, "children_of");
   PushHostClosure(lua, host, LuaWorldHasComponent);
@@ -2225,10 +2435,23 @@ void PushEditorTable(lua_State* lua, const ScriptExecutionContext& context) {
   lua_setfield(lua, -2, "edited_component");
 }
 
+// === Audio bindings ============================================================
+// Namespace: ctx.audio.*
+// Type errors: luaL_argerror — wrong Lua type is a programming error.
+// Missing object: returns nil / void — audio system unavailable or handle invalid.
+// Returns: voice handle table | nil | void.
 int LuaAudioPostEvent(lua_State* lua) {
-  auto* host = Host(lua);
   const int eventIndex = lua_isstring(lua, 2) ? 2 : (lua_isstring(lua, 1) ? 1 : 0);
-  if (host == nullptr || eventIndex == 0) {
+  if (eventIndex == 0) {
+    return luaL_argerror(lua, lua_isnoneornil(lua, 2) ? 1 : 2,
+                         "expected event name string");
+  }
+  const int optionsIndexArg = eventIndex + 1;
+  if (!lua_isnoneornil(lua, optionsIndexArg) && !lua_istable(lua, optionsIndexArg)) {
+    return luaL_argerror(lua, optionsIndexArg, "expected options table or nil");
+  }
+  auto* host = Host(lua);
+  if (host == nullptr) {
     lua_pushnil(lua);
     return 1;
   }
@@ -2290,6 +2513,13 @@ int LuaAudioPostEvent(lua_State* lua) {
 }
 
 int LuaAudioStop(lua_State* lua) {
+  // Accept :stop(handle) or .stop(handle). The user-supplied handle table may sit at
+  // index 1 (dot-call) or index 2 (colon-call). nil is allowed as a no-op. Any other
+  // type at index 2 is a programming error; we never argerror at index 1 because that
+  // index is the audio self-table when called via :.
+  if (!lua_isnoneornil(lua, 2) && !lua_istable(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected voice handle table or nil");
+  }
   auto* host = Host(lua);
   if (host == nullptr) {
     return 0;
@@ -2593,11 +2823,20 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
   PushHostClosure(lua, host, LuaInclude);
   lua_setglobal(lua, "include");
   constexpr std::size_t kInstructionSampleInterval = 1000u;
+  // 50 ms per script per hook: at 60 Hz the per-tick budget is 16.67 ms, so
+  // 50 ms is already 3x over budget. We could go tighter but the existing
+  // infinite-loop fixture (assets/scripts/test/script_budget_probe.lua) needs
+  // to trip the instruction budget first; with the default 250000-instruction
+  // limit and 1000-step sample interval, an empty `while true do end` runs in
+  // microseconds, well below 50 ms.
+  constexpr std::chrono::milliseconds kWallClockBudgetMs{50};
   LuaInstructionBudget instruction_budget;
   instruction_budget.limit = context.instruction_budget;
   instruction_budget.interval = context.instruction_budget == 0u
                                     ? 0u
                                     : std::min(context.instruction_budget, kInstructionSampleInterval);
+  instruction_budget.wall_clock_budget_ms = kWallClockBudgetMs;
+  instruction_budget.wall_clock_deadline = hook_start + kWallClockBudgetMs;
   host.instruction_budget = &instruction_budget;
 
   lua_rawgeti(lua, LUA_REGISTRYINDEX, pooled_state->script_table_ref);
@@ -2767,6 +3006,21 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
                               "instructions",
                               runtime_state.instruction_count,
                               context.instruction_budget);
+    } else if (instruction_budget.wall_clock_exceeded ||
+               runtime_state.last_error.find("wall-clock budget exceeded") != std::string::npos) {
+      runtime_state.budget_exceeded = true;
+      runtime_state.budget_exceeded_type = "wall_clock";
+      runtime_state.disabled_until_reload = true;
+      const auto elapsed_ms = static_cast<std::size_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - hook_start)
+              .count());
+      LogScriptBudgetExceeded(binding,
+                              hook,
+                              context,
+                              "wall_clock",
+                              elapsed_ms,
+                              static_cast<std::size_t>(instruction_budget.wall_clock_budget_ms.count()));
     } else if (pooled_state->memory_budget.exceeded ||
                runtime_state.last_error.find("memory") != std::string::npos) {
       runtime_state.budget_exceeded = true;
@@ -3164,6 +3418,9 @@ ScriptDispatchSummary EcsScriptRuntime::dispatch_hook(const vkpt::scene::SceneWo
     if (result.runtime_state.budget_exceeded) {
       ++m_status.budget_kills_total;
       ++summary.result.budget_exceeded_count;
+      if (result.runtime_state.budget_exceeded_type == "wall_clock") {
+        ++m_status.wall_clock_kills_total;
+      }
     }
     const bool killed_this_dispatch = result.runtime_state.disabled_until_reload &&
                                       !result.runtime_state.last_error.empty();
