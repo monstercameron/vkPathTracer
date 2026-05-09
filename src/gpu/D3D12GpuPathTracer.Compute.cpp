@@ -660,6 +660,20 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
   }
   ++m_filmGeneration;
   if (doReadback && m_ldrReadbackPtr && m_filmPixels > 0u) {
+    // CRITICAL: the readback heap (m_ldrReadbackPtr) is written by the GPU's
+    // CopyBufferRegion at the end of this frame's command list. Reading it
+    // before the GPU finishes that copy produces a torn image — partial rows
+    // from N+1 frames mixed together (visible to the user as black banding).
+    // The frames-in-flight optimization legitimately removes the wait for
+    // *non-readback* samples (the next render_tile is the only consumer of
+    // those, and it waits on its own slot). For readback samples the CPU
+    // *is* the consumer and MUST synchronize.
+    if (!wait_for_fence(frameCtx.fence_value)) {
+      m_error = "wait_for_fence on readback failed: " + m_error;
+      LogError("render_sample_batch readback fence wait: " + m_error);
+      return false;
+    }
+    frameCtx.in_flight = false;
     m_ldrResolve.width  = m_settings.width;
     m_ldrResolve.height = m_settings.height;
     m_ldrResolve.rgba8.resize(static_cast<size_t>(m_filmPixels) * 4u);
