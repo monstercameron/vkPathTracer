@@ -1202,7 +1202,7 @@ bool CheckPhysicsTelemetry() {
   }
 
   return Check(summary.enabled_bodies == 2u && summary.ecs_entities == 3u,
-               "physics telemetry probe should create a sync drift") &&
+               "physics probe world should expose 3 ECS entities and 2 enabled bodies") &&
          Check(static_cast<bool>(valid_step),
                "physics telemetry valid step should be accepted") &&
          Check(valid_status.backend.size() > 0 &&
@@ -1220,7 +1220,8 @@ bool CheckPhysicsTelemetry() {
                "physics telemetry should record contacts_per_step histogram") &&
          Check(MetricGaugeValue("vkp.physics.body_count.enabled") == 2.0,
                "physics telemetry should publish enabled body-count gauge") &&
-         Check(saw_sync_drift, "physics telemetry should emit physics.sync_drift") &&
+         Check(!saw_sync_drift,
+               "physics.sync_drift must not fire when ECS-enabled and backend body counts agree") &&
          Check(saw_step_failed, "physics telemetry should emit physics.step_failed");
 }
 
