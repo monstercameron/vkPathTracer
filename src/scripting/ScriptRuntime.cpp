@@ -994,12 +994,34 @@ void PushCamera(lua_State* lua, const vkpt::scene::CameraComponent& camera) {
   lua_setfield(lua, -2, "near_plane");
   lua_pushnumber(lua, camera.far_plane);
   lua_setfield(lua, -2, "far_plane");
+  lua_pushnumber(lua, camera.focal_length_mm);
+  lua_setfield(lua, -2, "focal_length_mm");
+  lua_pushnumber(lua, camera.sensor_width_mm);
+  lua_setfield(lua, -2, "sensor_width_mm");
+  lua_pushnumber(lua, camera.sensor_height_mm);
+  lua_setfield(lua, -2, "sensor_height_mm");
+  lua_pushnumber(lua, camera.aperture_radius);
+  lua_setfield(lua, -2, "aperture_radius");
   lua_pushnumber(lua, camera.focus_distance);
   lua_setfield(lua, -2, "focus_distance");
   lua_pushnumber(lua, camera.f_stop);
   lua_setfield(lua, -2, "f_stop");
+  lua_pushnumber(lua, camera.shutter_seconds);
+  lua_setfield(lua, -2, "shutter_seconds");
+  lua_pushnumber(lua, camera.iso);
+  lua_setfield(lua, -2, "iso");
   lua_pushnumber(lua, camera.exposure_compensation);
   lua_setfield(lua, -2, "exposure_compensation");
+  lua_pushnumber(lua, camera.white_balance_kelvin);
+  lua_setfield(lua, -2, "white_balance_kelvin");
+  lua_pushnumber(lua, camera.iris_rotation_degrees);
+  lua_setfield(lua, -2, "iris_rotation_degrees");
+  lua_pushnumber(lua, camera.iris_roundness);
+  lua_setfield(lua, -2, "iris_roundness");
+  lua_pushnumber(lua, camera.anamorphic_squeeze);
+  lua_setfield(lua, -2, "anamorphic_squeeze");
+  lua_pushinteger(lua, static_cast<lua_Integer>(camera.iris_blade_count));
+  lua_setfield(lua, -2, "iris_blade_count");
 }
 
 void PushPhysicsBody(lua_State* lua, const vkpt::scene::PhysicsBodyComponent& body) {
