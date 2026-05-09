@@ -2,11 +2,68 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <numeric>
+#include <unordered_map>
 #include <utility>
 
 namespace vkpt::render {
+
+namespace {
+
+// FNV-1a 64-bit hash helpers — used to fingerprint comparator-relevant tile
+// state so rebuild_order() can short-circuit when the sort key set is unchanged
+// across samples.
+constexpr std::uint64_t kFnvOffset = 0xcbf29ce484222325ull;
+constexpr std::uint64_t kFnvPrime = 0x100000001b3ull;
+
+inline std::uint64_t FnvMix(std::uint64_t h, std::uint64_t v) noexcept {
+  // Mix 8 bytes one at a time (cheap; gets folded by the compiler for small v).
+  for (int i = 0; i < 8; ++i) {
+    h ^= (v >> (i * 8)) & 0xffull;
+    h *= kFnvPrime;
+  }
+  return h;
+}
+
+// Bucket variance / sample_count to keep the fingerprint stable across
+// micro-fluctuations that don't actually change the sort outcome. The bucket
+// granularity matches the comparator's sensitivity: variance is compared as
+// a strict ordering, so we bucket to ~256 levels per tile by quantising into
+// fixed bins.
+inline std::uint32_t VarianceBucket(double variance) noexcept {
+  if (!(variance > 0.0)) {
+    return 0u;
+  }
+  // Quantize variance into ~256 buckets across a log range; preserves
+  // ordering for adjacent-bucket tiles while letting noise within a bucket
+  // skip the resort.
+  const double clamped = std::clamp(variance, 1e-9, 1e9);
+  const double log = std::log10(clamped);  // ~[-9, 9]
+  const double scaled = (log + 9.0) * (256.0 / 18.0);
+  return static_cast<std::uint32_t>(std::clamp(scaled, 0.0, 255.0));
+}
+
+inline std::uint32_t SampleCountBucket(std::uint32_t samples) noexcept {
+  // 0..15 individually, then powers-of-two coarsening.
+  if (samples < 16u) return samples;
+  std::uint32_t bucket = 16u;
+  std::uint32_t v = samples;
+  while (v >= 32u) {
+    v >>= 1;
+    ++bucket;
+  }
+  return bucket;
+}
+
+// thread_local cache; the scheduler is driven from a single worker thread
+// per coordinator, so per-thread keying by `this` is sufficient and avoids
+// any global synchronization.
+thread_local std::unordered_map<const TileScheduler*, std::uint64_t>
+    tls_lastFingerprint;
+
+}  // namespace
 
 void TileScheduler::configure(TileSchedulerConfig config) {
   config.tile_height = std::max(1u, config.tile_height);
@@ -24,6 +81,8 @@ void TileScheduler::configure(TileSchedulerConfig config) {
   }
   m_order.clear();
   m_nextTile = 0u;
+  // Topology change invalidates any cached sort fingerprint for this instance.
+  tls_lastFingerprint.erase(this);
 }
 
 void TileScheduler::set_feedback(std::span<const TilePriorityFeedback> feedback) {
@@ -87,23 +146,92 @@ TileSchedulerStats TileScheduler::stats() const {
 }
 
 void TileScheduler::rebuild_order() {
+  // Fingerprint comparator-relevant inputs. If the bucketed sort keys are
+  // identical to the previous call, the existing m_order is still correct
+  // and we can skip the iota/sort/rebuild work entirely. The fingerprint also
+  // covers config fields that affect ordering output (foveated extra samples,
+  // tile_height, height, gpu_count) so any topology change forces a rebuild.
+  std::uint64_t fingerprint = kFnvOffset;
+  fingerprint = FnvMix(fingerprint, static_cast<std::uint64_t>(m_tileCount));
+  fingerprint = FnvMix(
+      fingerprint,
+      static_cast<std::uint64_t>(m_config.foveated_center_extra_samples));
+  fingerprint = FnvMix(fingerprint, static_cast<std::uint64_t>(m_config.tile_height));
+  fingerprint = FnvMix(fingerprint, static_cast<std::uint64_t>(m_config.height));
+  fingerprint = FnvMix(fingerprint, static_cast<std::uint64_t>(m_config.gpu_count));
+
+  // Pre-compute dirty population counts in the same pass as fingerprinting so
+  // we can dispatch to a specialized comparator below (constant first
+  // conditional when all-dirty / all-clean).
+  std::uint32_t dirtyCount = 0u;
+  for (std::uint32_t tileId = 0u; tileId < m_tileCount; ++tileId) {
+    const auto& fb = m_feedback[tileId];
+    if (fb.dirty) {
+      ++dirtyCount;
+    }
+    // Pack {dirty, variance_bucket, sample_count_bucket, tile_id} into a
+    // single 64-bit lane so the FnvMix loop is amortised: 1 bit dirty
+    // | 8 bits variance | 16 bits sample bucket | 32 bits tile_id = 57 bits.
+    const std::uint64_t packed =
+        (static_cast<std::uint64_t>(fb.dirty ? 1u : 0u) << 56) |
+        (static_cast<std::uint64_t>(VarianceBucket(fb.variance) & 0xffu) << 48) |
+        (static_cast<std::uint64_t>(SampleCountBucket(fb.sample_count) & 0xffffu)
+         << 32) |
+        static_cast<std::uint64_t>(tileId);
+    fingerprint = FnvMix(fingerprint, packed);
+  }
+
+  if (!m_order.empty()) {
+    auto cached = tls_lastFingerprint.find(this);
+    if (cached != tls_lastFingerprint.end() && cached->second == fingerprint) {
+      // Sort-relevant state matches the previous rebuild; m_order is stale-free.
+      return;
+    }
+  }
+  tls_lastFingerprint[this] = fingerprint;
+
   std::vector<std::uint32_t> rankedTileIds(m_tileCount);
   std::iota(rankedTileIds.begin(), rankedTileIds.end(), 0u);
-  std::stable_sort(rankedTileIds.begin(), rankedTileIds.end(), [&](std::uint32_t lhs,
-                                                                   std::uint32_t rhs) {
-    const auto& left = m_feedback[lhs];
-    const auto& right = m_feedback[rhs];
-    if (left.dirty != right.dirty) {
-      return left.dirty && !right.dirty;
-    }
-    if (left.variance != right.variance) {
-      return left.variance > right.variance;
-    }
-    if (left.sample_count != right.sample_count) {
-      return left.sample_count < right.sample_count;
-    }
-    return lhs < rhs;
-  });
+
+  // Specialize the comparator on the dirty distribution. When every tile is
+  // dirty (snapshot-change case, common) or every tile is clean, the first
+  // conditional is constant and we elide it from the inner loop.
+  const bool allDirty = (dirtyCount == m_tileCount);
+  const bool allClean = (dirtyCount == 0u);
+  if (allDirty || allClean) {
+    // Fast path: same priority class across all tiles, so dirty bit is moot.
+    std::stable_sort(rankedTileIds.begin(),
+                     rankedTileIds.end(),
+                     [&](std::uint32_t lhs, std::uint32_t rhs) {
+                       const auto& left = m_feedback[lhs];
+                       const auto& right = m_feedback[rhs];
+                       if (left.variance != right.variance) {
+                         return left.variance > right.variance;
+                       }
+                       if (left.sample_count != right.sample_count) {
+                         return left.sample_count < right.sample_count;
+                       }
+                       return lhs < rhs;
+                     });
+  } else {
+    // General path: tiles span both dirty/clean classes.
+    std::stable_sort(rankedTileIds.begin(),
+                     rankedTileIds.end(),
+                     [&](std::uint32_t lhs, std::uint32_t rhs) {
+                       const auto& left = m_feedback[lhs];
+                       const auto& right = m_feedback[rhs];
+                       if (left.dirty != right.dirty) {
+                         return left.dirty && !right.dirty;
+                       }
+                       if (left.variance != right.variance) {
+                         return left.variance > right.variance;
+                       }
+                       if (left.sample_count != right.sample_count) {
+                         return left.sample_count < right.sample_count;
+                       }
+                       return lhs < rhs;
+                     });
+  }
 
   // Indexed writes into a pre-sized vector — no per-tile push_back / reallocation.
   // First pass counts foveated-center tiles to size the buffer exactly; second

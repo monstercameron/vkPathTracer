@@ -6,10 +6,26 @@
 #include <variant>
 
 namespace vkpt::scene {
+namespace {
+
+// Typical per-frame command counts in the FPS demo are well under 64
+// (set_transform per moving entity + a handful of script-driven mutations);
+// reserving once on first use avoids the small-vector growth churn that
+// dominates the WorldCommandBuffer hot path on first-frame and after-clear
+// reuse cycles. clear() preserves capacity so this only fires once per
+// command buffer instance.
+inline void EnsureCommandsCapacity(std::vector<WorldCommandBuffer::Command>& commands) {
+  if (commands.capacity() == 0u) {
+    commands.reserve(64u);
+  }
+}
+
+}  // namespace
 
 void WorldCommandBuffer::add_create_entity(std::string_view name,
                                            vkpt::core::StableId stable_hint,
                                            vkpt::core::StableId requested_parent) {
+  EnsureCommandsCapacity(m_commands);
   CreateEntityCommand cmd;
   cmd.name = std::string(name);
   cmd.requested_id = stable_hint;
@@ -18,22 +34,27 @@ void WorldCommandBuffer::add_create_entity(std::string_view name,
 }
 
 void WorldCommandBuffer::add_destroy_entity(vkpt::core::StableId id) {
+  EnsureCommandsCapacity(m_commands);
   m_commands.push_back({CommandType::DestroyEntity, DestroyEntityCommand{id, false}});
 }
 
 void WorldCommandBuffer::add_destroy_subtree(vkpt::core::StableId id) {
+  EnsureCommandsCapacity(m_commands);
   m_commands.push_back({CommandType::DestroyEntity, DestroyEntityCommand{id, true}});
 }
 
 void WorldCommandBuffer::add_set_component(vkpt::core::StableId id, ComponentKind kind, ComponentVariant component) {
+  EnsureCommandsCapacity(m_commands);
   m_commands.push_back({CommandType::SetComponent, SetComponentCommand{id, kind, std::move(component)}});
 }
 
 void WorldCommandBuffer::add_add_component(vkpt::core::StableId id, ComponentKind kind, ComponentVariant component) {
+  EnsureCommandsCapacity(m_commands);
   m_commands.push_back({CommandType::AddComponent, AddComponentCommand{id, kind, std::move(component)}});
 }
 
 void WorldCommandBuffer::add_remove_component(vkpt::core::StableId id, ComponentKind kind) {
+  EnsureCommandsCapacity(m_commands);
   m_commands.push_back({CommandType::RemoveComponent, RemoveComponentCommand{id, kind}});
 }
 
@@ -42,6 +63,7 @@ void WorldCommandBuffer::add_set_transform(vkpt::core::StableId id,
                                            TransformAuthority authority,
                                            std::string_view writer,
                                            vkpt::core::FrameIndex frame) {
+  EnsureCommandsCapacity(m_commands);
   SetTransformCommand cmd;
   cmd.id = id;
   cmd.transform = transform;
@@ -54,24 +76,29 @@ void WorldCommandBuffer::add_set_transform(vkpt::core::StableId id,
 void WorldCommandBuffer::add_reparent_entity(vkpt::core::StableId child,
                                              vkpt::core::StableId parent,
                                              bool preserve_world_transform) {
+  EnsureCommandsCapacity(m_commands);
   m_commands.push_back({CommandType::ReparentEntity, ReparentEntityCommand{child, parent, preserve_world_transform}});
 }
 
 void WorldCommandBuffer::add_reorder_sibling(vkpt::core::StableId moved,
                                              vkpt::core::StableId sibling_before,
                                              vkpt::core::StableId sibling_after) {
+  EnsureCommandsCapacity(m_commands);
   m_commands.push_back({CommandType::ReorderSibling, ReorderSiblingCommand{moved, sibling_before, sibling_after}});
 }
 
 void WorldCommandBuffer::add_assign_material(vkpt::core::StableId id, vkpt::core::StableId material_id) {
+  EnsureCommandsCapacity(m_commands);
   m_commands.push_back({CommandType::AssignMaterial, AssignMaterialCommand{id, material_id}});
 }
 
 void WorldCommandBuffer::add_assign_light(vkpt::core::StableId id, const LightComponent& light) {
+  EnsureCommandsCapacity(m_commands);
   m_commands.push_back({CommandType::AssignLight, AssignLightCommand{id, light}});
 }
 
 void WorldCommandBuffer::add_assign_camera(vkpt::core::StableId id, const CameraComponent& camera) {
+  EnsureCommandsCapacity(m_commands);
   m_commands.push_back({CommandType::AssignCamera, AssignCameraCommand{id, camera}});
 }
 

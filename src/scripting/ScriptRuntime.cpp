@@ -433,6 +433,13 @@ struct LuaInstructionBudget {
 };
 
 constexpr const char* kLuaHostContextRegistryKey = "vkpt.current_host_context";
+// Registry keys for cached prototype tables / metatables. Built once at
+// lua_State creation; the per-dispatch fast paths fetch them via lua_getfield
+// and clone via metatable __index instead of rebuilding closure tables.
+constexpr const char* kLuaEntityMetatableRegistryKey = "vkpt.entity_metatable";
+constexpr const char* kLuaEntityPrototypeRegistryKey = "vkpt.entity_prototype";
+constexpr const char* kLuaCtxPrototypeRegistryKey = "vkpt.ctx_prototype";
+constexpr const char* kLuaCtxMetatableRegistryKey = "vkpt.ctx_metatable";
 
 // Clears the per-dispatch fields of a host context so a stale pointer left in
 // the Lua registry across reused dispatches resolves to safe nullptr/default
@@ -441,18 +448,13 @@ constexpr const char* kLuaHostContextRegistryKey = "vkpt.current_host_context";
 // state from a prior dispatch never leaks into the next one. The struct itself
 // stays alive — the heap host outlives any single dispatch.
 inline void ResetHostSnapshot(LuaHostContext& host) noexcept {
-  host.world = nullptr;
-  host.commands = nullptr;
-  host.context = nullptr;
-  host.binding = nullptr;
-  host.hook = ScriptLifecycleHook::OnUpdate;
-  host.dispatch_diagnostics = nullptr;
-  host.runtime_diagnostics = nullptr;
-  host.next_entity_id = 1;
+  // Empty the persistent containers in place (so any allocated capacity is
+  // released by the assignment cleanly) and then assign a default-constructed
+  // host. The aggregate copy folds 11 separate trivial-field stores into a
+  // single bulk move of POD defaults.
   host.reserved_entity_ids.clear();
   host.ensured_script_keys.clear();
-  host.pure = false;
-  host.instruction_budget = nullptr;
+  host = LuaHostContext{};
 }
 
 LuaHostContext* Host(lua_State* lua);
@@ -1496,46 +1498,107 @@ int LuaEntitySetUiPanel(lua_State* lua) {
   return 0;
 }
 
-void PushHostClosure(lua_State* lua, LuaHostContext& host, lua_CFunction function) {
-  (void)host;
-  lua_pushcfunction(lua, function);
+// Build the entity prototype table once for the lifetime of the lua_State.
+// Closures are stateless C functions; the per-dispatch wrapper tables only
+// need a fresh `_entity_id` plus a metatable {__index = prototype} so reads
+// of `t.id`, `t.get_transform` etc. fall through to the cached closure table.
+// Saves ~14 lua_pushcfunction / lua_setfield calls per PushEntityObject for
+// non-pure bindings.
+void BuildEntityPrototype(lua_State* lua, bool pure) {
+  lua_newtable(lua);  // prototype
+  lua_pushcfunction(lua, LuaEntityId);
+  lua_setfield(lua, -2, "id");
+  lua_pushcfunction(lua, LuaEntityGetName);
+  lua_setfield(lua, -2, "get_name");
+  lua_pushcfunction(lua, LuaEntityGetTransform);
+  lua_setfield(lua, -2, "get_transform");
+  lua_pushcfunction(lua, LuaEntityLog);
+  lua_setfield(lua, -2, "log");
+  lua_pushcfunction(lua, LuaEntityGetLight);
+  lua_setfield(lua, -2, "get_light");
+  lua_pushcfunction(lua, LuaEntityGetCamera);
+  lua_setfield(lua, -2, "get_camera");
+  lua_pushcfunction(lua, LuaEntityGetPhysics);
+  lua_setfield(lua, -2, "get_physics");
+  lua_pushcfunction(lua, LuaEntityGetMaterialId);
+  lua_setfield(lua, -2, "get_material_id");
+  lua_pushcfunction(lua, LuaEntityGetUiPanel);
+  lua_setfield(lua, -2, "get_ui_panel");
+  if (!pure) {
+    lua_pushcfunction(lua, LuaEntitySetTransform);
+    lua_setfield(lua, -2, "set_transform");
+    lua_pushcfunction(lua, LuaEntitySetName);
+    lua_setfield(lua, -2, "set_name");
+    lua_pushcfunction(lua, LuaEntitySetDebugValue);
+    lua_setfield(lua, -2, "set_debug_value");
+    lua_pushcfunction(lua, LuaEntitySetLight);
+    lua_setfield(lua, -2, "set_light");
+    lua_pushcfunction(lua, LuaEntitySetCamera);
+    lua_setfield(lua, -2, "set_camera");
+    lua_pushcfunction(lua, LuaEntitySetUiPanel);
+    lua_setfield(lua, -2, "set_ui_panel");
+  }
+  // Stash prototype in registry under a known key for PushEntityObject's fast
+  // path to find it. lua_setfield consumes the value, so push a dup first.
+  lua_pushvalue(lua, -1);
+  lua_setfield(lua, LUA_REGISTRYINDEX, kLuaEntityPrototypeRegistryKey);
+  // Build metatable {__index = prototype} and stash that too. Wrapper tables
+  // get this as their metatable so missing keys fall through to prototype.
+  lua_newtable(lua);              // metatable
+  lua_pushvalue(lua, -2);         // prototype copy
+  lua_setfield(lua, -2, "__index");
+  lua_setfield(lua, LUA_REGISTRYINDEX, kLuaEntityMetatableRegistryKey);
+  lua_pop(lua, 1);  // pop prototype
 }
 
 void PushEntityObject(lua_State* lua, LuaHostContext& host, vkpt::core::StableEntityId entity_id) {
-  // Entity handles are lightweight tables closed over the host context for this hook dispatch only.
+  // Fast path: per-dispatch wrapper table inherits closures from the cached
+  // prototype via metatable __index. Only `_entity_id` is per-instance.
+  lua_getfield(lua, LUA_REGISTRYINDEX, kLuaEntityMetatableRegistryKey);
+  if (lua_istable(lua, -1)) {
+    lua_createtable(lua, 0, 1);  // wrapper with one named field
+    lua_pushinteger(lua, static_cast<lua_Integer>(entity_id));
+    lua_setfield(lua, -2, "_entity_id");
+    lua_pushvalue(lua, -2);     // metatable
+    lua_setmetatable(lua, -2);  // setmetatable(wrapper, mt)
+    lua_remove(lua, -2);        // pop the metatable copy underneath wrapper
+    return;
+  }
+  lua_pop(lua, 1);  // pop the non-table sentinel
+  // Fallback: build the full table inline (only hit if prototype is missing).
   lua_newtable(lua);
   lua_pushinteger(lua, static_cast<lua_Integer>(entity_id));
   lua_setfield(lua, -2, "_entity_id");
-  PushHostClosure(lua, host, LuaEntityId);
+  lua_pushcfunction(lua, LuaEntityId);
   lua_setfield(lua, -2, "id");
-  PushHostClosure(lua, host, LuaEntityGetName);
+  lua_pushcfunction(lua, LuaEntityGetName);
   lua_setfield(lua, -2, "get_name");
-  PushHostClosure(lua, host, LuaEntityGetTransform);
+  lua_pushcfunction(lua, LuaEntityGetTransform);
   lua_setfield(lua, -2, "get_transform");
-  PushHostClosure(lua, host, LuaEntityLog);
+  lua_pushcfunction(lua, LuaEntityLog);
   lua_setfield(lua, -2, "log");
-  PushHostClosure(lua, host, LuaEntityGetLight);
+  lua_pushcfunction(lua, LuaEntityGetLight);
   lua_setfield(lua, -2, "get_light");
-  PushHostClosure(lua, host, LuaEntityGetCamera);
+  lua_pushcfunction(lua, LuaEntityGetCamera);
   lua_setfield(lua, -2, "get_camera");
-  PushHostClosure(lua, host, LuaEntityGetPhysics);
+  lua_pushcfunction(lua, LuaEntityGetPhysics);
   lua_setfield(lua, -2, "get_physics");
-  PushHostClosure(lua, host, LuaEntityGetMaterialId);
+  lua_pushcfunction(lua, LuaEntityGetMaterialId);
   lua_setfield(lua, -2, "get_material_id");
-  PushHostClosure(lua, host, LuaEntityGetUiPanel);
+  lua_pushcfunction(lua, LuaEntityGetUiPanel);
   lua_setfield(lua, -2, "get_ui_panel");
   if (!host.pure) {
-    PushHostClosure(lua, host, LuaEntitySetTransform);
+    lua_pushcfunction(lua, LuaEntitySetTransform);
     lua_setfield(lua, -2, "set_transform");
-    PushHostClosure(lua, host, LuaEntitySetName);
+    lua_pushcfunction(lua, LuaEntitySetName);
     lua_setfield(lua, -2, "set_name");
-    PushHostClosure(lua, host, LuaEntitySetDebugValue);
+    lua_pushcfunction(lua, LuaEntitySetDebugValue);
     lua_setfield(lua, -2, "set_debug_value");
-    PushHostClosure(lua, host, LuaEntitySetLight);
+    lua_pushcfunction(lua, LuaEntitySetLight);
     lua_setfield(lua, -2, "set_light");
-    PushHostClosure(lua, host, LuaEntitySetCamera);
+    lua_pushcfunction(lua, LuaEntitySetCamera);
     lua_setfield(lua, -2, "set_camera");
-    PushHostClosure(lua, host, LuaEntitySetUiPanel);
+    lua_pushcfunction(lua, LuaEntitySetUiPanel);
     lua_setfield(lua, -2, "set_ui_panel");
   }
 }
@@ -2342,42 +2405,42 @@ int LuaInputMouseDelta(lua_State* lua) {
 
 void PushWorldTable(lua_State* lua, LuaHostContext& host) {
   lua_newtable(lua);
-  PushHostClosure(lua, host, LuaWorldFindEntity);
+  lua_pushcfunction(lua, LuaWorldFindEntity);
   lua_setfield(lua, -2, "find_entity");
-  PushHostClosure(lua, host, LuaWorldChildrenOf);
+  lua_pushcfunction(lua, LuaWorldChildrenOf);
   lua_setfield(lua, -2, "children_of");
-  PushHostClosure(lua, host, LuaWorldHasComponent);
+  lua_pushcfunction(lua, LuaWorldHasComponent);
   lua_setfield(lua, -2, "has_component");
   if (!host.pure) {
-    PushHostClosure(lua, host, LuaWorldSpawnEntity);
+    lua_pushcfunction(lua, LuaWorldSpawnEntity);
     lua_setfield(lua, -2, "spawn_entity");
-    PushHostClosure(lua, host, LuaWorldDestroyEntity);
+    lua_pushcfunction(lua, LuaWorldDestroyEntity);
     lua_setfield(lua, -2, "destroy_entity");
-    PushHostClosure(lua, host, LuaWorldReparentEntity);
+    lua_pushcfunction(lua, LuaWorldReparentEntity);
     lua_setfield(lua, -2, "reparent_entity");
-    PushHostClosure(lua, host, LuaWorldReorderEntity);
+    lua_pushcfunction(lua, LuaWorldReorderEntity);
     lua_setfield(lua, -2, "reorder_entity");
-    PushHostClosure(lua, host, LuaWorldRemoveComponent);
+    lua_pushcfunction(lua, LuaWorldRemoveComponent);
     lua_setfield(lua, -2, "remove_component");
-    PushHostClosure(lua, host, LuaWorldAssignMaterial);
+    lua_pushcfunction(lua, LuaWorldAssignMaterial);
     lua_setfield(lua, -2, "assign_material");
   }
 }
 
 void PushSceneTable(lua_State* lua, LuaHostContext& host) {
   lua_newtable(lua);
-  PushHostClosure(lua, host, LuaSceneMainCamera);
+  lua_pushcfunction(lua, LuaSceneMainCamera);
   lua_setfield(lua, -2, "main_camera");
-  PushHostClosure(lua, host, LuaSceneFindEntity);
+  lua_pushcfunction(lua, LuaSceneFindEntity);
   lua_setfield(lua, -2, "find_entity");
-  PushHostClosure(lua, host, LuaSceneEntitiesWithComponent);
+  lua_pushcfunction(lua, LuaSceneEntitiesWithComponent);
   lua_setfield(lua, -2, "entities_with_component");
-  PushHostClosure(lua, host, LuaSceneUseSystem);
+  lua_pushcfunction(lua, LuaSceneUseSystem);
   lua_setfield(lua, -2, "use_system");
   if (!host.pure) {
-    PushHostClosure(lua, host, LuaSceneEnsureScript);
+    lua_pushcfunction(lua, LuaSceneEnsureScript);
     lua_setfield(lua, -2, "ensure_script");
-    PushHostClosure(lua, host, LuaSceneRegisterInteractable);
+    lua_pushcfunction(lua, LuaSceneRegisterInteractable);
     lua_setfield(lua, -2, "register_interactable");
   }
 }
@@ -2408,11 +2471,11 @@ void PushRuntimeTable(lua_State* lua, const ScriptExecutionContext& context) {
 
 void PushInputTable(lua_State* lua, LuaHostContext& host) {
   lua_newtable(lua);
-  PushHostClosure(lua, host, LuaInputKeyDown);
+  lua_pushcfunction(lua, LuaInputKeyDown);
   lua_setfield(lua, -2, "key_down");
-  PushHostClosure(lua, host, LuaInputMouseDown);
+  lua_pushcfunction(lua, LuaInputMouseDown);
   lua_setfield(lua, -2, "mouse_down");
-  PushHostClosure(lua, host, LuaInputMouseDelta);
+  lua_pushcfunction(lua, LuaInputMouseDelta);
   lua_setfield(lua, -2, "mouse_delta");
   const auto& input = host.context == nullptr ? ScriptExecutionContext::InputState{} : host.context->input;
   lua_pushboolean(lua, input.enabled ? 1 : 0);
@@ -2569,17 +2632,116 @@ int LuaAudioStop(lua_State* lua) {
 void PushAudioTable(lua_State* lua, LuaHostContext& host) {
   lua_newtable(lua);
   if (!host.pure) {
-    PushHostClosure(lua, host, LuaAudioPostEvent);
+    lua_pushcfunction(lua, LuaAudioPostEvent);
     lua_setfield(lua, -2, "post_event");
-    PushHostClosure(lua, host, LuaAudioStop);
+    lua_pushcfunction(lua, LuaAudioStop);
     lua_setfield(lua, -2, "stop");
   }
+}
+
+// Builds the parts of ctx that are static across dispatches for the lifetime
+// of the lua_State: world/scene/audio sub-tables (pure closures) and the
+// diagnostic/include closures. Stashes the prototype + a metatable
+// {__index = prototype} in the registry so per-dispatch ctx tables can
+// inherit static fields and only set the per-dispatch values.
+void BuildCtxPrototype(lua_State* lua, LuaHostContext& host) {
+  // Closure-only input prototype. Per-dispatch input wrappers get a metatable
+  // pointing at this so the 3 closures don't have to be reinstalled.
+  lua_newtable(lua);  // input prototype
+  lua_pushcfunction(lua, LuaInputKeyDown);
+  lua_setfield(lua, -2, "key_down");
+  lua_pushcfunction(lua, LuaInputMouseDown);
+  lua_setfield(lua, -2, "mouse_down");
+  lua_pushcfunction(lua, LuaInputMouseDelta);
+  lua_setfield(lua, -2, "mouse_delta");
+  lua_newtable(lua);          // input metatable
+  lua_pushvalue(lua, -2);     // input prototype copy
+  lua_setfield(lua, -2, "__index");
+  lua_setfield(lua, LUA_REGISTRYINDEX, "vkpt.input_metatable");
+  lua_pop(lua, 1);  // pop the input prototype
+
+  // ctx prototype with the static sub-tables and global closures.
+  lua_newtable(lua);
+  PushWorldTable(lua, host);
+  lua_setfield(lua, -2, "world");
+  PushSceneTable(lua, host);
+  lua_setfield(lua, -2, "scene");
+  PushAudioTable(lua, host);
+  lua_setfield(lua, -2, "audio");
+  lua_pushcfunction(lua, LuaContextDiagnostic);
+  lua_setfield(lua, -2, "diagnostic");
+  lua_pushcfunction(lua, LuaInclude);
+  lua_setfield(lua, -2, "include");
+  // Stash prototype + metatable.
+  lua_pushvalue(lua, -1);
+  lua_setfield(lua, LUA_REGISTRYINDEX, kLuaCtxPrototypeRegistryKey);
+  lua_newtable(lua);          // metatable
+  lua_pushvalue(lua, -2);     // prototype
+  lua_setfield(lua, -2, "__index");
+  lua_setfield(lua, LUA_REGISTRYINDEX, kLuaCtxMetatableRegistryKey);
+  lua_pop(lua, 1);  // pop prototype
+}
+
+// Per-dispatch input table: small wrapper with per-dispatch value fields and
+// metatable {__index = input_prototype} so the 3 closures are inherited.
+void PushInputTableFast(lua_State* lua, LuaHostContext& host) {
+  lua_getfield(lua, LUA_REGISTRYINDEX, "vkpt.input_metatable");
+  if (!lua_istable(lua, -1)) {
+    lua_pop(lua, 1);
+    PushInputTable(lua, host);
+    return;
+  }
+  lua_createtable(lua, 0, 9);
+  lua_pushvalue(lua, -2);
+  lua_setmetatable(lua, -2);
+  lua_remove(lua, -2);  // pop metatable copy underneath wrapper
+
+  const auto& input = host.context == nullptr ? ScriptExecutionContext::InputState{} : host.context->input;
+  lua_pushboolean(lua, input.enabled ? 1 : 0);
+  lua_setfield(lua, -2, "enabled");
+  lua_pushnumber(lua, input.mouse_delta_x);
+  lua_setfield(lua, -2, "mouse_delta_x");
+  lua_pushnumber(lua, input.mouse_delta_y);
+  lua_setfield(lua, -2, "mouse_delta_y");
+  lua_pushnumber(lua, input.mouse_wheel_delta);
+  lua_setfield(lua, -2, "mouse_wheel_delta");
+  lua_pushboolean(lua, input.viewport_focused ? 1 : 0);
+  lua_setfield(lua, -2, "viewport_focused");
+  const bool left_down = std::find(input.active_mouse_buttons.begin(),
+                                   input.active_mouse_buttons.end(),
+                                   0) != input.active_mouse_buttons.end();
+  const bool right_down = std::find(input.active_mouse_buttons.begin(),
+                                    input.active_mouse_buttons.end(),
+                                    1) != input.active_mouse_buttons.end();
+  const bool middle_down = std::find(input.active_mouse_buttons.begin(),
+                                     input.active_mouse_buttons.end(),
+                                     2) != input.active_mouse_buttons.end();
+  lua_pushboolean(lua, left_down ? 1 : 0);
+  lua_setfield(lua, -2, "mouse_left_down");
+  lua_pushboolean(lua, right_down ? 1 : 0);
+  lua_setfield(lua, -2, "mouse_right_down");
+  lua_pushboolean(lua, middle_down ? 1 : 0);
+  lua_setfield(lua, -2, "mouse_middle_down");
 }
 
 void PushContextTable(lua_State* lua,
                       LuaHostContext& host,
                       const std::unordered_map<std::string, ScriptVariableOverride>& overrides) {
-  lua_newtable(lua);
+  // Fast path: per-dispatch wrapper inherits world/scene/audio/diagnostic/
+  // include from the cached ctx prototype via metatable __index. Only the
+  // value fields and the dynamic sub-tables (runtime, editor, input, params)
+  // are constructed per dispatch.
+  lua_getfield(lua, LUA_REGISTRYINDEX, kLuaCtxMetatableRegistryKey);
+  const bool fast_path = lua_istable(lua, -1);
+  if (fast_path) {
+    lua_createtable(lua, 0, 12);
+    lua_pushvalue(lua, -2);
+    lua_setmetatable(lua, -2);
+    lua_remove(lua, -2);  // pop metatable copy
+  } else {
+    lua_pop(lua, 1);
+    lua_newtable(lua);
+  }
   const auto& context = *host.context;
   lua_pushinteger(lua, static_cast<lua_Integer>(host.binding == nullptr ? 0u : host.binding->entity));
   lua_setfield(lua, -2, "entity_id");
@@ -2603,20 +2765,27 @@ void PushContextTable(lua_State* lua,
     lua_newtable(lua);
   }
   lua_setfield(lua, -2, "params");
-  PushWorldTable(lua, host);
-  lua_setfield(lua, -2, "world");
-  PushSceneTable(lua, host);
-  lua_setfield(lua, -2, "scene");
-  PushInputTable(lua, host);
+  if (fast_path) {
+    PushInputTableFast(lua, host);
+  } else {
+    PushInputTable(lua, host);
+  }
   lua_setfield(lua, -2, "input");
   PushEditorTable(lua, context);
   lua_setfield(lua, -2, "editor");
-  PushAudioTable(lua, host);
-  lua_setfield(lua, -2, "audio");
-  PushHostClosure(lua, host, LuaContextDiagnostic);
-  lua_setfield(lua, -2, "diagnostic");
-  PushHostClosure(lua, host, LuaInclude);
-  lua_setfield(lua, -2, "include");
+  if (!fast_path) {
+    // Fallback: populate the static fields inline.
+    PushWorldTable(lua, host);
+    lua_setfield(lua, -2, "world");
+    PushSceneTable(lua, host);
+    lua_setfield(lua, -2, "scene");
+    PushAudioTable(lua, host);
+    lua_setfield(lua, -2, "audio");
+    lua_pushcfunction(lua, LuaContextDiagnostic);
+    lua_setfield(lua, -2, "diagnostic");
+    lua_pushcfunction(lua, LuaInclude);
+    lua_setfield(lua, -2, "include");
+  }
 }
 
 vkpt::core::StableEntityId NextEntityId(const vkpt::scene::SceneWorld& world) {
@@ -2750,7 +2919,12 @@ std::shared_ptr<LuaStatePool::Impl::State> GetOrCreateLuaState(
   auto* lua = state->lua;
   SetCurrentHost(lua, state->host.get());
   OpenSafeLuaLibraries(lua);
-  PushHostClosure(lua, host, LuaInclude);
+  // Build the per-state cached prototype tables once so per-dispatch entity
+  // and ctx wrapper tables don't have to rebuild ~14 closure setfields each.
+  // host.pure is fixed for the binding identity that owns this lua_State.
+  BuildEntityPrototype(lua, host.pure);
+  BuildCtxPrototype(lua, host);
+  lua_pushcfunction(lua, LuaInclude);
   lua_setglobal(lua, "include");
 
   const auto chunk_name = "@" + script_path.generic_string();
@@ -2841,18 +3015,18 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
   host.runtime_diagnostics = &runtime_diagnostics;
   host.next_entity_id = NextEntityId(world);
   host.pure = binding.pure;
+  // Reset runtime_state via aggregate-init (folds the trivial-field clears
+  // into a single bulk assignment of POD defaults) and then stamp the few
+  // fields that need values from this dispatch's binding/context. Caller
+  // always passes a freshly-constructed BindingDispatchResult member, but
+  // this idiom is robust if someone later reuses the slot.
+  runtime_state = ScriptBindingRuntimeState{};
   runtime_state.entity = binding.entity;
   runtime_state.source = binding.source;
   runtime_state.last_hook = hook;
   runtime_state.last_frame = context.frame;
   runtime_state.command_count = commands.commands().size();
-  runtime_state.last_error.clear();
-  runtime_state.skip_reason.clear();
   runtime_state.pure = binding.pure;
-  runtime_state.hook_fired = false;
-  runtime_state.budget_exceeded = false;
-  runtime_state.budget_exceeded_type.clear();
-  runtime_state.instruction_count = 0u;
   const auto hook_start = std::chrono::steady_clock::now();
 
   auto pooled_state = GetOrCreateLuaState(
@@ -2872,7 +3046,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
   pooled_state->memory_budget.limit = context.memory_budget_bytes;
   pooled_state->memory_budget.exceeded = false;
   pooled_state->memory_budget.requested = 0u;
-  PushHostClosure(lua, host, LuaInclude);
+  lua_pushcfunction(lua, LuaInclude);
   lua_setglobal(lua, "include");
   constexpr std::size_t kInstructionSampleInterval = 1000u;
   // 50 ms per script per hook: at 60 Hz the per-tick budget is 16.67 ms, so
@@ -3126,9 +3300,15 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
     lua_sethook(active_coroutine, nullptr, 0, 0);
   }
   lua_sethook(lua, nullptr, 0, 0);
-  lua_rawgeti(lua, LUA_REGISTRYINDEX, hook_function_ref);
-  CaptureLuaScriptVariables(lua, -2, -1, binding, hook, context, variable_snapshots);
-  lua_pop(lua, 1);
+  // Variable snapshots are only consumed by editor panels. Skip the per-
+  // dispatch Lua stack walk (table iteration + upvalue probe) when the editor
+  // canvas is disabled — saves ~1-2us per dispatch on representative scenes
+  // and avoids snapshot vector growth in non-editor sessions.
+  if (context.editor.canvas_enabled) {
+    lua_rawgeti(lua, LUA_REGISTRYINDEX, hook_function_ref);
+    CaptureLuaScriptVariables(lua, -2, -1, binding, hook, context, variable_snapshots);
+    lua_pop(lua, 1);
+  }
   if (hook_function_ref != LUA_NOREF) {
     luaL_unref(lua, LUA_REGISTRYINDEX, hook_function_ref);
   }

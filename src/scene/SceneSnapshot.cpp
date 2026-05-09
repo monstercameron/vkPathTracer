@@ -556,12 +556,34 @@ RenderSceneSnapshot::Ptr BuildRenderSceneSnapshot(
     out->local_indices = reuseArray(previous->local_indices);
     out->tessellation_requests = reuseArray(previous->tessellation_requests);
     out->sdf_primitives = reuseArray(previous->sdf_primitives);
-    out->environment_map = materialSame
-        ? reuseArray(previous->environment_map)
-        : BuildCowArray(scene.environment_map,
-                        &previous->environment_map,
-                        SameVec3,
-                        localStats);
+
+    // S6: when materialSame, all material-dependent arrays reuse previous
+    // storage in a single block (clarity refactor).
+    if (materialSame) {
+      out->environment_map = reuseArray(previous->environment_map);
+      out->materials = reuseArray(previous->materials);
+      out->textures = reuseArray(previous->textures);
+      out->lights = reuseArray(previous->lights);
+    } else {
+      out->environment_map = BuildCowArray(scene.environment_map,
+                                           &previous->environment_map,
+                                           SameVec3,
+                                           localStats);
+      out->materials = BuildCowArray(scene.materials,
+                                     &previous->materials,
+                                     SameMaterial,
+                                     localStats);
+      out->textures = BuildCowArray(scene.textures,
+                                    &previous->textures,
+                                    [](const std::string& lhs, const std::string& rhs) {
+                                      return lhs == rhs;
+                                    },
+                                    localStats);
+      out->lights = BuildCowArray(scene.lights,
+                                  &previous->lights,
+                                  SameLight,
+                                  localStats);
+    }
 
     out->instances = (transformSame && materialSame)
         ? reuseArray(previous->instances)
@@ -569,27 +591,18 @@ RenderSceneSnapshot::Ptr BuildRenderSceneSnapshot(
                         &previous->instances,
                         SameInstance,
                         localStats);
-    out->materials = materialSame
-        ? reuseArray(previous->materials)
-        : BuildCowArray(scene.materials,
-                        &previous->materials,
-                        SameMaterial,
-                        localStats);
-    out->textures = materialSame
-        ? reuseArray(previous->textures)
-        : BuildCowArray(scene.textures,
-                        &previous->textures,
-                        [](const std::string& lhs, const std::string& rhs) {
-                          return lhs == rhs;
-                        },
-                        localStats);
-    out->lights = materialSame
-        ? reuseArray(previous->lights)
-        : BuildCowArray(scene.lights,
-                        &previous->lights,
-                        SameLight,
-                        localStats);
     if (transformSame) {
+      // S3 trivial case: topologySame && transformSame implies no per-instance
+      // motion is possible; short-circuit to an empty buffer.
+      ++localStats.cow_total_arrays;
+      if (previous->instance_motion.empty()) {
+        ++localStats.cow_reused_arrays;
+      }
+      out->instance_motion = {};
+    } else if (out->instances.shares_storage_with(previous->instances)) {
+      // S3: BuildCowArray reused previous storage (every instance compared
+      // equal), so by construction no transform changed and motion is empty.
+      // Skip BuildInstanceMotion's O(n) walk.
       ++localStats.cow_total_arrays;
       if (previous->instance_motion.empty()) {
         ++localStats.cow_reused_arrays;

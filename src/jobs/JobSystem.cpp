@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <exception>
 #include <memory>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -21,9 +23,25 @@
 
 namespace vkpt::jobs {
 
+// Cache line size for false-sharing avoidance. Use the standard hint when
+// available, otherwise assume 64 bytes which matches every mainstream x86_64
+// and AArch64 target this project ships on.
+#ifdef __cpp_lib_hardware_interference_size
+inline constexpr std::size_t kJobsCacheLineBytes = std::hardware_destructive_interference_size;
+#else
+inline constexpr std::size_t kJobsCacheLineBytes = 64u;
+#endif
+
 struct JobSystem::JobState {
+  // Hot atomic on its own cache line: workers fetch_sub on `pending` from
+  // multiple cores while the wait path inspects the adjacent mutex/cv on its
+  // owning thread. Padding prevents that ping-pong (audit J3).
+  alignas(kJobsCacheLineBytes) std::atomic<std::size_t> pending = 1u;
+  // Pad out the rest of the cache line so the cold metadata below cannot
+  // be pulled into the same line as `pending`.
+  char pad_after_pending[kJobsCacheLineBytes - sizeof(std::atomic<std::size_t>)];
+
   vkpt::core::JobHandle id = 0u;
-  std::atomic<std::size_t> pending = 1u;
   std::mutex mutex;
   std::condition_variable cv;
   JobFunction job;
@@ -274,12 +292,23 @@ vkpt::core::JobHandle JobSystem::create_group(std::size_t pending_count) {
   state->id = m_nextJobId.fetch_add(1u, std::memory_order_relaxed);
   state->pending.store(pending_count, std::memory_order_release);
   state->submitted_ns = steady_now_ns();
+  if (pending_count == 0u) {
+    // Already-completed groups are returned by chain()/submit_*_job() shims
+    // when the user passes an empty job. complete_job() will never run on
+    // them, so retire eagerly here under m_jobsMutex: record a CompletedResult
+    // (so a later wait() can still observe success) and skip inserting into
+    // m_jobs entirely (audit J5: bound m_jobs growth for fire-and-forget
+    // call sites that never wait).
+    {
+      std::scoped_lock lock(m_jobsMutex);
+      remember_completed_result_locked(state->id, CompletedResult{true, nullptr});
+    }
+    state->cv.notify_all();
+    return state->id;
+  }
   {
     std::scoped_lock lock(m_jobsMutex);
     m_jobs.emplace(state->id, state);
-  }
-  if (pending_count == 0u) {
-    state->cv.notify_all();
   }
   return state->id;
 }
@@ -418,6 +447,11 @@ void JobSystem::complete_job(const std::shared_ptr<JobState>& state, std::except
     // the whole dependency tree without enqueueing a separate completion job.
     complete_job(parent, failure);
   }
+  // Eager retirement (audit J5): remove this state from m_jobs as soon as it
+  // is finished and stash its CompletedResult. This bounds m_jobs even for
+  // fire-and-forget submitters that never call wait(), without affecting
+  // late waiters because find_completed_result() falls back on the bounded
+  // m_completedResults LRU.
   retire_completed_state(state);
 }
 
@@ -431,7 +465,10 @@ void JobSystem::run_job(const std::shared_ptr<JobState>& state) {
   if (state->submitted_ns != 0u && started_ns >= state->submitted_ns) {
     VKP_METRIC_OBSERVE("vkp.jobs.wait_us", (started_ns - state->submitted_ns) / 1000u);
   }
-  m_workersBusy.fetch_add(1u, std::memory_order_acq_rel);
+  // Relaxed: this counter is only consumed by status() which uses acquire on
+  // its own load, and the load synchronizes with these stores via the atomic
+  // (audit J2). No surrounding non-atomic state hangs off this ordering.
+  m_workersBusy.fetch_add(1u, std::memory_order_relaxed);
   std::exception_ptr failure;
   try {
     if (state->job) {
@@ -484,7 +521,7 @@ void JobSystem::run_job(const std::shared_ptr<JobState>& state) {
   if (finished_ns >= started_ns) {
     VKP_METRIC_OBSERVE("vkp.jobs.run_us", (finished_ns - started_ns) / 1000u);
   }
-  m_workersBusy.fetch_sub(1u, std::memory_order_acq_rel);
+  m_workersBusy.fetch_sub(1u, std::memory_order_relaxed);
   complete_job(state, failure);
 }
 
@@ -777,7 +814,12 @@ bool JobSystem::wait(vkpt::core::JobHandle id,
       continue;
     }
     std::unique_lock lock(target->mutex);
-    target->cv.wait_for(lock, std::chrono::milliseconds(1), [&]() {
+    // complete_job() always notifies the per-job CV under the same mutex once
+    // pending hits zero, so wait() blocks until that signal instead of polling
+    // every 1ms (audit J1). A 100ms safety net keeps the waiter alive across
+    // exotic tear-down sequences where a notify could be racing with shutdown
+    // bookkeeping; the predicate re-checks `pending` on each spurious wake.
+    target->cv.wait_for(lock, std::chrono::milliseconds(100), [&]() {
       return target->pending.load(std::memory_order_acquire) == 0u;
     });
   }
@@ -1034,13 +1076,30 @@ bool JobSystem::shutdown() {
     }
   }
   pump_main_thread();
+
+  // Audit J10: don't lie about dropped jobs. Once workers have joined and the
+  // main-thread queues have been pumped, anything still resident in m_queue
+  // or m_workerQueues is being abandoned. Count it under m_queueMutex so the
+  // log reflects reality (SYSTEM.md §6.5: "Drain m_queue on shutdown, or
+  // document the drop").
+  std::size_t dropped = 0u;
+  {
+    std::scoped_lock lock(m_queueMutex);
+    dropped = m_queue.size();
+    for (const auto& queue : m_workerQueues) {
+      dropped += queue.size();
+    }
+    for (const auto& queue : m_mainQueues) {
+      dropped += queue.size();
+    }
+  }
   record_status_tick();
   try {
     vkpt::log::Logger::instance().log(
         vkpt::log::Severity::Info,
         "jobs",
         "stopped",
-        {{"dropped_count", "0"}});
+        {{"dropped_count", std::to_string(dropped)}});
   } catch (...) {
   }
   return true;

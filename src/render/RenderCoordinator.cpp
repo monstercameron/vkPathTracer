@@ -1059,6 +1059,57 @@ void RenderCoordinator::run(std::stop_token stop,
   }
   configureTileScheduler();
 
+  // Hot-path shadow accumulators for per-tile counters. The inner tile loop
+  // updates these without taking m_statsMutex; we fold them into m_stats once
+  // per sample (see the per-sample fold-in block below). This drops the
+  // m_statsMutex acquisition from the per-tile hot path entirely. gpu_count
+  // is fixed at configure time, so the gpu vector never resizes on the hot
+  // path; an out-of-range gpu_id (which would be a tracer/scheduler bug)
+  // marks the worker failed instead of silently growing the vector.
+  const std::uint32_t hotGpuCount = std::max<std::uint32_t>(1u, m_config.gpu_count);
+  std::vector<std::uint64_t> tilesPerGpuShadow(hotGpuCount, 0u);
+  std::uint64_t tilesRenderedShadow = 0u;
+  std::uint64_t tileLatencyOverBudgetShadow = 0u;
+  double tileLatencyLastShadow = 0.0;
+  double tileLatencyMaxShadow = 0.0;
+  std::uint64_t tracerGenLagShadow = 0u;
+  std::uint64_t snapshotFirstTilePublishShadow = 0u;
+  std::uint32_t snapshotFirstTilePublishMaxTilesShadow = 0u;
+  bool hotShadowDirty = false;
+
+  auto foldShadowsIntoStats = [&]() {
+    if (!hotShadowDirty) {
+      return;
+    }
+    std::scoped_lock lock(m_statsMutex);
+    m_stats.tiles_rendered_total += tilesRenderedShadow;
+    if (m_stats.gpu_tiles_rendered_total.size() < tilesPerGpuShadow.size()) {
+      m_stats.gpu_tiles_rendered_total.resize(tilesPerGpuShadow.size(), 0u);
+    }
+    for (std::size_t i = 0u; i < tilesPerGpuShadow.size(); ++i) {
+      m_stats.gpu_tiles_rendered_total[i] += tilesPerGpuShadow[i];
+    }
+    if (tilesRenderedShadow != 0u) {
+      m_stats.tile_latency_last_us = tileLatencyLastShadow;
+    }
+    m_stats.tile_latency_max_us =
+        std::max(m_stats.tile_latency_max_us, tileLatencyMaxShadow);
+    m_stats.tile_latency_over_budget_total += tileLatencyOverBudgetShadow;
+    m_stats.tracer_gen_lag = tracerGenLagShadow;
+    m_stats.snapshot_first_tile_publish_total += snapshotFirstTilePublishShadow;
+    m_stats.snapshot_first_tile_publish_max_tiles =
+        std::max(m_stats.snapshot_first_tile_publish_max_tiles,
+                 snapshotFirstTilePublishMaxTilesShadow);
+    // Reset the per-sample deltas after folding; running maxima are absorbed.
+    tilesRenderedShadow = 0u;
+    std::fill(tilesPerGpuShadow.begin(), tilesPerGpuShadow.end(), 0u);
+    tileLatencyOverBudgetShadow = 0u;
+    snapshotFirstTilePublishShadow = 0u;
+    snapshotFirstTilePublishMaxTilesShadow = 0u;
+    // tileLatencyLastShadow/MaxShadow are running values, leave them alone.
+    hotShadowDirty = false;
+  };
+
   auto publishResolvedFrame = [&](std::uint32_t publishedSampleCount,
                                   const vkpt::pathtracer::SampleCounters& counters) {
     auto ldr = tracer->resolve_ldr();
@@ -1154,23 +1205,27 @@ void RenderCoordinator::run(std::stop_token stop,
       ++tilesRenderedThisSample;
       VKP_METRIC_INC("vkp.tracer.tiles_total");
       VKP_METRIC_OBSERVE("vkp.render.tile_latency_us", tileUs);
-      {
-        std::scoped_lock lock(m_statsMutex);
-        ++m_stats.tiles_rendered_total;
-        if (tile.gpu_id >= m_stats.gpu_tiles_rendered_total.size()) {
-          m_stats.gpu_tiles_rendered_total.resize(
-              static_cast<std::size_t>(tile.gpu_id) + 1u,
-              0u);
-        }
-        ++m_stats.gpu_tiles_rendered_total[tile.gpu_id];
-        m_stats.tile_latency_last_us = tileUs;
-        m_stats.tile_latency_max_us = std::max(m_stats.tile_latency_max_us, tileUs);
-        if (tileUs > m_config.tile_latency_budget_us) {
-          ++m_stats.tile_latency_over_budget_total;
-        }
-        const auto readerStats = snapshotRing.reader_stats(tracerSnapshotReader);
-        m_stats.tracer_gen_lag = readerStats.lag;
+      // Hot path: update lock-free shadow accumulators only. They are folded
+      // into m_stats once per sample (see foldShadowsIntoStats below). Single
+      // writer (this worker thread) — plain ints, no atomic ops needed.
+      ++tilesRenderedShadow;
+      if (tile.gpu_id < tilesPerGpuShadow.size()) {
+        ++tilesPerGpuShadow[tile.gpu_id];
+      } else {
+        // gpu_count was supposed to be fixed at configure time; an out-of-range
+        // gpu_id indicates a scheduler/tracer contract violation.
+        mark_failed("render coordinator gpu_id out of fixed gpu_count range");
+        tileFailed = true;
+        break;
       }
+      tileLatencyLastShadow = tileUs;
+      tileLatencyMaxShadow = std::max(tileLatencyMaxShadow, tileUs);
+      if (tileUs > m_config.tile_latency_budget_us) {
+        ++tileLatencyOverBudgetShadow;
+      }
+      tracerGenLagShadow =
+          snapshotRing.reader_stats(tracerSnapshotReader).lag;
+      hotShadowDirty = true;
       auto& logger = vkpt::log::Logger::instance();
       if (logger.enabled(vkpt::log::Severity::Debug)) {
         logger.log(
@@ -1188,19 +1243,23 @@ void RenderCoordinator::run(std::stop_token stop,
         ++tilesSinceSnapshotChange;
         const auto countersAfterTile = tracer->read_counters();
         publishResolvedFrame(sample, countersAfterTile);
-        {
-          std::scoped_lock lock(m_statsMutex);
-          ++m_stats.snapshot_first_tile_publish_total;
-          m_stats.snapshot_first_tile_publish_max_tiles =
-              std::max(m_stats.snapshot_first_tile_publish_max_tiles,
-                       tilesSinceSnapshotChange);
-        }
+        // Hot path: defer m_stats fold-in to the per-sample fold below.
+        ++snapshotFirstTilePublishShadow;
+        snapshotFirstTilePublishMaxTilesShadow =
+            std::max(snapshotFirstTilePublishMaxTilesShadow,
+                     tilesSinceSnapshotChange);
+        hotShadowDirty = true;
         pendingFirstTilePublishGeneration = 0u;
         tilesSinceSnapshotChange = 0u;
       } else if (pendingFirstTilePublishGeneration != 0u) {
         ++tilesSinceSnapshotChange;
       }
     }
+    // Fold per-tile shadow accumulators into m_stats once per sample. This is
+    // the only place m_statsMutex is held by the worker for tile counters in
+    // steady state; readers of stats() will see at most one sample of lag for
+    // these fields.
+    foldShadowsIntoStats();
     if (stop.stop_requested()) {
       break;
     }
@@ -1232,6 +1291,10 @@ void RenderCoordinator::run(std::stop_token stop,
   if (tracer) {
     tracer->shutdown();
   }
+
+  // Ensure any pending hot-path tile counters are visible to stats() readers
+  // before the worker exits.
+  foldShadowsIntoStats();
 
   RenderCoordinatorStats snapshot;
   {
