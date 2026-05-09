@@ -104,6 +104,9 @@ void LogCoordinatorException(std::string_view error) noexcept {
 
 void SleepRenderWorkerUntil(std::stop_token stop,
                             std::chrono::steady_clock::time_point target) {
+  // Intentional publish-rate pacing (caps producer to publishHz), not blocking
+  // on contention; spin-yields when target is imminent. This is the throttle,
+  // not a per-frame hot path — the hot path is the inner tile loop below.
   while (!stop.stop_requested() && std::chrono::steady_clock::now() < target) {
     const auto remaining = target - std::chrono::steady_clock::now();
     if (remaining > std::chrono::milliseconds(2)) {
@@ -1103,6 +1106,9 @@ void RenderCoordinator::run(std::stop_token stop,
 
     update_stats(generation, sample, settings, tracer->read_counters());
     if (sample >= settings.spp) {
+      // Idle throttle when rendering is fully converged (sample budget reached);
+      // not on the per-frame hot path — this branch only runs after the worker
+      // has nothing else to do and is awaiting a settings/scene change.
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }

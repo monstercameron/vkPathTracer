@@ -105,12 +105,26 @@ void TileScheduler::rebuild_order() {
     return lhs < rhs;
   });
 
-  m_order.clear();
+  // Indexed writes into a pre-sized vector — no per-tile push_back / reallocation.
+  // First pass counts foveated-center tiles to size the buffer exactly; second
+  // pass fills it. Single allocation in resize(); both loops are then index-only.
   const std::uint32_t extraSamples = m_config.foveated_center_extra_samples;
-  m_order.reserve(static_cast<std::size_t>(m_tileCount) *
-                  static_cast<std::size_t>(extraSamples + 1u));
+  std::size_t foveatedCenterCount = 0u;
+  if (extraSamples > 0u) {
+    for (const std::uint32_t tileId : rankedTileIds) {
+      if (is_foveated_center_tile(tileId)) {
+        ++foveatedCenterCount;
+      }
+    }
+  }
+  const std::size_t totalSize = static_cast<std::size_t>(m_tileCount) +
+                                foveatedCenterCount *
+                                    static_cast<std::size_t>(extraSamples);
+  m_order.clear();
+  m_order.resize(totalSize);
+  std::size_t writeIndex = 0u;
   for (const std::uint32_t tileId : rankedTileIds) {
-    m_order.push_back(ScheduledTile{tileId, 0u});
+    m_order[writeIndex++] = ScheduledTile{tileId, 0u};
   }
   if (extraSamples == 0u) {
     return;
@@ -120,7 +134,7 @@ void TileScheduler::rebuild_order() {
        ++sampleOffset) {
     for (const std::uint32_t tileId : rankedTileIds) {
       if (is_foveated_center_tile(tileId)) {
-        m_order.push_back(ScheduledTile{tileId, sampleOffset});
+        m_order[writeIndex++] = ScheduledTile{tileId, sampleOffset};
       }
     }
   }

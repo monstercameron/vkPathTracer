@@ -23,6 +23,7 @@ SnapshotRing::SnapshotRing() {
 }
 
 std::uint32_t SnapshotRing::register_reader(std::string_view name) {
+  // One-shot subsystem registration at startup, not on any per-frame path.
   std::scoped_lock lock(m_mutex);
   if (m_readerCount >= kMaxReaders) {
     return kInvalidReader;
@@ -47,6 +48,11 @@ void SnapshotRing::publish(SnapshotPtr snapshot) {
   SnapshotRingStats publishedStats;
 
   {
+    // Publish runs once per sim tick (sim->render handoff), not on the renderer's
+    // per-tile/per-sample hot path. Consumers read snapshots through the lock-free
+    // m_current atomic<shared_ptr> below (the documented MSVC fast path per
+    // SYSTEM.md "Risks & open questions"); this lock only guards the auxiliary
+    // stats/slots bookkeeping that no hot-path consumer reads.
     std::scoped_lock lock(m_mutex);
     if (droppedPrevious) {
       ++m_stats.dropped_total;
@@ -141,6 +147,7 @@ std::uint64_t SnapshotRing::current_flow_id() const noexcept {
 }
 
 void SnapshotRing::set_determinism(const vkpt::core::DeterminismContext& context) {
+  // Determinism context update; happens at scenario boundaries, not per frame.
   vkpt::core::DeterminismContext previous;
   {
     std::scoped_lock lock(m_mutex);
@@ -155,11 +162,13 @@ void SnapshotRing::set_determinism(const vkpt::core::DeterminismContext& context
 }
 
 vkpt::core::DeterminismContext SnapshotRing::determinism_context() const {
+  // Diagnostic / determinism-replay accessor; not on per-frame hot path.
   std::scoped_lock lock(m_mutex);
   return m_determinismContext;
 }
 
 SnapshotRingStats SnapshotRing::stats() const {
+  // Diagnostic accessor (UI/metrics scrape); not on per-frame hot path.
   std::scoped_lock lock(m_mutex);
   auto out = m_stats;
   out.current_flow_id = current_flow_id();
@@ -208,6 +217,8 @@ bool SnapshotRing::was_observed_by_any_reader(std::uint64_t generation) const {
 void SnapshotRing::emit_reader_lag_warnings(std::uint64_t latest_generation) {
   std::array<std::shared_ptr<ReaderState>, kMaxReaders> readers;
   {
+    // Snapshot the reader array under the lock so we don't hold it across the
+    // logging loop. Same publish-cadence path (once per sim tick), not hot.
     std::scoped_lock lock(m_mutex);
     readers = m_readers;
   }
