@@ -656,6 +656,7 @@ add_executable(ptapp
   src/app/AppRuntime.cpp
   src/app/AppRuntimeSupport.cpp
   src/cpu/BvhTriangleIntersector.cpp
+  src/sim/SimWorker.cpp
   ${PT_CPU_SOURCES}
 )
 
@@ -1071,6 +1072,19 @@ target_compile_features(pt_editor_override_tracker_smoke PRIVATE cxx_std_23)
 foreach(feature IN LISTS PT_ACTIVE_FEATURE_FLAGS)
   target_compile_definitions(pt_editor_override_tracker_smoke PRIVATE ${feature})
 endforeach()
+
+# SimWorker channel/lifecycle smoke (Step 1 of the SimWorker rollout).
+add_executable(pt_sim_worker_smoke EXCLUDE_FROM_ALL
+  tests/sim_worker_smoke.cpp
+  src/sim/SimWorker.cpp
+)
+
+target_include_directories(pt_sim_worker_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_sim_worker_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_sim_worker_smoke PRIVATE Threads::Threads)
 
 add_executable(pt_scene_contract_smoke EXCLUDE_FROM_ALL
   tests/scene_contract_smoke.cpp
