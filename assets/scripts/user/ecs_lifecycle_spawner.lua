@@ -1,5 +1,6 @@
+-- [user/ecs_lifecycle_spawner] Spawns a scripted child entity once at on_spawn for the ECS lifecycle scripting demo.
 -- @editor child_name text default="Script Spawned Child" label="Child Name"
--- @editor child_source text default="assets/scripts/ecs_lifecycle_spawned_child.lua" label="Child Script"
+-- @editor child_source text default="assets/scripts/user/ecs_lifecycle_spawned_child.lua" label="Child Script"
 -- @editor child_offset_y number default=0.95 min=-4 max=4 step=0.01 label="Child Offset Y"
 -- @editor child_offset_z number default=-0.01 min=-4 max=4 step=0.01 label="Child Offset Z"
 -- @editor child_scale_x number default=0.45 min=0.01 max=4 step=0.01 label="Child Scale X"
@@ -50,7 +51,7 @@ function script.on_spawn(self, ctx)
       material_id = math.floor(param_number(ctx, "child_material_id", 7103)),
     },
     script = {
-      source = param_string(ctx, "child_source", "assets/scripts/ecs_lifecycle_spawned_child.lua"),
+      source = param_string(ctx, "child_source", "assets/scripts/user/ecs_lifecycle_spawned_child.lua"),
       language = "lua",
       entry = "default",
       enabled = true,

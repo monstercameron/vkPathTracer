@@ -1,3 +1,4 @@
+-- [user/ecs_lifecycle_mover] Sinusoidal motion driver for the ECS lifecycle scripting demo.
 -- @editor spawn_lift number default=0.18 min=-2 max=2 step=0.01 label="Spawn Lift"
 -- @editor origin_x number default=-1.15 min=-10 max=10 step=0.01 label="Origin X"
 -- @editor move_x_amplitude number default=0.22 min=0 max=4 step=0.01 label="X Amplitude"

@@ -1,6 +1,6 @@
 return {
   player = "Lua Audio Player",
-  player_script = "assets/scripts/audio_interaction_demo.lua",
+  player_script = "assets/scripts/user/audio_interaction_demo.lua",
   interactables = {
     pickup = {
       entity = "Pickup Audio Marker",

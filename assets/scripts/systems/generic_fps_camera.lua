@@ -1,5 +1,4 @@
--- Canonical reusable FPS camera system. Keep the legacy compatibility path at
--- assets/scripts/generic_fps_camera.lua runnable until authored scenes migrate.
+-- [systems/generic_fps_camera] Canonical reusable FPS camera controller; attach to any active camera entity and tune via params.
 -- @editor movement_mode text default=walk label="Movement Mode"
 -- @editor walk_speed number default=4.2 min=0 max=20 step=0.1 label="Walk Speed"
 -- @editor run_multiplier number default=1.75 min=1 max=5 step=0.05 label="Run Multiplier"

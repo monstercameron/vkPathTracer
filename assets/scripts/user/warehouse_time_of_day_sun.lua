@@ -1,3 +1,4 @@
+-- [user/warehouse_time_of_day_sun] Drives sun direction/colour by configured time of day for the warehouse showcase scene.
 -- @editor time_of_day_hour number default=15.5 min=0 max=24 step=0.25 label="Time Of Day"
 -- @editor sunrise_hour number default=6.0 min=0 max=12 step=0.25 label="Sunrise Hour"
 -- @editor sunset_hour number default=18.5 min=12 max=24 step=0.25 label="Sunset Hour"

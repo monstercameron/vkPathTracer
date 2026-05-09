@@ -1,3 +1,4 @@
+-- [user/third_person_action_player] Third-person action gameplay player controller (camera follow, movement, panel).
 -- @editor camera_name text default="Action Camera" label="Camera Entity"
 -- @editor controls_panel_name text default="Third Person Controls Panel" label="Controls Entity"
 -- @editor controls_panel_id number default=9190 min=0 max=999999 step=1 label="Controls Entity ID"

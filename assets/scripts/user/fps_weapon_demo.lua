@@ -1,3 +1,4 @@
+-- [user/fps_weapon_demo] FPS weapon gameplay controller (movement, ADS, tracers, audio dispatch) for the shooting range demo scene.
 -- @editor walk_speed number default=3.9 min=0 max=12 step=0.1 label="Walk Speed"
 -- @editor run_multiplier number default=1.7 min=1 max=4 step=0.05 label="Run Multiplier"
 -- @editor crouch_multiplier number default=0.45 min=0.1 max=1 step=0.05 label="Crouch Multiplier"
@@ -31,8 +32,12 @@
 -- @editor bullet_visual_radius number default=0.022 min=0.005 max=0.12 step=0.001 label="Bullet Radius"
 -- @editor bullet_visual_length number default=0.16 min=0.02 max=0.8 step=0.01 label="Bullet Length"
 -- @editor flashlight_name text default="FPS Player Flashlight" label="Flashlight"
--- @editor flashlight_intensity number default=28.0 min=0 max=100 step=1 label="Flashlight Intensity"
--- @editor flashlight_radius number default=6.0 min=0.1 max=16 step=0.1 label="Flashlight Radius"
+-- @editor flashlight_intensity number default=38.0 min=0 max=120 step=1 label="Flashlight Intensity"
+-- @editor flashlight_radius number default=14.0 min=1 max=60 step=0.5 label="Flashlight Throw"
+-- @editor flashlight_beam_degrees number default=8.0 min=4 max=45 step=0.5 label="Flashlight Cone"
+-- @editor flashlight_blend number default=0.10 min=0 max=1 step=0.01 label="Flashlight Edge"
+-- @editor flashlight_forward_offset number default=0.18 min=-0.5 max=1.0 step=0.01 label="Flashlight Forward"
+-- @editor flashlight_drop number default=0.06 min=0 max=0.6 step=0.01 label="Flashlight Drop"
 -- @editor target_name text default="FPS Hero Target Model" label="Hero Target"
 -- @editor weapon_name text default="FPS Player Rifle Model" label="Weapon Model"
 -- @editor controls_panel_name text default="FPS Weapon Controls Panel" label="Controls Panel"
@@ -276,8 +281,12 @@ local function read_settings(ctx)
     bullet_visual_radius = param_number(ctx, "bullet_visual_radius", 0.022),
     bullet_visual_length = param_number(ctx, "bullet_visual_length", 0.16),
     flashlight_name = param_string(ctx, "flashlight_name", "FPS Player Flashlight"),
-    flashlight_intensity = param_number(ctx, "flashlight_intensity", 28.0),
-    flashlight_radius = param_number(ctx, "flashlight_radius", 6.0),
+    flashlight_intensity = param_number(ctx, "flashlight_intensity", 38.0),
+    flashlight_radius = param_number(ctx, "flashlight_radius", 14.0),
+    flashlight_beam_degrees = param_number(ctx, "flashlight_beam_degrees", 8.0),
+    flashlight_blend = param_number(ctx, "flashlight_blend", 0.10),
+    flashlight_forward_offset = param_number(ctx, "flashlight_forward_offset", 0.18),
+    flashlight_drop = param_number(ctx, "flashlight_drop", 0.06),
     target_name = param_string(ctx, "target_name", "FPS Hero Target Model"),
     weapon_name = param_string(ctx, "weapon_name", "FPS Player Rifle Model"),
     controls_panel_name = param_string(ctx, "controls_panel_name", "FPS Weapon Controls Panel"),
@@ -511,9 +520,19 @@ local function update_flashes(ctx, state, dt)
         local light = flash:get_light()
         if light ~= nil then
           local t = clamp(flash_state.time_left / math.max(0.001, flash_state.duration), 0.0, 1.0)
-          light.intensity = flash_state.intensity * t * t
-          light.radius = flash_state.radius
-          flash:set_light(light)
+          local target_intensity = flash_state.intensity * t * t
+          local current_intensity = light.intensity or 0.0
+          -- Only push assign_light when intensity steps materially. The
+          -- snapshot bus race fixed by 9894cce gets worse when every active
+          -- flash emits a light command per frame, so we coalesce small
+          -- decay steps into the next visible threshold change.
+          local intensity_delta = math.abs(current_intensity - target_intensity)
+          local minimum_step = math.max(0.5, flash_state.intensity * 0.08)
+          if intensity_delta >= minimum_step or t < 0.05 then
+            light.intensity = target_intensity
+            light.radius = flash_state.radius
+            flash:set_light(light)
+          end
         end
       end
     end
@@ -833,6 +852,19 @@ end
 
 local function spawn_bullet(ctx, state, settings, transform)
   local muzzle, fx, fy, fz = muzzle_position(transform, state)
+  -- Re-aim from the muzzle through a point on the crosshair line at the
+  -- current focus distance so bullets converge with the reticle even when
+  -- the muzzle sits ~37 cm to the right of the camera at hip-fire. Without
+  -- this, hip-fire bullets fly parallel to the camera forward and miss
+  -- centred targets to the side every shot.
+  local aim_distance = math.max(2.5, settings.ads_focus_distance + (state.ads_focus_offset or 0.0))
+  local aim_x = transform.translation.x + fx * aim_distance
+  local aim_y = transform.translation.y + fy * aim_distance
+  local aim_z = transform.translation.z + fz * aim_distance
+  local dir_x, dir_y, dir_z = normalize_vec3(aim_x - muzzle.x,
+                                             aim_y - muzzle.y,
+                                             aim_z - muzzle.z,
+                                             { x = fx, y = fy, z = fz })
   local id = next_pooled_id(state,
                             "bullet_slot",
                             DEFAULTS.bullet_pool_start_id,
@@ -841,9 +873,10 @@ local function spawn_bullet(ctx, state, settings, transform)
   if bullet_entity == nil then
     return
   end
+  local bullet_rotation = camera_look_quat(dir_x, dir_y, dir_z)
   set_entity_transform(bullet_entity,
                        muzzle,
-                       transform.rotation,
+                       bullet_rotation,
                        {
                          x = settings.bullet_visual_radius,
                          y = settings.bullet_visual_radius,
@@ -854,10 +887,10 @@ local function spawn_bullet(ctx, state, settings, transform)
     x = muzzle.x,
     y = muzzle.y,
     z = muzzle.z,
-    vx = fx * settings.bullet_speed,
-    vy = fy * settings.bullet_speed,
-    vz = fz * settings.bullet_speed,
-    rotation = transform.rotation,
+    vx = dir_x * settings.bullet_speed,
+    vy = dir_y * settings.bullet_speed,
+    vz = dir_z * settings.bullet_speed,
+    rotation = bullet_rotation,
   }
   spawn_flash(ctx,
               state,
@@ -986,8 +1019,8 @@ local function update_bullets(ctx, state, settings, dt)
       apply_range_target_impulse(state, settings, hit_target, bullet)
       play(ctx, "weapon.bullet.impact", {
         position = hit_pos,
-        volume = 0.74,
-        pitch = 1.0,
+        volume = 1.10,
+        pitch = 1.0 + (state.hits % 4) * 0.02,
         spatial = true,
       })
       spawn_flash(ctx,
@@ -1035,15 +1068,20 @@ local function update_range_target_motion(ctx, state, settings, dt)
         if transform.translation.y < floor_y then
           transform.translation.y = floor_y
           if velocity.vy < 0.0 then
-            velocity.vy = -velocity.vy * settings.range_target_bounce
+            velocity.vy = -velocity.vy * settings.range_target_bounce * 0.5
           end
-          velocity.vx = velocity.vx * 0.76
-          velocity.vz = velocity.vz * 0.76
+          velocity.vx = velocity.vx * 0.55
+          velocity.vz = velocity.vz * 0.55
         end
 
         entity:set_transform(transform)
         local speed = math.abs(velocity.vx) + math.abs(velocity.vy) + math.abs(velocity.vz)
-        if speed < 0.045 and transform.translation.y <= floor_y + 0.005 then
+        -- Aggressive settle threshold: a bouncing sphere is the dominant
+        -- per-frame transform mutator after a hit, and the snapshot publish
+        -- path that crashes is hit hardest while the target is moving. Stop
+        -- pushing transforms as soon as motion is small rather than waiting
+        -- for sub-cm/s speeds.
+        if speed < 0.18 and transform.translation.y <= floor_y + 0.01 then
           state.target_velocities[id] = nil
         else
           state.target_velocities[id] = velocity
@@ -1053,8 +1091,20 @@ local function update_range_target_motion(ctx, state, settings, dt)
   end
 end
 
-local function update_flashlight(ctx, state, settings, force_transform)
+local function update_flashlight(ctx, state, settings, player_transform)
   if ctx == nil or ctx.world == nil then
+    return
+  end
+  -- Skip every-frame flashlight work when the light is off. The flashlight
+  -- entity has a light component, so set_entity_transform() on it during
+  -- camera turns triggers markLightTouched in qtApplyScriptCommandsToDocument
+  -- and re-publishes a light delta every tick. With the player's kinematic
+  -- targets also moving after a hit, that compounds the snapshot-bus pressure
+  -- that takes down the latest crash. When the flashlight is off we have no
+  -- visible effect to maintain, so we bail out unless flashlight_dirty is set
+  -- (toggle just happened — push the off-state once and clear the flag).
+  local flashlight_active = state.flashlight_on or state.flashlight_dirty
+  if not flashlight_active then
     return
   end
   local flashlight = ctx.world:find_entity(settings.flashlight_name)
@@ -1062,22 +1112,54 @@ local function update_flashlight(ctx, state, settings, force_transform)
     return
   end
 
-  if force_transform then
-    set_entity_transform(flashlight,
-                         { x = 0.12, y = 1.54, z = 5.28 },
-                         { x = 0.0, y = 0.0, z = 0.0, w = 1.0 },
-                         { x = 0.10, y = 0.10, z = 0.10 })
-  end
+  -- Anchor the flashlight to the camera every frame so it actually behaves like
+  -- a flashlight: a fixed-world spot is a stage light, not a hand torch.
+  local cam_pos = player_transform ~= nil and player_transform.translation
+      or { x = 0.0, y = DEFAULTS.standing_height, z = 6.4 }
+  local cam_rot = player_transform ~= nil and player_transform.rotation
+      or { x = 0.0, y = 0.0, z = 0.0, w = 1.0 }
+  local fwd_x, fwd_y, fwd_z = rotate_by_quat(cam_rot, 0.0, 0.0, -1.0)
+  fwd_x, fwd_y, fwd_z = normalize_vec3(fwd_x, fwd_y, fwd_z, { x = 0.0, y = 0.0, z = -1.0 })
 
-  if state.flashlight_dirty then
-    local light = flashlight:get_light()
-    if light == nil then
-      state.flashlight_dirty = false
-      return
-    end
-    light.color = { x = 0.80, y = 0.90, z = 1.0 }
-    light.intensity = state.flashlight_on and settings.flashlight_intensity or 0.0
+  local fwd_offset = settings.flashlight_forward_offset or 0.18
+  local drop = settings.flashlight_drop or 0.10
+  local position = {
+    x = cam_pos.x + fwd_x * fwd_offset,
+    y = cam_pos.y - drop + fwd_y * fwd_offset,
+    z = cam_pos.z + fwd_z * fwd_offset,
+  }
+  set_entity_transform(flashlight,
+                       position,
+                       cam_rot,
+                       { x = 0.10, y = 0.10, z = 0.10 })
+
+  -- The renderer derives spot direction from the entity rotation when
+  -- light.direction is zero (see light_direction_from_component). The entity
+  -- transform above is updated every frame, so we can leave the direction at
+  -- zero here and avoid pushing assign_light commands every frame — those would
+  -- spam the snapshot bus and amplify the lazy path-tracer-scene init race
+  -- that fix(scene) 9894cce repaired.
+  local current = flashlight:get_light()
+  local target_intensity = state.flashlight_on and settings.flashlight_intensity or 0.0
+  local needs_update = state.flashlight_dirty
+  if not needs_update and current ~= nil then
+    needs_update = current.type ~= "spot" or
+        not nearly_equal(current.intensity or 0.0, target_intensity, 0.005) or
+        not nearly_equal(current.radius or 0.0, settings.flashlight_radius, 0.01) or
+        not nearly_equal(current.beam_angle or 0.0, settings.flashlight_beam_degrees, 0.05) or
+        not nearly_equal(current.blend or 0.0, settings.flashlight_blend, 0.01)
+  elseif current == nil then
+    needs_update = true
+  end
+  if needs_update then
+    local light = current ~= nil and current or {}
+    light.type = "spot"
+    light.color = { x = 1.0, y = 0.95, z = 0.82 }
+    light.intensity = target_intensity
     light.radius = settings.flashlight_radius
+    light.direction = { x = 0.0, y = 0.0, z = 0.0 }
+    light.beam_angle = settings.flashlight_beam_degrees
+    light.blend = settings.flashlight_blend
     flashlight:set_light(light)
     state.flashlight_dirty = false
   end
@@ -1132,7 +1214,7 @@ local function reset_gameplay_scene(ctx, self, state, settings)
 
   local transform = default_player_transform()
   self:set_transform(transform)
-  update_flashlight(ctx, state, settings, true)
+  update_flashlight(ctx, state, settings, transform)
   return transform
 end
 
@@ -1211,7 +1293,7 @@ function script.on_update(self, ctx)
   if not transform_nearly_equal(original_transform, transform, 0.00005) then
     self:set_transform(transform)
   end
-  update_flashlight(ctx, state, settings, false)
+  update_flashlight(ctx, state, settings, transform)
 
   local speed = math.sqrt(state.velocity_x * state.velocity_x + state.velocity_z * state.velocity_z)
   if moving and speed > 0.15 then
@@ -1256,6 +1338,90 @@ function script.on_update(self, ctx)
   end
 
   update_controls_panel(ctx, state, settings, dt)
+end
+
+local function clean_pooled_entities(ctx)
+  -- Tucks every pool entity back to the inactive translation and zeroes pool
+  -- lights. Called from on_load so that re-entering Play mode does not leave
+  -- bullets or muzzle/impact flashes scattered across the range from the
+  -- previous session.
+  for i = 0, DEFAULTS.bullet_pool_size - 1 do
+    hide_pooled_entity(ctx, DEFAULTS.bullet_pool_start_id + i, false)
+  end
+  for i = 0, DEFAULTS.muzzle_flash_pool_size - 1 do
+    hide_pooled_entity(ctx, DEFAULTS.muzzle_flash_pool_start_id + i, true)
+  end
+  for i = 0, DEFAULTS.impact_flash_pool_size - 1 do
+    hide_pooled_entity(ctx, DEFAULTS.impact_flash_pool_start_id + i, true)
+  end
+end
+
+function script.on_load(self, ctx)
+  if ctx == nil or ctx.world == nil then
+    return
+  end
+  -- Lua VM resets across binding reload, so runtime_state starts at nil. Build
+  -- a fresh state and clean any scene leftover from the previous Play session.
+  runtime_state = nil
+  local state = ensure_state()
+  local settings = read_settings(ctx)
+  state.flashlight_on = false
+  state.flashlight_dirty = true
+  clean_pooled_entities(ctx)
+
+  local flashlight = ctx.world:find_entity(settings.flashlight_name)
+  if flashlight ~= nil then
+    local light = flashlight:get_light() or {}
+    light.type = "spot"
+    light.intensity = 0.0
+    light.radius = settings.flashlight_radius
+    light.beam_angle = settings.flashlight_beam_degrees
+    light.blend = settings.flashlight_blend
+    light.direction = { x = 0.0, y = 0.0, z = 0.0 }
+    flashlight:set_light(light)
+  end
+
+  local hero = ctx.world:find_entity(settings.target_name)
+  if hero ~= nil and type(hero.set_debug_value) == "function" then
+    hero:set_debug_value("")
+  end
+end
+
+function script.on_disable(self, ctx)
+  if ctx == nil or ctx.world == nil then
+    return
+  end
+  -- Leave the scene in a clean editor state: flashlight off (with a zeroed
+  -- direction so the renderer falls back to the entity rotation rather than
+  -- holding a stale direction baked from the previous play session), every
+  -- pooled bullet/flash hidden so the editor view does not see leftover
+  -- tracer streaks or muzzle/impact flashes from the last session.
+  local settings = read_settings(ctx)
+  local flashlight = ctx.world:find_entity(settings.flashlight_name)
+  if flashlight ~= nil then
+    local light = flashlight:get_light() or {}
+    light.type = "spot"
+    light.intensity = 0.0
+    light.radius = settings.flashlight_radius
+    light.beam_angle = settings.flashlight_beam_degrees
+    light.blend = settings.flashlight_blend
+    light.direction = { x = 0.0, y = 0.0, z = 0.0 }
+    flashlight:set_light(light)
+  end
+  for i = 0, DEFAULTS.bullet_pool_size - 1 do
+    hide_pooled_entity(ctx, DEFAULTS.bullet_pool_start_id + i, false)
+  end
+  for i = 0, DEFAULTS.muzzle_flash_pool_size - 1 do
+    hide_pooled_entity(ctx, DEFAULTS.muzzle_flash_pool_start_id + i, true)
+  end
+  for i = 0, DEFAULTS.impact_flash_pool_size - 1 do
+    hide_pooled_entity(ctx, DEFAULTS.impact_flash_pool_start_id + i, true)
+  end
+  if runtime_state ~= nil then
+    runtime_state.bullets = {}
+    runtime_state.flashes = {}
+    runtime_state.target_velocities = {}
+  end
 end
 
 return script

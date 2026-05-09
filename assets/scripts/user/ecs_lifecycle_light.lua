@@ -1,3 +1,4 @@
+-- [user/ecs_lifecycle_light] Animated point light driver for the ECS lifecycle scripting demo.
 -- @editor base_intensity number default=5.0 min=0 max=25 step=0.1 label="Base Intensity"
 -- @editor intensity_amplitude number default=1.25 min=0 max=10 step=0.1 label="Intensity Amplitude"
 -- @editor intensity_rate number default=2.0 min=0 max=10 step=0.1 label="Intensity Rate"

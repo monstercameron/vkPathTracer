@@ -1,3 +1,4 @@
+-- [user/ecs_lifecycle_dormant] Dormant entity script that pulses scale; used by the ECS lifecycle scripting demo.
 -- @editor scale_amplitude number default=0.15 min=0 max=2 step=0.01 label="Scale Amplitude"
 -- @editor scale_rate number default=4.0 min=0 max=12 step=0.1 label="Scale Rate"
 

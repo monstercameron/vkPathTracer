@@ -1,3 +1,4 @@
+-- [user/live_edit_model_lab] Live Edit annotated controls demo: model scale, color cycling, lights, orbiters, UI panel, animation.
 -- @editor animation_enabled bool default=true label="Animation"
 -- @editor model_scale number default=1.05 min=0.2 max=3.0 step=0.01 label="Model Scale"
 -- @editor spin_speed_degrees number default=24.0 min=-180 max=180 step=1 label="Spin Speed"

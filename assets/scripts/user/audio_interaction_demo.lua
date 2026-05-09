@@ -1,3 +1,4 @@
+-- [user/audio_interaction_demo] Player camera + interactable trigger driver for the audio Lua interaction demo scene.
 -- @editor camera_name text default="Audio Demo Camera Listener" label="Camera Entity"
 -- @editor controls_panel_name text default="Audio Controls Panel" label="Controls Entity"
 -- @editor controls_panel_id number default=9790 min=0 max=999999 step=1 label="Controls Entity ID"

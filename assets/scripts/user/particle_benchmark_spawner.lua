@@ -1,3 +1,4 @@
+-- [user/particle_benchmark_spawner] Periodically spawns/cleans particle entities to drive the particle benchmark scene.
 -- @editor first_id number default=12000 min=1 max=100000 step=1 label="First Entity ID"
 -- @editor count number default=18 min=1 max=128 step=1 label="Spawn Count"
 -- @editor respawn_period number default=96 min=1 max=600 step=1 label="Respawn Period"

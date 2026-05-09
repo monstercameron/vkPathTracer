@@ -1,3 +1,4 @@
+-- [user/ecs_lifecycle_spawned_child] Per-child bob animation for entities the lifecycle spawner produces at runtime.
 -- @editor base_y number default=0.95 min=-4 max=4 step=0.01 label="Base Y"
 -- @editor bob_amplitude number default=0.06 min=0 max=2 step=0.01 label="Bob Amplitude"
 -- @editor bob_rate number default=3.0 min=0 max=12 step=0.1 label="Bob Rate"
