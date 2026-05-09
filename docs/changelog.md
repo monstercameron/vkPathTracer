@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-05-08 (session 43)
+
+### FPS demo right-click ADS crash fix
+
+- `9894cce` scene: Replaced the plain store in `RenderSceneSnapshot::path_tracer_scene_snapshot()` lazy init with `compare_exchange_strong`. Concurrent first readers (UI picking + render coordinator on the camera-only COW delta produced by ADS toggling) were each building their own scene; the loser's stored `shared_ptr` was overwritten by the winner, and its local was the only remaining strong owner — on function return the local destructed and the returned `const&` dangled, crashing the next consumer. CAS so only one builder wins; losers return the winner's value through `expected`. Adds a 32-trial × 16-thread regression in `snapshot_bus_smoke` that COW-builds a camera-only delta and races readers into the lazy build.
+
 ## 2026-05-08 (session 42)
 
 ### Performance culling, snapshot COW fast-path, GPU delta uploads, FPS demo
