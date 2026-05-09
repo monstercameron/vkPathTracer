@@ -1037,10 +1037,29 @@
           }
         }
         if (!requestedScriptsRunning && wasScriptsRunning) {
-          qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnDisable,
-                               frameIndex,
-                               0.0,
-                               "runtime mode exit");
+          try {
+            qtDispatchScriptHook(vkpt::scripting::ScriptLifecycleHook::OnDisable,
+                                 frameIndex,
+                                 0.0,
+                                 "runtime mode exit");
+          } catch (const std::exception& error) {
+            logger.log(vkpt::log::Severity::Error,
+                       "scripts",
+                       "OnDisable dispatch faulted; continuing mode exit",
+                       {{"source", std::string(source)}, {"error", error.what()}},
+                       frameIndex);
+          } catch (...) {
+            logger.log(vkpt::log::Severity::Error,
+                       "scripts",
+                       "OnDisable dispatch faulted with unknown exception",
+                       {{"source", std::string(source)}},
+                       frameIndex);
+          }
+          // Force the runtime world cache to rebuild on the next Play entry.
+          // The OnDisable hook may have mutated the scene; replay can leave
+          // the cache holding entity pointers that no longer match the
+          // document, and the next OnLoad would dispatch against stale state.
+          qtScriptRuntimeWorldCache.reset();
         }
         const bool modeChanged = qtRuntimeModeName() != requestedModeName;
         qtScriptState.mode = requestedModeName;

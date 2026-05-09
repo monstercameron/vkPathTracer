@@ -639,6 +639,53 @@ ScriptBindingSummary SummarizeScriptBindings(const std::vector<ScriptBinding>& b
   return summary;
 }
 
+namespace {
+
+// Identity used to decide whether two binding sets address the same Lua VMs.
+// If the (entity, source, language, entry, module_id) tuple of every binding
+// matches, the cached LuaStatePool entries are still keyed correctly and we
+// can skip the destructive pool clear that lua_close-faults on long-lived
+// state from a prior Play session. Params/editor annotations are read fresh
+// per-dispatch, so they don't need to invalidate the VM.
+struct BindingIdentity {
+  vkpt::core::StableEntityId entity;
+  std::string source;
+  std::string language;
+  std::string entry;
+  std::string module_id;
+  bool enabled;
+  bool operator==(const BindingIdentity& other) const noexcept {
+    return entity == other.entity && source == other.source &&
+           language == other.language && entry == other.entry &&
+           module_id == other.module_id && enabled == other.enabled;
+  }
+};
+
+std::vector<BindingIdentity> CaptureBindingIdentities(const std::vector<ScriptBinding>& bindings) {
+  std::vector<BindingIdentity> out;
+  out.reserve(bindings.size());
+  for (const auto& binding : bindings) {
+    out.push_back({binding.entity, binding.source, binding.language, binding.entry,
+                   binding.module_id, binding.enabled});
+  }
+  return out;
+}
+
+bool BindingIdentitiesEqual(const std::vector<BindingIdentity>& a,
+                            const std::vector<BindingIdentity>& b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    if (!(a[i] == b[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 ScriptBindingSummary EcsScriptRuntime::reload_bindings(const vkpt::scene::SceneWorld& world) {
   std::unique_lock runtime_lock(m_runtime_mutex);
   vkpt::core::contracts::assert_state(
@@ -649,18 +696,29 @@ ScriptBindingSummary EcsScriptRuntime::reload_bindings(const vkpt::scene::SceneW
        vkpt::core::contracts::ComponentLifecycle::Degraded,
        vkpt::core::contracts::ComponentLifecycle::Failed});
   m_status.lifecycle = vkpt::core::contracts::ComponentLifecycle::Initializing;
-  m_bindings = BuildScriptBindings(world);
-  ApplyScriptEditorAnnotations(m_bindings);
-  // Source paths can resolve differently after reload, so bytecode is rebuilt on demand.
-  {
-    std::scoped_lock cache_lock(m_lua_cache_mutex);
-    m_lua_bytecode_cache.clear();
+
+  const auto previous_identity = CaptureBindingIdentities(m_bindings);
+  auto next_bindings = BuildScriptBindings(world);
+  ApplyScriptEditorAnnotations(next_bindings);
+  const auto next_identity = CaptureBindingIdentities(next_bindings);
+  const bool keep_states = BindingIdentitiesEqual(previous_identity, next_identity) &&
+                           m_lua_state_pool->state_count() > 0u;
+  m_bindings = std::move(next_bindings);
+
+  if (!keep_states) {
+    // Source paths can resolve differently after reload, so bytecode is rebuilt on demand.
+    {
+      std::scoped_lock cache_lock(m_lua_cache_mutex);
+      m_lua_bytecode_cache.clear();
+    }
+    m_lua_state_pool->clear();
+    m_script_command_queue->clear();
+    m_variable_snapshots.clear();
+    m_runtime_states.clear();
   }
-  m_lua_state_pool->clear();
-  m_script_command_queue->clear();
-  m_variable_snapshots.clear();
-  m_runtime_states.clear();
+  // Reload always re-enables scripts disabled by the budget hooks, by definition.
   m_disabled_until_reload.clear();
+
   const auto summary = SummarizeScriptBindings(m_bindings, lua_compiled_in(), execution_available());
   m_status.lifecycle = vkpt::core::contracts::ComponentLifecycle::Ready;
   m_status.health = vkpt::core::contracts::SubsystemHealth::Ok;
@@ -677,6 +735,7 @@ ScriptBindingSummary EcsScriptRuntime::reload_bindings(const vkpt::scene::SceneW
        {"runnable", std::to_string(summary.runnable_count)},
        {"disabled", std::to_string(summary.disabled_count)},
        {"unsupported_language", std::to_string(summary.unsupported_language_count)},
+       {"reused_states", keep_states ? "true" : "false"},
        {"lua_compiled_in", summary.lua_compiled_in ? "true" : "false"},
        {"execution_available", summary.execution_available ? "true" : "false"}});
   return summary;

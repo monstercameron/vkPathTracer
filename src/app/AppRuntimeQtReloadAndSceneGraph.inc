@@ -719,8 +719,10 @@
           return false;
         }
         auto& world = worldResult.value()->world;
-        // Binding reload only scans script components. Building the world
-        // transform cache here makes reloads O(scene size) with no consumer.
+        // reload_bindings reuses the cached LuaStatePool when binding identity
+        // is unchanged (toggle re-entry case), so this is no longer a heavy
+        // call on play->edit->play. The on_load hook is still dispatched so
+        // scripts get a fresh runtime_state regardless.
         qtScriptState.binding_summary = qtScriptRuntime->reload_bindings(world);
         qtScriptState.bindings = qtScriptRuntime->bindings();
         qtScriptState.diagnostics = qtScriptRuntime->diagnostics();
