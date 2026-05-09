@@ -1149,8 +1149,77 @@ int RunApp(int argc, char** argv) {
       auto qtCreateRuntimeTracer = [&](std::string_view requestedBackend) {
         QtRuntimeTracerInit out;
         out.requested_backend = qtNormalizeRuntimeBackend(requestedBackend);
-        const std::string effectiveBackend =
-            (out.requested_backend == "auto") ? std::string("cpu") : out.requested_backend;
+        std::string effectiveBackend = out.requested_backend;
+        if (effectiveBackend == "auto") {
+          // Auto-detection: try the platform's hardware path tracers in order
+          // and use the first one that initializes successfully. The previous
+          // implementation hardcoded "auto" -> "cpu", which silently dropped
+          // Cornell-class scenes to ~50 FPS on hosts with a perfectly capable
+          // discrete GPU. The Windows preferred order is D3D12 (covers most
+          // discrete GPUs and integrated Intel/AMD), then Vulkan, then the
+          // CPU tiled tracer as a final fallback. Each attempt's failure is
+          // logged via the GPU tracer's last_error() so the user can see
+          // why a backend was rejected.
+          std::string autoErrors;
+#ifdef PT_ENABLE_D3D12
+          {
+            const std::string hlslPath =
+#ifdef PT_SHADER_HLSL_PATH
+                PT_SHADER_HLSL_PATH;
+#else
+                "src/shaders/gpu/pathtrace_cs.hlsl";
+#endif
+            auto gpu = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(hlslPath);
+            if (gpu->is_valid()) {
+              // Prefer DXR (hardware ray tracing) when the adapter advertises
+              // support — DXR amortizes BVH traversal in dedicated RT cores
+              // instead of running it as a compute shader, which is the
+              // dominant per-pixel cost for the path tracer at this scene
+              // scale. set_prefer_dxr is a request, not a guarantee; the
+              // tracer falls back to compute internally if the runtime
+              // discovers DXR isn't actually usable for the current scene
+              // shape.
+              const bool dxrAvailable = gpu->dxr_supported();
+              gpu->set_prefer_dxr(dxrAvailable);
+              std::cout << "[gpu/auto] D3D12 " << gpu->gpu_name()
+                        << "  " << gpu->vram_mb() << " MB VRAM"
+                        << "  DXR=" << (dxrAvailable ? "preferred" : "unavailable")
+                        << "\n";
+              out.renderer_path = dxrAvailable ? "d3d12_dxr" : "d3d12_compute";
+              out.tracer = std::move(gpu);
+              return out;
+            }
+            if (!autoErrors.empty()) autoErrors += "; ";
+            autoErrors += "d3d12: " + gpu->last_error();
+          }
+#endif
+#ifdef PT_ENABLE_VULKAN
+          {
+            const std::string spvPath =
+#ifdef PT_SHADER_SPV_PATH
+                PT_SHADER_SPV_PATH;
+#else
+                "shaders/pathtrace.spv";
+#endif
+            auto gpu = std::make_unique<vkpt::gpu::VulkanGpuPathTracer>(spvPath);
+            if (gpu->is_valid()) {
+              std::cout << "[gpu/auto] Vulkan compute path\n";
+              out.renderer_path = "vulkan_compute";
+              out.tracer = std::move(gpu);
+              return out;
+            }
+            if (!autoErrors.empty()) autoErrors += "; ";
+            autoErrors += "vulkan: " + gpu->last_error();
+          }
+#endif
+          if (!autoErrors.empty()) {
+            std::cout << "[gpu/auto] no GPU backend available (" << autoErrors
+                      << "), falling back to CPU tracer\n";
+          } else {
+            std::cout << "[gpu/auto] no GPU backend compiled in, using CPU tracer\n";
+          }
+          effectiveBackend = "cpu";
+        }
         if (effectiveBackend == "cpu") {
           vkpt::cpu::TiledRenderConfig tiledConfig{};
           tiledConfig.worker_count = InteractiveCpuWorkerCount();
