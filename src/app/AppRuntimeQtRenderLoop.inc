@@ -206,6 +206,15 @@
 
       constexpr uint32_t kQtMaxGpuBatchesPerTick = 1u;
       const auto qtMeasuredLoopStart = std::chrono::steady_clock::now();
+      // Auto-enter Play mode if the CLI requested it (--play). Goes through
+      // the same code path F1 uses, so all downstream subsystems (script
+      // tick, ragdoll attach, animation tick, framebuffer pacing) wake up
+      // identically. Fires once before the loop body so the very first frame
+      // is already in Play mode.
+      if (parsedOptions.start_in_play_mode) {
+        qtStartupStep("auto-entering play mode (cli --play)");
+        qtSetRuntimeMode(RuntimeMode::Play, qtFrameCount, "cli --play");
+      }
       while (window->is_open()) {
         const auto qtFrameStart = std::chrono::steady_clock::now();
 

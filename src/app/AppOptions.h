@@ -72,6 +72,11 @@ struct AppOptions {
   //   --include-integrated => include integrated/low-VRAM adapters in auto-pick
   std::optional<std::uint32_t> gpu_count;
   bool include_integrated_gpu = false;
+  // Auto-enter Play runtime mode on Qt startup. Equivalent to pressing F1
+  // once the editor window is visible. Used to drive ragdoll / animation /
+  // scripted gameplay without manual UI interaction (CI smokes, screen
+  // capture, demo launches). No effect on non-Qt platforms.
+  bool start_in_play_mode = false;
 };
 
 struct AppOptionsParseResult {
