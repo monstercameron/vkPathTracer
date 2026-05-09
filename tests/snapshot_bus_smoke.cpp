@@ -2529,6 +2529,79 @@ bool CheckCoordinatorTransformFallbackAndFirstTilePublish() {
 
 }  // namespace
 
+bool CheckLazyPathTracerSceneRace() {
+  // Repro for the lazy-init race that crashed FPS demo right-click ADS:
+  // the COW path leaves path_tracer_scene null on a camera-only delta, so the
+  // first concurrent readers all enter the build path. Before the CAS fix, the
+  // racing builders' plain stores trampled each other and the loser's local
+  // shared_ptr was the sole owner of its build, dangling the returned const&
+  // when it went out of scope.
+  for (int trial = 0; trial < 32; ++trial) {
+    auto scene = MakeScene();
+    vkpt::scene::RenderSceneSnapshotRevisions rev{};
+    rev.generation = 1u;
+    auto base = vkpt::scene::BuildRenderSceneSnapshot(scene, nullptr, rev);
+    if (!Check(base != nullptr, "base snapshot must build")) {
+      return false;
+    }
+    ++rev.generation;
+    ++rev.camera_revision;
+    scene.camera_position.x = 0.5f + 0.001f * static_cast<float>(trial);
+    auto cameraOnly = vkpt::scene::BuildRenderSceneSnapshot(scene, base.get(), rev);
+    if (!Check(cameraOnly != nullptr, "camera-only snapshot must build")) {
+      return false;
+    }
+    if (!Check(!cameraOnly->path_tracer_scene.load(std::memory_order_acquire),
+               "COW camera-change path should leave path_tracer_scene null for lazy build")) {
+      return false;
+    }
+
+    constexpr int kThreads = 16;
+    std::atomic<int> ready{0};
+    std::atomic<bool> go{false};
+    std::vector<const vkpt::pathtracer::PathTracerSceneSnapshot*> seen(kThreads, nullptr);
+    std::vector<std::thread> threads;
+    threads.reserve(kThreads);
+    for (int i = 0; i < kThreads; ++i) {
+      threads.emplace_back([&, i]() {
+        ready.fetch_add(1, std::memory_order_acq_rel);
+        while (!go.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+        const auto& view = cameraOnly->path_tracer_scene_snapshot();
+        // Touch fields to force the CPU to actually read through the reference;
+        // a dangling read here would crash or read garbage.
+        volatile std::size_t triangles = view.indices.size();
+        (void)triangles;
+        seen[static_cast<std::size_t>(i)] = &view;
+      });
+    }
+    while (ready.load(std::memory_order_acquire) < kThreads) {
+      std::this_thread::yield();
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& t : threads) {
+      t.join();
+    }
+    const auto* expected = seen.front();
+    if (!Check(expected != nullptr, "lazy build must populate path_tracer_scene")) {
+      return false;
+    }
+    for (const auto* observed : seen) {
+      if (!Check(observed == expected,
+                 "all concurrent readers must observe the same path_tracer_scene")) {
+        return false;
+      }
+    }
+    auto stored = cameraOnly->path_tracer_scene.load(std::memory_order_acquire);
+    if (!Check(stored.get() == expected,
+               "atomic must hold the same pointer all readers observed")) {
+      return false;
+    }
+  }
+  return true;
+}
+
 int main() {
   auto run = [](const char* name, bool (*fn)()) {
     if (fn()) {
@@ -2540,6 +2613,7 @@ int main() {
 
   if (!run("deterministic snapshot output hashes", CheckDeterministicSnapshotOutputsHashStream) ||
       !run("copy-on-write snapshot reuse", CheckCowReuse) ||
+      !run("lazy path_tracer_scene race", CheckLazyPathTracerSceneRace) ||
       !run("history camera sweep validation", CheckHistoryCameraSweepValidation) ||
       !run("one-mover history validation", CheckOneMoverHistoryValidation) ||
       !run("material reshade invalidation", CheckMaterialReshadeInvalidation) ||

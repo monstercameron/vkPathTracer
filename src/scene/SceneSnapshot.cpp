@@ -453,10 +453,20 @@ RenderSceneSnapshot::path_tracer_scene_snapshot() const {
   scene->environment_map_width = environment_map_width;
   scene->environment_map_height = environment_map_height;
   ApplyCamera(*scene, camera);
-  path_tracer_scene.store(
-      std::shared_ptr<const vkpt::pathtracer::PathTracerSceneSnapshot>(scene),
-      std::memory_order_release);
-  return *scene;
+
+  // CAS so concurrent first readers settle on a single shared_ptr. With a plain
+  // store, the loser's local was the only owner of its build; on function return
+  // the local destructed and the returned const& dangled, crashing whoever held it
+  // (UI picking thread + render thread racing on first ADS frame).
+  std::shared_ptr<const vkpt::pathtracer::PathTracerSceneSnapshot> expected{};
+  if (path_tracer_scene.compare_exchange_strong(
+          expected,
+          std::shared_ptr<const vkpt::pathtracer::PathTracerSceneSnapshot>(scene),
+          std::memory_order_acq_rel,
+          std::memory_order_acquire)) {
+    return *scene;
+  }
+  return *expected;
 }
 
 const char* ToString(SnapshotTransitionAction action) {
