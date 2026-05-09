@@ -89,6 +89,12 @@
 #endif
 #include "platform/PlatformFactory.h"
 #include "physics/PhysicsWorld.h"
+// physics/Ragdoll.h is only consumed by the smoke that drives a dedicated
+// JPH::PhysicsSystem (tests/hero_hit_demo_smoke.cpp). The qt main loop only
+// invokes the animation sampler today; full ragdoll integration will pull
+// the include back in alongside the IPhysicsWorld extension that exposes the
+// shared JPH::PhysicsSystem.
+#include "animation/AnimationSampler.h"
 #include "scene/Scene.h"
 #include "scene/SceneScriptBootstrap.h"
 #include "scene/SnapshotRing.h"

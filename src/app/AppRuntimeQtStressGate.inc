@@ -437,7 +437,7 @@
         }
       };
 
-      const std::array<std::string_view, 55> qtStressTrackedMetrics = {
+      const std::array<std::string_view, 56> qtStressTrackedMetrics = {
         "vkp.ui.paint_us",
         "vkp.ui.repaint_total",
         "vkp.ui.input_event_total",
@@ -480,6 +480,7 @@
         "vkp.qt.script_command_camera_us",
         "vkp.qt.script_command_reload_us",
         "vkp.qt.script_command_apply_us",
+        "vkp.qt.animation_tick_us",
         "vkp.qt.loop_poll_us",
         "vkp.qt.loop_input_us",
         "vkp.qt.loop_physics_us",

@@ -694,6 +694,12 @@
           qtPendingFpsLookDx = 0.0f;
           qtPendingFpsLookDy = 0.0f;
         }
+        // Phase 5 RAG05+: tick animation sampler + ragdoll activation
+        // handling against the cached script runtime world. Cheap when no
+        // skeletal entities are present (early-outs inside tick_animations).
+        if (qtScriptsRunning()) {
+          qtTickAnimationsAndRagdolls(qtInputDt, qtFrameCount);
+        }
         qtApplyPhysicsSimulation(qtFrameStart);
         const auto qtAfterPhysics = std::chrono::steady_clock::now();
         qtFlushDeferredBackgroundSnapshot();

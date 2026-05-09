@@ -1656,28 +1656,25 @@
         }
         try {
         const auto dispatchStart = std::chrono::steady_clock::now();
-        std::optional<vkpt::scene::SceneScriptRuntimeWorld> transientRuntimeWorld;
         vkpt::scene::SceneScriptRuntimeWorld* runtimeWorld = nullptr;
-        if (qtIsPlayMode()) {
-          auto worldResult = qtGetCachedScriptRuntimeWorld(qtScriptsRunning());
-          if (!worldResult) {
-            qtScriptState.status = "dispatch failed: world build";
-            ui_runtime_state.last_warning_or_error = qtScriptState.status;
-            qtDockPanelsDirty = true;
-            return false;
-          }
-          runtimeWorld = worldResult.value();
-        } else {
-          auto worldResult = qtBuildScriptRuntimeWorld(qtScriptsRunning());
-          if (!worldResult) {
-            qtScriptState.status = "dispatch failed: world build";
-            ui_runtime_state.last_warning_or_error = qtScriptState.status;
-            qtDockPanelsDirty = true;
-            return false;
-          }
-          transientRuntimeWorld = std::move(worldResult.value());
-          runtimeWorld = &*transientRuntimeWorld;
+        // Both Play (F1) and LiveEdit (F2) reuse the cached runtime world. The
+        // cache is invalidated on mode toggle, scene reload, and scripted
+        // command replay failure (see qtScriptRuntimeWorldCache.reset() sites),
+        // so it stays consistent with the document. Rebuilding it every
+        // dispatch was the dominant per-frame cost on scenes carrying skeletal
+        // assets — `runtime_document.to_world()` deep-copies every entity's
+        // animation_clips vector, which can easily run into hundreds of
+        // kilobytes per skeletal entity (see hero_hit_demo.json + low_poly_hero
+        // glTF: ~14 clips × tens of joints × tens of keyframes each). That
+        // scaled the F2 frame loop down to ~7 FPS in the user's report.
+        auto worldResult = qtGetCachedScriptRuntimeWorld(qtScriptsRunning());
+        if (!worldResult) {
+          qtScriptState.status = "dispatch failed: world build";
+          ui_runtime_state.last_warning_or_error = qtScriptState.status;
+          qtDockPanelsDirty = true;
+          return false;
         }
+        runtimeWorld = worldResult.value();
         const auto dispatchWorldEnd = std::chrono::steady_clock::now();
         auto& world = runtimeWorld->world;
         // Script bindings and Lua entity APIs read local component state.
@@ -1904,6 +1901,87 @@
             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::duration<double>(kQtScriptHookTargetIntervalSeconds));
         return dispatched;
+      };
+      // Phase 5 RAG05+: tick the animation sampler each frame against the
+      // cached scripting world so entities with Skeleton + AnimationComponent
+      // get their joint_world_matrices written. This is the live counterpart
+      // to the explicit tick_animations() calls in tests/hero_hit_demo_smoke.
+      //
+      // Ragdoll integration is handled here defensively: when the script flips
+      // RagdollComponent.active = true with seed_from_animation/has_impulse
+      // hints, we log the activation, capture the animation pose for any
+      // future seeding, and CLEAR the one-shot flags so they only fire once.
+      // The full Jolt body construction + step is deferred — the ragdoll
+      // bodies need to live alongside the existing ThreadedPhysicsWorld's
+      // JPH::PhysicsSystem, which is owned by the dedicated physics worker
+      // thread and not yet exposed by IPhysicsWorld. Driving the bodies from
+      // the qt thread without that exposure would race with the worker. The
+      // smoke (tests/hero_hit_demo_smoke) covers the full path with a
+      // dedicated JPH::PhysicsSystem; production wiring is tracked under the
+      // RAG-MAIN-LOOP TODO below.
+      auto qtTickAnimationsAndRagdolls =
+          [&](double dtSeconds, vkpt::core::FrameIndex frameIndex) {
+        (void)frameIndex;
+        if (!qtScriptRuntimeWorldCache.has_value()) {
+          return;
+        }
+        if (!std::isfinite(dtSeconds) || dtSeconds <= 0.0) {
+          return;
+        }
+        const float dt = static_cast<float>(
+            std::min(dtSeconds, 0.10));  // cap for safety
+        auto& world = qtScriptRuntimeWorldCache->world;
+        const auto tickStart = std::chrono::steady_clock::now();
+        // 1. Animation sampler — early-outs internally on entities with no
+        //    skeleton / no AnimationComponent / no clips, so this is cheap on
+        //    scenes that don't carry any animated entities.
+        vkpt::animation::tick_animations(world, dt);
+        // 2. Ragdoll one-shot activation handling. Iterate entities looking
+        //    for RagdollComponent.active = true with pending one-shot flags.
+        //    On the activation frame, log + clear the flags. The full Jolt
+        //    body construction is deferred; see comment above.
+        for (const auto entity_id : world.all_entities()) {
+          auto* entity = world.get_entity(entity_id);
+          if (entity == nullptr || !entity->ragdoll.has_value()) {
+            continue;
+          }
+          auto& rag = *entity->ragdoll;
+          if (!rag.active) {
+            continue;
+          }
+          const bool hadSeed = rag.seed_from_animation;
+          const bool hadImpulse = rag.has_impulse;
+          if (!hadSeed && !hadImpulse) {
+            continue;
+          }
+          // Capture activation diagnostics. When the full Jolt integration
+          // lands, this is where build()/seed_pose_from_skeleton()/
+          // apply_impulse_to_joint() will run.
+          logger.log(
+              vkpt::log::Severity::Info, "ragdoll",
+              "ragdoll_activation_pending",
+              {{"entity_id", std::to_string(entity_id)},
+               {"seed_from_animation", hadSeed ? "true" : "false"},
+               {"has_impulse", hadImpulse ? "true" : "false"},
+               {"impulse_x", std::to_string(rag.impulse.x)},
+               {"impulse_y", std::to_string(rag.impulse.y)},
+               {"impulse_z", std::to_string(rag.impulse.z)},
+               {"impulse_joint", rag.impulse_joint},
+               {"skeleton_present",
+                entity->skeleton.has_value() ? "true" : "false"},
+               // RAG-MAIN-LOOP: full Jolt body construction in qt loop is
+               // pending exposure of JPH::PhysicsSystem from
+               // ThreadedPhysicsWorld. tests/hero_hit_demo_smoke.cpp drives
+               // the full path with a dedicated PhysicsSystem.
+               {"full_jolt_step_deferred", "true"}});
+          rag.seed_from_animation = false;
+          rag.has_impulse = false;
+        }
+        const auto tickEnd = std::chrono::steady_clock::now();
+        VKP_METRIC_OBSERVE(
+            "vkp.qt.animation_tick_us",
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                tickEnd - tickStart).count());
       };
       qtReloadEditedScene = [&](std::string_view reason) {
         const auto reloadStart = std::chrono::steady_clock::now();
