@@ -244,6 +244,8 @@ std::string_view to_string(ComponentKind kind) {
       return "UiPanel";
     case ComponentKind::BenchmarkTag:
       return "BenchmarkTag";
+    case ComponentKind::Skeleton:
+      return "Skeleton";
     default:
       return "Unknown";
   }
@@ -315,6 +317,14 @@ vkpt::core::Result<SceneWorld> SceneDocument::to_world() const {
     }
     if (entity.has_benchmark_tag && !world.set_component(id, ComponentKind::BenchmarkTag, entity.benchmark_tag)) {
       return vkpt::core::Result<SceneWorld>::error(vkpt::core::ErrorCode::Internal);
+    }
+    if (entity.has_skeleton) {
+      // Skeleton is not part of ComponentVariant; attach via the EntityRecord
+      // directly. This mirrors how Phase 1 keeps skeletal data outside the hot
+      // ECS variant until later phases need transform-system reads.
+      if (auto* record = world.get_entity(id)) {
+        record->skeleton = entity.skeleton;
+      }
     }
   }
   for (const auto& cam : cameras) {

@@ -43,6 +43,8 @@ inline std::string_view editor_override_component_name(vkpt::scene::ComponentKin
       return "UiPanel";
     case vkpt::scene::ComponentKind::BenchmarkTag:
       return "BenchmarkTag";
+    case vkpt::scene::ComponentKind::Skeleton:
+      return "Skeleton";
     case vkpt::scene::ComponentKind::Count:
       return {};
   }

@@ -837,6 +837,7 @@
               fullSceneReloadNeeded = true;
               break;
             case vkpt::scene::ComponentKind::BenchmarkTag:
+            case vkpt::scene::ComponentKind::Skeleton:
             case vkpt::scene::ComponentKind::Count:
               break;
           }
@@ -1133,6 +1134,10 @@
             case vkpt::scene::ComponentKind::BenchmarkTag:
               entity.has_benchmark_tag = false;
               entity.benchmark_tag = {};
+              break;
+            case vkpt::scene::ComponentKind::Skeleton:
+              entity.has_skeleton = false;
+              entity.skeleton = {};
               break;
             case vkpt::scene::ComponentKind::Identity:
             case vkpt::scene::ComponentKind::Count:

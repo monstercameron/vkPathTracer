@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "animation/Skeleton.h"
 #include "core/Types.h"
 #include "scene/SceneTypes.h"
 
@@ -47,6 +48,7 @@ struct SceneEntityDefinition {
   bool has_audio_listener = false;
   bool has_audio_emitter = false;
   bool has_ui_panel = false;
+  bool has_skeleton = false;
   TransformComponent transform;
   CameraComponent camera;
   LightComponent light;
@@ -60,6 +62,7 @@ struct SceneEntityDefinition {
   AudioEmitterComponent audio_emitter;
   UiPanelComponent ui_panel;
   BenchmarkTagComponent benchmark_tag;
+  SkeletonComponent skeleton;
 };
 
 struct SceneAssetDefinition {

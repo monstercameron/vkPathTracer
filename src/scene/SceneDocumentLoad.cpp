@@ -428,6 +428,55 @@ vkpt::core::Result<SceneDocument> SceneDocument::load_from_text(std::string_view
         entity.has_benchmark_tag = true;
         read_bool(benchmarkNode->second, "enabled", entity.benchmark_tag.enabled);
       }
+      if (const auto skeletonIt = item.object.find("skeleton");
+          skeletonIt != item.object.end() &&
+          skeletonIt->second.kind == JsonValue::Kind::Object) {
+        // Phase 1 ANI01 read path. We deliberately accept missing fields rather
+        // than reject so partial scenes keep loading; validate() is the gate.
+        entity.has_skeleton = true;
+        const auto& skeletonNode = skeletonIt->second;
+        std::int64_t root_index_signed = -1;
+        if (const auto rootIt = skeletonNode.object.find("root_index");
+            rootIt != skeletonNode.object.end() &&
+            rootIt->second.kind == JsonValue::Kind::Number) {
+          root_index_signed = static_cast<std::int64_t>(rootIt->second.number);
+        }
+        entity.skeleton.root_index = static_cast<std::int32_t>(root_index_signed);
+        if (const auto jointsIt = skeletonNode.object.find("joints");
+            jointsIt != skeletonNode.object.end() &&
+            jointsIt->second.kind == JsonValue::Kind::Array) {
+          entity.skeleton.joints.clear();
+          entity.skeleton.joints.reserve(jointsIt->second.array.size());
+          for (const auto& jointNode : jointsIt->second.array) {
+            vkpt::animation::Joint joint;
+            read_string(jointNode, "name", joint.name);
+            std::int64_t parent = -1;
+            if (const auto parentIt = jointNode.object.find("parent");
+                parentIt != jointNode.object.end() &&
+                parentIt->second.kind == JsonValue::Kind::Number) {
+              parent = static_cast<std::int64_t>(parentIt->second.number);
+            }
+            joint.parent_index = static_cast<std::int32_t>(parent);
+            if (const auto ibmIt = jointNode.object.find("inverse_bind");
+                ibmIt != jointNode.object.end() &&
+                ibmIt->second.kind == JsonValue::Kind::Array &&
+                ibmIt->second.array.size() == 16u) {
+              for (std::size_t k = 0; k < 16u; ++k) {
+                if (ibmIt->second.array[k].kind == JsonValue::Kind::Number) {
+                  joint.inverse_bind.values[k] =
+                      static_cast<float>(ibmIt->second.array[k].number);
+                }
+              }
+            }
+            if (const auto localIt = jointNode.object.find("bind_local");
+                localIt != jointNode.object.end() &&
+                localIt->second.kind == JsonValue::Kind::Object) {
+              joint.bind_local = read_transform(localIt->second);
+            }
+            entity.skeleton.joints.push_back(std::move(joint));
+          }
+        }
+      }
       doc.entities.push_back(std::move(entity));
     }
   }

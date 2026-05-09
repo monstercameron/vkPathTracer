@@ -14,6 +14,7 @@
 #include "core/contracts/Result.h"
 #include "core/contracts/SubsystemStatus.h"
 #include "core/health/Health.h"
+#include "animation/Skeleton.h"
 #include "core/Types.h"
 #include "scene/FrameLifecycle.h"
 #include "scene/RenderExtraction.h"
@@ -185,6 +186,7 @@ class SceneWorld : public IEcsWorld {
     std::optional<AudioEmitterComponent> audio_emitter;
     std::optional<UiPanelComponent> ui_panel;
     std::optional<BenchmarkTagComponent> benchmark_tag;
+    std::optional<SkeletonComponent> skeleton;
   };
 
   vkpt::core::StableEntityId create_entity(std::string_view name = {}, vkpt::core::StableEntityId stable_hint = 0) override;

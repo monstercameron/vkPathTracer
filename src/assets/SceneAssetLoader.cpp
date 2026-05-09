@@ -257,6 +257,10 @@ bool ImportModelAsset(vkpt::scene::SceneDocument& document,
   root.hierarchy.sibling_order = asset.parent == 0
                                       ? static_cast<std::uint32_t>(document.entities.size())
                                       : asset.sibling_order;
+  if (loaded.skeleton.has_value()) {
+    root.has_skeleton = true;
+    root.skeleton = *loaded.skeleton;
+  }
   const auto root_id = root.id;
   document.entities.push_back(std::move(root));
   local_stats.imported_root_entity = root_id;

@@ -49,10 +49,8 @@ These are the bedrock: until they exist, every higher-level system has to fake o
 The biggest critical missing system. Every demo with a character needs at minimum a skeleton, animation clips, and skinning. README mentioned "animation timelines" but nothing in `src/` implements joint-based animation.
 
 #### `ANI01` — Skeleton data type
-- [ ] **What**: `Skeleton { vector<Joint> joints; }` where `Joint { string name; int parent_index; mat4 inverse_bind; }`. Skeleton lives on the `Mesh` asset (or alongside it). Hierarchy stored as parallel array (parent index `-1` = root).
-- **Files**: new `src/animation/Skeleton.h/cpp`, scene document additions in `src/scene/SceneDocument.h` for `SkeletonComponent`.
-- **Depends on**: nothing.
-- **Done when**: glTF importer extracts skeletons (skin nodes); a `pt_skeleton_smoke` round-trips a skeleton through scene serialize/deserialize and validates joint count + parent links.
+- [x] **What**: `Skeleton { vector<Joint> joints; }` where `Joint { string name; int parent_index; mat4 inverse_bind; transform bind_local; }`. Hierarchy stored as parallel array (parent index `-1` = root). Validation: acyclic, single-rooted, finite inverse-bind. `compute_bind_world_matrices` topo-sorts then composes parent chain.
+- **Done**: `assets/models/low_poly_hero/character.gltf` imports cleanly: 14 joints, single root `body`, full bind hierarchy. SceneDocument JSON round-trip verified. `pt_skeleton_import_smoke` ok; all other smokes still pass.
 
 #### `ANI02` — Animation clip data
 - [ ] **What**: `AnimationClip { float duration; vector<JointTrack> tracks; }`, `JointTrack { int joint_index; vector<TranslationKey/RotationKey/ScaleKey> ... }`. Each key has `time`, `value`, optional `tangent` for cubic interpolation.
@@ -109,6 +107,78 @@ The biggest critical missing system. Every demo with a character needs at minimu
 - **Files**: `src/animation/AnimationIK.h/cpp`.
 - **Depends on**: `ANI09`.
 - **Done when**: character feet stay on ground when terrain dips; head tracks the player camera.
+
+#### `SKN01` — glTF JOINTS_0 / WEIGHTS_0 vertex attribute extraction
+- [ ] **What**: extend the importer to read `attributes.JOINTS_0` (VEC4 uint8/uint16, remapped through skin's `joints[]` table) + `attributes.WEIGHTS_0` (VEC4 float, normalized to sum=1 with epsilon guard) per primitive. Skipped if mesh has no `skin` reference.
+- **Files**: `src/assets/SceneAssetGltfLoader.cpp` (new `GltfReadAccessorUint`, `GltfReadAccessorMat4`).
+- **Depends on**: `ANI01`.
+- **Done when**: hero glTF imports with per-vertex joint/weight buffers attached; `pt_skeleton_import_smoke` validates buffer sizes match vertex count.
+
+#### `SKN02` — Joint indices + weights GPU buffer
+- [ ] **What**: upload per-vertex joint indices/weights to GPU as additional vertex attribute buffers. One per skinned mesh.
+- **Files**: `src/gpu/D3D12GpuPathTracer.cpp` + `VulkanGpuPathTracer.cpp` (buffer allocation + bind), `src/pathtracer/SceneConversion.cpp` (skinned-mesh tagging).
+- **Depends on**: `SKN01`, `ANI04`.
+- **Done when**: GPU buffer round-trips upload + readback of joint/weight data verified against CPU source.
+
+#### `SKN03` — Skinned BVH refit per frame
+- [ ] **What**: each frame, dispatch a CS that consumes bind-pose vertices + skinning matrices → writes skinned vertices. BVH refits over the skinned positions. Reuses the existing `dynamic_bvh` channel.
+- **Files**: `src/shaders/gpu/skin_vertices_cs.hlsl` (+ Vulkan SPIR-V equivalent), `src/gpu/D3D12GpuPathTracer.SceneBvh.cpp`, `src/scene/SceneSnapshot.cpp` (new `RenderSceneSnapshotChange::SkinningMatricesChanged`).
+- **Depends on**: `SKN02`.
+- **Done when**: skinned mesh in a path-traced viewport deforms correctly; per-frame stall < 16 ms.
+
+---
+
+### 1.2.R Ragdoll physics (Jolt bridge on top of `ANI01`)
+
+Builds on the imported skeleton. Visible "stick figure" ragdoll first, then handoff to/from animation.
+
+#### `RAG01` — Jolt RagdollSettings builder
+- [ ] **What**: from a `Skeleton`, generate a Jolt `RagdollSettings`: capsule per bone (oriented parent→child, length = bone length, radius proportional to character scale), constraint type per joint (cone-twist for shoulders/hips by name match, hinge for knees/elbows, fixed for spine/head fallback).
+- **Files**: new `src/physics/Ragdoll.h/cpp`.
+- **Depends on**: `ANI01`.
+- **Done when**: `pt_ragdoll_smoke` constructs a ragdoll from the hero skeleton, asserts 14 bodies + plausible constraint counts.
+
+#### `RAG02` — Per-frame body-to-joint transform writeback
+- [ ] **What**: after Jolt steps, copy each ragdoll body's transform into the entity's `joint_world_matrices` cache. This shares the field that animation P3 will write to; `RagdollComponent.active` decides authority per entity per frame.
+- **Files**: `src/physics/PhysicsWorld.cpp` (parallel `BuildRagdollSyncList`), `src/scene/SceneWorld.cpp` (joint cache).
+- **Depends on**: `RAG01`.
+- **Done when**: deterministic 2-second smoke shows every joint world matrix differs frame-to-frame as the ragdoll falls; no NaNs.
+
+#### `RAG03` — Lua enable / disable API
+- [ ] **What**: bindings: `entity:enable_ragdoll(opts)` / `entity:disable_ragdoll()`. `opts` includes `seed_from_animation` (defer to `RAG06`), `impulse` (defer to `RAG07`).
+- **Files**: `src/scripting/ScriptRuntime.cpp`.
+- **Depends on**: `RAG02`.
+- **Done when**: a Lua script flips a hero into ragdoll mode at a scripted moment.
+
+#### `RAG04` — Ragdoll demo scene
+- [ ] **What**: `assets/scenes/ragdoll_demo.json` — hero spawns 5m above a ground plane with `ragdoll_on_spawn = true`. Visual confirmation that physics works end-to-end.
+- **Files**: scene JSON, optional `assets/scripts/user/ragdoll_demo.lua`.
+- **Depends on**: `RAG01`-`RAG03`.
+- **Done when**: launching the scene shows hero capsules collapse to floor in 2 s of sim.
+
+#### `RAG05` — Sampler vs ragdoll authority arbitration
+- [ ] **What**: per-entity per-frame: if `RagdollComponent.active`, ragdoll's joint transforms win; else sampler's. The losing source still computes (cheap) so handoff seeds the active source with a frozen pose.
+- **Files**: `src/sim/SimWorker.cpp`.
+- **Depends on**: `RAG02`, `ANI06`.
+- **Done when**: toggling ragdoll mid-animation produces no visible joint snap.
+
+#### `RAG06` — Pose seeding from animation on activation
+- [ ] **What**: when ragdoll activates while animation is playing, spawn the Jolt bodies at the current animated joint world matrices, with linear+angular velocity captured from previous-two-frames delta.
+- **Files**: `src/physics/Ragdoll.cpp` (`seed_pose_from_skeleton(joint_world_matrices, prev_joint_world_matrices, dt)`).
+- **Depends on**: `RAG05`.
+- **Done when**: triggering ragdoll mid-walk inherits the current pose without a teleport; subsequent frames decay under gravity.
+
+#### `RAG07` — Impulse on activation (hit reaction)
+- [ ] **What**: optional `impulse: {x,y,z}` and `impulse_joint: "spine"` in `enable_ragdoll(opts)`. Jolt body for that joint gets the impulse.
+- **Files**: `src/physics/Ragdoll.cpp`, `src/scripting/ScriptRuntime.cpp`.
+- **Depends on**: `RAG06`.
+- **Done when**: scripted hit at chest causes the hero to fly backward + collapse.
+
+#### `RAG08` — `assets/scenes/hero_hit_demo.json` end-to-end
+- [ ] **What**: hero plays idle clip, scripted trigger at t=2s flips ragdoll on with downward impulse. Full demo.
+- **Files**: scene JSON + script.
+- **Depends on**: `RAG07`, `ANI06`, `SKN03`.
+- **Done when**: published scene plays the full hit→collapse loop with deformed mesh.
 
 ---
 

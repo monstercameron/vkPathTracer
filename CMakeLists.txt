@@ -498,6 +498,7 @@ set(PT_CPU_SOURCES
   src/editor/UiModelsState.cpp
 
   # Scene, scripting, materials, and physics
+  src/animation/Skeleton.cpp
   src/assets/AssetImporters.cpp
   src/assets/AssetImportersTexture.cpp
   src/assets/SceneAssetLoader.cpp
@@ -1099,6 +1100,44 @@ target_include_directories(pt_scene_contract_smoke PRIVATE
 )
 
 target_compile_features(pt_scene_contract_smoke PRIVATE cxx_std_23)
+
+add_executable(pt_skeleton_import_smoke EXCLUDE_FROM_ALL
+  tests/skeleton_import_smoke.cpp
+  src/animation/Skeleton.cpp
+  src/assets/AssetImporters.cpp
+  src/assets/AssetImportersTexture.cpp
+  src/assets/SceneAssetLoader.cpp
+  src/assets/SceneAssetLoaderSupport.cpp
+  src/assets/SceneAssetObjLoader.cpp
+  src/assets/SceneAssetGltfLoader.cpp
+  src/core/health/Health.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/scene/Json.cpp
+  src/scene/Scene.cpp
+  src/scene/SceneDocumentExport.cpp
+  src/scene/SceneDocumentLoad.cpp
+  src/scene/SceneScriptBootstrap.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
+  src/physics/PhysicsWorld.cpp
+  src/pathtracer/SceneConversion.cpp
+)
+
+target_include_directories(pt_skeleton_import_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_skeleton_import_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_skeleton_import_smoke PRIVATE Threads::Threads)
+
+if(PT_ENABLE_JOLT)
+  target_link_libraries(pt_skeleton_import_smoke PRIVATE ${PT_JOLT_TARGET})
+  target_compile_definitions(pt_skeleton_import_smoke PRIVATE
+    PT_ENABLE_JOLT
+    PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
+endif()
 
 add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
   tests/scene_script_bootstrap_smoke.cpp

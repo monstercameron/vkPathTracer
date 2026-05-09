@@ -12,9 +12,11 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "animation/Skeleton.h"
 #include "scene/Json.h"
 
 namespace vkpt::assets::scene_asset_detail {
@@ -328,6 +330,153 @@ inline bool GltfReadAccessorIndices(const std::vector<GltfAccessor>& accessors,
   return true;
 }
 
+// Reads a Mat4 accessor (componentType=5126 float, type="MAT4"). Outputs 16
+// floats per item in glTF's column-major order, the same layout used by
+// vkpt::scene::Mat4. Honors bufferView byteStride for interleaved layouts.
+inline bool GltfReadAccessorMat4(const std::vector<GltfAccessor>& accessors,
+                                 const std::vector<GltfBufferView>& views,
+                                 const std::vector<std::vector<std::uint8_t>>& buffers,
+                                 std::size_t accessor_index,
+                                 std::vector<float>& out) {
+  out.clear();
+  if (accessor_index >= accessors.size()) {
+    return false;
+  }
+  const auto& accessor = accessors[accessor_index];
+  if (accessor.buffer_view >= views.size() || accessor.component_type != 5126 ||
+      accessor.type != "MAT4") {
+    return false;
+  }
+  const auto& view = views[accessor.buffer_view];
+  if (view.buffer >= buffers.size()) {
+    return false;
+  }
+  constexpr std::size_t kFloatsPerMat = 16u;
+  constexpr std::size_t kBytesPerMat = kFloatsPerMat * sizeof(float);
+  const std::size_t stride = view.byte_stride == 0u ? kBytesPerMat : view.byte_stride;
+  const auto& bytes = buffers[view.buffer];
+  std::size_t base = 0u;
+  std::size_t output_count = 0u;
+  if (!CheckedAddSize(view.byte_offset, accessor.byte_offset, base) ||
+      !CheckedMulSize(accessor.count, kFloatsPerMat, output_count)) {
+    return false;
+  }
+  out.resize(output_count);
+  for (std::size_t item = 0; item < accessor.count; ++item) {
+    std::size_t item_stride = 0u;
+    std::size_t item_offset = 0u;
+    if (!CheckedMulSize(item, stride, item_stride) ||
+        !CheckedAddSize(base, item_stride, item_offset)) {
+      out.clear();
+      return false;
+    }
+    for (std::size_t k = 0; k < kFloatsPerMat; ++k) {
+      std::size_t element_offset = 0u;
+      std::size_t scalar_offset = 0u;
+      if (!CheckedMulSize(k, sizeof(float), element_offset) ||
+          !CheckedAddSize(item_offset, element_offset, scalar_offset)) {
+        out.clear();
+        return false;
+      }
+      float value = 0.0f;
+      if (!GltfReadScalar(bytes, scalar_offset, value) || !std::isfinite(value)) {
+        out.clear();
+        return false;
+      }
+      out[item * kFloatsPerMat + k] = value;
+    }
+  }
+  return true;
+}
+
+// Reads SCALAR or VECN unsigned integer accessors of componentType 5121/5123/5125
+// into a flat uint32 array (length = count * components). Used for skin joints
+// (SCALAR uint) now and reserved for SKN01's per-vertex JOINTS_0 (VEC4 uint).
+inline bool GltfReadAccessorUint(const std::vector<GltfAccessor>& accessors,
+                                 const std::vector<GltfBufferView>& views,
+                                 const std::vector<std::vector<std::uint8_t>>& buffers,
+                                 std::size_t accessor_index,
+                                 std::vector<std::uint32_t>& out,
+                                 std::size_t* out_components = nullptr) {
+  out.clear();
+  if (accessor_index >= accessors.size()) {
+    return false;
+  }
+  const auto& accessor = accessors[accessor_index];
+  if (accessor.buffer_view >= views.size()) {
+    return false;
+  }
+  const std::size_t components = GltfComponentCount(accessor.type);
+  const std::size_t component_size = GltfComponentSize(accessor.component_type);
+  if (components == 0u || component_size == 0u) {
+    return false;
+  }
+  if (accessor.component_type != 5121 && accessor.component_type != 5123 &&
+      accessor.component_type != 5125) {
+    return false;
+  }
+  const auto& view = views[accessor.buffer_view];
+  if (view.buffer >= buffers.size()) {
+    return false;
+  }
+  const std::size_t stride = view.byte_stride == 0u
+      ? components * component_size
+      : view.byte_stride;
+  const auto& bytes = buffers[view.buffer];
+  std::size_t base = 0u;
+  std::size_t output_count = 0u;
+  if (!CheckedAddSize(view.byte_offset, accessor.byte_offset, base) ||
+      !CheckedMulSize(accessor.count, components, output_count)) {
+    return false;
+  }
+  out.resize(output_count);
+  std::size_t out_index = 0u;
+  for (std::size_t item = 0; item < accessor.count; ++item) {
+    std::size_t item_stride = 0u;
+    std::size_t item_offset = 0u;
+    if (!CheckedMulSize(item, stride, item_stride) ||
+        !CheckedAddSize(base, item_stride, item_offset)) {
+      out.clear();
+      return false;
+    }
+    for (std::size_t component = 0; component < components; ++component) {
+      std::size_t component_offset = 0u;
+      std::size_t scalar_offset = 0u;
+      if (!CheckedMulSize(component, component_size, component_offset) ||
+          !CheckedAddSize(item_offset, component_offset, scalar_offset)) {
+        out.clear();
+        return false;
+      }
+      std::uint32_t value = 0u;
+      if (accessor.component_type == 5121) {
+        std::uint8_t raw = 0u;
+        if (!GltfReadScalar(bytes, scalar_offset, raw)) {
+          out.clear();
+          return false;
+        }
+        value = raw;
+      } else if (accessor.component_type == 5123) {
+        std::uint16_t raw = 0u;
+        if (!GltfReadScalar(bytes, scalar_offset, raw)) {
+          out.clear();
+          return false;
+        }
+        value = raw;
+      } else {
+        if (!GltfReadScalar(bytes, scalar_offset, value)) {
+          out.clear();
+          return false;
+        }
+      }
+      out[out_index++] = value;
+    }
+  }
+  if (out_components != nullptr) {
+    *out_components = components;
+  }
+  return true;
+}
+
 ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
                          std::vector<std::string>* diagnostics) {
   ObjLoadResult result;
@@ -597,6 +746,125 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
     JsonReadQuatMember(node, "rotation", result.root_transform.rotation);
     JsonReadVec3Member(node, "scale", result.root_transform.scale);
     result.has_root_transform = true;
+  }
+
+  // Phase 1 ANI01: import the first skin (skeleton) if present. The hero asset
+  // uses a single skin, which is the common case; multi-skin support can layer on.
+  if (const auto* skins_node = JsonMember(root, "skins");
+      skins_node != nullptr &&
+      skins_node->kind == vkpt::scene::JsonValue::Kind::Array &&
+      !skins_node->array.empty() &&
+      nodes_node != nullptr &&
+      nodes_node->kind == vkpt::scene::JsonValue::Kind::Array) {
+    const auto& skin_node = skins_node->array[0];
+    const auto* joints_array = JsonMember(skin_node, "joints");
+    const auto ibm_index = JsonIndexMember(skin_node, "inverseBindMatrices");
+    if (joints_array != nullptr &&
+        joints_array->kind == vkpt::scene::JsonValue::Kind::Array &&
+        !joints_array->array.empty() &&
+        ibm_index.has_value()) {
+      const std::size_t joint_count = joints_array->array.size();
+      std::vector<std::size_t> joint_node_indices;
+      joint_node_indices.reserve(joint_count);
+      bool joint_indices_ok = true;
+      for (const auto& entry : joints_array->array) {
+        if (entry.kind != vkpt::scene::JsonValue::Kind::Number ||
+            !std::isfinite(entry.number) || entry.number < 0.0) {
+          joint_indices_ok = false;
+          break;
+        }
+        const auto node_index = static_cast<std::size_t>(entry.number);
+        if (node_index >= nodes_node->array.size()) {
+          joint_indices_ok = false;
+          break;
+        }
+        joint_node_indices.push_back(node_index);
+      }
+
+      std::vector<float> ibm_values;
+      const bool ibm_ok = GltfReadAccessorMat4(accessors, buffer_views, buffers,
+                                                *ibm_index, ibm_values) &&
+                          ibm_values.size() == joint_count * 16u;
+
+      if (joint_indices_ok && ibm_ok) {
+        // node-index -> joint-local index lookup, used to translate child node
+        // refs into joint-local parent indices.
+        std::unordered_map<std::size_t, std::int32_t> node_to_joint;
+        node_to_joint.reserve(joint_count);
+        for (std::size_t j = 0; j < joint_count; ++j) {
+          node_to_joint.emplace(joint_node_indices[j], static_cast<std::int32_t>(j));
+        }
+
+        // First pass: collect each joint's TRS and name from its source node.
+        vkpt::animation::Skeleton skeleton;
+        skeleton.joints.resize(joint_count);
+        for (std::size_t j = 0; j < joint_count; ++j) {
+          const auto& source_node = nodes_node->array[joint_node_indices[j]];
+          auto& joint = skeleton.joints[j];
+          joint.name = JsonStringMember(source_node, "name",
+                                        "joint_" + std::to_string(j));
+          joint.bind_local = IdentityTransform();
+          JsonReadVec3Member(source_node, "translation", joint.bind_local.translation);
+          JsonReadQuatMember(source_node, "rotation", joint.bind_local.rotation);
+          JsonReadVec3Member(source_node, "scale", joint.bind_local.scale);
+          for (std::size_t k = 0; k < 16u; ++k) {
+            joint.inverse_bind.values[k] = ibm_values[j * 16u + k];
+          }
+          joint.parent_index = -1;
+        }
+
+        // Second pass: walk every node's children list and assign parent for any
+        // child that resolves to a joint. Joints whose owning node has no parent
+        // joint stay at parent_index == -1.
+        for (std::size_t n = 0; n < nodes_node->array.size(); ++n) {
+          const auto* children = JsonMember(nodes_node->array[n], "children");
+          if (children == nullptr ||
+              children->kind != vkpt::scene::JsonValue::Kind::Array) {
+            continue;
+          }
+          const auto parent_it = node_to_joint.find(n);
+          for (const auto& child : children->array) {
+            if (child.kind != vkpt::scene::JsonValue::Kind::Number ||
+                !std::isfinite(child.number) || child.number < 0.0) {
+              continue;
+            }
+            const auto child_node = static_cast<std::size_t>(child.number);
+            const auto child_it = node_to_joint.find(child_node);
+            if (child_it == node_to_joint.end()) {
+              continue;
+            }
+            // A child joint that has a parent that is not itself a joint is
+            // treated as a root within the skeleton (skin owner above the rig).
+            if (parent_it != node_to_joint.end()) {
+              skeleton.joints[static_cast<std::size_t>(child_it->second)]
+                  .parent_index = parent_it->second;
+            }
+          }
+        }
+
+        // Resolve root: prefer skin.skeleton if it points to a joint, else find
+        // the first joint with no parent.
+        skeleton.root_index = -1;
+        if (const auto skeleton_node = JsonIndexMember(skin_node, "skeleton")) {
+          const auto it = node_to_joint.find(*skeleton_node);
+          if (it != node_to_joint.end()) {
+            skeleton.root_index = it->second;
+          }
+        }
+        if (skeleton.root_index < 0) {
+          for (std::size_t j = 0; j < joint_count; ++j) {
+            if (skeleton.joints[j].parent_index == -1) {
+              skeleton.root_index = static_cast<std::int32_t>(j);
+              break;
+            }
+          }
+        }
+
+        result.skeleton = std::move(skeleton);
+      } else if (diagnostics) {
+        diagnostics->push_back("glTF skin import skipped: malformed joints/inverseBindMatrices");
+      }
+    }
   }
 
   std::sort(result.texture_uris.begin(), result.texture_uris.end());

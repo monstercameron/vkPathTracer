@@ -403,6 +403,30 @@ std::string SceneDocument::to_json(bool pretty) const {
       benchmarkTagNode.object["enabled"] = bool_value(entity.benchmark_tag.enabled);
       item.object["benchmark"] = std::move(benchmarkTagNode);
     }
+    if (entity.has_skeleton) {
+      // Phase 1 ANI01: skeleton round-trips through SceneDocument JSON. Each
+      // joint emits its parent index, inverse-bind matrix (16 floats, column
+      // major), bind-pose TRS, and name.
+      JsonValue skeletonNode = object_value();
+      skeletonNode.object["root_index"] = number_value(static_cast<double>(entity.skeleton.root_index));
+      JsonValue jointsArray = array_value();
+      jointsArray.array.reserve(entity.skeleton.joints.size());
+      for (const auto& joint : entity.skeleton.joints) {
+        JsonValue jointNode = object_value();
+        jointNode.object["name"] = string_value(joint.name);
+        jointNode.object["parent"] = number_value(static_cast<double>(joint.parent_index));
+        JsonValue ibmNode = array_value();
+        ibmNode.array.reserve(16);
+        for (float v : joint.inverse_bind.values) {
+          ibmNode.array.push_back(number_value(static_cast<double>(v)));
+        }
+        jointNode.object["inverse_bind"] = std::move(ibmNode);
+        jointNode.object["bind_local"] = transform_value(joint.bind_local);
+        jointsArray.array.push_back(std::move(jointNode));
+      }
+      skeletonNode.object["joints"] = std::move(jointsArray);
+      item.object["skeleton"] = std::move(skeletonNode);
+    }
     entitiesNode.array.push_back(std::move(item));
   }
   root.object["entities"] = std::move(entitiesNode);

@@ -75,6 +75,8 @@ std::string_view ComponentKindName(ComponentKind kind) {
       return "UiPanel";
     case ComponentKind::BenchmarkTag:
       return "BenchmarkTag";
+    case ComponentKind::Skeleton:
+      return "Skeleton";
     case ComponentKind::Count:
       break;
   }

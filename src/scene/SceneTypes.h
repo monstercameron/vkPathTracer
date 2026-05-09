@@ -10,6 +10,10 @@
 
 #include "core/Types.h"
 
+namespace vkpt::animation {
+struct Skeleton;
+}  // namespace vkpt::animation
+
 namespace vkpt::scene {
 
 enum class ComponentKind : std::uint8_t {
@@ -27,6 +31,7 @@ enum class ComponentKind : std::uint8_t {
   AudioEmitter,
   UiPanel,
   BenchmarkTag,
+  Skeleton,
   Count
 };
 
@@ -191,6 +196,12 @@ struct UiPanelComponent {
 struct BenchmarkTagComponent {
   bool enabled = true;
 };
+
+// Phase 1 ANI01: alias only — full Skeleton definition lives in
+// animation/Skeleton.h, which scene callers should include directly when they
+// need to inspect joints. Kept out of the ComponentVariant to avoid pulling
+// the animation header into every scene translation unit.
+using SkeletonComponent = vkpt::animation::Skeleton;
 
 using ComponentVariant = std::variant<
     IdentityComponent,

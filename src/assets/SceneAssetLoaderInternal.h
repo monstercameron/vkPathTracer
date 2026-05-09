@@ -2,10 +2,12 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "animation/Skeleton.h"
 #include "scene/Scene.h"
 
 namespace vkpt::assets::scene_asset_detail {
@@ -46,6 +48,8 @@ struct ObjLoadResult {
   std::string source_format = "obj";
   bool has_root_transform = false;
   vkpt::scene::TransformComponent root_transform;
+  // Phase 1 ANI01: skeletal hierarchy if the source asset declared a skin.
+  std::optional<vkpt::animation::Skeleton> skeleton;
 };
 
 std::string PathString(const std::filesystem::path& path);
