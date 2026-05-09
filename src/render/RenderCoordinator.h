@@ -18,6 +18,7 @@
 #include "core/health/Health.h"
 #include "pathtracer/PathTracer.h"
 #include "render/FrameHandoff.h"
+#include "render/MultiGpuAccumulation.h"
 
 namespace vkpt::scene {
 class SnapshotRing;
@@ -194,6 +195,15 @@ class RenderCoordinator {
                     vkpt::pathtracer::RenderSettings settings,
                     vkpt::pathtracer::PathTracerSceneSnapshot scene,
                     RenderCoordinatorConfig config = {});
+  /// Multi-tracer constructor. The primary tracer owns gpu_id 0 and is
+  /// followed by `additional_tracers` for gpu_id 1..N. When the additional
+  /// list is empty this is byte-identical to the single-tracer ctor.
+  RenderCoordinator(
+      std::unique_ptr<vkpt::pathtracer::IPathTracer> primary_tracer,
+      vkpt::pathtracer::RenderSettings settings,
+      vkpt::pathtracer::PathTracerSceneSnapshot scene,
+      RenderCoordinatorConfig config,
+      std::vector<std::unique_ptr<vkpt::pathtracer::IPathTracer>> additional_tracers);
   ~RenderCoordinator();
 
   RenderCoordinator(const RenderCoordinator&) = delete;
@@ -217,7 +227,8 @@ class RenderCoordinator {
   std::shared_ptr<vkpt::core::health::IHealthProbe> create_health_probe() const;
 
  private:
-  void run(std::stop_token stop, std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer);
+  void run(std::stop_token stop,
+           std::vector<std::unique_ptr<vkpt::pathtracer::IPathTracer>> tracers);
   std::optional<vkpt::pathtracer::RenderSettings> drain_render_settings();
   void mark_failed(std::string error);
   void update_stats(std::uint64_t generation,
@@ -231,6 +242,7 @@ class RenderCoordinator {
   std::shared_ptr<const vkpt::scene::RenderSceneSnapshot> m_initialSnapshot;
   RenderCoordinatorConfig m_config{};
   std::unique_ptr<vkpt::pathtracer::IPathTracer> m_initialTracer;
+  std::vector<std::unique_ptr<vkpt::pathtracer::IPathTracer>> m_initialAdditionalTracers;
   std::atomic<std::uint32_t> m_publishHz{60u};
 
   mutable std::mutex m_settingsMutex;

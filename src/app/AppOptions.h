@@ -67,6 +67,11 @@ struct AppOptions {
   bool deterministic = false;
   bool snapshot_bus = true;
   std::optional<std::uint32_t> ui_present_hz;
+  // Multi-GPU dispatch:
+  //   --gpus N           => gpu_count = N (must be >= 1, 0 means "auto-detect")
+  //   --include-integrated => include integrated/low-VRAM adapters in auto-pick
+  std::optional<std::uint32_t> gpu_count;
+  bool include_integrated_gpu = false;
 };
 
 struct AppOptionsParseResult {

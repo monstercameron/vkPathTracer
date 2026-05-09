@@ -14,13 +14,16 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstring>
 #include <exception>
 #include <initializer_list>
 #include <new>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace vkpt::render {
 
@@ -304,10 +307,23 @@ RenderCoordinator::RenderCoordinator(std::unique_ptr<vkpt::pathtracer::IPathTrac
                                      vkpt::pathtracer::RenderSettings settings,
                                      vkpt::pathtracer::PathTracerSceneSnapshot scene,
                                      RenderCoordinatorConfig config)
+    : RenderCoordinator(std::move(tracer),
+                        std::move(settings),
+                        std::move(scene),
+                        config,
+                        {}) {}
+
+RenderCoordinator::RenderCoordinator(
+    std::unique_ptr<vkpt::pathtracer::IPathTracer> primary_tracer,
+    vkpt::pathtracer::RenderSettings settings,
+    vkpt::pathtracer::PathTracerSceneSnapshot scene,
+    RenderCoordinatorConfig config,
+    std::vector<std::unique_ptr<vkpt::pathtracer::IPathTracer>> additional_tracers)
     : m_initialSettings(std::move(settings)),
       m_initialSnapshot(BuildInitialSnapshot(scene)),
       m_config(config),
-      m_initialTracer(std::move(tracer)) {
+      m_initialTracer(std::move(primary_tracer)),
+      m_initialAdditionalTracers(std::move(additional_tracers)) {
   m_config.publish_hz = std::max<std::uint32_t>(1u, m_config.publish_hz);
   m_config.tile_height = std::max<std::uint32_t>(1u, m_config.tile_height);
   m_config.gpu_count = std::max<std::uint32_t>(1u, m_config.gpu_count);
@@ -317,6 +333,16 @@ RenderCoordinator::RenderCoordinator(std::unique_ptr<vkpt::pathtracer::IPathTrac
       std::clamp(m_config.foveated_center_radius, 0.0, 0.5);
   if (m_config.tile_latency_budget_us <= 0.0) {
     m_config.tile_latency_budget_us = 2000.0;
+  }
+  // gpu_count must match the number of supplied tracers when we are in
+  // multi-tracer mode. Single-tracer construction (additional_tracers empty)
+  // honours the caller's gpu_count; the run() loop's fast path checks
+  // m_tracers.size() == 1 and skips composition entirely so behavior is
+  // byte-identical to today.
+  if (!m_initialAdditionalTracers.empty()) {
+    const std::uint32_t supplied =
+        1u + static_cast<std::uint32_t>(m_initialAdditionalTracers.size());
+    m_config.gpu_count = supplied;
   }
   m_publishHz.store(m_config.publish_hz, std::memory_order_relaxed);
   m_handoff.set_observer(ObserveFrameHandoffEvent);
@@ -376,8 +402,14 @@ vkpt::core::Status RenderCoordinator::start() {
                         "height",
                         m_initialSettings.height);
 
-  auto tracer = std::move(m_initialTracer);
-  m_thread = std::jthread([this, tracer = std::move(tracer)](std::stop_token stop) mutable {
+  std::vector<std::unique_ptr<vkpt::pathtracer::IPathTracer>> tracers;
+  tracers.reserve(1u + m_initialAdditionalTracers.size());
+  tracers.push_back(std::move(m_initialTracer));
+  for (auto& extra : m_initialAdditionalTracers) {
+    tracers.push_back(std::move(extra));
+  }
+  m_initialAdditionalTracers.clear();
+  m_thread = std::jthread([this, tracers = std::move(tracers)](std::stop_token stop) mutable {
     vkpt::jobs::ApplyCurrentThreadPriority(vkpt::jobs::WorkerThreadPriority::Background);
     const auto failFromException = [this](std::string_view error) noexcept {
       if (error.empty()) {
@@ -390,7 +422,7 @@ vkpt::core::Status RenderCoordinator::start() {
       LogCoordinatorException(error);
     };
     try {
-      run(stop, std::move(tracer));
+      run(stop, std::move(tracers));
     } catch (const std::bad_alloc& ex) {
       (void)ex;
       failFromException("render coordinator out of memory");
@@ -773,14 +805,25 @@ void RenderCoordinator::mirror_stats_to_metrics(const RenderCoordinatorStats& st
   m_lastMirroredStats = stats;
 }
 
-void RenderCoordinator::run(std::stop_token stop,
-                            std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer) {
+void RenderCoordinator::run(
+    std::stop_token stop,
+    std::vector<std::unique_ptr<vkpt::pathtracer::IPathTracer>> tracers) {
   {
     std::scoped_lock lock(m_statsMutex);
     (void)AssertCoordinatorState("RenderCoordinator::run",
                                  m_lifecycle,
                                  {RenderCoordinatorLifecycle::Running});
   }
+  if (tracers.empty()) {
+    mark_failed("render coordinator has no tracers");
+    return;
+  }
+  // tracer is the primary (gpu_id 0). Multi-tracer dispatch routes each tile
+  // to tracers[tile.gpu_id]; when the vector has size 1 the routing is a
+  // no-op so the single-GPU fast path remains byte-identical.
+  const auto& tracer = tracers.front();
+  const std::uint32_t tracerCount = static_cast<std::uint32_t>(tracers.size());
+  const bool multiTracer = tracerCount > 1u;
   std::uint64_t generation = 0u;
   std::uint32_t sample = 0u;
   auto settings = m_initialSettings;
@@ -825,9 +868,31 @@ void RenderCoordinator::run(std::stop_token stop,
   auto loadSnapshotIntoTracer =
       [&](const vkpt::scene::RenderSceneSnapshot& snapshot) -> bool {
     const auto& snapshotScene = snapshot.path_tracer_scene_snapshot();
-    return tracer &&
-           tracer->load_scene_snapshot(snapshotScene) &&
-           tracer->build_or_update_acceleration();
+    if (!tracer) {
+      return false;
+    }
+    // Each tracer holds its own GPU-resident copy of the scene buffers; the
+    // snapshot is shared but every backend uploads independently.
+    for (auto& backend : tracers) {
+      if (!backend ||
+          !backend->load_scene_snapshot(snapshotScene) ||
+          !backend->build_or_update_acceleration()) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Helper that broadcasts a per-tracer call across the entire fleet, short-
+  // circuiting on the first failure. The single-GPU fast path collapses to a
+  // single invocation on tracers.front().
+  auto broadcastTracers = [&](auto&& fn) -> bool {
+    for (auto& backend : tracers) {
+      if (!backend || !fn(*backend)) {
+        return false;
+      }
+    }
+    return true;
   };
 
   auto consumeCurrentSnapshot = [&]() -> bool {
@@ -883,7 +948,9 @@ void RenderCoordinator::run(std::stop_token stop,
 
     const auto resetToCurrentSnapshot = [&]() -> bool {
       if (!loadSnapshotIntoTracer(*currentSnapshot) ||
-          !tracer->reset_accumulation()) {
+          !broadcastTracers([](vkpt::pathtracer::IPathTracer& t) {
+            return t.reset_accumulation();
+          })) {
         mark_failed("render coordinator snapshot transition reset failed");
         return false;
       }
@@ -920,16 +987,23 @@ void RenderCoordinator::run(std::stop_token stop,
     } else if (decision.action ==
                vkpt::scene::SnapshotTransitionAction::ReprojectCamera) {
       const auto previousFilm = tracer->film();
-      bool cameraOk = tracer->update_camera_state(currentSnapshot->camera);
+      bool cameraOk = broadcastTracers([&](vkpt::pathtracer::IPathTracer& t) {
+        return t.update_camera_state(currentSnapshot->camera);
+      });
       if (!cameraOk) {
-        cameraOk = tracer->load_scene_snapshot(currentSnapshot->path_tracer_scene_snapshot());
+        cameraOk = broadcastTracers([&](vkpt::pathtracer::IPathTracer& t) {
+          return t.load_scene_snapshot(
+              currentSnapshot->path_tracer_scene_snapshot());
+        });
       }
       auto history = ApplyCameraHistoryTransition(previousFilm,
                                                   activeSnapshot->camera,
                                                   currentSnapshot->camera);
       if (!cameraOk ||
           !history.applied ||
-          !tracer->replace_film_history(history.film)) {
+          !broadcastTracers([&](vkpt::pathtracer::IPathTracer& t) {
+            return t.replace_film_history(history.film);
+          })) {
         decision.action = vkpt::scene::SnapshotTransitionAction::ResetAccumulation;
         decision.reset_accumulation = true;
         if (!resetToCurrentSnapshot()) {
@@ -950,8 +1024,20 @@ void RenderCoordinator::run(std::stop_token stop,
       options.reset_accumulation = false;
       options.fallback_policy =
           vkpt::pathtracer::TransformFallbackPolicy::AllowDynamicAcceleration;
-      const auto updateResult =
-          tracer->apply_instance_transform_update(updates, options);
+      // Broadcast the transform update across the fleet. We only inspect the
+      // primary tracer's result for the "applied" decision; the others are
+      // expected to mirror it (same scene, same options).
+      vkpt::pathtracer::InstanceTransformUpdateResult updateResult{};
+      bool transformAppliedAll = true;
+      for (std::size_t bi = 0u; bi < tracers.size(); ++bi) {
+        auto result = tracers[bi]->apply_instance_transform_update(updates, options);
+        if (bi == 0u) {
+          updateResult = result;
+        }
+        if (!result.applied()) {
+          transformAppliedAll = false;
+        }
+      }
       auto motionVectors = RasterizeCoarseMotionVectors(*activeSnapshot,
                                                         *currentSnapshot,
                                                         settings.width,
@@ -959,9 +1045,12 @@ void RenderCoordinator::run(std::stop_token stop,
                                                         m_config.motion_vector_block_size);
       auto history =
           ApplyTransformHistoryTransition(previousFilm, motionVectors);
-      if (!updateResult.applied() ||
+      if (!transformAppliedAll ||
+          !updateResult.applied() ||
           !history.applied ||
-          !tracer->replace_film_history(history.film)) {
+          !broadcastTracers([&](vkpt::pathtracer::IPathTracer& t) {
+            return t.replace_film_history(history.film);
+          })) {
         decision.action = vkpt::scene::SnapshotTransitionAction::ResetAccumulation;
         decision.reset_accumulation = true;
         if (!resetToCurrentSnapshot()) {
@@ -988,12 +1077,16 @@ void RenderCoordinator::run(std::stop_token stop,
           (!delta->materials.empty() ||
            !delta->lights.empty() ||
            delta->environment_color_changed)) {
-        materialOk = tracer->update_scene_delta(*delta);
+        materialOk = broadcastTracers([&](vkpt::pathtracer::IPathTracer& t) {
+          return t.update_scene_delta(*delta);
+        });
       }
       auto history = ApplyMaterialHistoryTransition(previousFilm);
       if (!materialOk ||
           !history.applied ||
-          !tracer->replace_film_history(history.film)) {
+          !broadcastTracers([&](vkpt::pathtracer::IPathTracer& t) {
+            return t.replace_film_history(history.film);
+          })) {
         decision.action = vkpt::scene::SnapshotTransitionAction::ResetAccumulation;
         decision.reset_accumulation = true;
         if (!resetToCurrentSnapshot()) {
@@ -1048,12 +1141,18 @@ void RenderCoordinator::run(std::stop_token stop,
   }
 
   if (!tracer ||
-      !tracer->configure(settings) ||
+      !broadcastTracers([&](vkpt::pathtracer::IPathTracer& t) -> bool {
+        return static_cast<bool>(t.configure(settings));
+      }) ||
       !loadSnapshotIntoTracer(*activeSnapshot) ||
-      !tracer->reset_accumulation()) {
+      !broadcastTracers([](vkpt::pathtracer::IPathTracer& t) {
+        return t.reset_accumulation();
+      })) {
     mark_failed("render coordinator tracer initialization failed");
-    if (tracer) {
-      tracer->shutdown();
+    for (auto& backend : tracers) {
+      if (backend) {
+        backend->shutdown();
+      }
     }
     return;
   }
@@ -1112,11 +1211,68 @@ void RenderCoordinator::run(std::stop_token stop,
 
   auto publishResolvedFrame = [&](std::uint32_t publishedSampleCount,
                                   const vkpt::pathtracer::SampleCounters& counters) {
-    auto ldr = tracer->resolve_ldr();
     DisplayFrame frame;
-    frame.rgba8 = std::move(ldr.rgba8);
-    frame.width = ldr.width;
-    frame.height = ldr.height;
+    if (!multiTracer) {
+      // Single-GPU fast path: byte-identical to the historical resolve_ldr()
+      // call so we do not perturb the steady-state pipeline.
+      auto ldr = tracer->resolve_ldr();
+      frame.rgba8 = std::move(ldr.rgba8);
+      frame.width = ldr.width;
+      frame.height = ldr.height;
+    } else {
+      // Multi-GPU compose: resolve each backend independently, then stripe
+      // rows by tile_id % gpu_count exactly as the TileScheduler dispatched
+      // them. We work in LDR (rgba8) here because resolve_ldr is the public
+      // tracer interface and works for every backend; matches the spec
+      // ("Each tracer's resolve_ldr() gives a per-GPU image; compose by
+      // spatial partition"). Tile boundaries align with row boundaries so
+      // the copy is contiguous.
+      std::vector<vkpt::pathtracer::FilmLdr> sliceLdr;
+      sliceLdr.reserve(tracers.size());
+      std::uint32_t commonW = 0u;
+      std::uint32_t commonH = 0u;
+      for (auto& backend : tracers) {
+        sliceLdr.push_back(backend->resolve_ldr());
+        if (commonW == 0u && commonH == 0u) {
+          commonW = sliceLdr.back().width;
+          commonH = sliceLdr.back().height;
+        }
+      }
+      // If any slice is empty (e.g. failed to allocate), fall back to the
+      // primary's resolve so we still publish *something* the UI can show.
+      bool slicesUsable = (commonW != 0u && commonH != 0u);
+      for (const auto& s : sliceLdr) {
+        if (s.width != commonW || s.height != commonH ||
+            s.rgba8.size() != static_cast<std::size_t>(commonW) * commonH * 4u) {
+          slicesUsable = false;
+          break;
+        }
+      }
+      if (!slicesUsable) {
+        auto ldr = tracer->resolve_ldr();
+        frame.rgba8 = std::move(ldr.rgba8);
+        frame.width = ldr.width;
+        frame.height = ldr.height;
+      } else {
+        frame.width = commonW;
+        frame.height = commonH;
+        frame.rgba8.assign(static_cast<std::size_t>(commonW) * commonH * 4u, 0u);
+        const std::uint32_t tileH = std::max<std::uint32_t>(1u, m_config.tile_height);
+        const std::uint32_t tileCount = (commonH + tileH - 1u) / tileH;
+        for (std::uint32_t tileId = 0u; tileId < tileCount; ++tileId) {
+          const std::uint32_t owner = tileId % tracerCount;
+          const std::uint32_t startY = tileId * tileH;
+          const std::uint32_t endY = std::min(commonH, startY + tileH);
+          const std::size_t rowBytes = static_cast<std::size_t>(commonW) * 4u;
+          for (std::uint32_t y = startY; y < endY; ++y) {
+            const std::size_t offset = static_cast<std::size_t>(y) * rowBytes;
+            std::memcpy(frame.rgba8.data() + offset,
+                        sliceLdr[owner].rgba8.data() + offset,
+                        rowBytes);
+          }
+        }
+      }
+    }
     frame.generation = generation;
     frame.sample_count = publishedSampleCount;
     frame.counters = counters;
@@ -1136,12 +1292,20 @@ void RenderCoordinator::run(std::stop_token stop,
       settings = std::move(*pendingSettings);
       sample = 0u;
       bool settingsApplied =
-          tracer->update_render_settings(settings) &&
-          tracer->reset_accumulation();
+          broadcastTracers([&](vkpt::pathtracer::IPathTracer& t) {
+            return t.update_render_settings(settings);
+          }) &&
+          broadcastTracers([](vkpt::pathtracer::IPathTracer& t) {
+            return t.reset_accumulation();
+          });
       if (!settingsApplied &&
-          (!tracer->configure(settings) ||
+          (!broadcastTracers([&](vkpt::pathtracer::IPathTracer& t) -> bool {
+             return static_cast<bool>(t.configure(settings));
+           }) ||
            !loadSnapshotIntoTracer(*activeSnapshot) ||
-           !tracer->reset_accumulation())) {
+           !broadcastTracers([](vkpt::pathtracer::IPathTracer& t) {
+             return t.reset_accumulation();
+           }))) {
         mark_failed("render coordinator settings update failed");
         break;
       }
@@ -1180,6 +1344,13 @@ void RenderCoordinator::run(std::stop_token stop,
     vkpt::pathtracer::RenderTile tile;
     std::uint32_t tilesRenderedThisSample = 0u;
     bool tileFailed = false;
+    // Worker-local buffer for tile batches. Reused across iterations to avoid
+    // per-batch allocation. Sized at 64 — large enough to amortize backend
+    // overhead, small enough to keep first-tile-publish responsive.
+    constexpr std::uint32_t kTileBatchMax = 64u;
+    static thread_local std::vector<vkpt::pathtracer::RenderTile> tileBatch;
+    tileBatch.reserve(kTileBatchMax);
+    const bool useBatching = tracer->supports_tile_batching();
     while (true) {
       if (stop.stop_requested()) {
         break;
@@ -1188,72 +1359,110 @@ void RenderCoordinator::run(std::stop_token stop,
         tileFailed = true;
         break;
       }
-      if (!tileScheduler.next_tile(tile)) {
-        break;
+      tileBatch.clear();
+      std::uint32_t batchSize = 0u;
+      if (useBatching) {
+        batchSize = tileScheduler.next_tile_batch(kTileBatchMax, tileBatch);
+        if (batchSize == 0u) {
+          break;
+        }
+      } else {
+        if (!tileScheduler.next_tile(tile)) {
+          break;
+        }
+        tileBatch.push_back(tile);
+        batchSize = 1u;
       }
-      const auto tileStart = std::chrono::steady_clock::now();
-      if (!tracer->render_tile_cancellable(tile, 0u, stop)) {
+      // Route the batch to the tracer that owns its gpu_id. The scheduler's
+      // next_tile_batch guarantees every tile in `tileBatch` shares the same
+      // gpu_id, so picking the dispatch target from the first tile is exact.
+      // Single-GPU fast path: tracerCount == 1, dispatch_gpu == 0 always.
+      const std::uint32_t dispatchGpu =
+          multiTracer ? std::min(tileBatch.front().gpu_id, tracerCount - 1u) : 0u;
+      auto& dispatchTracer = *tracers[dispatchGpu];
+      const auto batchStart = std::chrono::steady_clock::now();
+      bool batchOk = false;
+      if (useBatching) {
+        batchOk = dispatchTracer.render_tiles(
+            std::span<const vkpt::pathtracer::RenderTile>(tileBatch.data(),
+                                                          tileBatch.size()),
+            0u, stop);
+      } else {
+        batchOk = dispatchTracer.render_tile_cancellable(tileBatch.front(), 0u, stop);
+      }
+      if (!batchOk) {
         if (!stop.stop_requested()) {
           mark_failed("render coordinator tile failed");
         }
         tileFailed = true;
         break;
       }
-      const auto tileEnd = std::chrono::steady_clock::now();
-      const double tileUs =
-          std::chrono::duration<double, std::micro>(tileEnd - tileStart).count();
-      ++tilesRenderedThisSample;
-      VKP_METRIC_INC("vkp.tracer.tiles_total");
-      VKP_METRIC_OBSERVE("vkp.render.tile_latency_us", tileUs);
-      // Hot path: update lock-free shadow accumulators only. They are folded
-      // into m_stats once per sample (see foldShadowsIntoStats below). Single
-      // writer (this worker thread) — plain ints, no atomic ops needed.
-      ++tilesRenderedShadow;
-      if (tile.gpu_id < tilesPerGpuShadow.size()) {
-        ++tilesPerGpuShadow[tile.gpu_id];
-      } else {
+      const auto batchEnd = std::chrono::steady_clock::now();
+      const double batchUs =
+          std::chrono::duration<double, std::micro>(batchEnd - batchStart).count();
+      // Distribute the batch latency evenly across the tiles for histogram
+      // continuity with the legacy per-tile path. When batching is active each
+      // tile in the batch shares the same recorded latency; aggregate stats
+      // (counts, totals, max) remain accurate.
+      const double tileUs = batchUs / static_cast<double>(batchSize);
+      bool gpuIdOutOfRange = false;
+      auto& logger = vkpt::log::Logger::instance();
+      const bool debugLog = logger.enabled(vkpt::log::Severity::Debug);
+      for (const auto& batchedTile : tileBatch) {
+        ++tilesRenderedThisSample;
+        VKP_METRIC_INC("vkp.tracer.tiles_total");
+        VKP_METRIC_OBSERVE("vkp.render.tile_latency_us", tileUs);
+        // Hot path: update lock-free shadow accumulators only. They are folded
+        // into m_stats once per sample (see foldShadowsIntoStats below). Single
+        // writer (this worker thread) — plain ints, no atomic ops needed.
+        ++tilesRenderedShadow;
+        if (batchedTile.gpu_id < tilesPerGpuShadow.size()) {
+          ++tilesPerGpuShadow[batchedTile.gpu_id];
+        } else {
+          gpuIdOutOfRange = true;
+          break;
+        }
+        tileLatencyLastShadow = tileUs;
+        tileLatencyMaxShadow = std::max(tileLatencyMaxShadow, tileUs);
+        if (tileUs > m_config.tile_latency_budget_us) {
+          ++tileLatencyOverBudgetShadow;
+        }
+        if (debugLog) {
+          logger.log(
+              vkpt::log::Severity::Debug,
+              "tracer",
+              "tracer.tile_done",
+              {{"tile_id", std::to_string(batchedTile.tile_id)},
+               {"gen", std::to_string(generation)},
+               {"gpu_id", std::to_string(batchedTile.gpu_id)},
+               {"samples", std::to_string(batchedTile.sample_index + 1u)},
+               {"tile_us", std::to_string(tileUs)},
+               {"variance", "0"}});
+        }
+        if (pendingFirstTilePublishGeneration == generation) {
+          ++tilesSinceSnapshotChange;
+          const auto countersAfterTile = tracer->read_counters();
+          publishResolvedFrame(sample, countersAfterTile);
+          ++snapshotFirstTilePublishShadow;
+          snapshotFirstTilePublishMaxTilesShadow =
+              std::max(snapshotFirstTilePublishMaxTilesShadow,
+                       tilesSinceSnapshotChange);
+          pendingFirstTilePublishGeneration = 0u;
+          tilesSinceSnapshotChange = 0u;
+        } else if (pendingFirstTilePublishGeneration != 0u) {
+          ++tilesSinceSnapshotChange;
+        }
+      }
+      if (gpuIdOutOfRange) {
         // gpu_count was supposed to be fixed at configure time; an out-of-range
         // gpu_id indicates a scheduler/tracer contract violation.
         mark_failed("render coordinator gpu_id out of fixed gpu_count range");
         tileFailed = true;
         break;
       }
-      tileLatencyLastShadow = tileUs;
-      tileLatencyMaxShadow = std::max(tileLatencyMaxShadow, tileUs);
-      if (tileUs > m_config.tile_latency_budget_us) {
-        ++tileLatencyOverBudgetShadow;
-      }
       tracerGenLagShadow =
           snapshotRing.reader_stats(tracerSnapshotReader).lag;
       hotShadowDirty = true;
-      auto& logger = vkpt::log::Logger::instance();
-      if (logger.enabled(vkpt::log::Severity::Debug)) {
-        logger.log(
-            vkpt::log::Severity::Debug,
-            "tracer",
-            "tracer.tile_done",
-            {{"tile_id", std::to_string(tile.tile_id)},
-             {"gen", std::to_string(generation)},
-             {"gpu_id", std::to_string(tile.gpu_id)},
-             {"samples", std::to_string(tile.sample_index + 1u)},
-             {"tile_us", std::to_string(tileUs)},
-             {"variance", "0"}});
-      }
-      if (pendingFirstTilePublishGeneration == generation) {
-        ++tilesSinceSnapshotChange;
-        const auto countersAfterTile = tracer->read_counters();
-        publishResolvedFrame(sample, countersAfterTile);
-        // Hot path: defer m_stats fold-in to the per-sample fold below.
-        ++snapshotFirstTilePublishShadow;
-        snapshotFirstTilePublishMaxTilesShadow =
-            std::max(snapshotFirstTilePublishMaxTilesShadow,
-                     tilesSinceSnapshotChange);
-        hotShadowDirty = true;
-        pendingFirstTilePublishGeneration = 0u;
-        tilesSinceSnapshotChange = 0u;
-      } else if (pendingFirstTilePublishGeneration != 0u) {
-        ++tilesSinceSnapshotChange;
-      }
     }
     // Fold per-tile shadow accumulators into m_stats once per sample. This is
     // the only place m_statsMutex is held by the worker for tile counters in
@@ -1288,8 +1497,10 @@ void RenderCoordinator::run(std::stop_token stop,
     }
   }
 
-  if (tracer) {
-    tracer->shutdown();
+  for (auto& backend : tracers) {
+    if (backend) {
+      backend->shutdown();
+    }
   }
 
   // Ensure any pending hot-path tile counters are visible to stats() readers

@@ -129,6 +129,42 @@ bool TileScheduler::next_tile(vkpt::pathtracer::RenderTile& out) {
   return true;
 }
 
+std::uint32_t TileScheduler::next_tile_batch(
+    std::uint32_t max_tiles,
+    std::vector<vkpt::pathtracer::RenderTile>& out) noexcept {
+  if (max_tiles == 0u || m_config.width == 0u || m_config.height == 0u ||
+      m_nextTile >= m_order.size()) {
+    return 0u;
+  }
+  // The batch must stay on a single backend; we group by gpu_id so the
+  // caller can route the entire span to one tracer instance. Once a tile
+  // with a different gpu_id is encountered we stop the batch — the caller
+  // can re-enter on the next iteration to drain a fresh same-gpu_id run.
+  vkpt::pathtracer::RenderTile firstTile;
+  if (!next_tile(firstTile)) {
+    return 0u;
+  }
+  out.push_back(firstTile);
+  std::uint32_t drained = 1u;
+  const std::uint32_t batchGpuId = firstTile.gpu_id;
+  while (drained < max_tiles && m_nextTile < m_order.size()) {
+    // Peek at the next tile; only commit (advance m_nextTile) if it matches.
+    const auto entry = m_order[m_nextTile];
+    const std::uint32_t tileId = entry.tile_id;
+    const std::uint32_t peekGpuId = tileId % m_config.gpu_count;
+    if (peekGpuId != batchGpuId) {
+      break;
+    }
+    vkpt::pathtracer::RenderTile next;
+    if (!next_tile(next)) {
+      break;
+    }
+    out.push_back(next);
+    ++drained;
+  }
+  return drained;
+}
+
 TileSchedulerStats TileScheduler::stats() const {
   std::vector<std::uint32_t> gpuScheduled(
       static_cast<std::size_t>(std::max(1u, m_config.gpu_count)),

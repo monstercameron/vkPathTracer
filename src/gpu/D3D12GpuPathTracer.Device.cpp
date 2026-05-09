@@ -37,6 +37,7 @@ void D3D12GpuPathTracer::shutdown() {
   m_dxrCmdAllocator.Reset();
   m_dxrCmdQueue.Reset();
   m_device5.Reset();
+  destroy_frame_contexts();
   m_cmdList.Reset();
   m_cmdAllocator.Reset();
   m_pso.Reset();
@@ -46,6 +47,8 @@ void D3D12GpuPathTracer::shutdown() {
   m_temporalPso.Reset();
   m_rootSig.Reset();
   if (m_fenceEvent) { CloseHandle(m_fenceEvent); m_fenceEvent = nullptr; }
+  if (m_timelineFenceEvent) { CloseHandle(m_timelineFenceEvent); m_timelineFenceEvent = nullptr; }
+  m_timelineFence.Reset();
   m_cmdQueue.Reset();
   m_device.Reset();
   m_factory.Reset();
@@ -59,6 +62,56 @@ void D3D12GpuPathTracer::shutdown() {
 // ============================================================================
 // Init helpers
 // ============================================================================
+
+std::vector<D3D12GpuPathTracer::AdapterDescriptor>
+D3D12GpuPathTracer::EnumerateAdapters() {
+  std::vector<AdapterDescriptor> out;
+  UINT flags = 0;
+#if defined(_DEBUG)
+  flags |= DXGI_CREATE_FACTORY_DEBUG;
+#endif
+  Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
+  if (FAILED(CreateDXGIFactory2(flags, IID_PPV_ARGS(&factory)))) {
+    return out;
+  }
+  for (UINT i = 0;; ++i) {
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    if (factory->EnumAdapters1(i, &adapter) == DXGI_ERROR_NOT_FOUND) {
+      break;
+    }
+    DXGI_ADAPTER_DESC1 desc{};
+    if (FAILED(adapter->GetDesc1(&desc))) {
+      continue;
+    }
+    AdapterDescriptor info;
+    info.index = i;
+    info.description = std::wstring(desc.Description);
+    info.dedicated_vram_bytes = static_cast<std::uint64_t>(desc.DedicatedVideoMemory);
+    info.shared_system_bytes = static_cast<std::uint64_t>(desc.SharedSystemMemory);
+    info.is_software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+    // Cheap probe: try to create a non-realized ID3D12Device, then a real
+    // device only if needed for a DXR feature query. The non-realized create
+    // is the same call init_device() uses to skip unusable adapters.
+    const bool creates = SUCCEEDED(D3D12CreateDevice(adapter.Get(),
+                                                     D3D_FEATURE_LEVEL_11_0,
+                                                     __uuidof(ID3D12Device),
+                                                     nullptr));
+    if (creates && !info.is_software) {
+      Microsoft::WRL::ComPtr<ID3D12Device> probeDevice;
+      if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
+                                      IID_PPV_ARGS(&probeDevice)))) {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5{};
+        if (SUCCEEDED(probeDevice->CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5)))) {
+          info.dxr_supported =
+              opts5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
+        }
+      }
+    }
+    out.push_back(std::move(info));
+  }
+  return out;
+}
 
 vkpt::core::Status D3D12GpuPathTracer::init_device() {
 #if defined(_DEBUG)
@@ -78,11 +131,22 @@ vkpt::core::Status D3D12GpuPathTracer::init_device() {
     return D3D12InitFailure(m_error);
   }
 
-  // Enumerate adapters, pick the one with the most dedicated VRAM
+  // Enumerate adapters. Two selection modes are supported:
+  //   - When `m_adapterIndex` is set: bind to the matching adapter from
+  //     EnumAdapters1, so RenderCoordinator can hand each tracer instance a
+  //     specific GPU. We still log the full enumeration for diagnostics.
+  //   - When unset: legacy "max VRAM among non-software D3D12-capable
+  //     adapters" selection is preserved exactly so single-GPU callers see
+  //     byte-identical behavior.
   Microsoft::WRL::ComPtr<IDXGIAdapter1> chosen;
   SIZE_T bestVram = 0;
   std::string bestName;
   int adapterCount = 0;
+  Microsoft::WRL::ComPtr<IDXGIAdapter1> indexedAdapter;
+  std::string indexedName;
+  SIZE_T indexedVram = 0;
+  bool indexedSoftware = false;
+  bool indexedCreates = false;
   for (UINT i = 0;; ++i) {
     Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
     if (m_factory->EnumAdapters1(i, &adapter) == DXGI_ERROR_NOT_FOUND) break;
@@ -98,6 +162,13 @@ vkpt::core::Status D3D12GpuPathTracer::init_device() {
       << "MB software=" << (software ? "true" : "false")
       << " create_ok=" << (creates ? "true" : "false");
     LogDebug(a.str());
+    if (m_adapterIndex.has_value() && i == *m_adapterIndex) {
+      indexedAdapter = adapter;
+      indexedName = name;
+      indexedVram = desc.DedicatedVideoMemory;
+      indexedSoftware = software;
+      indexedCreates = creates;
+    }
     if (software || !creates) continue;
     ++adapterCount;
     if (desc.DedicatedVideoMemory > bestVram) {
@@ -105,6 +176,25 @@ vkpt::core::Status D3D12GpuPathTracer::init_device() {
       chosen = adapter;
       bestName = name;
     }
+  }
+  if (m_adapterIndex.has_value()) {
+    if (!indexedAdapter) {
+      m_error = "adapter index " + std::to_string(*m_adapterIndex) +
+                " out of range";
+      return D3D12InitFailure(m_error, vkpt::core::StatusCode::NotReady);
+    }
+    if (indexedSoftware || !indexedCreates) {
+      m_error = "adapter index " + std::to_string(*m_adapterIndex) +
+                " is not a usable D3D12 device (software=" +
+                (indexedSoftware ? "true" : "false") +
+                ", create_ok=" + (indexedCreates ? "true" : "false") + ")";
+      return D3D12InitFailure(m_error, vkpt::core::StatusCode::NotReady);
+    }
+    chosen = indexedAdapter;
+    bestVram = indexedVram;
+    bestName = indexedName;
+    LogInfo("D3D12 explicit adapter selection index=" +
+            std::to_string(*m_adapterIndex) + " name=" + bestName);
   }
   if (!chosen) {
     m_factory->EnumWarpAdapter(IID_PPV_ARGS(&chosen));
@@ -231,8 +321,69 @@ vkpt::core::Status D3D12GpuPathTracer::init_device() {
   }
   LogDebug("D3D12 device init success upload_heap=" + std::to_string(m_uploadSize));
 
+  if (!init_frame_contexts()) {
+    LogError("init_device: " + m_error);
+    return D3D12InitFailure(m_error);
+  }
+
   LogInfo("D3D12 device init success");
   return vkpt::core::Status::ok("D3D12 device initialized");
+}
+
+bool D3D12GpuPathTracer::init_frame_contexts() {
+  // The render-tile path uses a small ring of (allocator, command list)
+  // contexts plus a shared timeline fence. With kD3D12FrameCount in flight,
+  // the CPU records frame N+1 while frame N is still executing on the GPU,
+  // amortizing fence-wait latency that previously serialized every tile.
+  const D3D12_COMMAND_LIST_TYPE commandListType = SelectComputeCommandListType();
+  for (size_t i = 0; i < m_frameCtx.size(); ++i) {
+    auto& ctx = m_frameCtx[i];
+    const HRESULT createAllocHr = m_device->CreateCommandAllocator(
+        commandListType, IID_PPV_ARGS(&ctx.allocator));
+    if (FAILED(createAllocHr)) {
+      m_error = "CreateCommandAllocator(frame=" + std::to_string(i) +
+                ") hr=" + FormatHr(createAllocHr);
+      return false;
+    }
+    const HRESULT createListHr = m_device->CreateCommandList(
+        0, commandListType, ctx.allocator.Get(), nullptr,
+        IID_PPV_ARGS(&ctx.cmdList));
+    if (FAILED(createListHr)) {
+      m_error = "CreateCommandList(frame=" + std::to_string(i) +
+                ") hr=" + FormatHr(createListHr);
+      return false;
+    }
+    const HRESULT closeHr = ctx.cmdList->Close();
+    if (FAILED(closeHr)) {
+      m_error = "frame cmd list initial close hr=" + FormatHr(closeHr);
+      return false;
+    }
+    ctx.fence_value = 0;
+    ctx.in_flight = false;
+  }
+  const HRESULT createTimelineHr = m_device->CreateFence(
+      0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_timelineFence));
+  if (FAILED(createTimelineHr)) {
+    m_error = "CreateFence(timeline) hr=" + FormatHr(createTimelineHr);
+    return false;
+  }
+  m_timelineFenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (!m_timelineFenceEvent) {
+    m_error = "CreateEventW(timeline)";
+    return false;
+  }
+  m_nextFenceValue = 1;
+  m_frameRingIdx = 0;
+  return true;
+}
+
+void D3D12GpuPathTracer::destroy_frame_contexts() {
+  for (auto& ctx : m_frameCtx) {
+    ctx.cmdList.Reset();
+    ctx.allocator.Reset();
+    ctx.fence_value = 0;
+    ctx.in_flight = false;
+  }
 }
 
 vkpt::core::Status D3D12GpuPathTracer::init_dxr_runtime_objects() {
@@ -300,6 +451,8 @@ vkpt::core::Status D3D12GpuPathTracer::init_dxr_runtime_objects() {
 bool D3D12GpuPathTracer::wait_for_gpu() {
   // Fence every submitted batch before CPU readback or resource reuse. This is
   // conservative but keeps persistent mapped upload/readback buffers simple.
+  // Also drains any in-flight per-frame ring submissions so subsequent cold-path
+  // operations can safely reuse m_cmdAllocator/m_cmdList.
   ++m_fenceValue;
   const HRESULT signalHr = m_cmdQueue->Signal(m_fence.Get(), m_fenceValue);
   if (FAILED(signalHr)) {
@@ -320,7 +473,44 @@ bool D3D12GpuPathTracer::wait_for_gpu() {
       LogError("wait_for_gpu: " + m_error);
       return false;
     }
+  }
+  // Drain the timeline fence too. After wait_for_gpu the caller assumes both
+  // m_cmdList and any frame-context submission have retired so allocator
+  // resets are safe.
+  if (m_timelineFence) {
+    const UINT64 latest = m_nextFenceValue == 0u ? 0u : (m_nextFenceValue - 1u);
+    if (latest > 0u && m_timelineFence->GetCompletedValue() < latest) {
+      if (!wait_for_fence(latest)) {
+        return false;
+      }
+    }
+    for (auto& ctx : m_frameCtx) {
+      ctx.in_flight = false;
+    }
+  }
+  return true;
+}
+
+bool D3D12GpuPathTracer::wait_for_fence(UINT64 target) {
+  if (!m_timelineFence || target == 0u) {
     return true;
+  }
+  if (m_timelineFence->GetCompletedValue() >= target) {
+    return true;
+  }
+  const HRESULT setEvHr =
+      m_timelineFence->SetEventOnCompletion(target, m_timelineFenceEvent);
+  if (FAILED(setEvHr)) {
+    m_error = "wait_for_fence SetEventOnCompletion hr=" + FormatHr(setEvHr);
+    LogError("wait_for_fence: " + m_error);
+    return false;
+  }
+  const DWORD waitRes =
+      WaitForSingleObjectEx(m_timelineFenceEvent, INFINITE, FALSE);
+  if (waitRes != WAIT_OBJECT_0) {
+    m_error = "wait_for_fence wait code=" + std::to_string(waitRes);
+    LogError("wait_for_fence: " + m_error);
+    return false;
   }
   return true;
 }

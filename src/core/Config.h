@@ -63,6 +63,13 @@ struct RuntimeConfig {
   ConfigValue<uint32_t>     max_depth{6};
   ConfigValue<std::string>  output_path{"artifacts/renders/output.png"};
   ConfigValue<std::string>  exr_output_path{""};
+  // Number of GPU path tracers to spin up. 1 = legacy single-GPU fast path.
+  // 0 means "all viable adapters" (auto-detect). N >= 2 enables multi-GPU
+  // dispatch via TileScheduler row striping.
+  ConfigValue<uint32_t>     gpu_count{1u};
+  // When auto-detecting (--gpus 0 or N greater than 1), allow integrated /
+  // low-VRAM adapters that would normally be skipped.
+  ConfigValue<bool>         include_integrated_gpu{false};
 
   // --- Benchmark ---
   ConfigValue<uint32_t>     benchmark_warmup_frames{2};

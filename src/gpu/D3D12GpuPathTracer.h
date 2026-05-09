@@ -16,8 +16,12 @@
 #include "pathtracer/PathTracer.h"
 #include "gpu/GpuBackendIntrospection.h"
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -92,8 +96,37 @@ struct D3D12TemporalCameraState {
 class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer,
                                  public IGpuBackendIntrospect {
  public:
+  /// Lightweight descriptor for an enumerable D3D12 adapter. EnumerateAdapters()
+  /// queries DXGI without creating a full ID3D12Device, so it is safe to call
+  /// before deciding how many tracers to instantiate (and on which adapters).
+  struct AdapterDescriptor {
+    std::uint32_t index = 0u;
+    std::wstring description;
+    std::uint64_t dedicated_vram_bytes = 0u;
+    std::uint64_t shared_system_bytes = 0u;
+    bool is_software = false;
+    bool dxr_supported = false;
+  };
+
+  /// Returns one descriptor per enumerable DXGI adapter, in
+  /// EnumAdapters1 order. Indices are stable within a single call and can be
+  /// passed to the constructor as `adapter_index` to bind a tracer to a
+  /// specific GPU. Software adapters and adapters that fail
+  /// D3D12CreateDevice(11_0, nullptr) are still listed (with `is_software`
+  /// set or `dxr_supported=false`) so callers can filter explicitly.
+  static std::vector<AdapterDescriptor> EnumerateAdapters();
+
   /// Creates the backend and defers most GPU resource allocation until configure/load.
-  D3D12GpuPathTracer(std::string hlsl_path, std::string entry_point = "main");
+  ///
+  /// When `adapter_index` is set, init_device() selects the matching DXGI
+  /// adapter (`EnumAdapters1` order). When unset, the legacy "max VRAM wins"
+  /// selection is preserved so single-GPU callers see byte-identical behavior.
+  explicit D3D12GpuPathTracer(std::string hlsl_path,
+                              std::optional<std::uint32_t> adapter_index = std::nullopt);
+  D3D12GpuPathTracer(std::string hlsl_path, std::string entry_point);
+  D3D12GpuPathTracer(std::string hlsl_path,
+                     std::string entry_point,
+                     std::optional<std::uint32_t> adapter_index);
   ~D3D12GpuPathTracer() override;
 
   /// Allocates film resources and records render settings for subsequent uploads.
@@ -141,6 +174,10 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer,
                    uint32_t frame_idx) override;
   vkpt::core::Status render_tile_status(const vkpt::pathtracer::RenderTile& tile,
                                         uint32_t frame_idx);
+  bool render_tiles(std::span<const vkpt::pathtracer::RenderTile> tiles,
+                    std::uint32_t frame_idx,
+                    std::stop_token stop) override;
+  bool supports_tile_batching() const override { return true; }
   vkpt::pathtracer::FilmLdr resolve_ldr() const override;
   vkpt::pathtracer::FilmHdr resolve_hdr() const override;
   vkpt::pathtracer::FilmReadbackToken request_film_readback() override;
@@ -186,7 +223,8 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer,
     info.pending_dispatches = 0u;
     info.last_present_us = 0u;
     info.last_fence_wait_us = 0u;
-    info.timeline_value = static_cast<std::uint64_t>(m_fenceValue);
+    info.timeline_value = static_cast<std::uint64_t>(
+        std::max<UINT64>(m_fenceValue, m_nextFenceValue));
     info.device_lost_recent = !m_error.empty() && m_error.find("device") != std::string::npos;
     info.fence_timeout_recent = !m_error.empty() && m_error.find("fence") != std::string::npos;
     if (!m_valid && !m_error.empty()) {
@@ -301,6 +339,27 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer,
   HANDLE m_fenceEvent = nullptr;
   UINT64 m_fenceValue = 0;
 
+  // Per-frame command recording context. Replaces the legacy single-allocator
+  // model on the render-tile hot path so consecutive tiles can be queued and
+  // signalled without each one waiting on the GPU. Cold paths (scene upload,
+  // BVH/AS build, DXR build/refit) continue to use m_cmdAllocator/m_cmdList
+  // because they explicitly drain the queue around CPU-visible operations.
+  struct FrameContext {
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> cmdList;
+    UINT64 fence_value = 0;
+    bool in_flight = false;
+  };
+  std::array<FrameContext, kD3D12FrameCount> m_frameCtx;
+  Microsoft::WRL::ComPtr<ID3D12Fence> m_timelineFence;
+  HANDLE m_timelineFenceEvent = nullptr;
+  UINT64 m_nextFenceValue = 1;
+  size_t m_frameRingIdx = 0;
+
+  bool init_frame_contexts();
+  void destroy_frame_contexts();
+  bool wait_for_fence(UINT64 target);
+
   Microsoft::WRL::ComPtr<ID3D12Resource> m_uploadBuf; // staging upload heap
   void* m_uploadPtr = nullptr;
   UINT64 m_uploadSize = 0;
@@ -343,6 +402,7 @@ class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer,
 
   std::string m_hlslPath;
   std::string m_entryPoint;
+  std::optional<std::uint32_t> m_adapterIndex;
   std::string m_error;
   std::string m_gpuName;
   uint32_t    m_vramMb     = 0;

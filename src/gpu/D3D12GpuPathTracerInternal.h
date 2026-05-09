@@ -17,6 +17,17 @@ namespace vkpt::gpu {
 
 inline constexpr UINT kPathTraceRoot32BitValues =
     static_cast<UINT>(sizeof(PathTraceConstants) / sizeof(uint32_t));
+// Per-frame slice of the persistent upload heap reserved for the render-tile
+// ring. With kD3D12FrameCount frames in flight we need disjoint upload regions
+// per ring slot so the CPU writing constants for frame N+1 cannot stomp on the
+// constants the GPU is still reading for frame N. 1 MiB easily covers a 272-byte
+// PathTraceConstants record, dynamic instance/BVH motion uploads, and small
+// material/light delta uploads issued through emit_pending_*_upload().
+inline constexpr UINT64 kFrameSlotUploadBytes = 1ull * 1024ull * 1024ull;
+// Within a render-tile slot, motion uploads start past the 4 KiB constants
+// region. The legacy kMotionUploadOffset constant kept its value (4096 bytes)
+// for source-level compatibility — the per-slot base is added on top.
+inline constexpr UINT64 kRenderTileMotionUploadOffset = 4096ull;
 inline constexpr uint32_t kGpuSdfStrideFloats =
     vkpt::pathtracer::kStandardGpuSceneBufferLayout.sdf_stride_floats;
 /// Packed triangle record consumed by compute and DXR shaders: v0, edges,

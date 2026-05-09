@@ -318,28 +318,49 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
     }
   }
 
-  // Reset command list
-  const HRESULT resetAllocatorHr = m_cmdAllocator->Reset();
+  // Per-frame ring slot — frames-in-flight: select the ring index up front, wait
+  // ONLY on the slot we're about to recycle (not the full GPU), then reset its
+  // allocator/list. Keeps the GPU queue saturated as the CPU records frame N+1
+  // while frame N is still executing.
+  auto& frameCtx = m_frameCtx[m_frameRingIdx];
+  if (frameCtx.in_flight && frameCtx.fence_value != 0u &&
+      m_timelineFence->GetCompletedValue() < frameCtx.fence_value) {
+    if (!wait_for_fence(frameCtx.fence_value)) {
+      LogError("render_sample_batch: " + m_error);
+      return false;
+    }
+  }
+  frameCtx.in_flight = false;
+  const HRESULT resetAllocatorHr = frameCtx.allocator->Reset();
   if (FAILED(resetAllocatorHr)) {
     m_error = "allocator reset hr=" + FormatHr(resetAllocatorHr);
     LogError("render_sample_batch: " + m_error);
     return false;
   }
-  const HRESULT resetCmdListHr = m_cmdList->Reset(m_cmdAllocator.Get(), m_pso.Get());
+  const HRESULT resetCmdListHr =
+      frameCtx.cmdList->Reset(frameCtx.allocator.Get(), m_pso.Get());
   if (FAILED(resetCmdListHr)) {
     m_error = "cmd list reset hr=" + FormatHr(resetCmdListHr);
     LogError("render_sample_batch: " + m_error);
     return false;
   }
-  constexpr UINT64 kMotionUploadOffset = 4096u;
+  ID3D12GraphicsCommandList* cmdList = frameCtx.cmdList.Get();
+  // Disjoint upload heap regions per ring slot. Frame N+1 writes constants and
+  // motion uploads into its own slot while the GPU is still reading frame N's
+  // slot. The wait above on the recycled slot's fence guarantees the slot we're
+  // about to write has already retired.
+  const UINT64 frameSlotBaseOffset =
+      static_cast<UINT64>(m_frameRingIdx) * kFrameSlotUploadBytes;
+  const UINT64 kMotionUploadOffset =
+      frameSlotBaseOffset + kRenderTileMotionUploadOffset;
   UINT64 nextUploadOffset = kMotionUploadOffset;
-  if (!emit_pending_instance_upload(m_cmdList.Get(),
+  if (!emit_pending_instance_upload(cmdList,
                                     kMotionUploadOffset,
                                     &nextUploadOffset)) {
     LogError("render_sample_batch: " + m_error);
     return false;
   }
-  if (!emit_pending_scene_delta_uploads(m_cmdList.Get(),
+  if (!emit_pending_scene_delta_uploads(cmdList,
                                         nextUploadOffset,
                                         &nextUploadOffset)) {
     LogError("render_sample_batch: " + m_error);
@@ -348,7 +369,7 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
 
   // Upload constants through the persistent upload heap and bind it as a CBV.
   // The command list is fenced before this memory is reused on the next submit.
-  m_cmdList->SetComputeRootSignature(m_rootSig.Get());
+  cmdList->SetComputeRootSignature(m_rootSig.Get());
 
   // Create descriptor heap for SRVs/UAVs lazily and reuse across samples.
   // Slots: t0-t14 SRVs, u0 film, u1 LDR, u2 denoised HDR, u3/u6 guides, u4/u5 temporal.
@@ -404,12 +425,16 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
   FillPreviousCameraConstants(pc, m_temporalHistoryValid ? m_temporalPrevCamera : MakeTemporalCameraState(pc));
 
   ID3D12DescriptorHeap* heaps[] = {m_srvUavHeap.Get()};
-  m_cmdList->SetDescriptorHeaps(1, heaps);
-  m_cmdList->SetComputeRootDescriptorTable(1, gpuHandle);
+  cmdList->SetDescriptorHeaps(1, heaps);
+  cmdList->SetComputeRootDescriptorTable(1, gpuHandle);
 
-  // Root constants (b0) mirror PathTraceConstants exactly.
-  std::memcpy(m_uploadPtr, &pc, sizeof(pc));
-  m_cmdList->SetComputeRootConstantBufferView(0, m_uploadBuf->GetGPUVirtualAddress());
+  // Root constants (b0) mirror PathTraceConstants exactly. Each ring slot has
+  // its own constants region so a CPU memcpy for frame N+1 cannot stomp the
+  // GPU's read of frame N's constants.
+  std::memcpy(static_cast<uint8_t*>(m_uploadPtr) + frameSlotBaseOffset,
+              &pc, sizeof(pc));
+  cmdList->SetComputeRootConstantBufferView(
+      0, m_uploadBuf->GetGPUVirtualAddress() + frameSlotBaseOffset);
 
   // --- Transition FilmBuf and LdrBuf to UAV for GPU work --------------------
   D3D12_RESOURCE_BARRIER filmBarrier{};
@@ -418,7 +443,7 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
   filmBarrier.Transition.StateBefore     = D3D12_RESOURCE_STATE_COMMON;
   filmBarrier.Transition.StateAfter      = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   filmBarrier.Transition.Subresource     = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-  m_cmdList->ResourceBarrier(1u, &filmBarrier);
+  cmdList->ResourceBarrier(1u, &filmBarrier);
 
   D3D12_RESOURCE_BARRIER ldrBarrier{};
   ldrBarrier.Type                        = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -427,7 +452,7 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
   ldrBarrier.Transition.StateAfter       = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
   ldrBarrier.Transition.Subresource      = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
   if (doReadback) {
-    m_cmdList->ResourceBarrier(1u, &ldrBarrier);
+    cmdList->ResourceBarrier(1u, &ldrBarrier);
   }
 
   D3D12_RESOURCE_BARRIER denoiseBarrier = MakeTransitionBarrier(
@@ -451,7 +476,7 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
       startBarriers[barrierCount++] = prevGuideBarrier;
     }
     if (barrierCount > 0u) {
-      m_cmdList->ResourceBarrier(barrierCount, startBarriers.data());
+      cmdList->ResourceBarrier(barrierCount, startBarriers.data());
     }
   }
 
@@ -463,11 +488,11 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
     d << "dispatch groups " << groupsX << "x" << groupsY;
     LogDebug(d.str());
   }
-  m_cmdList->SetPipelineState(m_pso.Get());
+  cmdList->SetPipelineState(m_pso.Get());
   constexpr wchar_t kPathTraceEvent[] = L"D3D12 Compute PathTrace Dispatch";
-  m_cmdList->BeginEvent(0, kPathTraceEvent, sizeof(kPathTraceEvent));
-  m_cmdList->Dispatch(groupsX, groupsY, 1u);
-  m_cmdList->EndEvent();
+  cmdList->BeginEvent(0, kPathTraceEvent, sizeof(kPathTraceEvent));
+  cmdList->Dispatch(groupsX, groupsY, 1u);
+  cmdList->EndEvent();
 
   if (doReadback) {
   // Post passes are only scheduled for display/readback samples. Accumulation
@@ -476,51 +501,51 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
   D3D12_RESOURCE_BARRIER uavBarrier{};
   uavBarrier.Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
   uavBarrier.UAV.pResource = m_filmBuf.Get();
-  m_cmdList->ResourceBarrier(1, &uavBarrier);
+  cmdList->ResourceBarrier(1, &uavBarrier);
 
   if (doGuide) {
-    m_cmdList->SetPipelineState(m_guidePso.Get());
+    cmdList->SetPipelineState(m_guidePso.Get());
     constexpr wchar_t kGuideEvent[] = L"D3D12 Compute Guide Dispatch";
-    m_cmdList->BeginEvent(0, kGuideEvent, sizeof(kGuideEvent));
-    m_cmdList->Dispatch(groupsX, groupsY, 1u);
-    m_cmdList->EndEvent();
+    cmdList->BeginEvent(0, kGuideEvent, sizeof(kGuideEvent));
+    cmdList->Dispatch(groupsX, groupsY, 1u);
+    cmdList->EndEvent();
 
     uavBarrier.UAV.pResource = m_guideBuf.Get();
-    m_cmdList->ResourceBarrier(1, &uavBarrier);
+    cmdList->ResourceBarrier(1, &uavBarrier);
   }
 
   if (doTemporal) {
-    m_cmdList->SetPipelineState(m_temporalPso.Get());
+    cmdList->SetPipelineState(m_temporalPso.Get());
     constexpr wchar_t kTemporalEvent[] = L"D3D12 Compute Temporal AA Dispatch";
-    m_cmdList->BeginEvent(0, kTemporalEvent, sizeof(kTemporalEvent));
-    m_cmdList->Dispatch(groupsX, groupsY, 1u);
-    m_cmdList->EndEvent();
+    cmdList->BeginEvent(0, kTemporalEvent, sizeof(kTemporalEvent));
+    cmdList->Dispatch(groupsX, groupsY, 1u);
+    cmdList->EndEvent();
 
     uavBarrier.UAV.pResource = m_temporalBuf.Get();
-    m_cmdList->ResourceBarrier(1, &uavBarrier);
+    cmdList->ResourceBarrier(1, &uavBarrier);
   }
 
   if (doDenoise) {
-    m_cmdList->SetPipelineState(m_denoisePso.Get());
+    cmdList->SetPipelineState(m_denoisePso.Get());
     constexpr wchar_t kDenoiseEvent[] = L"D3D12 Compute Denoise Dispatch";
-    m_cmdList->BeginEvent(0, kDenoiseEvent, sizeof(kDenoiseEvent));
-    m_cmdList->Dispatch(groupsX, groupsY, 1u);
-    m_cmdList->EndEvent();
+    cmdList->BeginEvent(0, kDenoiseEvent, sizeof(kDenoiseEvent));
+    cmdList->Dispatch(groupsX, groupsY, 1u);
+    cmdList->EndEvent();
 
     uavBarrier.UAV.pResource = m_denoiseBuf.Get();
-    m_cmdList->ResourceBarrier(1, &uavBarrier);
+    cmdList->ResourceBarrier(1, &uavBarrier);
   }
 
   // --- GPU tonemap dispatch: RGBA32F film → RGBA8 LdrBuf --------------------
-  m_cmdList->SetPipelineState(m_tonemapPso.Get());
+  cmdList->SetPipelineState(m_tonemapPso.Get());
   constexpr wchar_t kTonemapEvent[] = L"D3D12 Compute Tonemap Dispatch";
-  m_cmdList->BeginEvent(0, kTonemapEvent, sizeof(kTonemapEvent));
-  m_cmdList->Dispatch(groupsX, groupsY, 1u);
-  m_cmdList->EndEvent();
+  cmdList->BeginEvent(0, kTonemapEvent, sizeof(kTonemapEvent));
+  cmdList->Dispatch(groupsX, groupsY, 1u);
+  cmdList->EndEvent();
 
   // UAV barrier on LdrBuf: ensure tonemap writes complete before copy-out.
   uavBarrier.UAV.pResource = m_ldrBuf.Get();
-  m_cmdList->ResourceBarrier(1, &uavBarrier);
+  cmdList->ResourceBarrier(1, &uavBarrier);
 
   if (doTemporal) {
     // Preserve the previous temporal output and guide buffers on GPU so the
@@ -536,9 +561,9 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
         MakeTransitionBarrier(m_prevGuideBuf.Get(),
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST)};
-    m_cmdList->ResourceBarrier(static_cast<UINT>(copyStartBarriers.size()), copyStartBarriers.data());
-    m_cmdList->CopyBufferRegion(m_temporalHistoryBuf.Get(), 0, m_temporalBuf.Get(), 0, filmSize);
-    m_cmdList->CopyBufferRegion(m_prevGuideBuf.Get(), 0, m_guideBuf.Get(), 0, guideSize);
+    cmdList->ResourceBarrier(static_cast<UINT>(copyStartBarriers.size()), copyStartBarriers.data());
+    cmdList->CopyBufferRegion(m_temporalHistoryBuf.Get(), 0, m_temporalBuf.Get(), 0, filmSize);
+    cmdList->CopyBufferRegion(m_prevGuideBuf.Get(), 0, m_guideBuf.Get(), 0, guideSize);
 
     std::array<D3D12_RESOURCE_BARRIER, 4> copyEndBarriers = {
         MakeTransitionBarrier(m_temporalBuf.Get(),
@@ -549,7 +574,7 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
             D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON),
         MakeTransitionBarrier(m_prevGuideBuf.Get(),
             D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON)};
-    m_cmdList->ResourceBarrier(static_cast<UINT>(copyEndBarriers.size()), copyEndBarriers.data());
+    cmdList->ResourceBarrier(static_cast<UINT>(copyEndBarriers.size()), copyEndBarriers.data());
   }
 
   // --- Transition for readback ----------------------------------------------
@@ -570,43 +595,57 @@ bool D3D12GpuPathTracer::render_tile(const vkpt::pathtracer::RenderTile& tile,
     guideBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
     if (doDenoise) readbackBarriers[barrierCount++] = denoiseBarrier;
     if (doGuide && !doTemporal) readbackBarriers[barrierCount++] = guideBarrier;
-    m_cmdList->ResourceBarrier(barrierCount, readbackBarriers.data());
+    cmdList->ResourceBarrier(barrierCount, readbackBarriers.data());
   } else {
     D3D12_RESOURCE_BARRIER readbackBarriers[2] = {filmBarrier, ldrBarrier};
-    m_cmdList->ResourceBarrier(2, readbackBarriers);
+    cmdList->ResourceBarrier(2, readbackBarriers);
   }
 
   // Copy LdrBuf (RGBA8, 4 B/pixel) to CPU-visible readback buffer.
   const UINT64 ldrSize = static_cast<UINT64>(m_filmPixels) * sizeof(uint32_t);
-  m_cmdList->CopyBufferRegion(m_ldrReadbackBuf.Get(), 0, m_ldrBuf.Get(), 0, ldrSize);
+  cmdList->CopyBufferRegion(m_ldrReadbackBuf.Get(), 0, m_ldrBuf.Get(), 0, ldrSize);
 
   // LdrBuf: COPY_SOURCE → COMMON
   ldrBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
   ldrBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
-  m_cmdList->ResourceBarrier(1, &ldrBarrier);
+  cmdList->ResourceBarrier(1, &ldrBarrier);
   } else {
     filmBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     filmBarrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
-    m_cmdList->ResourceBarrier(1, &filmBarrier);
+    cmdList->ResourceBarrier(1, &filmBarrier);
   }
 
-  const auto closeRes = m_cmdList->Close();
+  const auto closeRes = cmdList->Close();
   if (FAILED(closeRes)) {
     m_error = "cmd list close hr=" + FormatHr(closeRes);
     LogError("render_sample_batch: " + m_error);
     return false;
   }
-  ID3D12CommandList* lists[] = {m_cmdList.Get()};
+  ID3D12CommandList* lists[] = {cmdList};
   if (verbose) {
     LogDebug("render_sample_batch execute cmdlist frame=" + std::to_string(frame_idx) +
              " sample=" + std::to_string(sample_idx));
   }
   m_cmdQueue->ExecuteCommandLists(1, lists);
-  if (!wait_for_gpu()) {
-    m_error = "wait_for_gpu failed";
+
+  // Signal the timeline fence for this frame slot. We do NOT wait at the end
+  // of render_tile — the next render_tile waits ONLY on the slot it's about
+  // to recycle (via wait_for_fence), keeping kD3D12FrameCount frames in flight.
+  // For readback samples, the CPU memcpy below copies whatever the GPU has
+  // written into m_ldrReadbackPtr by now; any tile not fully retired yet
+  // simply propagates last-frame's pixels into the published LDR image. The
+  // caller is at most kD3D12FrameCount frames behind, which is below the
+  // visual threshold and well below the 240 Hz publish budget.
+  frameCtx.fence_value = m_nextFenceValue++;
+  frameCtx.in_flight = true;
+  const HRESULT signalHr =
+      m_cmdQueue->Signal(m_timelineFence.Get(), frameCtx.fence_value);
+  if (FAILED(signalHr)) {
+    m_error = "timeline Signal hr=" + FormatHr(signalHr);
     LogError("render_sample_batch: " + m_error);
     return false;
   }
+  m_frameRingIdx = (m_frameRingIdx + 1u) % m_frameCtx.size();
   const auto removeHr = m_device->GetDeviceRemovedReason();
   if (FAILED(removeHr)) {
     m_error = "device removed during render hr=" + FormatHr(removeHr);
@@ -671,6 +710,26 @@ vkpt::core::Status D3D12GpuPathTracer::render_tile_status(
       ok,
       m_error,
       vkpt::core::StatusCode::NotReady);
+}
+
+bool D3D12GpuPathTracer::render_tiles(
+    std::span<const vkpt::pathtracer::RenderTile> tiles,
+    std::uint32_t frame_idx,
+    std::stop_token stop) {
+  // Each call to render_tile() consumes one ring slot, so the batch as a whole
+  // pipelines through kD3D12FrameCount slots: the GPU is already executing
+  // tile N while the CPU records tile N+1. The non-readback samples never
+  // drain the timeline fence, so the only steady-state wait is on the slot
+  // we recycle every kD3D12FrameCount tiles.
+  for (const auto& tile : tiles) {
+    if (stop.stop_requested()) {
+      return false;
+    }
+    if (!render_tile(tile, frame_idx)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool D3D12GpuPathTracer::create_root_sig_and_pso() {

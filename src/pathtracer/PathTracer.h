@@ -1131,6 +1131,25 @@ class IPathTracer {
     }
     return render_tile(tile, frame_index);
   }
+  // Batched tile-rendering hook. Backends that override
+  // supports_tile_batching() to return true MAY override this to amortize
+  // per-tile overhead (e.g. command-list reset/close, fence sync). The default
+  // implementation simply forwards each tile to render_tile_cancellable so
+  // callers can use the same code path for batching-aware and legacy backends.
+  virtual bool render_tiles(std::span<const RenderTile> tiles,
+                            std::uint32_t frame_idx,
+                            std::stop_token stop) {
+    for (const auto& t : tiles) {
+      if (stop.stop_requested()) {
+        return false;
+      }
+      if (!render_tile_cancellable(t, frame_idx, stop)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  virtual bool supports_tile_batching() const { return false; }
   virtual FilmLdr resolve_ldr() const = 0;
   virtual FilmHdr resolve_hdr() const = 0;
   virtual FilmReadbackToken request_film_readback() { return {}; }

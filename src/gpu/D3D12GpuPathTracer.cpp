@@ -48,11 +48,19 @@ vkpt::pathtracer::PathTracerLifecycle LifecycleFromGpuState(bool valid,
 
 }  // namespace
 
-D3D12GpuPathTracer::D3D12GpuPathTracer(std::string hlsl_path, std::string entry_point)
-    : m_hlslPath(std::move(hlsl_path)), m_entryPoint(std::move(entry_point)) {
+D3D12GpuPathTracer::D3D12GpuPathTracer(std::string hlsl_path,
+                                       std::string entry_point,
+                                       std::optional<std::uint32_t> adapter_index)
+    : m_hlslPath(std::move(hlsl_path)),
+      m_entryPoint(std::move(entry_point)),
+      m_adapterIndex(adapter_index) {
   m_shaderTraversalMode = SelectShaderTraversalMode();
   m_packedTriangleBufferEnabled = SelectPackedTriangleBuffer();
+  std::string adapterTag = m_adapterIndex.has_value()
+      ? (" adapter=" + std::to_string(*m_adapterIndex))
+      : "";
   LogDebug("D3D12 tracer ctor hlsl=" + m_hlslPath + " entry=" + m_entryPoint +
+           adapterTag +
            " shader_traversal=" + m_shaderTraversalMode +
            " packed_triangles=" + (m_packedTriangleBufferEnabled ? "true" : "false"));
   vkpt::core::Status initStatus = init_device();
@@ -70,6 +78,13 @@ D3D12GpuPathTracer::D3D12GpuPathTracer(std::string hlsl_path, std::string entry_
     EmitGpuBackendStarted("d3d12", introspect());
   }
 }
+
+D3D12GpuPathTracer::D3D12GpuPathTracer(std::string hlsl_path,
+                                       std::optional<std::uint32_t> adapter_index)
+    : D3D12GpuPathTracer(std::move(hlsl_path), std::string("main"), adapter_index) {}
+
+D3D12GpuPathTracer::D3D12GpuPathTracer(std::string hlsl_path, std::string entry_point)
+    : D3D12GpuPathTracer(std::move(hlsl_path), std::move(entry_point), std::nullopt) {}
 
 D3D12GpuPathTracer::~D3D12GpuPathTracer() { shutdown(); }
 

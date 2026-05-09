@@ -39,6 +39,14 @@ class TileScheduler {
   void set_feedback(std::span<const TilePriorityFeedback> feedback);
   void begin_sample(std::uint64_t generation, std::uint32_t sample_index);
   bool next_tile(vkpt::pathtracer::RenderTile& out);
+  // Drains up to `max_tiles` consecutive scheduled tiles whose gpu_id matches
+  // the first one drained, appending them to `out`. Returns the number of
+  // tiles drained. The same-gpu_id grouping lets the caller dispatch a batch
+  // through a single backend instance without violating the multi-GPU
+  // accumulation contract. `out` is NOT cleared by this call so callers can
+  // reuse a pooled buffer across worker iterations.
+  std::uint32_t next_tile_batch(std::uint32_t max_tiles,
+                                std::vector<vkpt::pathtracer::RenderTile>& out) noexcept;
   TileSchedulerStats stats() const;
 
  private:

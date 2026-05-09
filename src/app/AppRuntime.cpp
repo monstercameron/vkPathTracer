@@ -723,6 +723,8 @@ int RunApp(int argc, char** argv) {
   const bool deterministic = parsedOptions.deterministic;
   const bool snapshotBus = parsedOptions.snapshot_bus;
   const std::optional<uint32_t> uiPresentHz = parsedOptions.ui_present_hz;
+  const std::optional<uint32_t> cliGpuCount = parsedOptions.gpu_count;
+  const bool cliIncludeIntegrated = parsedOptions.include_integrated_gpu;
   if (envFileEnabled) {
     std::error_code envFileEc;
     const bool envFileExists = std::filesystem::exists(envFilePath, envFileEc);
@@ -752,6 +754,10 @@ int RunApp(int argc, char** argv) {
   if (spp != 16)          { config.spp           = {spp,    vkpt::config::ConfigSource::CliFlag}; }
   if (maxDepth != 6)      { config.max_depth     = {maxDepth, vkpt::config::ConfigSource::CliFlag}; }
   if (uiPresentHz)        { config.ui_present_hz = {*uiPresentHz, vkpt::config::ConfigSource::CliFlag}; }
+  if (cliGpuCount)        { config.gpu_count     = {*cliGpuCount,  vkpt::config::ConfigSource::CliFlag}; }
+  if (cliIncludeIntegrated) {
+    config.include_integrated_gpu = {true, vkpt::config::ConfigSource::CliFlag};
+  }
   if (!outputPath.empty()) { config.output_path  = {std::string(outputPath), vkpt::config::ConfigSource::CliFlag}; }
   if (!exrOutputPath.empty()) {
     config.exr_output_path = {std::string(exrOutputPath), vkpt::config::ConfigSource::CliFlag};
@@ -1111,6 +1117,7 @@ int RunApp(int argc, char** argv) {
       // ---- Runtime backend / path tracer setup ----
       struct QtRuntimeTracerInit {
         std::unique_ptr<vkpt::pathtracer::IPathTracer> tracer;
+        std::vector<std::unique_ptr<vkpt::pathtracer::IPathTracer>> additional_tracers;
         std::string requested_backend;
         std::string renderer_path;
         std::string error;
@@ -1186,6 +1193,93 @@ int RunApp(int argc, char** argv) {
                         << "  DXR=" << (dxrAvailable ? "preferred" : "unavailable")
                         << "\n";
               out.renderer_path = dxrAvailable ? "d3d12_dxr" : "d3d12_compute";
+
+              // Multi-GPU dispatch: when the user asked for >1 path tracers,
+              // enumerate every adapter again and instantiate one tracer per
+              // additional viable adapter. We re-enumerate (instead of using
+              // the cached enumeration from init_device) because that data is
+              // not exposed; EnumerateAdapters() is a static helper that does
+              // the same DXGI walk, so the listing matches.
+              const std::uint32_t requestedGpuCount = config.gpu_count.value;
+              const bool requestMulti =
+                  (requestedGpuCount == 0u || requestedGpuCount > 1u);
+              if (requestMulti) {
+                const auto adapters =
+                    vkpt::gpu::D3D12GpuPathTracer::EnumerateAdapters();
+                // Try to identify the index already bound to the primary by
+                // matching its description. EnumerateAdapters mirrors
+                // init_device's DXGI walk so name matches uniquely identify
+                // the primary's index.
+                const std::string primaryName = gpu->gpu_name();
+                std::optional<std::uint32_t> primaryIndex;
+                for (const auto& a : adapters) {
+                  // WStringToUtf8 is internal; do a light comparison using
+                  // wchar->utf8 conversion via WideCharToMultiByte.
+                  const int needed = ::WideCharToMultiByte(
+                      CP_UTF8, 0, a.description.c_str(),
+                      static_cast<int>(a.description.size()),
+                      nullptr, 0, nullptr, nullptr);
+                  std::string name(needed, '\0');
+                  if (needed > 0) {
+                    ::WideCharToMultiByte(
+                        CP_UTF8, 0, a.description.c_str(),
+                        static_cast<int>(a.description.size()),
+                        name.data(), needed, nullptr, nullptr);
+                  }
+                  if (name == primaryName) {
+                    primaryIndex = a.index;
+                    break;
+                  }
+                }
+                const std::uint64_t kVramFloorBytes = 1ull * 1024ull * 1024ull * 1024ull;
+                const bool includeIntegrated = config.include_integrated_gpu.value;
+                std::vector<vkpt::gpu::D3D12GpuPathTracer::AdapterDescriptor> candidates;
+                for (const auto& a : adapters) {
+                  if (a.is_software) continue;
+                  if (primaryIndex && a.index == *primaryIndex) continue;
+                  if (!includeIntegrated && a.dedicated_vram_bytes < kVramFloorBytes) continue;
+                  candidates.push_back(a);
+                }
+                std::uint32_t totalDesired = requestedGpuCount;
+                if (requestedGpuCount == 0u) {
+                  totalDesired = 1u + static_cast<std::uint32_t>(candidates.size());
+                }
+                const std::uint32_t additionalNeeded =
+                    totalDesired > 1u ? totalDesired - 1u : 0u;
+                std::vector<std::unique_ptr<vkpt::pathtracer::IPathTracer>> extras;
+                extras.reserve(additionalNeeded);
+                for (std::uint32_t i = 0u;
+                     i < additionalNeeded && i < candidates.size();
+                     ++i) {
+                  const auto& cand = candidates[i];
+                  auto extra = std::make_unique<vkpt::gpu::D3D12GpuPathTracer>(
+                      hlslPath, std::optional<std::uint32_t>{cand.index});
+                  if (!extra->is_valid()) {
+                    std::cout << "[gpu/auto] additional adapter index="
+                              << cand.index << " init failed: "
+                              << extra->last_error()
+                              << " (skipping; staying single-GPU on this slot)\n";
+                    continue;
+                  }
+                  extra->set_prefer_dxr(extra->dxr_supported());
+                  std::cout << "[gpu/auto] additional D3D12 adapter index="
+                            << cand.index
+                            << " name=" << extra->gpu_name()
+                            << " vram=" << extra->vram_mb()
+                            << "MB DXR="
+                            << (extra->dxr_supported() ? "yes" : "no") << "\n";
+                  extras.push_back(std::move(extra));
+                }
+                if (extras.empty() && additionalNeeded > 0u) {
+                  std::cout << "[gpu/auto] no additional viable adapters; "
+                               "falling back to single-GPU\n";
+                } else if (!extras.empty()) {
+                  std::cout << "[gpu/auto] multi-GPU dispatch enabled: "
+                            << (1u + extras.size()) << " path tracers\n";
+                  out.additional_tracers = std::move(extras);
+                }
+              }
+
               out.tracer = std::move(gpu);
               // Run the GPU tracer through RenderCoordinator's worker thread
               // so the Qt main loop only sees frame handoff (acquire_latest)
@@ -1316,6 +1410,7 @@ int RunApp(int argc, char** argv) {
         return 1;
       }
       qtTracer = std::move(qtInitialTracer.tracer);
+      auto qtAdditionalTracers = std::move(qtInitialTracer.additional_tracers);
       qtRendererPath = qtInitialTracer.renderer_path;
       updateStatusFile([&](auto& fileStatus) {
         fileStatus.selected_renderer_path = qtRendererPath;
@@ -1677,11 +1772,22 @@ int RunApp(int argc, char** argv) {
         coordinatorConfig.publish_hz = qtPreviewPublishHz;
         coordinatorConfig.immediate_publish_count = kQtPreviewImmediatePublishes;
         coordinatorConfig.snapshot_ring = &qtSnapshotRing;
-        qtRenderCoordinator = std::make_unique<vkpt::render::RenderCoordinator>(
-            std::move(qtTracer),
-            qtSettings,
-            qtScene,
-            coordinatorConfig);
+        if (!qtAdditionalTracers.empty()) {
+          coordinatorConfig.gpu_count =
+              1u + static_cast<std::uint32_t>(qtAdditionalTracers.size());
+          qtRenderCoordinator = std::make_unique<vkpt::render::RenderCoordinator>(
+              std::move(qtTracer),
+              qtSettings,
+              qtScene,
+              coordinatorConfig,
+              std::move(qtAdditionalTracers));
+        } else {
+          qtRenderCoordinator = std::make_unique<vkpt::render::RenderCoordinator>(
+              std::move(qtTracer),
+              qtSettings,
+              qtScene,
+              coordinatorConfig);
+        }
         if (!qtRenderCoordinator->start()) {
           qtTracerReady = false;
           qtStartupStep("background cpu render coordinator start failed");

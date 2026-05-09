@@ -194,6 +194,8 @@ void PrintUsage() {
   std::cout << "  --temporal-aa         Enable temporal reuse for D3D12 renders\n";
   std::cout << "  --deterministic       Force deterministic script/job scheduling where available\n";
   std::cout << "  --snapshot-bus        Explicitly use the snapshot-bus render path (default)\n";
+  std::cout << "  --gpus <N>            Use N path tracers (one per GPU). 0=auto-detect, default 1.\n";
+  std::cout << "  --include-integrated  Allow integrated/low-VRAM adapters in --gpus auto-detect\n";
 }
 
 void PrintVersionText(vkpt::platform::RuntimePlatformKind platform_shell) {
@@ -439,6 +441,15 @@ AppOptionsParseResult ParseAppOptions(int argc, char** argv) {
         return ParseError("invalid value for --ui-present-hz");
       }
       options.ui_present_hz = vkpt::config::ClampUiPresentHz(parsed_ui_present_hz);
+    } else if (token == "--gpus") {
+      std::uint32_t parsed_gpus = 0u;
+      if (!HasValue(args, i) || !ParseUnsigned(args[++i], parsed_gpus)) {
+        return ParseError("invalid value for --gpus");
+      }
+      // 0 = "all viable adapters" (auto-detect). N >= 1 is the literal cap.
+      options.gpu_count = parsed_gpus;
+    } else if (token == "--include-integrated") {
+      options.include_integrated_gpu = true;
     } else if (token == "--frames") {
       if (!HasValue(args, i) ||
           !ParseUnsigned(args[++i], options.window_frame_limit) ||
