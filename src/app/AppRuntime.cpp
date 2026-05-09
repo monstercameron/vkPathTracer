@@ -1187,6 +1187,16 @@ int RunApp(int argc, char** argv) {
                         << "\n";
               out.renderer_path = dxrAvailable ? "d3d12_dxr" : "d3d12_compute";
               out.tracer = std::move(gpu);
+              // Run the GPU tracer through RenderCoordinator's worker thread
+              // so the Qt main loop only sees frame handoff (acquire_latest)
+              // instead of synchronously waiting on render_tile + GPU
+              // submission per frame. Same decoupling the CPU tracer has been
+              // using all along; it works for D3D12 because the tracer's
+              // command-list submission is thread-safe for a single owning
+              // thread (the coordinator worker), and resource creation
+              // (init() during D3D12GpuPathTracer ctor) already happened on
+              // the main thread before the move into the coordinator.
+              out.background = true;
               return out;
             }
             if (!autoErrors.empty()) autoErrors += "; ";
@@ -1206,6 +1216,8 @@ int RunApp(int argc, char** argv) {
               std::cout << "[gpu/auto] Vulkan compute path\n";
               out.renderer_path = "vulkan_compute";
               out.tracer = std::move(gpu);
+              // Decouple from Qt main thread — see D3D12 branch above.
+              out.background = true;
               return out;
             }
             if (!autoErrors.empty()) autoErrors += "; ";
