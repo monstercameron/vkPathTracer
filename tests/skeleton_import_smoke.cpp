@@ -39,32 +39,96 @@ bool MatricesEqual(const vkpt::scene::Mat4& a, const vkpt::scene::Mat4& b) {
 
 }  // namespace
 
+// Resolve a relative glTF path by walking up from CWD looking for the file.
+static std::filesystem::path resolve_asset(const std::filesystem::path& rel) {
+  if (std::filesystem::exists(rel)) {
+    return rel;
+  }
+  auto cwd = std::filesystem::current_path();
+  for (int i = 0; i < 8; ++i) {
+    const auto candidate = cwd / rel;
+    if (std::filesystem::exists(candidate)) {
+      return candidate;
+    }
+    if (!cwd.has_parent_path() || cwd.parent_path() == cwd) {
+      break;
+    }
+    cwd = cwd.parent_path();
+  }
+  return rel;
+}
+
+// Validate a glTF skeleton: 14 joints, single root, JOINTS_0/WEIGHTS_0
+// vertex attributes present (the latter via skinned_attributes_present on
+// at least one primitive). Returns true on success; logs to stderr otherwise.
+static bool validate_humanoid_gltf(const std::filesystem::path& gltf_path,
+                                   const char* label) {
+  std::vector<std::string> diagnostics;
+  auto loaded = vkpt::assets::scene_asset_detail::LoadGltf(gltf_path, &diagnostics);
+  for (const auto& msg : diagnostics) {
+    std::cerr << "skeleton_import_smoke[" << label << " diag]: " << msg << "\n";
+  }
+  if (!loaded.skeleton.has_value()) {
+    std::cerr << "skeleton_import_smoke[" << label << "]: skeleton missing\n";
+    return false;
+  }
+  const auto& skel = *loaded.skeleton;
+  if (skel.joints.size() != 14u) {
+    std::cerr << "skeleton_import_smoke[" << label << "]: expected 14 joints, got "
+              << skel.joints.size() << "\n";
+    return false;
+  }
+  std::int32_t roots = 0;
+  for (const auto& j : skel.joints) {
+    if (j.parent_index == -1) ++roots;
+  }
+  if (roots != 1) {
+    std::cerr << "skeleton_import_smoke[" << label << "]: expected 1 root, got "
+              << roots << "\n";
+    return false;
+  }
+  // JOINTS_0 + WEIGHTS_0 confirmation: any geometry bucket with non-zero
+  // joint_indices count proves the loader extracted skinning attributes.
+  bool any_skinned_prim = false;
+  for (const auto& bucket : loaded.geometry) {
+    if (!bucket.joint_indices.empty() && !bucket.joint_weights.empty()) {
+      any_skinned_prim = true;
+      break;
+    }
+  }
+  if (!any_skinned_prim) {
+    std::cerr << "skeleton_import_smoke[" << label
+              << "]: no primitive has JOINTS_0/WEIGHTS_0\n";
+    return false;
+  }
+  std::cout << "skeleton_import_smoke[" << label << "]: 14 joints, 1 root, skinning attrs ok\n";
+  return true;
+}
+
 int main(int argc, char** argv) {
   std::filesystem::path gltf_path =
       "assets/models/low_poly_hero/character.gltf";
   if (argc > 1) {
     gltf_path = argv[1];
   }
-  // Walk upwards looking for the assets root, since the binary is placed in a
-  // build directory at runtime.
-  if (!std::filesystem::exists(gltf_path)) {
-    auto cwd = std::filesystem::current_path();
-    for (int i = 0; i < 8; ++i) {
-      const auto candidate = cwd / "assets/models/low_poly_hero/character.gltf";
-      if (std::filesystem::exists(candidate)) {
-        gltf_path = candidate;
-        break;
-      }
-      if (!cwd.has_parent_path() || cwd.parent_path() == cwd) {
-        break;
-      }
-      cwd = cwd.parent_path();
-    }
-  }
+  gltf_path = resolve_asset(gltf_path);
 
   if (!Check(std::filesystem::exists(gltf_path),
              "hero glTF asset not found")) {
     return 1;
+  }
+
+  // Multi-target: also validate the auto-rigged Meshy character if present.
+  // Non-fatal if the file is missing (e.g. on CI without the rigged asset).
+  const auto rigged_path = resolve_asset(
+      "assets/models/black_ops_operator_rigged/character.gltf");
+  if (std::filesystem::exists(rigged_path)) {
+    if (!validate_humanoid_gltf(rigged_path, "black_ops_operator_rigged")) {
+      return 1;
+    }
+  } else {
+    std::cout << "skeleton_import_smoke: black_ops_operator_rigged asset not "
+                 "present, skipping auto-rigged target\n";
   }
 
   std::vector<std::string> diagnostics;

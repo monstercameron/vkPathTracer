@@ -9,7 +9,7 @@
     {
       "id": 9501,
       "type": "model/gltf",
-      "uri": "../models/low_poly_hero/character.gltf",
+      "uri": "../models/black_ops_operator_rigged/character.gltf",
       "name": "Hero Character",
       "parent": 9400,
       "sibling_order": 1,

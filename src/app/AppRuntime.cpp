@@ -89,6 +89,7 @@
 #endif
 #include "platform/PlatformFactory.h"
 #include "physics/PhysicsWorld.h"
+#include "physics/RagdollWorld.h"
 // physics/Ragdoll.h is only consumed by the smoke that drives a dedicated
 // JPH::PhysicsSystem (tests/hero_hit_demo_smoke.cpp). The qt main loop only
 // invokes the animation sampler today; full ragdoll integration will pull
@@ -1585,6 +1586,17 @@ int RunApp(int argc, char** argv) {
         qtAudioSystem->set_snapshot_ring(&qtSnapshotRing);
         qtAudioSystem->load_scene_audio(qtSceneDocument, RuntimeSceneDisplayName(config.scene_path.value));
       }
+      // RAG-MAIN-LOOP: dedicated ragdoll world owned by the qt loop. Lives
+      // alongside ThreadedPhysicsWorld with its own JPH::PhysicsSystem so
+      // we never race the physics worker thread. The qt loop ticks this
+      // world per frame in qtTickAnimationsAndRagdolls.
+      vkpt::physics::RagdollWorld qtRagdollWorld;
+      std::unordered_map<vkpt::core::StableEntityId,
+                         vkpt::physics::RagdollHandle>
+          qtRagdollHandles;
+      std::unordered_map<vkpt::core::StableEntityId,
+                         std::vector<vkpt::scene::Mat4>>
+          qtRagdollPrevAnim;
       std::unordered_map<vkpt::core::StableId, uint32_t> qtRtInstanceIndexByEntity;
       auto qtRebuildRtInstanceIndexCache = [&]() {
         qtRtInstanceIndexByEntity.clear();

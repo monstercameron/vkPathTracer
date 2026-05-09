@@ -1936,47 +1936,135 @@
         //    skeleton / no AnimationComponent / no clips, so this is cheap on
         //    scenes that don't carry any animated entities.
         vkpt::animation::tick_animations(world, dt);
-        // 2. Ragdoll one-shot activation handling. Iterate entities looking
-        //    for RagdollComponent.active = true with pending one-shot flags.
-        //    On the activation frame, log + clear the flags. The full Jolt
-        //    body construction is deferred; see comment above.
+        // 2. Ragdoll lifecycle + step. RAG-MAIN-LOOP wiring: when an
+        //    entity's RagdollComponent.active flips false->true, attach a
+        //    ragdoll to qtRagdollWorld; when it flips true->false, detach.
+        //    Per active frame, after the step, write the latest joint
+        //    matrices into EntityRecord::joint_world_matrices so the
+        //    renderer/skinning sees the ragdoll pose.
         for (const auto entity_id : world.all_entities()) {
           auto* entity = world.get_entity(entity_id);
-          if (entity == nullptr || !entity->ragdoll.has_value()) {
+          if (entity == nullptr) {
             continue;
           }
-          auto& rag = *entity->ragdoll;
-          if (!rag.active) {
-            continue;
+          const bool wantsActive =
+              entity->ragdoll.has_value() && entity->ragdoll->active;
+          const auto handleIt = qtRagdollHandles.find(entity_id);
+          const bool hasHandle = (handleIt != qtRagdollHandles.end());
+
+          if (wantsActive && !hasHandle &&
+              entity->skeleton.has_value() &&
+              qtRagdollWorld.is_available()) {
+            const auto& skel = *entity->skeleton;
+            // Spawn pose: use entity's translation as world origin.
+            vkpt::scene::Mat4 spawn{};
+            spawn.values[0] = 1.0f;
+            spawn.values[5] = 1.0f;
+            spawn.values[10] = 1.0f;
+            spawn.values[15] = 1.0f;
+            if (entity->transform.has_value()) {
+              spawn.values[12] = entity->transform->translation.x;
+              spawn.values[13] = entity->transform->translation.y;
+              spawn.values[14] = entity->transform->translation.z;
+            }
+            vkpt::physics::RagdollConfig cfg;
+            cfg.capsule_radius_scale = entity->ragdoll->capsule_radius_scale;
+            cfg.spine_capsule_radius = entity->ragdoll->spine_capsule_radius;
+            cfg.head_capsule_radius = entity->ragdoll->head_capsule_radius;
+            cfg.density = entity->ragdoll->density;
+            cfg.self_collision = entity->ragdoll->self_collision;
+            const auto handle = qtRagdollWorld.attach_ragdoll(
+                entity_id, skel, spawn, cfg);
+            if (handle.valid()) {
+              qtRagdollHandles[entity_id] = handle;
+              logger.log(vkpt::log::Severity::Info, "ragdoll",
+                         "ragdoll_attached_qt",
+                         {{"entity_id", std::to_string(entity_id)},
+                          {"handle", std::to_string(handle.id)},
+                          {"joints", std::to_string(skel.joints.size())}});
+              // Seed from the freshly-sampled animation pose if requested.
+              auto anim_world = entity->joint_world_matrices;
+              if (entity->transform.has_value()) {
+                const auto& t = entity->transform->translation;
+                for (auto& m : anim_world) {
+                  m.values[12] += t.x;
+                  m.values[13] += t.y;
+                  m.values[14] += t.z;
+                }
+              }
+              if (entity->ragdoll->seed_from_animation && !anim_world.empty()) {
+                auto prev_it = qtRagdollPrevAnim.find(entity_id);
+                const std::vector<vkpt::scene::Mat4>* prev_ptr =
+                    (prev_it != qtRagdollPrevAnim.end() &&
+                     prev_it->second.size() == anim_world.size())
+                        ? &prev_it->second
+                        : nullptr;
+                qtRagdollWorld.seed_ragdoll_pose(handle, anim_world, prev_ptr,
+                                                 dt);
+              }
+              if (entity->ragdoll->has_impulse) {
+                std::int32_t target = skel.root_index;
+                const auto& target_name = entity->ragdoll->impulse_joint;
+                if (!target_name.empty()) {
+                  for (std::size_t j = 0; j < skel.joints.size(); ++j) {
+                    if (skel.joints[j].name == target_name) {
+                      target = static_cast<std::int32_t>(j);
+                      break;
+                    }
+                  }
+                }
+                if (target < 0) target = skel.root_index;
+                qtRagdollWorld.apply_ragdoll_impulse(handle, target,
+                                                    entity->ragdoll->impulse);
+              }
+              entity->ragdoll->seed_from_animation = false;
+              entity->ragdoll->has_impulse = false;
+            }
+          } else if (!wantsActive && hasHandle) {
+            qtRagdollWorld.detach_ragdoll(handleIt->second);
+            qtRagdollHandles.erase(handleIt);
           }
-          const bool hadSeed = rag.seed_from_animation;
-          const bool hadImpulse = rag.has_impulse;
-          if (!hadSeed && !hadImpulse) {
-            continue;
+
+          // Cache the just-sampled animation pose for any future seed call.
+          if (entity->skeleton.has_value() &&
+              !entity->joint_world_matrices.empty()) {
+            qtRagdollPrevAnim[entity_id] = entity->joint_world_matrices;
+            if (entity->transform.has_value()) {
+              const auto& t = entity->transform->translation;
+              for (auto& m : qtRagdollPrevAnim[entity_id]) {
+                m.values[12] += t.x;
+                m.values[13] += t.y;
+                m.values[14] += t.z;
+              }
+            }
           }
-          // Capture activation diagnostics. When the full Jolt integration
-          // lands, this is where build()/seed_pose_from_skeleton()/
-          // apply_impulse_to_joint() will run.
-          logger.log(
-              vkpt::log::Severity::Info, "ragdoll",
-              "ragdoll_activation_pending",
-              {{"entity_id", std::to_string(entity_id)},
-               {"seed_from_animation", hadSeed ? "true" : "false"},
-               {"has_impulse", hadImpulse ? "true" : "false"},
-               {"impulse_x", std::to_string(rag.impulse.x)},
-               {"impulse_y", std::to_string(rag.impulse.y)},
-               {"impulse_z", std::to_string(rag.impulse.z)},
-               {"impulse_joint", rag.impulse_joint},
-               {"skeleton_present",
-                entity->skeleton.has_value() ? "true" : "false"},
-               // RAG-MAIN-LOOP: full Jolt body construction in qt loop is
-               // pending exposure of JPH::PhysicsSystem from
-               // ThreadedPhysicsWorld. tests/hero_hit_demo_smoke.cpp drives
-               // the full path with a dedicated PhysicsSystem.
-               {"full_jolt_step_deferred", "true"}});
-          rag.seed_from_animation = false;
-          rag.has_impulse = false;
         }
+
+        // 3. Step the ragdoll world.
+        qtRagdollWorld.step(dt);
+
+        // 4. After step, for each active ragdoll write joint matrices into
+        //    the entity record so the renderer/skinning consumes the
+        //    physics pose (authority arbiter would otherwise hand back
+        //    animation results).
+        for (const auto& [entity_id, handle] : qtRagdollHandles) {
+          auto* entity = world.get_entity(entity_id);
+          if (entity == nullptr) continue;
+          auto rag_world = qtRagdollWorld.read_ragdoll_joint_matrices(handle);
+          if (rag_world.empty()) continue;
+          // Subtract entity translation so values are stored in
+          // entity-local space (matches the animation sampler convention).
+          if (entity->transform.has_value()) {
+            const auto& t = entity->transform->translation;
+            for (auto& m : rag_world) {
+              m.values[12] -= t.x;
+              m.values[13] -= t.y;
+              m.values[14] -= t.z;
+            }
+          }
+          entity->joint_world_matrices = std::move(rag_world);
+        }
+
         const auto tickEnd = std::chrono::steady_clock::now();
         VKP_METRIC_OBSERVE(
             "vkp.qt.animation_tick_us",

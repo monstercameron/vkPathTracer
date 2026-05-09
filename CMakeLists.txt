@@ -513,6 +513,7 @@ set(PT_CPU_SOURCES
   src/materials/MaterialInterface.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
+  src/physics/RagdollWorld.cpp
   src/scene/FrameLifecycle.cpp
   src/scene/Json.cpp
   src/scene/Scene.cpp
@@ -985,6 +986,7 @@ add_executable(pt_scripting_smoke EXCLUDE_FROM_ALL
   src/animation/Skeleton.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
+  src/physics/RagdollWorld.cpp
   src/scene/SceneDocumentLoad.cpp
   src/scene/SceneSnapshot.cpp
   src/scene/SceneWorld.cpp
@@ -1030,6 +1032,7 @@ add_executable(pt_physics_contract_smoke EXCLUDE_FROM_ALL
   src/animation/Skeleton.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
+  src/physics/RagdollWorld.cpp
   src/scene/SceneWorld.cpp
   src/scene/SceneWorldExtraction.cpp
   src/scene/WorldCommandBuffer.cpp
@@ -1137,6 +1140,7 @@ add_executable(pt_skeleton_import_smoke EXCLUDE_FROM_ALL
   src/scene/WorldCommandBuffer.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
+  src/physics/RagdollWorld.cpp
   src/pathtracer/SceneConversion.cpp
 )
 
@@ -1183,6 +1187,7 @@ add_executable(pt_ragdoll_smoke EXCLUDE_FROM_ALL
   src/scene/WorldCommandBuffer.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
+  src/physics/RagdollWorld.cpp
   src/pathtracer/SceneConversion.cpp
 )
 
@@ -1228,6 +1233,7 @@ add_executable(pt_animation_sampler_smoke EXCLUDE_FROM_ALL
   src/scene/WorldCommandBuffer.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
+  src/physics/RagdollWorld.cpp
   src/pathtracer/SceneConversion.cpp
 )
 
@@ -1275,6 +1281,7 @@ add_executable(pt_skinning_pixel_hash_smoke EXCLUDE_FROM_ALL
   src/scene/WorldCommandBuffer.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
+  src/physics/RagdollWorld.cpp
   src/pathtracer/SceneConversion.cpp
 )
 
@@ -1316,6 +1323,7 @@ add_executable(pt_hero_hit_demo_smoke EXCLUDE_FROM_ALL
   src/jobs/JobSystem.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
+  src/physics/RagdollWorld.cpp
   src/pathtracer/SceneConversion.cpp
   src/scene/Json.cpp
   src/scene/Scene.cpp
@@ -1365,6 +1373,7 @@ add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
   src/animation/Skeleton.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
+  src/physics/RagdollWorld.cpp
   src/scene/Json.cpp
   src/scene/Scene.cpp
   src/scene/SceneDocumentExport.cpp
