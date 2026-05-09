@@ -41,6 +41,7 @@
 #include "core/Config.h"
 #include "core/ExecutionTrace.h"
 #include "core/Logging.h"
+#include "core/pacing/FramePacer.h"
 #include "core/contracts/Determinism.h"
 #include "core/contracts/SubsystemStatus.h"
 #include "core/health/Health.h"
@@ -149,24 +150,22 @@ class ScopedWindowsTimerResolution {
 
 #ifdef PT_ENABLE_QT
 void SleepUntilFrameTarget(std::chrono::steady_clock::time_point target) {
-  while (std::chrono::steady_clock::now() < target) {
-    if (QCoreApplication::instance() != nullptr) {
-      QCoreApplication::processEvents(QEventLoop::AllEvents, 1);
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= target) {
-      break;
-    }
-    const auto remaining = target - now;
-    if (remaining > std::chrono::milliseconds(2)) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      continue;
-    }
-#ifdef _WIN32
-    YieldProcessor();
-#endif
-    std::this_thread::yield();
+  // Drain any Qt events queued during the previous frame's work once at
+  // entry, non-blocking. The pace primitive itself doesn't process events —
+  // it sleeps until target with platform-specific high-precision timers
+  // (Windows: HIGH_RESOLUTION_TIMER waitable timer, ~250us avg overshoot
+  // vs ~14ms for std::this_thread::sleep_for at 1 ms scheduler resolution).
+  // See src/core/pacing/FramePacer.h. Earlier iterations of this function
+  // pumped Qt events on a 1 ms loop or chunked the sleep across event-drain
+  // points; both made things worse on the Qt main thread because
+  // SetWaitableTimer + WaitForSingleObject has its own overhead and
+  // multiple wakes compound jitter. A single drain at entry, one
+  // high-precision sleep to target, is the optimum we've measured for this
+  // call site.
+  if (auto* app = QCoreApplication::instance(); app != nullptr) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 0);
   }
+  vkpt::core::pacing::SleepUntilHighResolution(target);
 }
 #endif
 

@@ -463,6 +463,7 @@ set(PT_CPU_SOURCES
   src/core/log/Log.cpp
   src/core/metrics/Metrics.cpp
   src/core/metrics/UiInputLatency.cpp
+  src/core/pacing/FramePacer.cpp
   src/core/repl/Repl.cpp
   src/core/trace/Trace.cpp
   src/diagnostics/CrashHooks.cpp
@@ -836,6 +837,35 @@ target_compile_features(pt_observability_smoke PRIVATE cxx_std_23)
 
 find_package(Threads REQUIRED)
 target_link_libraries(pt_observability_smoke PRIVATE Threads::Threads)
+
+# Frame pacing primitive smoke (SYSTEM.md acceptance gate :1729 / :1736).
+add_executable(pt_frame_pacer_smoke EXCLUDE_FROM_ALL
+  tests/frame_pacer_smoke.cpp
+  src/core/pacing/FramePacer.cpp
+)
+
+target_include_directories(pt_frame_pacer_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_frame_pacer_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_frame_pacer_smoke PRIVATE Threads::Threads)
+if(WIN32)
+  target_link_libraries(pt_frame_pacer_smoke PRIVATE winmm)
+endif()
+
+# Standalone diagnostic that exercises SleepUntilHighResolution against the
+# naive sleep_for path so the dev can see whether HIGH_RESOLUTION_TIMER is
+# actually being granted on this host.
+add_executable(pt_frame_pacer_diag EXCLUDE_FROM_ALL
+  tests/frame_pacer_diag.cpp
+  src/core/pacing/FramePacer.cpp
+)
+target_include_directories(pt_frame_pacer_diag PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+target_compile_features(pt_frame_pacer_diag PRIVATE cxx_std_23)
+target_link_libraries(pt_frame_pacer_diag PRIVATE Threads::Threads)
 
 add_executable(pt_job_health_smoke EXCLUDE_FROM_ALL
   tests/job_health_smoke.cpp
