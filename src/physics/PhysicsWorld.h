@@ -143,6 +143,11 @@ struct PhysicsStepSnapshot {
   std::vector<PhysicsContactEvent> contact_events;
   std::unordered_map<std::string, std::size_t> body_counts;
   PhysicsStepStats stats;
+  // Phase 2 RAG02: per-entity joint-world matrices, parallel to that
+  // entity's skeleton.joints. Empty for entities with no active ragdoll.
+  // Additive — old consumers ignore this map.
+  std::unordered_map<vkpt::core::StableEntityId, std::vector<vkpt::scene::Mat4>>
+      joint_world_matrices;
 };
 
 using PhysicsWorldStepSnapshot = PhysicsStepSnapshot;

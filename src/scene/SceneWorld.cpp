@@ -77,6 +77,8 @@ std::string_view ComponentKindName(ComponentKind kind) {
       return "BenchmarkTag";
     case ComponentKind::Skeleton:
       return "Skeleton";
+    case ComponentKind::Ragdoll:
+      return "Ragdoll";
     case ComponentKind::Count:
       break;
   }
@@ -485,6 +487,18 @@ vkpt::core::Status SceneWorld::add_component(vkpt::core::StableId id, ComponentK
         return SceneOk("benchmark tag component set");
       }
       return ComponentMismatchStatus(kind);
+    case ComponentKind::Ragdoll:
+      if (const auto* value = std::get_if<RagdollComponent>(&component)) {
+        record->ragdoll = *value;
+        return SceneOk("ragdoll component set");
+      }
+      return ComponentMismatchStatus(kind);
+    case ComponentKind::Skeleton:
+      // Skeleton is not part of ComponentVariant; callers attach via
+      // EntityRecord::skeleton directly (see Scene.cpp::to_world). Reject
+      // the variant path defensively to catch misuse.
+      return SceneError(vkpt::core::StatusCode::Unsupported,
+                        "Skeleton component must be attached via EntityRecord::skeleton, not ComponentVariant");
     default:
       return SceneError(vkpt::core::StatusCode::Unsupported,
                         "unsupported component kind");
@@ -549,6 +563,13 @@ bool SceneWorld::remove_component(vkpt::core::StableId id, ComponentKind kind) {
       return true;
     case ComponentKind::BenchmarkTag:
       record->benchmark_tag.reset();
+      return true;
+    case ComponentKind::Ragdoll:
+      record->ragdoll.reset();
+      return true;
+    case ComponentKind::Skeleton:
+      record->skeleton.reset();
+      record->joint_world_matrices.clear();
       return true;
     default:
       return false;
@@ -675,6 +696,16 @@ std::vector<vkpt::core::StableId> SceneWorld::query(ComponentKind kind) const {
         break;
       case ComponentKind::BenchmarkTag:
         if (entity->benchmark_tag.has_value()) {
+          out.push_back(id);
+        }
+        break;
+      case ComponentKind::Skeleton:
+        if (entity->skeleton.has_value()) {
+          out.push_back(id);
+        }
+        break;
+      case ComponentKind::Ragdoll:
+        if (entity->ragdoll.has_value()) {
           out.push_back(id);
         }
         break;

@@ -246,6 +246,8 @@ std::string_view to_string(ComponentKind kind) {
       return "BenchmarkTag";
     case ComponentKind::Skeleton:
       return "Skeleton";
+    case ComponentKind::Ragdoll:
+      return "Ragdoll";
     default:
       return "Unknown";
   }

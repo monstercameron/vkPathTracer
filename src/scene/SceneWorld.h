@@ -187,6 +187,12 @@ class SceneWorld : public IEcsWorld {
     std::optional<UiPanelComponent> ui_panel;
     std::optional<BenchmarkTagComponent> benchmark_tag;
     std::optional<SkeletonComponent> skeleton;
+    std::optional<RagdollComponent> ragdoll;
+    // Phase 2 RAG02: parallel-to-skeleton joint world matrices, written by
+    // physics (when ragdoll active) or by the animation sampler (later).
+    // Empty when no skeleton is attached. SimWorker copies this from the
+    // physics step snapshot each frame.
+    std::vector<Mat4> joint_world_matrices;
   };
 
   vkpt::core::StableEntityId create_entity(std::string_view name = {}, vkpt::core::StableEntityId stable_hint = 0) override;

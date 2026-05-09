@@ -32,6 +32,7 @@ enum class ComponentKind : std::uint8_t {
   UiPanel,
   BenchmarkTag,
   Skeleton,
+  Ragdoll,
   Count
 };
 
@@ -203,6 +204,20 @@ struct BenchmarkTagComponent {
 // the animation header into every scene translation unit.
 using SkeletonComponent = vkpt::animation::Skeleton;
 
+// Phase 2 RAG01-04: per-entity ragdoll bridge. The active flag is the
+// single authority bit used by SimWorker to decide whether physics writes
+// joint world matrices, the animation sampler does, or both. Mirrors the
+// shape of vkpt::physics::RagdollConfig so the scene layer doesn't need to
+// pull the physics header.
+struct RagdollComponent {
+  bool active = false;
+  float capsule_radius_scale = 0.05f;
+  float spine_capsule_radius = 0.10f;
+  float head_capsule_radius = 0.12f;
+  float density = 1000.0f;
+  bool self_collision = false;
+};
+
 using ComponentVariant = std::variant<
     IdentityComponent,
     TransformComponent,
@@ -217,7 +232,8 @@ using ComponentVariant = std::variant<
     AudioListenerComponent,
     AudioEmitterComponent,
     UiPanelComponent,
-    BenchmarkTagComponent>;
+    BenchmarkTagComponent,
+    RagdollComponent>;
 
 std::string_view to_string(ComponentKind kind);
 std::string_view to_string(TransformAuthority authority);

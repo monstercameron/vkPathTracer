@@ -509,6 +509,7 @@ set(PT_CPU_SOURCES
   src/materials/MaterialDescriptors.cpp
   src/materials/MaterialInterface.cpp
   src/physics/PhysicsWorld.cpp
+  src/physics/Ragdoll.cpp
   src/scene/FrameLifecycle.cpp
   src/scene/Json.cpp
   src/scene/Scene.cpp
@@ -976,7 +977,9 @@ add_executable(pt_scripting_smoke EXCLUDE_FROM_ALL
   src/jobs/JobSystem.cpp
   src/pathtracer/CpuBvhAccelerator.cpp
   src/pathtracer/SceneConversion.cpp
+  src/animation/Skeleton.cpp
   src/physics/PhysicsWorld.cpp
+  src/physics/Ragdoll.cpp
   src/scene/SceneDocumentLoad.cpp
   src/scene/SceneSnapshot.cpp
   src/scene/SceneWorld.cpp
@@ -1017,7 +1020,9 @@ add_executable(pt_physics_contract_smoke EXCLUDE_FROM_ALL
   tests/physics_contract_smoke.cpp
   src/core/log/Log.cpp
   src/core/metrics/Metrics.cpp
+  src/animation/Skeleton.cpp
   src/physics/PhysicsWorld.cpp
+  src/physics/Ragdoll.cpp
   src/scene/SceneWorld.cpp
   src/scene/SceneWorldExtraction.cpp
   src/scene/WorldCommandBuffer.cpp
@@ -1122,6 +1127,7 @@ add_executable(pt_skeleton_import_smoke EXCLUDE_FROM_ALL
   src/scene/SceneWorldExtraction.cpp
   src/scene/WorldCommandBuffer.cpp
   src/physics/PhysicsWorld.cpp
+  src/physics/Ragdoll.cpp
   src/pathtracer/SceneConversion.cpp
 )
 
@@ -1139,6 +1145,49 @@ if(PT_ENABLE_JOLT)
     PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
 endif()
 
+# Phase 2 RAG01-04: ragdoll bridge smoke. Mirrors pt_skeleton_import_smoke's
+# source list (asset loader pulls in glTF + Skeleton) and adds the Ragdoll
+# bridge plus Jolt link. The smoke gracefully no-ops with a SKIP message
+# when built without PT_ENABLE_JOLT.
+add_executable(pt_ragdoll_smoke EXCLUDE_FROM_ALL
+  tests/ragdoll_smoke.cpp
+  src/animation/Skeleton.cpp
+  src/assets/AssetImporters.cpp
+  src/assets/AssetImportersTexture.cpp
+  src/assets/SceneAssetLoader.cpp
+  src/assets/SceneAssetLoaderSupport.cpp
+  src/assets/SceneAssetObjLoader.cpp
+  src/assets/SceneAssetGltfLoader.cpp
+  src/core/health/Health.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/scene/Json.cpp
+  src/scene/Scene.cpp
+  src/scene/SceneDocumentExport.cpp
+  src/scene/SceneDocumentLoad.cpp
+  src/scene/SceneScriptBootstrap.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
+  src/physics/PhysicsWorld.cpp
+  src/physics/Ragdoll.cpp
+  src/pathtracer/SceneConversion.cpp
+)
+
+target_include_directories(pt_ragdoll_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_ragdoll_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_ragdoll_smoke PRIVATE Threads::Threads)
+
+if(PT_ENABLE_JOLT)
+  target_link_libraries(pt_ragdoll_smoke PRIVATE ${PT_JOLT_TARGET})
+  target_compile_definitions(pt_ragdoll_smoke PRIVATE
+    PT_ENABLE_JOLT
+    PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
+endif()
+
 add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
   tests/scene_script_bootstrap_smoke.cpp
   src/assets/AssetImporters.cpp
@@ -1151,7 +1200,9 @@ add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
   src/core/log/Log.cpp
   src/core/metrics/Metrics.cpp
   src/pathtracer/SceneConversion.cpp
+  src/animation/Skeleton.cpp
   src/physics/PhysicsWorld.cpp
+  src/physics/Ragdoll.cpp
   src/scene/Json.cpp
   src/scene/Scene.cpp
   src/scene/SceneDocumentExport.cpp

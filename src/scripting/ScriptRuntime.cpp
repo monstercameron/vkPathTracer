@@ -1439,6 +1439,77 @@ int LuaEntityGetPhysics(lua_State* lua) {
   return 1;
 }
 
+// Phase 2 RAG03: enable a ragdoll on this entity. Optional table
+// `{ capsule_radius_scale=, density= }` overrides defaults; missing fields
+// keep the existing component values (or RagdollComponent{} defaults).
+int LuaEntityEnableRagdoll(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
+    return 0;
+  }
+  vkpt::scene::RagdollComponent component{};
+  component.active = true;
+  if (host->world != nullptr) {
+    if (const auto* entity = host->world->get_entity(entity_id);
+        entity != nullptr && entity->ragdoll.has_value()) {
+      component = *entity->ragdoll;
+      component.active = true;
+    }
+  }
+  if (lua_istable(lua, 2)) {
+    lua_getfield(lua, 2, "capsule_radius_scale");
+    if (lua_isnumber(lua, -1)) {
+      component.capsule_radius_scale = static_cast<float>(lua_tonumber(lua, -1));
+    }
+    lua_pop(lua, 1);
+    lua_getfield(lua, 2, "density");
+    if (lua_isnumber(lua, -1)) {
+      component.density = static_cast<float>(lua_tonumber(lua, -1));
+    }
+    lua_pop(lua, 1);
+    lua_getfield(lua, 2, "spine_capsule_radius");
+    if (lua_isnumber(lua, -1)) {
+      component.spine_capsule_radius = static_cast<float>(lua_tonumber(lua, -1));
+    }
+    lua_pop(lua, 1);
+    lua_getfield(lua, 2, "head_capsule_radius");
+    if (lua_isnumber(lua, -1)) {
+      component.head_capsule_radius = static_cast<float>(lua_tonumber(lua, -1));
+    }
+    lua_pop(lua, 1);
+    lua_getfield(lua, 2, "self_collision");
+    if (lua_isboolean(lua, -1)) {
+      component.self_collision = lua_toboolean(lua, -1) != 0;
+    }
+    lua_pop(lua, 1);
+  }
+  host->commands->add_set_component(entity_id,
+                                    vkpt::scene::ComponentKind::Ragdoll,
+                                    component);
+  return 0;
+}
+
+int LuaEntityDisableRagdoll(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
+    return 0;
+  }
+  vkpt::scene::RagdollComponent component{};
+  if (host->world != nullptr) {
+    if (const auto* entity = host->world->get_entity(entity_id);
+        entity != nullptr && entity->ragdoll.has_value()) {
+      component = *entity->ragdoll;
+    }
+  }
+  component.active = false;
+  host->commands->add_set_component(entity_id,
+                                    vkpt::scene::ComponentKind::Ragdoll,
+                                    component);
+  return 0;
+}
+
 int LuaEntityGetMaterialId(lua_State* lua) {
   auto* host = Host(lua);
   const auto entity_id = LuaSelfEntity(lua, 1);
@@ -1537,6 +1608,10 @@ void BuildEntityPrototype(lua_State* lua, bool pure) {
     lua_setfield(lua, -2, "set_camera");
     lua_pushcfunction(lua, LuaEntitySetUiPanel);
     lua_setfield(lua, -2, "set_ui_panel");
+    lua_pushcfunction(lua, LuaEntityEnableRagdoll);
+    lua_setfield(lua, -2, "enable_ragdoll");
+    lua_pushcfunction(lua, LuaEntityDisableRagdoll);
+    lua_setfield(lua, -2, "disable_ragdoll");
   }
   // Stash prototype in registry under a known key for PushEntityObject's fast
   // path to find it. lua_setfield consumes the value, so push a dup first.
@@ -1594,6 +1669,10 @@ void PushEntityObject(lua_State* lua, LuaHostContext& host, vkpt::core::StableEn
     lua_setfield(lua, -2, "set_name");
     lua_pushcfunction(lua, LuaEntitySetDebugValue);
     lua_setfield(lua, -2, "set_debug_value");
+    lua_pushcfunction(lua, LuaEntityEnableRagdoll);
+    lua_setfield(lua, -2, "enable_ragdoll");
+    lua_pushcfunction(lua, LuaEntityDisableRagdoll);
+    lua_setfield(lua, -2, "disable_ragdoll");
     lua_pushcfunction(lua, LuaEntitySetLight);
     lua_setfield(lua, -2, "set_light");
     lua_pushcfunction(lua, LuaEntitySetCamera);

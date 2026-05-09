@@ -56,6 +56,7 @@
         "PT_ENABLE_QT_EDITOR": "ON",
         "PT_ENABLE_LUA": "ON",
         "PT_ENABLE_AUDIO": "ON",
+        "PT_ENABLE_JOLT": "ON",
         "CMAKE_PREFIX_PATH": "C:/Qt/6.7.3/msvc2019_64",
         "PT_ENABLE_SANITIZERS": "OFF",
         "PT_SANITIZER": "disabled"
