@@ -692,6 +692,106 @@ int main() {
     }
   }
 
+  // G. Play->edit->play with reused lua_State must not leave a dangling host
+  //    pointer in the registry. Regression for the crash that hit on a hot
+  //    OnDisable -> reload (BindingIdentity match) -> OnLoad sequence: the
+  //    old code stored a stack-allocated LuaHostContext pointer in the Lua
+  //    registry, so the reused state's bindings would dereference dead stack
+  //    memory on the next dispatch. The fix moves the host to a heap-owned
+  //    member of LuaStatePool::Impl::State; this case verifies the sequence
+  //    runs clean and that script-local state survives unchanged.
+  vkpt::scene::SceneWorld toggle_world;
+  const auto toggle_entity = toggle_world.create_entity("dispatch_play_toggle", 50030u);
+  AttachScript(toggle_world, toggle_entity, "assets/scripts/test/script_counter_probe.lua");
+  auto toggle_runtime = vkpt::scripting::CreateScriptRuntime();
+  toggle_runtime->reload_bindings(toggle_world);
+
+  // First "Play" session: a couple of OnUpdate ticks.
+  for (int i = 0; i < 2; ++i) {
+    vkpt::scripting::ScriptExecutionContext play_ctx = context;
+    play_ctx.frame = static_cast<vkpt::core::FrameIndex>(400u + i);
+    vkpt::scene::WorldCommandBuffer play_commands;
+    toggle_runtime->dispatch_hook(
+        toggle_world,
+        vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+        play_ctx,
+        play_commands);
+  }
+
+  // Exit Play: OnDisable. The old bug stamped a stack pointer into the Lua
+  // registry here that would go stale before the next dispatch.
+  {
+    vkpt::scripting::ScriptExecutionContext disable_ctx = context;
+    disable_ctx.frame = 500u;
+    vkpt::scene::WorldCommandBuffer disable_commands;
+    toggle_runtime->dispatch_hook(
+        toggle_world,
+        vkpt::scripting::ScriptLifecycleHook::OnDisable,
+        disable_ctx,
+        disable_commands);
+  }
+
+  // Identity-unchanged reload (the toggle path): LuaStatePool must be reused.
+  const auto toggle_state_count_before = toggle_runtime->lua_state_count();
+  const auto toggle_created_before = toggle_runtime->lua_states_created_total();
+  toggle_runtime->reload_bindings(toggle_world);
+  if (!Check(toggle_runtime->lua_state_count() == toggle_state_count_before,
+             "play->edit->play reload should keep LuaStatePool entries") ||
+      !Check(toggle_runtime->lua_states_created_total() == toggle_created_before,
+             "play->edit->play reload should not create a new Lua state")) {
+    return 1;
+  }
+
+  // Re-enter Play: OnLoad. With the bug, this is where the crash hit because
+  // the registry still pointed at the stack frame that owned the OnDisable
+  // dispatch's host. With the fix, the registry points at a heap host owned
+  // by the State, so this dispatches cleanly.
+  {
+    vkpt::scripting::ScriptExecutionContext load_ctx = context;
+    load_ctx.frame = 600u;
+    vkpt::scene::WorldCommandBuffer load_commands;
+    const auto load_dispatch = toggle_runtime->dispatch_hook(
+        toggle_world,
+        vkpt::scripting::ScriptLifecycleHook::OnLoad,
+        load_ctx,
+        load_commands);
+    if (!Check(load_dispatch.result.overall_status !=
+                   vkpt::scripting::ScriptDispatchResult::Status::Failure,
+               "OnLoad after play->edit->play must not fail")) {
+      return 1;
+    }
+    bool toggle_load_fired = false;
+    for (const auto& rs : toggle_runtime->runtime_states()) {
+      if (rs.entity == toggle_entity && rs.hook_fired) {
+        toggle_load_fired = true;
+        break;
+      }
+    }
+    if (!Check(toggle_load_fired,
+               "OnLoad after play->edit->play must dispatch the reused script")) {
+      return 1;
+    }
+  }
+
+  // Subsequent OnUpdate must continue with state reused (counter at 4 since
+  // we ran 2 OnUpdates earlier; the OnLoad hook in the counter probe doesn't
+  // tick the counter, it just logs a load marker — the next OnUpdate logs 3).
+  {
+    vkpt::scripting::ScriptExecutionContext post_ctx = context;
+    post_ctx.frame = 700u;
+    vkpt::scene::WorldCommandBuffer post_commands;
+    const auto post_dispatch = toggle_runtime->dispatch_hook(
+        toggle_world,
+        vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+        post_ctx,
+        post_commands);
+    const auto seen = last_logged_tick(post_dispatch);
+    if (!Check(seen >= 3,
+               "post-toggle OnUpdate should resume counter past the pre-toggle ticks")) {
+      return 1;
+    }
+  }
+
   std::cout << "script dispatch contract smoke: ok\n";
   return 0;
 #endif

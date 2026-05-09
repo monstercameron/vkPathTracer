@@ -434,6 +434,27 @@ struct LuaInstructionBudget {
 
 constexpr const char* kLuaHostContextRegistryKey = "vkpt.current_host_context";
 
+// Clears the per-dispatch fields of a host context so a stale pointer left in
+// the Lua registry across reused dispatches resolves to safe nullptr/default
+// reads in the bindings (every binding short-circuits on host->world == nullptr
+// or host->context == nullptr). Persistent containers are emptied so per-script
+// state from a prior dispatch never leaks into the next one. The struct itself
+// stays alive — the heap host outlives any single dispatch.
+inline void ResetHostSnapshot(LuaHostContext& host) noexcept {
+  host.world = nullptr;
+  host.commands = nullptr;
+  host.context = nullptr;
+  host.binding = nullptr;
+  host.hook = ScriptLifecycleHook::OnUpdate;
+  host.dispatch_diagnostics = nullptr;
+  host.runtime_diagnostics = nullptr;
+  host.next_entity_id = 1;
+  host.reserved_entity_ids.clear();
+  host.ensured_script_keys.clear();
+  host.pure = false;
+  host.instruction_budget = nullptr;
+}
+
 LuaHostContext* Host(lua_State* lua);
 
 void* LuaBudgetAllocator(void* ud, void* ptr, std::size_t osize, std::size_t nsize) {
@@ -2622,6 +2643,11 @@ struct LuaStatePool::Impl {
     std::string key;
     std::mutex call_mutex;
     std::unordered_map<int, YieldedCoroutine> yielded;
+    // Heap-allocated host context owned by the State. The registry-stored
+    // pointer points here, not at any stack frame, so it stays valid across
+    // reused dispatches (the BindingIdentity hot-reload optimization). Per-
+    // dispatch fields are filled at hook entry and ResetHostSnapshot'd at exit.
+    std::unique_ptr<LuaHostContext> host;
 
     ~State() {
       if (lua != nullptr) {
@@ -2636,6 +2662,14 @@ struct LuaStatePool::Impl {
         }
         if (script_table_ref != LUA_NOREF) {
           luaL_unref(lua, LUA_REGISTRYINDEX, script_table_ref);
+        }
+        // The registry holds a lightuserdata pointing at host.get(). Clear it
+        // before lua_close to make sure no late finalizer can dereference the
+        // host while the State is mid-destruction. The unique_ptr below frees
+        // the host *after* lua_close returns.
+        if (host != nullptr) {
+          lua_pushnil(lua);
+          lua_setfield(lua, LUA_REGISTRYINDEX, kLuaHostContextRegistryKey);
         }
         lua_close(lua);
       }
@@ -2706,8 +2740,15 @@ std::shared_ptr<LuaStatePool::Impl::State> GetOrCreateLuaState(
     return nullptr;
   }
 
+  // Allocate the persistent host context now and seed it from the caller's
+  // staging snapshot. The registry stores this heap pointer for the life of
+  // the lua_State, so binding closures resolve via Host(lua) to a stable
+  // address even when the state is reused across mode transitions.
+  state->host = std::make_unique<LuaHostContext>();
+  *state->host = host;
+
   auto* lua = state->lua;
-  SetCurrentHost(lua, &host);
+  SetCurrentHost(lua, state->host.get());
   OpenSafeLuaLibraries(lua);
   PushHostClosure(lua, host, LuaInclude);
   lua_setglobal(lua, "include");
@@ -2784,6 +2825,12 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
                     std::unordered_map<std::string, std::string>& bytecode_cache,
                     std::mutex& bytecode_cache_mutex,
                     const std::unordered_map<std::string, ScriptVariableOverride>& variable_overrides) {
+  // Stage a fresh snapshot on the stack. Used for diagnostics emitted before
+  // we know whether the lua_State exists; the persistent heap host owned by
+  // the State is the one registered with the Lua registry and the one bindings
+  // see via Host(lua). After GetOrCreateLuaState succeeds we copy this stage
+  // into *pooled_state->host so both have the same snapshot for the rest of
+  // the dispatch.
   LuaHostContext host;
   host.world = &world;
   host.commands = &commands;
@@ -2815,7 +2862,12 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
   }
   std::unique_lock state_call_lock(pooled_state->call_mutex);
   auto* lua = pooled_state->lua;
-  SetCurrentHost(lua, &host);
+  // Refresh the persistent heap host with this dispatch's snapshot. Bindings
+  // resolve via Host(lua) -> pooled_state->host.get(), so the registry pointer
+  // is stable across reuse and the field values are always current. Mutations
+  // bindings perform (next_entity_id bookkeeping etc.) land on the heap copy.
+  *pooled_state->host = host;
+  SetCurrentHost(lua, pooled_state->host.get());
   runtime_state.state_ptr = reinterpret_cast<std::uintptr_t>(lua);
   pooled_state->memory_budget.limit = context.memory_budget_bytes;
   pooled_state->memory_budget.exceeded = false;
@@ -2837,7 +2889,10 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
                                     : std::min(context.instruction_budget, kInstructionSampleInterval);
   instruction_budget.wall_clock_budget_ms = kWallClockBudgetMs;
   instruction_budget.wall_clock_deadline = hook_start + kWallClockBudgetMs;
-  host.instruction_budget = &instruction_budget;
+  // Wire the budget through the heap host since the count-hook resolves it via
+  // Host(lua) -> pooled_state->host. The stack copy is no longer authoritative
+  // once GetOrCreateLuaState returned; bindings only see the heap version.
+  pooled_state->host->instruction_budget = &instruction_budget;
 
   lua_rawgeti(lua, LUA_REGISTRYINDEX, pooled_state->script_table_ref);
   const int script_table = lua_absindex(lua, -1);
@@ -2877,7 +2932,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
       pooled_state->yielded.erase(yielded);
       lua_pop(lua, 1);
       lua_sethook(lua, nullptr, 0, 0);
-      SetCurrentHost(lua, nullptr);
+      ResetHostSnapshot(*pooled_state->host);
       return false;
     }
     if (context.instruction_budget > 0u) {
@@ -2896,7 +2951,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
       // Missing hook functions are normal and are counted as non-calls, not diagnostics.
       lua_pop(lua, 2);
       lua_sethook(lua, nullptr, 0, 0);
-      SetCurrentHost(lua, nullptr);
+      ResetHostSnapshot(*pooled_state->host);
       return false;
     }
     if (!lua_isfunction(lua, -1)) {
@@ -2904,7 +2959,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
       AddLuaDiagnostic(host, ScriptDiagnosticSeverity::Error, runtime_state.last_error);
       lua_pop(lua, 2);
       lua_sethook(lua, nullptr, 0, 0);
-      SetCurrentHost(lua, nullptr);
+      ResetHostSnapshot(*pooled_state->host);
       return false;
     }
     const int hook_function = lua_absindex(lua, -1);
@@ -2977,7 +3032,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
       runtime_state.hook_duration_ns = static_cast<std::uint64_t>(
           std::chrono::duration_cast<std::chrono::nanoseconds>(hook_end - hook_start).count());
       RecordScriptHookTiming(hook, runtime_state.hook_duration_ns / 1000u);
-      SetCurrentHost(lua, nullptr);
+      ResetHostSnapshot(*pooled_state->host);
       return false;
     }
     lua_pop(lua, 1);
@@ -2988,7 +3043,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
     const auto hook_end = std::chrono::steady_clock::now();
     runtime_state.hook_duration_ns = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(hook_end - hook_start).count());
-    SetCurrentHost(lua, nullptr);
+    ResetHostSnapshot(*pooled_state->host);
     return true;
   }
   if (resume_status != LUA_OK) {
@@ -3055,7 +3110,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
     runtime_state.hook_duration_ns = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(hook_end - hook_start).count());
     RecordScriptHookTiming(hook, runtime_state.hook_duration_ns / 1000u);
-    SetCurrentHost(lua, nullptr);
+    ResetHostSnapshot(*pooled_state->host);
     return false;
   }
   if (coroutine_ref != LUA_NOREF) {
@@ -3096,7 +3151,7 @@ bool ExecuteLuaHook(const ScriptBinding& binding,
        {"active_keys", std::to_string(context.input.active_keys.size())},
        {"active_mouse_buttons", std::to_string(context.input.active_mouse_buttons.size())}},
       context.frame);
-  SetCurrentHost(lua, nullptr);
+  ResetHostSnapshot(*pooled_state->host);
   return true;
 }
 
