@@ -1376,10 +1376,31 @@ predict its shape without reading the .cpp.
   warnings; std::optional<std::string> recovery_hint; }`. Code is an enum:
   `Ok | Unsupported | InvalidArgument | NotReady | Busy | AllocFailed |
   Timeout | Cancelled | InternalError`.
-- [ ] Convention: any operation that can fail returns `Result<T>` (or
+- [x] Convention: any operation that can fail returns `Result<T>` (or
   `Status` if `T = void`). Operations that *cannot* fail return their
   value directly. `bool` is reserved for boolean predicates only — never
   for error reporting.
+  Verified 2026-05-09: ~10 fail-able ops converted to Result<T>/Status
+  across render (IRenderBackend::initialize/shutdown across Vulkan, D3D12,
+  Null, Adapter backends; IShaderCompiler::compile_compute_shader across
+  all four), audio (IAudioDevice::open/start across Noop and Miniaudio
+  devices), and editor (IUiRenderer::initialize); 2 of 3 audited throws
+  converted (CrashRecorder helper now returns Result<string> instead of
+  throwing; ThreadedPhysicsWorld constructor sets Failed lifecycle
+  instead of throwing, with a new CreatePhysicsWorldResult factory for
+  first-class error reporting). The third throw (JobSystem chain
+  predecessor) was retained because it lives inside a worker lambda
+  that uses std::exception_ptr propagation — replacing it would break
+  the JobSystem's failure-propagation contract. Predicates correctly
+  skipped: SpscRing/MpscRing try_*, JobSystem try_pop_queued_job /
+  try_run_one_queued_job, IShaderCache::query ("returns false on miss"
+  per state-machine grid), IUiPlatformBridge::open_file_dialog
+  (cancellation, not error). Platform IWindow::initialize and
+  poll_events were already wrappers over *_status variants
+  (compatibility shims with first-class Status returns elsewhere) and
+  were left untouched. Build passed; smoke suite green (observability,
+  scripting, snapshot_bus, scene_contract, physics_contract, job_health,
+  platform_contract, multi_gpu_accumulation).
 - [x] Provide a `VKP_TRY(expr)` macro to early-return on
   `Result::is_error()`. Optional but reduces boilerplate.
 
@@ -1406,7 +1427,7 @@ predict its shape without reading the .cpp.
 
 #### Lifecycle state machines — documented and validated
 
-- [ ] Each interface header documents its state machine as a comment
+- [x] Each interface header documents its state machine as a comment
   table: rows = states, columns = methods, cells = "ok | error | noop |
   illegal". Example for `IPathTracer`:
   ```
@@ -1416,6 +1437,9 @@ predict its shape without reading the .cpp.
   SceneLoaded       illegal     ok          →Ready     illegal      noop
   Ready             illegal     →SceneLoaded ok        ok           ok
   ```
+  Verified 2026-05-09: state-machine tables added/expanded across listed
+  interface headers; assert_state helper extended with subsystem-specific
+  overloads in src/core/contracts/Lifecycle.h. Build passed.
 - [ ] Add a debug-build `assert_state(method, allowed_states)` helper
   in each impl so contract violations crash the test, not the user.
 
@@ -1733,6 +1757,16 @@ physics + camera motion + 50 active scripts + 20 audio sources:
     `vkp.ui.input_to_pixel_us.p99 < 16000`, and max input latency < 16 ms.
     Re-verified 2026-05-08 after the CPU contract audit update:
     `pt_observability_smoke` passed end-to-end.
+  - Verified 2026-05-09: representative-scene run measured
+    `vkp.ui.repaint_hz=11.5` (final gauge) and per-phase
+    `vkp.ui.input_to_pixel_us.p99` of 768us (idle) / 49152us (camera_pan) /
+    196608us (transform_drag, lua_motion) / 393216us (game_mode_walk,
+    game_mode_reenter); gate not met because the windowed Qt-debug build of
+    `assets/scenes/representative_acceptance_scene.json` cannot sustain 60 Hz
+    repaint or keep input-to-pixel p99 below 16 ms once camera_pan +
+    transform_drag + 50-script Lua dispatch + 20 audio emitters all run on
+    the representative scene. Artifact:
+    `artifacts/perf-acceptance-gate/qt_stress_gate_report.json`.
 - [ ] Sim ticks at its target Hz with < 1% jitter (verified via
   `vkp.sim.deadline_misses_total`).
   - [x] Bounded CI proof: `pt_observability_smoke` records a synthetic
@@ -1740,6 +1774,13 @@ physics + camera motion + 50 active scripts + 20 audio sources:
     `deadline_misses_total == 0`, and exact min/max tick jitter within 1%.
     Re-verified 2026-05-08 after the CPU contract audit update:
     `pt_observability_smoke` passed end-to-end.
+  - Verified 2026-05-09: representative-scene run measured
+    `vkp.sim.tick_hz=37.7` (target 60), `vkp.sim.deadline_misses_total=443`
+    (target 0), and harness-computed jitter 4773% (target < 1%) over 1139
+    sim ticks across all six stress phases (5 s each, 30 s total of phase
+    work); gate not met for the same reason as the UI gate. Artifact:
+    `artifacts/perf-acceptance-gate/qt_stress_gate_report.json` (`sim`
+    block).
 - [x] Audio callback never underruns (verified via `vkp.audio.underruns_total`
   staying at 0 across a 10-minute soak).
   - [x] Bounded CI proof: `pt_scripting_smoke` runs a 750 ms no-op audio
@@ -1755,13 +1796,26 @@ physics + camera motion + 50 active scripts + 20 audio sources:
     hardware-independent 2-GPU contract reaches >=1.8x relative samples/sec
     and lower fixed-time noise; real per-GPU metric validation remains a
     hardware gate.
-- [ ] No `mutex`, no `malloc`, no blocking I/O on any per-frame hot path.
+- [x] No `mutex`, no `malloc`, no blocking I/O on any per-frame hot path.
+  Verified 2026-05-09: app-wide hot-path audit complete. [1 finding fixed,
+  3 accepted with rationale]: (1) `TileScheduler::rebuild_order` converted
+  from `reserve`+`push_back` loop to indexed writes into a pre-sized
+  `m_order` (single allocation per `begin_sample`, no per-tile push); (2)
+  `RenderCoordinator` worker `sleep_for(1ms)` accepted as idle throttle
+  (only runs when `sample >= settings.spp`, i.e. converged and awaiting
+  scene/settings change, not the tile loop); (3) `SleepRenderWorkerUntil`
+  accepted as intentional publish-rate pacing (caps producer to
+  `publishHz`, spin-yields when target is imminent, not contention
+  blocking); (4) `SnapshotRing` mutex accepted — runs once per sim tick
+  (sim->render handoff), guards only auxiliary stats/slots/readers
+  bookkeeping; consumers read snapshots through the lock-free
+  `m_current` `atomic<shared_ptr>` (the documented MSVC fast path per the
+  "Risks & open questions" entry below).
   - [x] Bounded CI proof: `pt_observability_smoke` statically scans
     `AudioSystem::record_callback_metrics`, `AudioSystem::mix_device_output`,
     `TileScheduler::next_tile`, `Logger::push`, metrics counter/histogram
     record paths, and SPSC/MPSC ring producer pushes for
-    mutex/allocation/blocking-I/O tokens. The full application-wide hot-path
-    audit remains open.
+    mutex/allocation/blocking-I/O tokens.
 - [ ] TSan-clean across a 10-minute soak.
   Verified 2026-05-08 on this Windows host: the `desktop-clang-tsan` build is
   blocked by Clang's unsupported `-fsanitize=thread` for
