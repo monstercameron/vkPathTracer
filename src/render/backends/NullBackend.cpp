@@ -10,14 +10,15 @@ bool NullShaderCompiler::supports_feature(std::string_view feature) const {
   return feature == "compute" || feature == "storage-buffers" || feature == "storage-textures";
 }
 
-bool NullShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc,
-                                              std::string& out_artifact,
-                                              std::string* diagnostics) {
+vkpt::core::Status NullShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc,
+                                                              std::string& out_artifact,
+                                                              std::string* diagnostics) {
   if (desc.entry_point.empty()) {
     if (diagnostics) {
       *diagnostics = "missing entry point";
     }
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument,
+                                     "missing entry point");
   }
   std::string defines;
   for (const auto& define : desc.defines) {
@@ -27,7 +28,7 @@ bool NullShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc,
     defines += define;
   }
   out_artifact = "null-compute:" + desc.debug_label + ":" + desc.entry_point + ":" + defines;
-  return true;
+  return vkpt::core::Status::ok();
 }
 
 bool NullShaderCache::query(std::string_view key, std::string& binary) {
@@ -236,21 +237,21 @@ IRenderResourceAllocator* NullDevice::allocator() {
   return m_allocator.get();
 }
 
-bool NullBackend::initialize() {
+vkpt::core::Status NullBackend::initialize() {
   if (m_initialized) {
-    return true;
+    return vkpt::core::Status::ok();
   }
   m_compiler = std::make_unique<NullShaderCompiler>();
   m_cache = std::make_unique<NullShaderCache>();
   m_initialized = true;
-  return true;
+  return vkpt::core::Status::ok();
 }
 
-bool NullBackend::shutdown() {
+vkpt::core::Status NullBackend::shutdown() {
   m_initialized = false;
   m_compiler.reset();
   m_cache.reset();
-  return true;
+  return vkpt::core::Status::ok();
 }
 
 BackendKind NullBackend::kind() const {

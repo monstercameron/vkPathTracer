@@ -15,7 +15,7 @@ namespace vkpt::render {
 class NullShaderCompiler final : public IShaderCompiler {
  public:
   bool supports_feature(std::string_view feature) const override;
-  bool compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) override;
+  vkpt::core::Status compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) override;
 };
 
 /// In-memory shader cache used by the null backend for lifecycle tests.
@@ -105,8 +105,8 @@ class NullDevice final : public IRenderDevice {
 /// Simulated backend for tests, diagnostics, and fallback selection.
 class NullBackend final : public IRenderBackend {
  public:
-  bool initialize() override;
-  bool shutdown() override;
+  vkpt::core::Status initialize() override;
+  vkpt::core::Status shutdown() override;
   BackendKind kind() const override;
   std::string name() const override;
   RenderBackendCapabilities capabilities() const override;

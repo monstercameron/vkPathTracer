@@ -462,14 +462,15 @@ bool D3D12ShaderCompiler::supports_feature(std::string_view feature) const {
       || feature == "hlsl";
 }
 
-bool D3D12ShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc,
-                                                  std::string& out_artifact,
-                                                  std::string* diagnostics) {
+vkpt::core::Status D3D12ShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc,
+                                                                std::string& out_artifact,
+                                                                std::string* diagnostics) {
   if (desc.source_path.empty()) {
     if (diagnostics) {
       *diagnostics = "missing source path";
     }
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument,
+                                     "missing source path");
   }
   std::string defines;
   for (const auto& define : desc.defines) {
@@ -479,7 +480,7 @@ bool D3D12ShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc
     defines += define;
   }
   out_artifact = "d3d12-compute:" + desc.source_path + ":" + desc.entry_point + ":" + defines;
-  return true;
+  return vkpt::core::Status::ok();
 }
 
 bool D3D12ShaderCache::query(std::string_view key, std::string& binary) {
@@ -702,21 +703,21 @@ IRenderResourceAllocator* D3D12Device::allocator() {
   return m_allocator.get();
 }
 
-bool D3D12Backend::initialize() {
+vkpt::core::Status D3D12Backend::initialize() {
   if (m_initialized) {
-    return true;
+    return vkpt::core::Status::ok();
   }
   m_compiler = std::make_unique<D3D12ShaderCompiler>();
   m_cache = std::make_unique<D3D12ShaderCache>();
   m_initialized = true;
-  return true;
+  return vkpt::core::Status::ok();
 }
 
-bool D3D12Backend::shutdown() {
+vkpt::core::Status D3D12Backend::shutdown() {
   m_initialized = false;
   m_compiler.reset();
   m_cache.reset();
-  return true;
+  return vkpt::core::Status::ok();
 }
 
 BackendKind D3D12Backend::kind() const {

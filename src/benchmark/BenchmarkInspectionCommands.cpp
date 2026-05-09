@@ -157,7 +157,7 @@ int ListBackendsCommand() {
       std::cout << name << " unavailable\n";
       continue;
     }
-    if (!backend->initialize()) {
+    if (!backend->initialize().is_ok()) {
       std::cout << name << " failed initialize\n";
       continue;
     }
@@ -638,7 +638,7 @@ int DumpCapabilitiesCommand() {
     const auto backend = vkpt::render::CreateBackend(name);
     std::cout << "    {\n";
     std::cout << "      \"name\":\"" << EscapeJson(name) << "\",\n";
-    if (backend && backend->initialize()) {
+    if (backend && backend->initialize().is_ok()) {
       std::cout << "      \"available\":true,\n";
       std::cout << "      \"capabilities\":" << vkpt::render::SerializeBackendCapabilities(backend->capabilities()) << "\n";
     } else {

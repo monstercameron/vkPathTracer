@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include "core/contracts/Result.h"
+
 namespace vkpt::audio {
 
 struct AudioDeviceConfig {
@@ -21,9 +23,9 @@ struct AudioDeviceCallback {
 class IAudioDevice {
  public:
   virtual ~IAudioDevice() = default;
-  virtual bool open(const AudioDeviceConfig& config, AudioDeviceCallback callback) = 0;
+  virtual vkpt::core::Status open(const AudioDeviceConfig& config, AudioDeviceCallback callback) = 0;
   virtual void close() = 0;
-  virtual bool start() = 0;
+  virtual vkpt::core::Status start() = 0;
   virtual void stop() = 0;
   virtual std::string device_name() const = 0;
 };

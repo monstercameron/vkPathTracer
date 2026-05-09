@@ -9,7 +9,6 @@
 #include <fstream>
 #include <mutex>
 #include <sstream>
-#include <stdexcept>
 
 #include "core/BuildInfo.h"
 
@@ -62,7 +61,8 @@ static void WriteTextFile(const std::string& path, std::string_view text) {
   }
 }
 
-static std::string CreateCrashArtifactDir(const std::string& base_dir) {
+static vkpt::core::Result<std::string> CreateCrashArtifactDirResult(
+    const std::string& base_dir) {
   std::filesystem::create_directories(base_dir);
   const std::string timestamp = TimestampNow();
   // Crash artifacts are append-only: retry with a numeric suffix instead of
@@ -74,10 +74,10 @@ static std::string CreateCrashArtifactDir(const std::string& base_dir) {
     }
     const std::filesystem::path dir = std::filesystem::path(base_dir) / name;
     if (std::filesystem::create_directories(dir)) {
-      return dir.string();
+      return vkpt::core::Result<std::string>::ok(dir.string());
     }
   }
-  throw std::runtime_error("failed to allocate unique crash artifact directory");
+  return vkpt::core::Result<std::string>::error(vkpt::core::ErrorCode::IOError);
 }
 
 static std::string StringOr(std::string value, std::string_view fallback) {
@@ -537,7 +537,29 @@ vkpt::core::Result<std::string> CrashRecorder::flush_result(const std::string& b
   }
 
   try {
-    const std::string dir = detail::CreateCrashArtifactDir(base_dir);
+    auto dirResult = detail::CreateCrashArtifactDirResult(base_dir);
+    if (dirResult.is_error()) {
+      std::fprintf(stderr,
+                   "[crash-recorder] flush failed: failed to allocate unique crash artifact directory\n");
+      {
+        std::scoped_lock lock(g_crashMutex);
+        m_lifecycle = vkpt::core::contracts::ComponentLifecycle::Failed;
+        m_snapshot.last_error = "failed to allocate unique crash artifact directory";
+        ++m_flush_errors_total;
+        m_last_flush_artifact.clear();
+      }
+      VKP_LOG(Warn,
+              "diagnostics",
+              "operation_failed",
+              "operation",
+              "flush",
+              "reason",
+              "failed to allocate unique crash artifact directory",
+              "flow_id",
+              snap.last_frame_index);
+      return vkpt::core::Result<std::string>::error(vkpt::core::ErrorCode::IOError);
+    }
+    const std::string dir = dirResult.value();
 
     detail::WriteTextFile(dir + "/crash_state.json", SerializeCrashState(snap));
 

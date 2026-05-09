@@ -16,7 +16,7 @@ namespace vkpt::render {
 class D3D12ShaderCompiler final : public IShaderCompiler {
  public:
   bool supports_feature(std::string_view feature) const override;
-  bool compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) override;
+  vkpt::core::Status compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) override;
 };
 
 /// In-memory cache for D3D12 skeleton shader artifacts and manifests.
@@ -103,8 +103,8 @@ class D3D12Device final : public IRenderDevice {
 /// D3D12 compute backend skeleton plus native accelerator discovery helpers.
 class D3D12Backend final : public IRenderBackend {
  public:
-  bool initialize() override;
-  bool shutdown() override;
+  vkpt::core::Status initialize() override;
+  vkpt::core::Status shutdown() override;
   BackendKind kind() const override;
   std::string name() const override;
   RenderBackendCapabilities capabilities() const override;

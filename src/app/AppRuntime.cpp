@@ -1583,9 +1583,9 @@ int RunApp(int argc, char** argv) {
           qtDeviceStats.selected_accelerator = qtDeviceStats.accelerators.front();
           qtDeviceStats.backend_caps = qtDeviceStats.accelerators.front().backend_caps;
         } else if (auto probeBackend = vkpt::render::CreateBackend(qtDeviceStats.selected_backend)) {
-          if (probeBackend->initialize()) {
+          if (probeBackend->initialize().is_ok()) {
             qtDeviceStats.backend_caps = probeBackend->capabilities();
-            probeBackend->shutdown();
+            (void)probeBackend->shutdown();
           }
         }
       };

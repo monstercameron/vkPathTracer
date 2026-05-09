@@ -9,7 +9,7 @@
       const auto backendNames = vkpt::render::AvailableBackendNames();
       if (!backendNames.empty()) {
         auto rendererBackend = vkpt::render::CreateBackend(backendNames.front());
-        if (rendererBackend && rendererBackend->initialize()) {
+        if (rendererBackend && rendererBackend->initialize().is_ok()) {
           const auto state = vkpt::render::BuildRendererCrashState(
               *rendererBackend, 0u, "ptapp.crash_test", "crash_test", "none", "crash_test_requested");
           vkpt::diagnostics::CrashRecorder::instance().update_renderer_state_json(

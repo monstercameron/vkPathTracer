@@ -1031,20 +1031,28 @@ class ICpuRayKernel {
 
 std::unique_ptr<IRayAccelerator> CreateCpuBvhAccelerator();
 
+// IPathTracer state machine contract:
+//
+// state\method      configure        load_scene_snapshot  build_or_update_acceleration  render_tile  reset_accumulation  update_camera/scene_delta  resolve_ldr/hdr  status   shutdown
+// Uninitialized     ->Configured     illegal              illegal                       illegal      noop                illegal                    empty            ok       noop
+// Configured        ok               ->SceneLoaded        illegal                       illegal      noop                illegal                    empty            ok       ->Uninitialized
+// SceneLoaded       ok               ok                   ->Ready                       illegal      noop                illegal                    empty            ok       ->Uninitialized
+// Ready             ok               ->SceneLoaded        ok                            ok           ok                  ok                         ok               ok       ->Uninitialized
+// Failed            error            error                error                         error        noop                error                      empty            ok       ->Uninitialized
+//
+// reset_accumulation() is film-only: it clears accumulated radiance and
+// counters, advances accumulation_gen, and preserves scene_loaded/accel_valid.
+// update_camera/update_camera_state/update_instance_transforms/update_scene_delta
+// require an established acceleration; backends that cannot apply the delta
+// return false so callers can fall back to load_scene_snapshot+build.
+// BuildStandardPathTracerContract() exposes the same transition table for
+// tests, scripting, and future backend conformance checks.
+
 class IPathTracer {
  public:
   virtual ~IPathTracer() = default;
 
-  // State contract:
-  // Uninitialized -> configure() -> Configured
-  // Configured -> load_scene_snapshot() -> SceneLoaded
-  // SceneLoaded -> build_or_update_acceleration() -> Ready
-  // Ready -> reset_accumulation() -> Ready
-  //
-  // reset_accumulation() is film-only: it clears accumulated radiance and
-  // counters, advances accumulation_gen, and preserves scene_loaded/accel_valid.
-  // BuildStandardPathTracerContract() exposes the same transition table for
-  // tests, scripting, and future backend conformance checks.
+  // See file-scope IPathTracer state machine contract above.
   virtual vkpt::core::Status configure(const RenderSettings& settings) = 0;
   virtual vkpt::core::Status configure(const PathTraceSettings& settings) {
     return configure(MakeRenderSettings(settings));

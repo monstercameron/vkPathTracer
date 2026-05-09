@@ -111,7 +111,7 @@ void PrintBackendDiagnostics() {
       std::cout << "  " << name << " unavailable\n";
       continue;
     }
-    if (!backend->initialize()) {
+    if (!backend->initialize().is_ok()) {
       std::cout << "  " << name << " failed to initialize\n";
       continue;
     }

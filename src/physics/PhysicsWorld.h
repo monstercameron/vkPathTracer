@@ -13,6 +13,7 @@
 #include "core/contracts/Lifecycle.h"
 #include "core/health/Health.h"
 #include "core/Types.h"
+#include "core/contracts/Result.h"
 #include "scene/Scene.h"
 
 namespace vkpt::physics {
@@ -175,6 +176,7 @@ class IPhysicsWorld {
 };
 
 std::unique_ptr<IPhysicsWorld> CreatePhysicsWorld();
+vkpt::core::Result<std::unique_ptr<IPhysicsWorld>> CreatePhysicsWorldResult();
 PhysicsEngineInfo GetCompiledPhysicsEngineInfo();
 vkpt::core::health::Report EvaluatePhysicsHealth(const PhysicsStatus& status);
 

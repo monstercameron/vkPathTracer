@@ -241,12 +241,18 @@ class IAudioSystem : public IAudioDiagnostics {
  public:
   virtual ~IAudioSystem() = default;
 
-  // State machine:
-  // state\method    initialize load_scene_audio post_* set_snapshot consume_snapshot update shutdown
-  // Uninitialized   ->Ready    error            error  error        error            noop   noop
-  // Ready           noop       ok               ok     ok           ok               ok     ->Uninitialized
-  // Degraded        noop       ok               ok     ok           ok               ok     ->Uninitialized
-  // Failed          error      error            error  error        error            noop   ->Uninitialized
+  // IAudioSystem state machine contract:
+  //
+  // state\method    initialize  load_scene_audio  post_one_shot_event  post_tracked_event  cancel/stop/stop_all  set_volume  query_state  set_listener  set_bus_volume  set_bus_muted  set_snapshot_ring  consume_snapshot  update  status/diagnostics  shutdown
+  // Uninitialized   ->Ready     error             error                error               noop                  noop        empty        noop          noop            noop           noop               error             noop    ok                  noop
+  // Ready           noop        ok                ok                   ok                  ok                    ok          ok           ok            ok              ok             ok                 ok                ok      ok                  ->Uninitialized
+  // Degraded        noop        ok                ok                   ok                  ok                    ok          ok           ok            ok              ok             ok                 ok                ok      ok                  ->Uninitialized
+  // Failed          error       error             error                error               noop                  noop        empty        noop          noop            noop           noop               error             noop    ok                  ->Uninitialized
+  //
+  // post_one_shot_event returns a Status; post_tracked_event returns an event
+  // handle whose AudioEventState surfaces failure modes (stolen, invalid).
+  // consume_snapshot is the single ingest point for ring-published scene
+  // updates; update() drives the mixer step and may noop in non-Ready states.
   virtual vkpt::core::Status initialize() = 0;
   virtual void shutdown() = 0;
   virtual vkpt::core::Status load_scene_audio(const vkpt::scene::SceneDocument& document,

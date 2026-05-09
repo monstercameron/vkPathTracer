@@ -104,7 +104,7 @@ int BackendExperimentsCommand(const std::vector<std::string_view>& args) {
       continue;
     }
     auto backend = vkpt::render::CreateBackend(target.backend);
-    if (!backend || !backend->initialize()) {
+    if (!backend || !backend->initialize().is_ok()) {
       row.status = "skipped";
       row.reason = backend ? backend->last_error() : "backend creation failed";
       rows.push_back(std::move(row));
@@ -202,7 +202,7 @@ int GpuMemPressureCommand(const std::vector<std::string_view>& args) {
   std::string backendStatus = "skipped";
   std::string backendReason = "backend unavailable";
   if (auto backend = vkpt::render::CreateBackend(backendName)) {
-    if (backend->initialize()) {
+    if (backend->initialize().is_ok()) {
       backendCaps = vkpt::render::SerializeBackendCapabilities(backend->capabilities());
       backendStatus = "available";
       backendReason = backend->capabilities().is_simulated ? "simulated backend; host allocation pressure used" :
@@ -311,7 +311,7 @@ int ShaderMatrixCommand(const std::vector<std::string_view>& args) {
       continue;
     }
     auto backend = vkpt::render::CreateBackend(target.backend);
-    if (!backend || !backend->initialize()) {
+    if (!backend || !backend->initialize().is_ok()) {
       rows.push_back({target.backend, target.shader_family, target.variant, "skipped",
                       backend ? backend->last_error() : "create_backend_failed", ""});
       continue;
@@ -335,7 +335,8 @@ int ShaderMatrixCommand(const std::vector<std::string_view>& args) {
 
     std::string artifact;
     std::string diag;
-    const bool ok = compiler->compile_compute_shader(desc, artifact, &diag);
+    const auto status = compiler->compile_compute_shader(desc, artifact, &diag);
+    const bool ok = status.is_ok();
     if (!ok) {
       failed = true;
     }

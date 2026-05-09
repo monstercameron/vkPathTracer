@@ -73,29 +73,32 @@ class AdapterShaderCompiler final : public IShaderCompiler {
            m_config.supported_features.end();
   }
 
-  bool compile_compute_shader(const ComputePipelineDesc& desc,
-                              std::string& out_artifact,
-                              std::string* diagnostics) override {
+  vkpt::core::Status compile_compute_shader(const ComputePipelineDesc& desc,
+                                            std::string& out_artifact,
+                                            std::string* diagnostics) override {
     const std::string source_path = desc.source_path.empty() ? m_config.default_source_path : desc.source_path;
     if (source_path.empty()) {
+      const std::string msg = m_config.stable_name + " compute shader compile failed: missing source path";
       if (diagnostics) {
-        *diagnostics = m_config.stable_name + " compute shader compile failed: missing source path";
+        *diagnostics = msg;
       }
-      return false;
+      return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument, msg);
     }
     if (desc.entry_point.empty()) {
+      const std::string msg = m_config.stable_name + " compute shader compile failed: missing entry point";
       if (diagnostics) {
-        *diagnostics = m_config.stable_name + " compute shader compile failed: missing entry point";
+        *diagnostics = msg;
       }
-      return false;
+      return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument, msg);
     }
     if (!SourcePathMatchesFormat(source_path, m_config.required_source_format)) {
+      const std::string msg = m_config.stable_name + " requires " +
+                              std::string(ShaderSourceFormatToString(m_config.required_source_format)) +
+                              " shader source; got '" + source_path + "'";
       if (diagnostics) {
-        *diagnostics = m_config.stable_name + " requires " +
-                       std::string(ShaderSourceFormatToString(m_config.required_source_format)) +
-                       " shader source; got '" + source_path + "'";
+        *diagnostics = msg;
       }
-      return false;
+      return vkpt::core::Status::error(vkpt::core::StatusCode::Unsupported, msg);
     }
 
     std::string defines;
@@ -110,7 +113,7 @@ class AdapterShaderCompiler final : public IShaderCompiler {
     if (diagnostics) {
       *diagnostics = "skeleton validation only; no native compiler invoked";
     }
-    return true;
+    return vkpt::core::Status::ok();
   }
 
  private:
@@ -191,22 +194,22 @@ class AdapterBackend final : public IRenderBackend {
  public:
   explicit AdapterBackend(AdapterBackendConfig config) : m_config(std::move(config)) {}
 
-  bool initialize() override {
+  vkpt::core::Status initialize() override {
     if (m_initialized) {
-      return true;
+      return vkpt::core::Status::ok();
     }
     m_compiler = std::make_unique<AdapterShaderCompiler>(m_config);
     m_cache = std::make_unique<AdapterShaderCache>(
         m_config.stable_name, m_config.required_source_format, m_config.default_source_path);
     m_initialized = true;
-    return true;
+    return vkpt::core::Status::ok();
   }
 
-  bool shutdown() override {
+  vkpt::core::Status shutdown() override {
     m_initialized = false;
     m_compiler.reset();
     m_cache.reset();
-    return true;
+    return vkpt::core::Status::ok();
   }
 
   BackendKind kind() const override { return m_config.kind; }
@@ -237,7 +240,7 @@ class AdapterBackend final : public IRenderBackend {
 
 /// Run the common one-pass compute graph against an adapter skeleton.
 inline bool RunAdapterComputeSmoke(IRenderBackend& backend, std::string_view label) {
-  if (!backend.initialize()) {
+  if (!backend.initialize().is_ok()) {
     return false;
   }
   auto device = backend.create_device();

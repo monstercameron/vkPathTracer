@@ -113,17 +113,19 @@ class IJobSystem {
 
   // IJobSystem lifecycle contract:
   //
-  // state\method     submit_*     wait/wait_group pump_main_thread status shutdown
-  // Uninitialized    illegal      error           noop             ok     ok
-  // Initializing      error        error           noop             ok     ->ShuttingDown
-  // Ready             ok           ok              ok               ok     ->ShuttingDown
-  // Busy              ok           ok              ok               ok     ->ShuttingDown
-  // Failed            error        ok              ok               ok     ->ShuttingDown
-  // ShuttingDown      error        ok              drain            ok     ok
+  // state\method     submit_job  submit_main_thread_job  submit_range_job  submit_indexed_range_job  chain  wait  wait_group  wait_group_status  pump_main_thread  worker_count/deterministic  set_determinism  waiting_thread_runs_jobs  status  shutdown/shutdown_status
+  // Uninitialized    illegal     illegal                 illegal           illegal                   illegal error error      error              noop              ok                          ok               ok                        ok      ok
+  // Initializing     error       error                   error             error                     error  error error      error              noop              ok                          ok               ok                        ok      ->ShuttingDown
+  // Ready            ok          ok                      ok                ok                        ok     ok    ok         ok                 ok                ok                          ok               ok                        ok      ->ShuttingDown
+  // Busy             ok          ok                      ok                ok                        ok     ok    ok         ok                 ok                ok                          ok               ok                        ok      ->ShuttingDown
+  // Failed           error       error                   error             error                     error  ok    ok         ok                 ok                ok                          ok               ok                        ok      ->ShuttingDown
+  // ShuttingDown     error       error                   error             error                     error  ok    ok         ok                 drain             ok                          ok               ok                        ok      ok
   //
-  // Bool-returning methods are compatibility wrappers. New call sites should
-  // prefer the Result/Status variants so failure reason and thrown exceptions
-  // are visible to callers and probes.
+  // submit_*_result/chain_result/wait_result/wait_group_status are the
+  // Result/Status-returning equivalents; they share the column above and are
+  // preferred for new call sites because they expose typed failure reasons and
+  // captured exceptions to callers and probes. Bool-returning submit_*/wait/
+  // wait_group/shutdown remain as compatibility wrappers.
   virtual vkpt::core::JobHandle submit_job(JobFunction job) = 0;
   virtual vkpt::core::Result<vkpt::core::JobHandle> submit_job_result(JobFunction job) = 0;
   virtual vkpt::core::JobHandle submit_main_thread_job(JobFunction job) = 0;

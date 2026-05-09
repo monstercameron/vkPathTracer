@@ -275,6 +275,13 @@ class IFileSystem {
 class ITimeSource {
  public:
   virtual ~ITimeSource() = default;
+
+  // State contract (Ready-only leaf):
+  // state\method      now_ms
+  // Ready             ok
+  //
+  // Time sources are pure leaves with no own lifecycle; the host owns lifetime
+  // and stops calling now_ms() once it shuts platform services down.
   virtual std::uint64_t now_ms() const = 0;
 };
 

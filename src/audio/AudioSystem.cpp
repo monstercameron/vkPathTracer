@@ -341,6 +341,10 @@ ClipDef GenerateToneClip(std::string_view uri, std::uint32_t sampleRate) {
 
   if (lower.find("footstep") != std::string::npos) {
     appendMixed(95.0f, 0.11f, 0.35f, 0.075f, 0.22f);
+  } else if (lower.find("ricochet") != std::string::npos ||
+             lower.find("impact") != std::string::npos ||
+             lower.find("hit") != std::string::npos) {
+    appendMixed(380.0f, 0.045f, 0.62f, 0.085f, 0.55f);
   } else if (lower.find("rifle") != std::string::npos || lower.find("fire") != std::string::npos) {
     appendMixed(145.0f, 0.085f, 0.58f, 0.060f, 0.48f);
   } else if (lower.find("shotgun") != std::string::npos) {
@@ -516,11 +520,11 @@ class NoopAudioDevice final : public IAudioDevice {
     close();
   }
 
-  bool open(const AudioDeviceConfig& config, AudioDeviceCallback callback) override {
+  vkpt::core::Status open(const AudioDeviceConfig& config, AudioDeviceCallback callback) override {
     m_config = config;
     m_callback = callback;
     m_open = true;
-    return true;
+    return vkpt::core::Status::ok();
   }
 
   void close() override {
@@ -528,16 +532,17 @@ class NoopAudioDevice final : public IAudioDevice {
     m_open = false;
   }
 
-  bool start() override {
+  vkpt::core::Status start() override {
     if (!m_open) {
-      return false;
+      return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady,
+                                       "noop audio device not open");
     }
     bool expected = false;
     if (m_running.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
       m_thread = std::thread([this] { callback_loop(); });
     }
     m_started = true;
-    return true;
+    return vkpt::core::Status::ok();
   }
 
   void stop() override {
@@ -591,7 +596,7 @@ class MiniaudioDevice final : public IAudioDevice {
     close();
   }
 
-  bool open(const AudioDeviceConfig& config, AudioDeviceCallback callback) override {
+  vkpt::core::Status open(const AudioDeviceConfig& config, AudioDeviceCallback callback) override {
     close();
     m_config = config;
     m_callback = callback;
@@ -610,10 +615,10 @@ class MiniaudioDevice final : public IAudioDevice {
     const ma_result result = ma_device_init(nullptr, &deviceConfig, &m_device);
     if (result != MA_SUCCESS) {
       m_lastError = "ma_device_init failed: " + std::to_string(static_cast<int>(result));
-      return false;
+      return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError, m_lastError);
     }
     m_open = true;
-    return true;
+    return vkpt::core::Status::ok();
   }
 
   void close() override {
@@ -626,17 +631,18 @@ class MiniaudioDevice final : public IAudioDevice {
     m_started = false;
   }
 
-  bool start() override {
+  vkpt::core::Status start() override {
     if (!m_open) {
-      return false;
+      return vkpt::core::Status::error(vkpt::core::StatusCode::NotReady,
+                                       "miniaudio device not open");
     }
     const ma_result result = ma_device_start(&m_device);
     if (result != MA_SUCCESS) {
       m_lastError = "ma_device_start failed: " + std::to_string(static_cast<int>(result));
-      return false;
+      return vkpt::core::Status::error(vkpt::core::StatusCode::InternalError, m_lastError);
     }
     m_started = true;
-    return true;
+    return vkpt::core::Status::ok();
   }
 
   void stop() override {
@@ -766,7 +772,7 @@ class EngineAudioSystem final : public IAudioSystem {
 #if defined(PT_ENABLE_MINIAUDIO)
     if (m_diag.backend_name == "miniaudio") {
       auto device = std::make_unique<MiniaudioDevice>();
-      if (device->open(deviceConfig, deviceCallback) && device->start()) {
+      if (device->open(deviceConfig, deviceCallback).is_ok() && device->start().is_ok()) {
         m_hardwarePlaybackEnabled = true;
         m_diag.device_name = device->device_name();
         m_audioDevice = std::move(device);
@@ -785,6 +791,8 @@ class EngineAudioSystem final : public IAudioSystem {
       auto device = std::make_unique<NoopAudioDevice>();
       (void)device->open(deviceConfig, deviceCallback);
       (void)device->start();
+      // open()/start() return Status; ignored here because NoopAudioDevice
+      // cannot fail in practice and we already committed to the noop path.
       m_audioDevice = std::move(device);
       m_hardwarePlaybackEnabled = false;
     }

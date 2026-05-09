@@ -394,6 +394,19 @@ void RegisterSceneWorldHealthProbe(SceneWorld& world, HealthRegistryT& registry)
   registry.register_probe(world.create_health_probe());
 }
 
+// ISceneRuntime lifecycle contract:
+//
+// state\method      world  load_document       snapshot  extract_render_scene  frame_lifecycle  shutdown(dtor)
+// Uninitialized     ok     ->Ready             empty     empty                 ok               noop
+// Ready             ok     ->Ready (replace)   ok        ok                    ok               ->Uninitialized
+// Degraded          ok     ->Ready             ok        ok                    ok               ->Uninitialized
+// Failed            ok     error               ok        ok                    ok               ->Uninitialized
+// ShuttingDown      ok     illegal             ok        ok                    ok               noop
+//
+// world(), snapshot(), extract_render_scene(), and frame_lifecycle() are
+// state-agnostic Ready-or-better reads. load_document() is the only call that
+// drives the lifecycle: it is the explicit transition into Ready and the only
+// gate before shutdown.
 class ISceneRuntime {
  public:
   virtual ~ISceneRuntime() = default;

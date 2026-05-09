@@ -78,6 +78,20 @@ struct VulkanGpuSubmissionContract {
 /// This backend uses host-visible storage buffers for scene and film data,
 /// dispatches pathtrace.comp for each sample, then lazily mirrors the GPU film
 /// into FilmBuffer when CPU-side resolve APIs are called.
+///
+/// VulkanGpuPathTracer state contract (impl-side, layered on top of the
+/// IPathTracer state grid in PathTracer.h):
+///
+/// state\method      init_device  introspect  is_valid  last_error  gpu_name  vram_mb  gpu_type  vulkan_api  health_report
+/// Uninitialized     ->Configured ok          false     ""          ""        0        ""        0           ok
+/// Configured        illegal      ok          true      ""/error    ok        ok       ok        ok          ok
+/// SceneLoaded       illegal      ok          true      ""/error    ok        ok       ok        ok          ok
+/// Ready             illegal      ok          true      ""/error    ok        ok       ok        ok          ok
+/// Failed            error        ok          false     error       ok        ok       ok        ok          failed
+///
+/// The IPathTracer state machine grid in src/pathtracer/PathTracer.h still
+/// governs configure/load_scene_snapshot/build_or_update_acceleration/
+/// render_tile/reset_accumulation/update_*/resolve_*/status/shutdown.
 class VulkanGpuPathTracer final : public vkpt::pathtracer::IPathTracer,
                                   public IGpuBackendIntrospect {
  public:

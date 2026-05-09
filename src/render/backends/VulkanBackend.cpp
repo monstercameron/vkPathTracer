@@ -84,15 +84,16 @@ bool VulkanShaderCompiler::supports_feature(std::string_view feature) const {
   return feature == "compute" || feature == "storage-buffers" || feature == "storage-textures";
 }
 
-bool VulkanShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc,
-                                                std::string& out_artifact,
-                                                std::string* diagnostics) {
+vkpt::core::Status VulkanShaderCompiler::compile_compute_shader(const ComputePipelineDesc& desc,
+                                                                std::string& out_artifact,
+                                                                std::string* diagnostics) {
   const auto compileStart = std::chrono::steady_clock::now();
   if (desc.source_path.empty()) {
     if (diagnostics) {
       *diagnostics = "missing source path";
     }
-    return false;
+    return vkpt::core::Status::error(vkpt::core::StatusCode::InvalidArgument,
+                                     "missing source path");
   }
   std::string defines;
   for (const auto& define : desc.defines) {
@@ -115,7 +116,7 @@ bool VulkanShaderCompiler::compile_compute_shader(const ComputePipelineDesc& des
           ElapsedUs(compileStart),
           "entry",
           desc.entry_point);
-  return true;
+  return vkpt::core::Status::ok();
 }
 
 bool VulkanShaderCache::query(std::string_view key, std::string& binary) {
@@ -379,17 +380,17 @@ IRenderResourceAllocator* VulkanDevice::allocator() {
   return m_allocator.get();
 }
 
-bool VulkanComputeBackend::initialize() {
+vkpt::core::Status VulkanComputeBackend::initialize() {
   if (m_initialized) {
-    return true;
+    return vkpt::core::Status::ok();
   }
   m_compiler = std::make_unique<VulkanShaderCompiler>();
   m_cache = std::make_unique<VulkanShaderCache>();
   m_initialized = true;
-  return true;
+  return vkpt::core::Status::ok();
 }
 
-bool VulkanComputeBackend::shutdown() {
+vkpt::core::Status VulkanComputeBackend::shutdown() {
   m_initialized = false;
   m_compiler.reset();
   m_cache.reset();
@@ -398,7 +399,7 @@ bool VulkanComputeBackend::shutdown() {
   m_timeline = {};
   m_nextCommandBuffer = 0u;
   m_lastError.clear();
-  return true;
+  return vkpt::core::Status::ok();
 }
 
 BackendKind VulkanComputeBackend::kind() const {
@@ -762,7 +763,7 @@ VulkanBVHPassResult RunVulkanBVHPass(
 
   VulkanBVHPassResult result;
 
-  if (!backend.initialize()) {
+  if (!backend.initialize().is_ok()) {
     result.error = "backend initialize failed";
     return result;
   }

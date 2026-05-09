@@ -630,6 +630,15 @@ struct BackendSelectionDecision {
 };
 
 /// Minimal command recording interface consumed by frame-graph execution.
+///
+/// IRenderCommandContext state machine contract:
+///
+/// state\method      begin_frame  end_frame   begin_pass   end_pass    dispatch  copy_buffer_to_texture  barrier
+/// Uninitialized     ->Recording  error       illegal      illegal     illegal   illegal                 illegal
+/// Recording         noop         ->Submitted ->InPass     illegal     illegal   ok                      ok
+/// InPass            illegal      illegal     illegal      ->Recording ok        ok                      ok
+/// Submitted         ->Recording  noop        illegal      illegal     illegal   illegal                 illegal
+/// Failed            error        error       error        error       error     error                   error
 class IRenderCommandContext {
  public:
   virtual ~IRenderCommandContext() = default;
@@ -644,6 +653,17 @@ class IRenderCommandContext {
 };
 
 /// Backend-owned resource allocator contract for buffers, textures, uploads, and readback.
+///
+/// IRenderResourceAllocator state machine contract:
+///
+/// state\method     create_buffer  destroy_buffer  create_texture  destroy_texture  upload_data  readback
+/// Uninitialized    illegal        noop            illegal         noop             illegal      illegal
+/// Ready            ok             ok              ok              ok               ok           ok
+/// ShuttingDown     illegal        ok              illegal         ok               illegal      illegal
+/// Failed           error          noop            error           noop             error        error
+///
+/// destroy_*() against an unknown handle is noop; against a live handle in
+/// Ready/ShuttingDown it is ok and idempotent.
 class IRenderResourceAllocator {
  public:
   virtual ~IRenderResourceAllocator() = default;
@@ -688,13 +708,25 @@ class IRenderDevice {
 };
 
 /// Shader compiler facade used by backend skeletons and future native compilers.
+///
+/// IShaderCompiler state machine contract:
+///
+/// state\method     supports_feature  compile_compute_shader
+/// Uninitialized    ok                illegal
+/// Ready            ok                ok
+/// ShuttingDown     ok                illegal
+/// Failed           ok                error
+///
+/// Compiler lifetime is bound to its owning backend: the pointer returned by
+/// IRenderBackend::compiler() is valid only between successful initialize()
+/// and the start of shutdown().
 class IShaderCompiler {
  public:
   virtual ~IShaderCompiler() = default;
   virtual bool supports_feature(std::string_view feature) const = 0;
   /// Thread-safety: implementations must be reentrant for concurrent compile
   /// requests once their owning backend has completed initialize().
-  virtual bool compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) = 0;
+  virtual vkpt::core::Status compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) = 0;
 };
 
 struct CachedManifest {
@@ -706,6 +738,16 @@ struct CachedManifest {
   bool compile_success = false;
 };
 
+/// IShaderCache state machine contract:
+///
+/// state\method     query    store    invalidate  explain_miss  dump_manifest
+/// Uninitialized    miss     illegal  noop        ok            empty
+/// Ready            ok       ok       ok          ok            ok
+/// ShuttingDown     ok       illegal  noop        ok            ok
+/// Failed           miss     error    noop        ok            empty
+///
+/// Cache lifetime is bound to its owning backend (see IRenderBackend grid).
+/// `query` returns false on miss in any state; `store` only mutates in Ready.
 class IShaderCache {
  public:
   virtual ~IShaderCache() = default;
@@ -777,8 +819,8 @@ class IFrameGraph {
 class IRenderBackend {
  public:
   virtual ~IRenderBackend() = default;
-  virtual bool initialize() = 0;
-  virtual bool shutdown() = 0;
+  virtual vkpt::core::Status initialize() = 0;
+  virtual vkpt::core::Status shutdown() = 0;
   virtual BackendKind kind() const = 0;
   virtual std::string name() const = 0;
   virtual RenderBackendCapabilities capabilities() const = 0;

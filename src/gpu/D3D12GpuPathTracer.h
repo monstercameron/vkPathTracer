@@ -73,6 +73,22 @@ struct D3D12TemporalCameraState {
 /// The backend owns device lifetime, scene buffer packing/upload, GPU film
 /// accumulation, optional post passes, and the DXR BLAS/TLAS/SBT objects used
 /// when hardware ray tracing is selected.
+///
+/// D3D12GpuPathTracer state contract (impl-side, layered on top of the
+/// IPathTracer state grid in PathTracer.h):
+///
+/// state\method      init_device   init_dxr_runtime_objects  introspect  is_valid  last_error  gpu_name  vram_mb  dxr_supported  using_dxr_dispatch  health_report
+/// Uninitialized     ->Configured  illegal                   ok          false     ""          ""        0        false          false               ok
+/// Configured        illegal       ok-if-dxr-pref            ok          true      ""/error    ok        ok       ok             ok                  ok
+/// SceneLoaded       illegal       ok-if-dxr-pref            ok          true      ""/error    ok        ok       ok             ok                  ok
+/// Ready             illegal       noop                      ok          true      ""/error    ok        ok       ok             ok                  ok
+/// Failed            error         error                     ok          false     error       ok        ok       ok             ok                  failed
+///
+/// init_dxr_runtime_objects() is opt-in via set_prefer_dxr(); it is only called
+/// after init_device() succeeded and before build_or_update_acceleration().
+/// The IPathTracer state machine grid in src/pathtracer/PathTracer.h still
+/// governs configure/load_scene_snapshot/build_or_update_acceleration/
+/// render_tile/reset_accumulation/update_*/resolve_*/status/shutdown.
 class D3D12GpuPathTracer final : public vkpt::pathtracer::IPathTracer,
                                  public IGpuBackendIntrospect {
  public:

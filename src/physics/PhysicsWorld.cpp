@@ -701,10 +701,18 @@ class ThreadedPhysicsWorld final : public IPhysicsWorld {
   };
 
  public:
+  // Precondition (enforced by CreatePhysicsWorld factory): `backend` must be non-null.
+  // Construction skips initialization when backend is null so the worker thread is
+  // never started; callers should obtain ThreadedPhysicsWorld via CreatePhysicsWorld
+  // which validates the backend up-front and reports failure via the factory's
+  // Result-returning interface rather than constructor throw.
   explicit ThreadedPhysicsWorld(std::unique_ptr<IPhysicsWorld> backend)
       : m_state(std::make_shared<WorkerState>()) {
     if (!backend) {
-      throw std::invalid_argument("physics backend is null");
+      m_state->status.lifecycle = ToComponentLifecycle(PhysicsLifecycleState::Failed);
+      m_state->status.last_error = "physics backend is null";
+      m_lifecycle.store(PhysicsLifecycleState::Failed, std::memory_order_release);
+      return;
     }
     m_state->cached_info = backend->engine_info();
     m_state->cached_info.runs_on_worker_thread = true;
@@ -1841,7 +1849,24 @@ std::unique_ptr<IPhysicsWorld> CreateBackendPhysicsWorld() {
 }
 
 std::unique_ptr<IPhysicsWorld> CreatePhysicsWorld() {
-  return std::make_unique<ThreadedPhysicsWorld>(CreateBackendPhysicsWorld());
+  auto backend = CreateBackendPhysicsWorld();
+  if (!backend) {
+    // Returning null instead of constructing a Failed-state world keeps callers
+    // (which already check for null in many sites) on a single error path.
+    return nullptr;
+  }
+  return std::make_unique<ThreadedPhysicsWorld>(std::move(backend));
+}
+
+vkpt::core::Result<std::unique_ptr<IPhysicsWorld>> CreatePhysicsWorldResult() {
+  auto backend = CreateBackendPhysicsWorld();
+  if (!backend) {
+    return vkpt::core::Result<std::unique_ptr<IPhysicsWorld>>::error(
+        vkpt::core::ErrorCode::Internal);
+  }
+  std::unique_ptr<IPhysicsWorld> world =
+      std::make_unique<ThreadedPhysicsWorld>(std::move(backend));
+  return vkpt::core::Result<std::unique_ptr<IPhysicsWorld>>::ok(std::move(world));
 }
 
 vkpt::core::health::Report EvaluatePhysicsHealth(const PhysicsStatus& status) {

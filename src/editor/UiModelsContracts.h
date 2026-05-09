@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/contracts/Result.h"
 #include "editor/UiModelsCore.h"
 
 namespace vkpt::editor {
@@ -9,7 +10,7 @@ namespace vkpt::editor {
 class IUiRenderer {
  public:
   virtual ~IUiRenderer() = default;
-  virtual bool initialize() = 0;
+  virtual vkpt::core::Status initialize() = 0;
   virtual void shutdown() = 0;
   virtual void begin_frame() = 0;
   virtual void end_frame() = 0;

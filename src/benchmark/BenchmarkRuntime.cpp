@@ -467,7 +467,7 @@ int RunCommand(const std::vector<std::string_view>& args) {
       std::cerr << "failed to create backend: " << normalizedBackend << "\n";
       return 2;
     }
-    if (!backend->initialize()) {
+    if (!backend->initialize().is_ok()) {
       std::cerr << "failed to initialize backend: " << normalizedBackend << "\n";
       return 2;
     }

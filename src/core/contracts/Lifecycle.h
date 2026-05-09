@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <string_view>
+#include <type_traits>
 
 #include "core/log/Log.h"
 
@@ -56,6 +57,49 @@ inline bool assert_state(std::string_view method,
   (void)method;
 #ifndef NDEBUG
   assert(ok && "component lifecycle state contract violated");
+#endif
+  return ok;
+}
+
+// Subsystem-specific assert_state overloads.
+//
+// Subsystems publish their own lifecycle enums (PathTracerLifecycle,
+// RenderContractState, RenderCoordinatorLifecycle, etc.) and those impls do not
+// want to convert back to ComponentLifecycle just to honor the contract.
+// These templated overloads accept any enum class that compares equal by value
+// and forward to the same allowed-set check used for ComponentLifecycle.
+//
+// Usage from impl code (wiring is intentionally deferred to the follow-up
+// pass after the Result<T> sweep lands):
+//
+//   using vkpt::pathtracer::PathTracerLifecycle;
+//   vkpt::core::contracts::assert_state(
+//       "load_scene_snapshot", m_lifecycle,
+//       {PathTracerLifecycle::Configured, PathTracerLifecycle::SceneLoaded});
+
+template <typename EnumT>
+inline bool state_allowed(EnumT current,
+                          std::initializer_list<EnumT> allowed) noexcept {
+  static_assert(std::is_enum_v<EnumT>,
+                "state_allowed<EnumT> requires an enum type");
+  for (const EnumT candidate : allowed) {
+    if (candidate == current) {
+      return true;
+    }
+  }
+  return false;
+}
+
+template <typename EnumT>
+inline bool assert_state(std::string_view method,
+                         EnumT current,
+                         std::initializer_list<EnumT> allowed) {
+  static_assert(std::is_enum_v<EnumT>,
+                "assert_state<EnumT> requires an enum type");
+  const bool ok = state_allowed<EnumT>(current, allowed);
+  (void)method;
+#ifndef NDEBUG
+  assert(ok && "subsystem lifecycle state contract violated");
 #endif
   return ok;
 }

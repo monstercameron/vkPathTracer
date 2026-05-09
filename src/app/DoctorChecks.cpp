@@ -117,7 +117,7 @@ DoctorCheckResult CheckBuild() {
     detail << " backends=FAIL(none)";
   } else {
     auto backend = vkpt::render::CreateBackend(backends.front());
-    if (!backend || !backend->initialize()) {
+    if (!backend || !backend->initialize().is_ok()) {
       ok = false;
       detail << " backend_init=FAIL(" << backends.front() << ")";
     } else {
@@ -167,7 +167,7 @@ DoctorCheckResult CheckBackends() {
   for (const auto& name : names) {
     auto backend = vkpt::render::CreateBackend(name);
     if (!backend) { detail << name << ":unavailable "; continue; }
-    if (!backend->initialize()) { detail << name << ":init_failed "; continue; }
+    if (!backend->initialize().is_ok()) { detail << name << ":init_failed "; continue; }
     const auto caps = backend->capabilities();
     detail << name << ":ok(compute=" << (caps.compute ? "y" : "n")
            << ",rt=" << (caps.ray_tracing ? "y" : "n") << ") ";

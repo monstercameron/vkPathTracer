@@ -20,7 +20,7 @@ namespace vkpt::render {
 class VulkanShaderCompiler final : public IShaderCompiler {
  public:
   bool supports_feature(std::string_view feature) const override;
-  bool compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) override;
+  vkpt::core::Status compile_compute_shader(const ComputePipelineDesc& desc, std::string& out_artifact, std::string* diagnostics) override;
 };
 
 /// In-memory cache for Vulkan skeleton shader artifacts and manifests.
@@ -202,8 +202,8 @@ std::string_view VulkanSnapshotTransitionKindToString(VulkanSnapshotTransitionKi
 /// Vulkan compute backend skeleton used before native VkDevice integration.
 class VulkanComputeBackend final : public IRenderBackend {
  public:
-  bool initialize() override;
-  bool shutdown() override;
+  vkpt::core::Status initialize() override;
+  vkpt::core::Status shutdown() override;
   BackendKind kind() const override;
   std::string name() const override;
   RenderBackendCapabilities capabilities() const override;
