@@ -2,9 +2,11 @@
 #include "scene/Scene.h"
 #include "scripting/ScriptRuntime.h"
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -135,7 +137,7 @@ int main() {
 
   vkpt::scene::SceneWorld world;
   const auto entity = world.create_entity("dispatch_no_lua", 50000u);
-  AttachScript(world, entity, "assets/scripts/script_param_probe.lua");
+  AttachScript(world, entity, "assets/scripts/test/script_param_probe.lua");
 
   auto runtime = vkpt::scripting::CreateScriptRuntime();
   runtime->reload_bindings(world);
@@ -175,7 +177,7 @@ int main() {
 
   vkpt::scene::SceneWorld ok_world;
   const auto ok_entity = ok_world.create_entity("dispatch_ok", 50001u);
-  AttachScript(ok_world, ok_entity, "assets/scripts/script_param_probe.lua");
+  AttachScript(ok_world, ok_entity, "assets/scripts/test/script_param_probe.lua");
   auto ok_runtime = vkpt::scripting::CreateScriptRuntime();
   ok_runtime->reload_bindings(ok_world);
   vkpt::scene::WorldCommandBuffer ok_commands;
@@ -214,9 +216,9 @@ int main() {
 
   vkpt::scene::SceneWorld partial_world;
   const auto partial_ok_entity = partial_world.create_entity("dispatch_partial_ok", 50002u);
-  AttachScript(partial_world, partial_ok_entity, "assets/scripts/script_param_probe.lua");
+  AttachScript(partial_world, partial_ok_entity, "assets/scripts/test/script_param_probe.lua");
   const auto partial_fail_entity = partial_world.create_entity("dispatch_partial_fail", 50003u);
-  AttachScript(partial_world, partial_fail_entity, "assets/scripts/script_sandbox_probe.lua");
+  AttachScript(partial_world, partial_fail_entity, "assets/scripts/test/script_sandbox_probe.lua");
   auto partial_runtime = vkpt::scripting::CreateScriptRuntime();
   partial_runtime->reload_bindings(partial_world);
   vkpt::scene::WorldCommandBuffer partial_commands;
@@ -235,7 +237,7 @@ int main() {
 
   vkpt::scene::SceneWorld instruction_world;
   const auto instruction_entity = instruction_world.create_entity("dispatch_instruction_budget", 50004u);
-  AttachScript(instruction_world, instruction_entity, "assets/scripts/script_budget_probe.lua");
+  AttachScript(instruction_world, instruction_entity, "assets/scripts/test/script_budget_probe.lua");
   auto instruction_runtime = vkpt::scripting::CreateScriptRuntime();
   instruction_runtime->reload_bindings(instruction_world);
   vkpt::scripting::ScriptExecutionContext instruction_context = context;
@@ -298,8 +300,24 @@ int main() {
                  vkpt::scripting::ScriptDispatchResult::Status::Failure,
              "expected reload to clear disabled-until-reload skip state") ||
       !Check(reloaded_instruction_dispatch.result.script_killed_count == 1u,
-             "expected reloaded script to execute and be killed again")) {
+             "expected reloaded script to execute and be killed again") ||
+      !Check(reloaded_instruction_dispatch.skipped_count == 0u,
+             "expected reloaded script to actually be dispatched (not skipped)")) {
     return 1;
+  }
+  // E. disabled-until-reload regression: after reload the binding ran (then
+  //    got killed again), so runtime_state.hook_fired must be true and the
+  //    disabled flag must be set anew rather than carried over from before.
+  {
+    const auto& reloaded_states = instruction_runtime->runtime_states();
+    if (!Check(!reloaded_states.empty() &&
+                   reloaded_states.front().hook_fired,
+               "reload should let the previously disabled script run again") ||
+        !Check(!reloaded_states.empty() &&
+                   reloaded_states.front().disabled_until_reload,
+               "reloaded run should set disabled_until_reload from a fresh kill")) {
+      return 1;
+    }
   }
 
   const auto memory_budget_path =
@@ -347,6 +365,331 @@ int main() {
   std::filesystem::remove(memory_budget_path, remove_error);
   if (!memory_ok) {
     return 1;
+  }
+
+  // A. Malformed-syntax probe: an inline file with a deliberate parse error must
+  //    load without crashing the host, end up disabled / not invoked, and never
+  //    interfere with a co-resident well-formed script in the same dispatch.
+  const auto syntax_error_path =
+      std::filesystem::temp_directory_path() / "vkpt_script_dispatch_syntax_error.lua";
+  {
+    std::ofstream bad_probe(syntax_error_path, std::ios::trunc);
+    bad_probe << "function on_update(self) syntax error here\n";
+  }
+  vkpt::scene::SceneWorld syntax_world;
+  const auto syntax_bad_entity = syntax_world.create_entity("dispatch_syntax_bad", 50006u);
+  AttachScript(syntax_world, syntax_bad_entity, syntax_error_path.generic_string());
+  const auto syntax_good_entity = syntax_world.create_entity("dispatch_syntax_good", 50007u);
+  AttachScript(syntax_world, syntax_good_entity,
+               "assets/scripts/test/script_param_probe.lua");
+  auto syntax_runtime = vkpt::scripting::CreateScriptRuntime();
+  syntax_runtime->reload_bindings(syntax_world);
+  vkpt::scene::WorldCommandBuffer syntax_commands;
+  const auto syntax_dispatch = syntax_runtime->dispatch_hook(
+      syntax_world,
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      context,
+      syntax_commands);
+  bool syntax_bad_disabled = false;
+  bool syntax_good_fired = false;
+  for (const auto& rs : syntax_runtime->runtime_states()) {
+    if (rs.entity == syntax_bad_entity) {
+      // Either disabled-until-reload, or simply never fired with last_error set.
+      syntax_bad_disabled = rs.disabled_until_reload || !rs.last_error.empty() || !rs.hook_fired;
+    }
+    if (rs.entity == syntax_good_entity) {
+      syntax_good_fired = rs.hook_fired;
+    }
+  }
+  const bool syntax_ok =
+      Check(syntax_dispatch.hook_call_count >= 1u,
+            "malformed-syntax dispatch should still run the well-formed sibling") &&
+      Check(syntax_good_fired,
+            "well-formed sibling should fire on_update alongside malformed peer") &&
+      Check(syntax_bad_disabled,
+            "malformed-syntax script should not have a successful hook fire") &&
+      Check(syntax_dispatch.result.overall_status ==
+                vkpt::scripting::ScriptDispatchResult::Status::PartialFailure ||
+                syntax_dispatch.result.overall_status ==
+                    vkpt::scripting::ScriptDispatchResult::Status::Ok,
+            "malformed-syntax dispatch should not crash; status is partial-failure or ok-with-error");
+  std::filesystem::remove(syntax_error_path, remove_error);
+  if (!syntax_ok) {
+    return 1;
+  }
+
+  // B. Stack-overflow probe: unbounded recursion must come back through
+  //    lua_resume cleanly and disable the binding until reload.
+  vkpt::scene::SceneWorld stack_world;
+  const auto stack_entity = stack_world.create_entity("dispatch_stack_overflow", 50008u);
+  AttachScript(stack_world, stack_entity,
+               "assets/scripts/test/script_stack_overflow_probe.lua");
+  auto stack_runtime = vkpt::scripting::CreateScriptRuntime();
+  stack_runtime->reload_bindings(stack_world);
+  vkpt::scripting::ScriptExecutionContext stack_context = context;
+  // Generous instruction budget so the recursion truly trips Lua's call-stack
+  // limit rather than the per-script instruction cap.
+  stack_context.instruction_budget = 5'000'000u;
+  vkpt::scene::WorldCommandBuffer stack_commands;
+  const auto stack_dispatch = stack_runtime->dispatch_hook(
+      stack_world,
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      stack_context,
+      stack_commands);
+  bool stack_disabled = false;
+  for (const auto& rs : stack_runtime->runtime_states()) {
+    if (rs.entity == stack_entity) {
+      stack_disabled = rs.disabled_until_reload || !rs.last_error.empty();
+    }
+  }
+  if (!Check(stack_dispatch.result.overall_status ==
+                 vkpt::scripting::ScriptDispatchResult::Status::Failure,
+             "stack overflow should yield a Failure dispatch status") ||
+      !Check(stack_dispatch.result.errors.size() == 1u &&
+                 stack_dispatch.result.errors.front().entity == stack_entity,
+             "stack overflow should report the offending entity in errors") ||
+      !Check(stack_disabled,
+             "stack overflow should disable the binding (until reload or via last_error)")) {
+    return 1;
+  }
+
+  // C. Wall-clock budget kill: drive instruction_budget high enough that the
+  //    50 ms wall-clock deadline trips before the per-script instruction cap.
+  vkpt::scene::SceneWorld wall_world;
+  const auto wall_entity = wall_world.create_entity("dispatch_wall_clock", 50009u);
+  AttachScript(wall_world, wall_entity,
+               "assets/scripts/test/script_wall_clock_probe.lua");
+  auto wall_runtime = vkpt::scripting::CreateScriptRuntime();
+  wall_runtime->reload_bindings(wall_world);
+  const auto wall_clock_kills_before = wall_runtime->status().wall_clock_kills_total;
+  vkpt::scripting::ScriptExecutionContext wall_context = context;
+  // 1 billion instructions so a 50 ms tight loop can never exhaust the
+  // per-script instruction cap before the wall-clock deadline trips.
+  wall_context.instruction_budget = 1'000'000'000u;
+  vkpt::scene::WorldCommandBuffer wall_commands;
+  const auto wall_dispatch = wall_runtime->dispatch_hook(
+      wall_world,
+      vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+      wall_context,
+      wall_commands);
+  const auto wall_status = wall_runtime->status();
+  bool wall_disabled = false;
+  std::string wall_kill_kind;
+  for (const auto& rs : wall_runtime->runtime_states()) {
+    if (rs.entity == wall_entity) {
+      wall_disabled = rs.disabled_until_reload;
+      wall_kill_kind = rs.budget_exceeded_type;
+    }
+  }
+  if (!Check(wall_dispatch.result.overall_status ==
+                 vkpt::scripting::ScriptDispatchResult::Status::Failure,
+             "wall-clock probe should fail dispatch") ||
+      !Check(wall_disabled,
+             "wall-clock probe should disable the binding until reload") ||
+      !Check(wall_kill_kind == "wall_clock",
+             "wall-clock probe should record budget_exceeded_type=wall_clock") ||
+      !Check(wall_status.wall_clock_kills_total == wall_clock_kills_before + 1u,
+             "wall-clock probe should increment ScriptingStatus.wall_clock_kills_total") ||
+      !Check(wall_dispatch.result.errors.size() == 1u &&
+                 wall_dispatch.result.errors.front().budget == "wall_clock" &&
+                 wall_dispatch.result.errors.front().killed,
+             "wall-clock probe error should record budget=wall_clock and killed=true")) {
+    return 1;
+  }
+
+  // D. Wrong-type binding-call survives: deliberately call ~6 representative
+  //    bindings with the wrong Lua type. luaL_argerror must fire, lua_resume
+  //    must catch it, the host stays alive, the offending script is
+  //    disabled, and any well-formed sibling continues to dispatch.
+  struct ArgErrorCase {
+    const char* label;
+    vkpt::core::StableEntityId entity;
+    const char* body;
+  };
+  const std::array<ArgErrorCase, 6> argerror_cases{{
+      {"entity_set_transform_string",
+       50010u,
+       "self:set_transform('not-a-table')"},                          // entity binding
+      {"world_find_entity_table",
+       50011u,
+       "ctx.world:find_entity({})"},                                  // world binding
+      {"scene_entities_with_component_table",
+       50012u,
+       "ctx.scene:entities_with_component({})"},                      // scene binding
+      {"input_key_down_table",
+       50013u,
+       "ctx.input:key_down({})"},                                     // input binding
+      {"audio_post_event_table",
+       50014u,
+       "ctx.audio:post_event({})"},                                   // audio binding
+      {"context_diagnostic_table_message",
+       50015u,
+       "ctx:diagnostic('info', {})"},                                 // context binding
+  }};
+
+  for (const auto& test_case : argerror_cases) {
+    const auto bad_path =
+        std::filesystem::temp_directory_path() /
+        (std::string("vkpt_script_dispatch_argerror_") + test_case.label + ".lua");
+    {
+      std::ofstream bad_script(bad_path, std::ios::trunc);
+      bad_script << "local script = {}\n"
+                    "function script.on_update(self, ctx)\n  "
+                 << test_case.body
+                 << "\nend\n"
+                    "return script\n";
+    }
+
+    vkpt::scene::SceneWorld arg_world;
+    const auto bad_entity =
+        arg_world.create_entity(std::string("argerror_bad_") + test_case.label,
+                                test_case.entity);
+    AttachScript(arg_world, bad_entity, bad_path.generic_string());
+    const auto good_entity =
+        arg_world.create_entity(std::string("argerror_good_") + test_case.label,
+                                test_case.entity + 100000u);
+    AttachScript(arg_world, good_entity,
+                 "assets/scripts/test/script_param_probe.lua");
+    auto arg_runtime = vkpt::scripting::CreateScriptRuntime();
+    arg_runtime->reload_bindings(arg_world);
+    vkpt::scene::WorldCommandBuffer arg_commands;
+    const auto arg_dispatch = arg_runtime->dispatch_hook(
+        arg_world,
+        vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+        context,
+        arg_commands);
+    bool bad_failed = false;
+    bool good_fired = false;
+    for (const auto& rs : arg_runtime->runtime_states()) {
+      if (rs.entity == bad_entity) {
+        bad_failed = !rs.last_error.empty() || rs.disabled_until_reload;
+      }
+      if (rs.entity == good_entity) {
+        good_fired = rs.hook_fired;
+      }
+    }
+    const auto status_msg =
+        std::string("argerror case should partial-fail: ") + test_case.label;
+    const auto bad_msg =
+        std::string("argerror case should leave bad script disabled/errored: ") +
+        test_case.label;
+    const auto good_msg =
+        std::string("argerror case should still dispatch healthy sibling: ") +
+        test_case.label;
+    const auto count_msg =
+        std::string("argerror case should fire exactly the healthy hook: ") +
+        test_case.label;
+    const bool case_ok =
+        Check(arg_dispatch.result.overall_status ==
+                  vkpt::scripting::ScriptDispatchResult::Status::PartialFailure,
+              status_msg.c_str()) &&
+        Check(bad_failed, bad_msg.c_str()) &&
+        Check(good_fired, good_msg.c_str()) &&
+        Check(arg_dispatch.hook_call_count == 1u, count_msg.c_str());
+    std::filesystem::remove(bad_path, remove_error);
+    if (!case_ok) {
+      return 1;
+    }
+  }
+
+  // F. Hot-reload state continuity: BindingIdentity-equal reloads must reuse
+  //    the LuaStatePool entry (script-local counter persists), and any
+  //    binding-set change must drop the pool (counter resets to 0).
+  vkpt::scene::SceneWorld reload_world;
+  const auto reload_entity = reload_world.create_entity("dispatch_state_continuity", 50020u);
+  AttachScript(reload_world, reload_entity, "assets/scripts/test/script_counter_probe.lua");
+  auto reload_runtime = vkpt::scripting::CreateScriptRuntime();
+  reload_runtime->reload_bindings(reload_world);
+
+  auto last_logged_tick = [](const vkpt::scripting::ScriptDispatchSummary& summary) -> int {
+    int latest = -1;
+    for (const auto& diag : summary.diagnostics) {
+      const auto pos = diag.message.find("tick=");
+      if (pos == std::string::npos) {
+        continue;
+      }
+      try {
+        latest = std::stoi(diag.message.substr(pos + 5));
+      } catch (...) {
+        // ignore
+      }
+    }
+    return latest;
+  };
+
+  int observed_tick = 0;
+  for (int i = 0; i < 5; ++i) {
+    vkpt::scripting::ScriptExecutionContext tick_ctx = context;
+    tick_ctx.frame = static_cast<vkpt::core::FrameIndex>(100u + i);
+    vkpt::scene::WorldCommandBuffer tick_commands;
+    const auto tick_dispatch = reload_runtime->dispatch_hook(
+        reload_world,
+        vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+        tick_ctx,
+        tick_commands);
+    const auto seen = last_logged_tick(tick_dispatch);
+    if (seen >= 0) {
+      observed_tick = seen;
+    }
+  }
+  if (!Check(observed_tick == 5,
+             "counter probe should report tick=5 after 5 dispatches")) {
+    return 1;
+  }
+  const auto state_count_before = reload_runtime->lua_state_count();
+  const auto created_total_before = reload_runtime->lua_states_created_total();
+
+  // Identical reload — BindingIdentity unchanged, state pool must be reused.
+  reload_runtime->reload_bindings(reload_world);
+  if (!Check(reload_runtime->lua_state_count() == state_count_before,
+             "identical reload should keep LuaStatePool entries") ||
+      !Check(reload_runtime->lua_states_created_total() == created_total_before,
+             "identical reload should not create a new Lua state")) {
+    return 1;
+  }
+  {
+    vkpt::scripting::ScriptExecutionContext after_ctx = context;
+    after_ctx.frame = 200u;
+    vkpt::scene::WorldCommandBuffer after_commands;
+    const auto after_dispatch = reload_runtime->dispatch_hook(
+        reload_world,
+        vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+        after_ctx,
+        after_commands);
+    const auto seen = last_logged_tick(after_dispatch);
+    if (!Check(seen == 6,
+               "identical reload should preserve script-local counter (expected 6)")) {
+      return 1;
+    }
+  }
+
+  // Now mutate the binding set (add a second script). BindingIdentity differs,
+  // state pool must be cleared, counter must reset to 0 (then increment to 1).
+  const auto reload_extra_entity =
+      reload_world.create_entity("dispatch_state_continuity_extra", 50021u);
+  AttachScript(reload_world, reload_extra_entity,
+               "assets/scripts/test/script_param_probe.lua");
+  reload_runtime->reload_bindings(reload_world);
+  if (!Check(reload_runtime->lua_state_count() == 0u,
+             "binding-set change should clear LuaStatePool entries")) {
+    return 1;
+  }
+  {
+    vkpt::scripting::ScriptExecutionContext changed_ctx = context;
+    changed_ctx.frame = 300u;
+    vkpt::scene::WorldCommandBuffer changed_commands;
+    const auto changed_dispatch = reload_runtime->dispatch_hook(
+        reload_world,
+        vkpt::scripting::ScriptLifecycleHook::OnUpdate,
+        changed_ctx,
+        changed_commands);
+    const auto seen = last_logged_tick(changed_dispatch);
+    if (!Check(reload_runtime->lua_states_created_total() > created_total_before,
+               "binding-set change should rebuild fresh LuaStatePool entries on next dispatch") ||
+        !Check(seen == 1,
+               "binding-set change should reset script-local counter to 1 on next tick")) {
+      return 1;
+    }
   }
 
   std::cout << "script dispatch contract smoke: ok\n";

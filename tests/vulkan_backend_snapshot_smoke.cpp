@@ -345,7 +345,7 @@ bool CheckGpuTelemetry(vkpt::render::VulkanComputeBackend& backend) {
   (void)backend;
 
   vkpt::render::VulkanComputeBackend telemetryBackend;
-  if (!Check(telemetryBackend.initialize(),
+  if (!Check(telemetryBackend.initialize().is_ok(),
              "telemetry smoke backend should initialize")) {
     return false;
   }
@@ -375,7 +375,7 @@ bool CheckGpuTelemetry(vkpt::render::VulkanComputeBackend& backend) {
   std::string artifact;
   std::string diagnostics;
   if (!Check(telemetryBackend.compiler() != nullptr &&
-                 telemetryBackend.compiler()->compile_compute_shader(desc, artifact, &diagnostics),
+                 telemetryBackend.compiler()->compile_compute_shader(desc, artifact, &diagnostics).is_ok(),
              "compiler should emit shader_compiled telemetry")) {
     cleanup();
     return false;
@@ -449,7 +449,7 @@ bool CheckCapabilities(vkpt::render::VulkanComputeBackend& backend) {
 
 int main() {
   vkpt::render::VulkanComputeBackend backend;
-  if (!Check(backend.initialize(), "backend should initialize")) {
+  if (!Check(backend.initialize().is_ok(), "backend should initialize")) {
     return 1;
   }
   if (!CheckCapabilities(backend)) {

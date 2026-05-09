@@ -1670,11 +1670,11 @@ bool ReplPass() {
   Repl::instance().set_script_list_provider([] {
     return std::string(
         "active_scripts=1 hooks_fired_total=3 budget_kills_total=0 last_error_script_id=0\n"
-        "42 assets/scripts/script_param_probe.lua enabled=true pure=false hook=on_update hook_us=11 instructions=123 mem_kb=4 state_ptr=0x1\n");
+        "42 assets/scripts/test/script_param_probe.lua enabled=true pure=false hook=on_update hook_us=11 instructions=123 mem_kb=4 state_ptr=0x1\n");
   });
   const std::string script_list = Repl::instance().dispatch("script list");
   if (!Check(script_list.find("active_scripts=1") != std::string::npos &&
-                 script_list.find("assets/scripts/script_param_probe.lua") != std::string::npos &&
+                 script_list.find("assets/scripts/test/script_param_probe.lua") != std::string::npos &&
                  script_list.find("hook=on_update") != std::string::npos,
              "repl: script list prints provider panel")) return false;
   const std::string script_usage = Repl::instance().dispatch("script reload 42");

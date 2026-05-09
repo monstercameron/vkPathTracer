@@ -1060,7 +1060,7 @@ bool CheckScriptingTelemetry() {
   vkpt::scene::TransformComponent transform;
   world.set_component(entity, vkpt::scene::ComponentKind::Transform, transform);
   vkpt::scene::ScriptComponent script;
-  script.script = "assets/scripts/script_param_probe.lua";
+  script.script = "assets/scripts/test/script_param_probe.lua";
   script.params["offset_x"] = "1.5";
   world.set_component(entity, vkpt::scene::ComponentKind::Script, script);
 
@@ -1081,7 +1081,7 @@ bool CheckScriptingTelemetry() {
   vkpt::scene::SceneWorld budget_world;
   const auto budget_entity = budget_world.create_entity("budget_telemetry_probe", 30601u);
   vkpt::scene::ScriptComponent budget_script;
-  budget_script.script = "assets/scripts/script_budget_probe.lua";
+  budget_script.script = "assets/scripts/test/script_budget_probe.lua";
   budget_world.set_component(budget_entity, vkpt::scene::ComponentKind::Script, budget_script);
   auto budget_runtime = vkpt::scripting::CreateScriptRuntime();
   budget_runtime->reload_bindings(budget_world);
@@ -1111,7 +1111,7 @@ bool CheckScriptingTelemetry() {
                "script telemetry probe should execute one hook") &&
          Check(status.active_scripts == 1u && status.hooks_fired_total == 1u,
                "ScriptingStatus should expose active scripts and fired hook count") &&
-         Check(script_list.find("assets/scripts/script_param_probe.lua") != std::string::npos &&
+         Check(script_list.find("assets/scripts/test/script_param_probe.lua") != std::string::npos &&
                    script_list.find("hooks_fired_total=1") != std::string::npos,
                "script list output should include per-script and aggregate status") &&
          Check(budget_dispatch.hook_call_count == 0u,
@@ -1136,7 +1136,7 @@ bool CheckScriptingTelemetry() {
   vkpt::scene::SceneWorld world;
   const auto entity = world.create_entity("script_status_probe", 30600u);
   vkpt::scene::ScriptComponent script;
-  script.script = "assets/scripts/script_param_probe.lua";
+  script.script = "assets/scripts/test/script_param_probe.lua";
   world.set_component(entity, vkpt::scene::ComponentKind::Script, script);
   auto runtime = vkpt::scripting::CreateScriptRuntime();
   runtime->reload_bindings(world);
@@ -1144,7 +1144,7 @@ bool CheckScriptingTelemetry() {
   const auto script_list = vkpt::scripting::FormatScriptList(*runtime);
   return Check(status.active_scripts == 1u,
                "ScriptingStatus should expose active scripts without Lua execution") &&
-         Check(script_list.find("assets/scripts/script_param_probe.lua") != std::string::npos,
+         Check(script_list.find("assets/scripts/test/script_param_probe.lua") != std::string::npos,
                "script list output should include bindings without Lua execution");
 #endif
 }
@@ -1550,7 +1550,7 @@ int RunScriptingRuntimeSmoke() {
   vkpt::scene::TransformComponent param_transform;
   param_world.set_transform(param_entity, param_transform);
   vkpt::scene::ScriptComponent param_script;
-  param_script.script = "assets/scripts/script_param_probe.lua";
+  param_script.script = "assets/scripts/test/script_param_probe.lua";
   param_script.params["offset_x"] = "2.5";
   if (!param_world.set_component(param_entity, vkpt::scene::ComponentKind::Script, param_script)) {
     return 1;
@@ -1606,7 +1606,7 @@ int RunScriptingRuntimeSmoke() {
                                         vkpt::core::StableEntityId{123}}) {
     const auto entity = annotation_cache_world.create_entity("annotation_cache_probe", id);
     vkpt::scene::ScriptComponent cache_script;
-    cache_script.script = "assets/scripts/script_param_probe.lua";
+    cache_script.script = "assets/scripts/test/script_param_probe.lua";
     if (!annotation_cache_world.set_component(entity, vkpt::scene::ComponentKind::Script, cache_script)) {
       return 1;
     }
@@ -1746,7 +1746,7 @@ return {}
       annotated_default_world.create_entity("annotated_default_probe", 121);
   annotated_default_world.set_transform(annotated_default_entity, vkpt::scene::TransformComponent{});
   vkpt::scene::ScriptComponent annotated_default_script;
-  annotated_default_script.script = "assets/scripts/script_param_probe.lua";
+  annotated_default_script.script = "assets/scripts/test/script_param_probe.lua";
   if (!annotated_default_world.set_component(
           annotated_default_entity,
           vkpt::scene::ComponentKind::Script,
@@ -1883,7 +1883,7 @@ return {
   vkpt::scene::SceneEntityDefinition param_roundtrip_entity;
   param_roundtrip_entity.id = 130;
   param_roundtrip_entity.name = "Script Param Roundtrip";
-  param_roundtrip_entity.script.script = "assets/scripts/script_param_probe.lua";
+  param_roundtrip_entity.script.script = "assets/scripts/test/script_param_probe.lua";
   param_roundtrip_entity.script.module_id = "roundtrip";
   param_roundtrip_entity.script.params["speed"] = "3.25";
   param_roundtrip_entity.script.params["enabled"] = "true";
@@ -2079,7 +2079,7 @@ return script
   sun_light.type = "spot";
   sun_world.set_component(sun_entity, vkpt::scene::ComponentKind::Light, sun_light);
   vkpt::scene::ScriptComponent sun_script;
-  sun_script.script = "assets/scripts/warehouse_time_of_day_sun.lua";
+  sun_script.script = "assets/scripts/user/warehouse_time_of_day_sun.lua";
   sun_script.params["time_of_day_hour"] = "12.0";
   sun_script.params["sunrise_hour"] = "6.0";
   sun_script.params["sunset_hour"] = "18.0";
@@ -2135,7 +2135,7 @@ return script
                                  vkpt::scene::ComponentKind::Camera,
                                  fps_camera_component);
   vkpt::scene::ScriptComponent fps_camera_script;
-  fps_camera_script.script = "assets/scripts/generic_fps_camera.lua";
+  fps_camera_script.script = "assets/scripts/systems/generic_fps_camera.lua";
   fps_camera_script.params["movement_mode"] = "walk";
   fps_camera_script.params["walk_speed"] = "6.0";
   fps_camera_script.params["fixed_y"] = "1.72";
@@ -2255,7 +2255,7 @@ return script
   for (const auto& entity : lowest_lod_document_result.value().entities) {
     if (entity.id == 9900u &&
         entity.has_camera &&
-        entity.script.script == "assets/scripts/generic_fps_camera.lua" &&
+        entity.script.script == "assets/scripts/systems/generic_fps_camera.lua" &&
         entity.script.params.contains("walk_speed")) {
       warehouse_camera_has_fps_script = true;
     }
@@ -2303,7 +2303,7 @@ return script
     return 1;
   }
   std::vector<std::filesystem::path> lua_script_files;
-  for (const auto& entry : std::filesystem::directory_iterator(scripts_dir)) {
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(scripts_dir)) {
     if (entry.is_regular_file() && entry.path().extension() == ".lua") {
       lua_script_files.push_back(entry.path());
     }
@@ -2336,7 +2336,7 @@ return script
   vkpt::scene::SceneWorld budget_world;
   const auto budget_entity = budget_world.create_entity("budget_probe", 121);
   vkpt::scene::ScriptComponent budget_script;
-  budget_script.script = "assets/scripts/script_budget_probe.lua";
+  budget_script.script = "assets/scripts/test/script_budget_probe.lua";
   budget_world.set_component(budget_entity, vkpt::scene::ComponentKind::Script, budget_script);
   auto budget_runtime = vkpt::scripting::CreateScriptRuntime();
   budget_runtime->reload_bindings(budget_world);
@@ -2364,7 +2364,7 @@ return script
   vkpt::scene::SceneWorld sandbox_world;
   const auto sandbox_entity = sandbox_world.create_entity("sandbox_probe", 122);
   vkpt::scene::ScriptComponent sandbox_script;
-  sandbox_script.script = "assets/scripts/script_sandbox_probe.lua";
+  sandbox_script.script = "assets/scripts/test/script_sandbox_probe.lua";
   sandbox_world.set_component(sandbox_entity, vkpt::scene::ComponentKind::Script, sandbox_script);
   auto sandbox_runtime = vkpt::scripting::CreateScriptRuntime();
   sandbox_runtime->reload_bindings(sandbox_world);
@@ -3141,7 +3141,7 @@ return script
     }
     return 1;
   }
-  const auto live_edit_script_path = FindRepoFile("assets/scripts/live_edit_model_lab.lua");
+  const auto live_edit_script_path = FindRepoFile("assets/scripts/user/live_edit_model_lab.lua");
   if (!Check(PathExists(live_edit_script_path),
              "live edit model lab script should exist")) {
     return 1;
@@ -3168,7 +3168,7 @@ return script
       live_edit_runtime->bindings().begin(),
       live_edit_runtime->bindings().end(),
       [](const vkpt::scripting::ScriptBinding& binding) {
-        return binding.source == "assets/scripts/live_edit_model_lab.lua";
+        return binding.source == "assets/scripts/user/live_edit_model_lab.lua";
       });
   auto live_edit_has_param = [&](std::string_view name) {
     return live_edit_binding != live_edit_runtime->bindings().end() &&
