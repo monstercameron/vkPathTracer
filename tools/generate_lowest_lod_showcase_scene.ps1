@@ -486,7 +486,7 @@ function Build-Scene([string]$outputPath) {
       blend = 0.48
     }
     script = [ordered]@{
-      source = "assets/scripts/warehouse_time_of_day_sun.lua"
+      source = "assets/scripts/user/warehouse_time_of_day_sun.lua"
       language = "lua"
       entry = "default"
       enabled = $true
@@ -516,7 +516,7 @@ function Build-Scene([string]$outputPath) {
       exposure_compensation = 2.35
     }
     script = [ordered]@{
-      source = "assets/scripts/generic_fps_camera.lua"
+      source = "assets/scripts/systems/generic_fps_camera.lua"
       language = "lua"
       entry = "default"
       enabled = $true

@@ -1,0 +1,360 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Representative Acceptance Scene",
+    "author": "vkPathTracer",
+    "created": "2026-05-09",
+    "notes": "Acceptance gate fixture: continuous physics (rail/stands/targets), continuous FPS camera motion, 50 active scripts (1 FPS controller + 49 cheap-tick), 20 audio emitters (one-shots + ambient mix). Used by --qt-stress-gate to verify SYSTEM.md acceptance gates."
+  },
+  "assets": [
+    {
+      "id": 8330,
+      "type": "environment/hdri",
+      "uri": "../skies/kiara_1_dawn_1k.hdr",
+      "name": "Acceptance scene dawn sky"
+    },
+    {
+      "id": 8331,
+      "type": "model/gltf",
+      "uri": "../../game/models/lods/Meshy_AI_Nightfall_AR_15_0507162037_texture/lod3_very_far_r0p1/Meshy_AI_Nightfall_AR_15_0507162037_texture__lod3_very_far_r0p1.gltf",
+      "name": "Acceptance Player Rifle Model",
+      "parent": 8400,
+      "sibling_order": 0,
+      "transform": {
+        "translation": [0.40, -0.34, -0.72],
+        "rotation": [0.0, -0.7071068, 0.0, 0.7071068],
+        "scale": [0.34, 0.34, 0.34]
+      }
+    },
+    {
+      "id": 8360,
+      "type": "audio/event/spatial",
+      "uri": "../audio/footstep_dirt_gravel_01.mp3",
+      "name": "player.footstep.dirt"
+    },
+    {
+      "id": 8361,
+      "type": "audio/event/spatial",
+      "uri": "../audio/footstep_dirt_gravel_03.mp3",
+      "name": "player.footstep.gravel"
+    },
+    {
+      "id": 8362,
+      "type": "audio/event/spatial",
+      "uri": "../audio/footstep_boots_dirt_01.mp3",
+      "name": "player.footstep.boots"
+    },
+    {
+      "id": 8363,
+      "type": "audio/event/spatial",
+      "uri": "tone:rifle.fire",
+      "name": "weapon.rifle.fire"
+    },
+    {
+      "id": 8364,
+      "type": "audio/event/spatial",
+      "uri": "tone:bullet.impact",
+      "name": "weapon.bullet.impact"
+    },
+    {
+      "id": 8365,
+      "type": "audio/stream/ambience",
+      "uri": "../audio/forest_ambience_loop.mp3",
+      "name": "ambience.forest"
+    }
+  ],
+  "materials": [
+    {"id": 8340, "name": "range compacted dirt", "family": "diffuse", "albedo": [0.35, 0.32, 0.27], "roughness": 0.92, "double_sided": true},
+    {"id": 8341, "name": "range matte concrete", "family": "concrete", "albedo": [0.28, 0.30, 0.31], "roughness": 0.84},
+    {"id": 8342, "name": "target backstop dark rubber", "family": "diffuse", "albedo": [0.06, 0.07, 0.07], "roughness": 0.78},
+    {"id": 8346, "name": "lane marker muted yellow", "family": "diffuse", "albedo": [0.86, 0.64, 0.20], "roughness": 0.7},
+    {"id": 8347, "name": "range ceramic physics target", "family": "diffuse", "albedo": [0.88, 0.92, 0.96], "roughness": 0.38},
+    {"id": 8348, "name": "range blackened steel stands", "family": "metal", "albedo": [0.055, 0.060, 0.062], "roughness": 0.64, "metallic": 0.75},
+    {"id": 8349, "name": "tick prop azure", "family": "diffuse", "albedo": [0.18, 0.42, 0.78], "roughness": 0.55}
+  ],
+  "geometry": [
+    {
+      "id": 8350,
+      "name": "unit_cube",
+      "primitive": "triangle",
+      "material_id": 8341,
+      "vertices": [
+        [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]
+      ],
+      "indices": [
+        0, 1, 2, 0, 2, 3,
+        4, 6, 5, 4, 7, 6,
+        0, 4, 5, 0, 5, 1,
+        3, 2, 6, 3, 6, 7,
+        1, 5, 6, 1, 6, 2,
+        0, 3, 7, 0, 7, 4
+      ]
+    },
+    {
+      "id": 8351,
+      "name": "range_floor",
+      "primitive": "triangle",
+      "material_id": 8340,
+      "vertices": [
+        [-8.0, 0.0, -13.5], [8.0, 0.0, -13.5], [8.0, 0.0, 8.5], [-8.0, 0.0, 8.5]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    }
+  ],
+  "entities": [
+    {"id": 8399, "name": "Acceptance Demo Root"},
+    {
+      "id": 8400,
+      "name": "Acceptance Player Entity",
+      "transform": {"translation": [0.0, 1.72, 6.4], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+      "camera": {
+        "fov": 68.0, "near_plane": 0.04, "far_plane": 160.0,
+        "focus_distance": 9.0, "aperture_radius": 0.0, "f_stop": 5.6,
+        "shutter_seconds": 0.0166667, "iso": 120.0, "exposure_compensation": 0.35
+      },
+      "audio_listener": {"enabled": true, "primary": true},
+      "script": {
+        "source": "assets/scripts/systems/generic_fps_camera.lua",
+        "language": "lua",
+        "entry": "default",
+        "module_id": "acceptance_fps_camera",
+        "enabled": true,
+        "reload_on_save": false,
+        "params": {
+          "movement_mode": "walk",
+          "walk_speed": "3.9",
+          "run_multiplier": "1.7",
+          "mouse_yaw_sensitivity": "0.0020",
+          "mouse_pitch_sensitivity": "0.0016",
+          "max_mouse_delta": "120",
+          "min_pitch_degrees": "-82",
+          "max_pitch_degrees": "82",
+          "max_dt": "0.08",
+          "fov": "68",
+          "focus_distance": "9",
+          "show_controls": "false"
+        }
+      },
+      "hierarchy": {"parent": 8399, "sibling_order": 0}
+    },
+    {
+      "id": 8410,
+      "name": "Acceptance Range Floor",
+      "mesh": {"mesh_id": 8351, "material_id": 8340},
+      "hierarchy": {"parent": 8399, "sibling_order": 1}
+    },
+    {
+      "id": 8411,
+      "name": "Hero Target Backstop",
+      "transform": {"translation": [0.0, 1.15, -9.55], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [3.8, 2.3, 0.18]},
+      "mesh": {"mesh_id": 8350, "material_id": 8342},
+      "hierarchy": {"parent": 8399, "sibling_order": 2}
+    },
+    {
+      "id": 8412,
+      "name": "Range Key Area Light",
+      "transform": {"translation": [-3.2, 5.2, 1.4], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+      "light": {"type": "sphere area", "color": [1.0, 0.86, 0.62], "intensity": 7.5, "radius": 1.4},
+      "hierarchy": {"parent": 8399, "sibling_order": 3}
+    },
+    {
+      "id": 8413,
+      "name": "Kiara Dawn HDRI Scene Fill",
+      "light": {"type": "environment hdri", "color": [0.78, 0.84, 0.96], "intensity": 0.18, "radius": 0.0},
+      "hierarchy": {"parent": 8399, "sibling_order": 4}
+    },
+    {
+      "id": 8414,
+      "name": "Acceptance Player Flashlight",
+      "transform": {"translation": [0.0, 1.66, 6.4], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.10, 0.10, 0.10]},
+      "light": {"type": "spot", "color": [1.0, 0.95, 0.82], "intensity": 0.0, "radius": 14.0, "direction": [0.0, 0.0, 0.0], "beam_angle": 8.0, "blend": 0.10},
+      "hierarchy": {"parent": 8399, "sibling_order": 5}
+    },
+
+    {
+      "id": 880000,
+      "name": "Acceptance Range Floor Physics Collider",
+      "transform": {"translation": [0.0, -0.05, -2.5], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [16.0, 0.10, 22.0]},
+      "physics": {"enabled": true, "mass": 1.0, "dynamic": false, "body_type": "static", "shape": "box", "friction": 0.72, "restitution": 0.05},
+      "hierarchy": {"parent": 8399, "sibling_order": 10}
+    },
+    {
+      "id": 880010,
+      "name": "Acceptance Range Target Rail",
+      "transform": {"translation": [0.0, 0.62, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [5.8, 0.12, 0.22]},
+      "mesh": {"mesh_id": 8350, "material_id": 8348},
+      "physics": {"enabled": true, "mass": 1.0, "dynamic": false, "body_type": "static", "shape": "box", "friction": 0.62, "restitution": 0.18},
+      "hierarchy": {"parent": 8399, "sibling_order": 11}
+    },
+    {
+      "id": 880020,
+      "name": "Acceptance Stand 01 Post",
+      "transform": {"translation": [-2.4, 0.55, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.10, 1.10, 0.10]},
+      "mesh": {"mesh_id": 8350, "material_id": 8348},
+      "physics": {"enabled": true, "mass": 1.0, "dynamic": false, "body_type": "static", "shape": "box", "friction": 0.6, "restitution": 0.12},
+      "hierarchy": {"parent": 8399, "sibling_order": 12}
+    },
+    {
+      "id": 880021,
+      "name": "Acceptance Stand 02 Post",
+      "transform": {"translation": [-1.2, 0.55, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.10, 1.10, 0.10]},
+      "mesh": {"mesh_id": 8350, "material_id": 8348},
+      "physics": {"enabled": true, "mass": 1.0, "dynamic": false, "body_type": "static", "shape": "box", "friction": 0.6, "restitution": 0.12},
+      "hierarchy": {"parent": 8399, "sibling_order": 13}
+    },
+    {
+      "id": 880022,
+      "name": "Acceptance Stand 03 Post",
+      "transform": {"translation": [0.0, 0.55, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.10, 1.10, 0.10]},
+      "mesh": {"mesh_id": 8350, "material_id": 8348},
+      "physics": {"enabled": true, "mass": 1.0, "dynamic": false, "body_type": "static", "shape": "box", "friction": 0.6, "restitution": 0.12},
+      "hierarchy": {"parent": 8399, "sibling_order": 14}
+    },
+    {
+      "id": 880023,
+      "name": "Acceptance Stand 04 Post",
+      "transform": {"translation": [1.2, 0.55, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.10, 1.10, 0.10]},
+      "mesh": {"mesh_id": 8350, "material_id": 8348},
+      "physics": {"enabled": true, "mass": 1.0, "dynamic": false, "body_type": "static", "shape": "box", "friction": 0.6, "restitution": 0.12},
+      "hierarchy": {"parent": 8399, "sibling_order": 15}
+    },
+    {
+      "id": 880024,
+      "name": "Acceptance Stand 05 Post",
+      "transform": {"translation": [2.4, 0.55, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.10, 1.10, 0.10]},
+      "mesh": {"mesh_id": 8350, "material_id": 8348},
+      "physics": {"enabled": true, "mass": 1.0, "dynamic": false, "body_type": "static", "shape": "box", "friction": 0.6, "restitution": 0.12},
+      "hierarchy": {"parent": 8399, "sibling_order": 16}
+    },
+
+    {
+      "id": 880100,
+      "name": "Acceptance Sphere Target 01",
+      "transform": {"translation": [-2.4, 1.18, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.34, 0.34, 0.34]},
+      "mesh": {"mesh_id": 8350, "material_id": 8347},
+      "physics": {"enabled": true, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
+      "hierarchy": {"parent": 8399, "sibling_order": 17}
+    },
+    {
+      "id": 880101,
+      "name": "Acceptance Sphere Target 02",
+      "transform": {"translation": [-1.2, 1.18, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.34, 0.34, 0.34]},
+      "mesh": {"mesh_id": 8350, "material_id": 8347},
+      "physics": {"enabled": true, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
+      "hierarchy": {"parent": 8399, "sibling_order": 18}
+    },
+    {
+      "id": 880102,
+      "name": "Acceptance Sphere Target 03",
+      "transform": {"translation": [0.0, 1.18, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.34, 0.34, 0.34]},
+      "mesh": {"mesh_id": 8350, "material_id": 8347},
+      "physics": {"enabled": true, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
+      "hierarchy": {"parent": 8399, "sibling_order": 19}
+    },
+    {
+      "id": 880103,
+      "name": "Acceptance Sphere Target 04",
+      "transform": {"translation": [1.2, 1.18, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.34, 0.34, 0.34]},
+      "mesh": {"mesh_id": 8350, "material_id": 8347},
+      "physics": {"enabled": true, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
+      "hierarchy": {"parent": 8399, "sibling_order": 20}
+    },
+    {
+      "id": 880104,
+      "name": "Acceptance Sphere Target 05",
+      "transform": {"translation": [2.4, 1.18, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.34, 0.34, 0.34]},
+      "mesh": {"mesh_id": 8350, "material_id": 8347},
+      "physics": {"enabled": true, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
+      "hierarchy": {"parent": 8399, "sibling_order": 21}
+    },
+
+    {"id": 870101, "name": "Acceptance Audio Emitter 01", "transform": {"translation": [-3.2, 0.30, -1.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "ambience.forest", "bus": "ambience", "enabled": true, "autoplay": false, "loop": true, "spatial": false, "volume": 0.10, "pitch": 1.0, "min_distance": 1.0, "max_distance": 24.0}, "hierarchy": {"parent": 8399, "sibling_order": 80}},
+    {"id": 870102, "name": "Acceptance Audio Emitter 02", "transform": {"translation": [-2.4, 0.30, -1.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "weapon.rifle.fire", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.40, "pitch": 1.0, "min_distance": 1.0, "max_distance": 30.0}, "hierarchy": {"parent": 8399, "sibling_order": 81}},
+    {"id": 870103, "name": "Acceptance Audio Emitter 03", "transform": {"translation": [-1.6, 0.30, -1.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "weapon.bullet.impact", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.40, "pitch": 1.0, "min_distance": 1.0, "max_distance": 25.0}, "hierarchy": {"parent": 8399, "sibling_order": 82}},
+    {"id": 870104, "name": "Acceptance Audio Emitter 04", "transform": {"translation": [-0.8, 0.30, -1.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.dirt", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.30, "pitch": 1.0, "min_distance": 0.5, "max_distance": 14.0}, "hierarchy": {"parent": 8399, "sibling_order": 83}},
+    {"id": 870105, "name": "Acceptance Audio Emitter 05", "transform": {"translation": [0.0, 0.30, -1.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.gravel", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.30, "pitch": 1.0, "min_distance": 0.5, "max_distance": 14.0}, "hierarchy": {"parent": 8399, "sibling_order": 84}},
+    {"id": 870106, "name": "Acceptance Audio Emitter 06", "transform": {"translation": [0.8, 0.30, -1.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.boots", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.30, "pitch": 1.0, "min_distance": 0.5, "max_distance": 14.0}, "hierarchy": {"parent": 8399, "sibling_order": 85}},
+    {"id": 870107, "name": "Acceptance Audio Emitter 07", "transform": {"translation": [1.6, 0.30, -1.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "weapon.rifle.fire", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.30, "pitch": 1.0, "min_distance": 1.0, "max_distance": 25.0}, "hierarchy": {"parent": 8399, "sibling_order": 86}},
+    {"id": 870108, "name": "Acceptance Audio Emitter 08", "transform": {"translation": [2.4, 0.30, -1.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "weapon.bullet.impact", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.30, "pitch": 1.0, "min_distance": 1.0, "max_distance": 22.0}, "hierarchy": {"parent": 8399, "sibling_order": 87}},
+    {"id": 870109, "name": "Acceptance Audio Emitter 09", "transform": {"translation": [3.2, 0.30, -1.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.dirt", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.25, "pitch": 1.0, "min_distance": 0.5, "max_distance": 12.0}, "hierarchy": {"parent": 8399, "sibling_order": 88}},
+    {"id": 870110, "name": "Acceptance Audio Emitter 10", "transform": {"translation": [-3.2, 0.30, 0.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.gravel", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.25, "pitch": 1.0, "min_distance": 0.5, "max_distance": 12.0}, "hierarchy": {"parent": 8399, "sibling_order": 89}},
+    {"id": 870111, "name": "Acceptance Audio Emitter 11", "transform": {"translation": [-2.4, 0.30, 0.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.boots", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.25, "pitch": 1.0, "min_distance": 0.5, "max_distance": 12.0}, "hierarchy": {"parent": 8399, "sibling_order": 90}},
+    {"id": 870112, "name": "Acceptance Audio Emitter 12", "transform": {"translation": [-1.6, 0.30, 0.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "weapon.rifle.fire", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.20, "pitch": 1.05, "min_distance": 1.0, "max_distance": 22.0}, "hierarchy": {"parent": 8399, "sibling_order": 91}},
+    {"id": 870113, "name": "Acceptance Audio Emitter 13", "transform": {"translation": [-0.8, 0.30, 0.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "weapon.bullet.impact", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.20, "pitch": 1.0, "min_distance": 1.0, "max_distance": 22.0}, "hierarchy": {"parent": 8399, "sibling_order": 92}},
+    {"id": 870114, "name": "Acceptance Audio Emitter 14", "transform": {"translation": [0.0, 0.30, 0.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.dirt", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.20, "pitch": 0.95, "min_distance": 0.5, "max_distance": 12.0}, "hierarchy": {"parent": 8399, "sibling_order": 93}},
+    {"id": 870115, "name": "Acceptance Audio Emitter 15", "transform": {"translation": [0.8, 0.30, 0.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.gravel", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.20, "pitch": 1.05, "min_distance": 0.5, "max_distance": 12.0}, "hierarchy": {"parent": 8399, "sibling_order": 94}},
+    {"id": 870116, "name": "Acceptance Audio Emitter 16", "transform": {"translation": [1.6, 0.30, 0.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.boots", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.20, "pitch": 1.0, "min_distance": 0.5, "max_distance": 12.0}, "hierarchy": {"parent": 8399, "sibling_order": 95}},
+    {"id": 870117, "name": "Acceptance Audio Emitter 17", "transform": {"translation": [2.4, 0.30, 0.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "weapon.rifle.fire", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.18, "pitch": 1.0, "min_distance": 1.0, "max_distance": 20.0}, "hierarchy": {"parent": 8399, "sibling_order": 96}},
+    {"id": 870118, "name": "Acceptance Audio Emitter 18", "transform": {"translation": [3.2, 0.30, 0.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "weapon.bullet.impact", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.18, "pitch": 1.0, "min_distance": 1.0, "max_distance": 20.0}, "hierarchy": {"parent": 8399, "sibling_order": 97}},
+    {"id": 870119, "name": "Acceptance Audio Emitter 19", "transform": {"translation": [-3.2, 0.30, 2.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.dirt", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.16, "pitch": 1.0, "min_distance": 0.5, "max_distance": 10.0}, "hierarchy": {"parent": 8399, "sibling_order": 98}},
+    {"id": 870120, "name": "Acceptance Audio Emitter 20", "transform": {"translation": [-2.4, 0.30, 2.0], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.18,0.18,0.18]}, "mesh": {"mesh_id": 8350, "material_id": 8346}, "audio_emitter": {"event": "player.footstep.gravel", "bus": "sfx", "enabled": true, "autoplay": false, "loop": false, "spatial": true, "volume": 0.16, "pitch": 1.0, "min_distance": 0.5, "max_distance": 10.0}, "hierarchy": {"parent": 8399, "sibling_order": 99}},
+    {"id": 871000, "name": "Acceptance Idle Tick 01", "transform": {"translation": [-3, 0.20, 3.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_1", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 200}},
+    {"id": 871001, "name": "Acceptance Idle Tick 02", "transform": {"translation": [-2, 0.20, 3.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_2", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 201}},
+    {"id": 871002, "name": "Acceptance Idle Tick 03", "transform": {"translation": [-1, 0.20, 3.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_3", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 202}},
+    {"id": 871003, "name": "Acceptance Idle Tick 04", "transform": {"translation": [0, 0.20, 3.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_4", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 203}},
+    {"id": 871004, "name": "Acceptance Idle Tick 05", "transform": {"translation": [1, 0.20, 3.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_5", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 204}},
+    {"id": 871005, "name": "Acceptance Idle Tick 06", "transform": {"translation": [2, 0.20, 3.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_6", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 205}},
+    {"id": 871006, "name": "Acceptance Idle Tick 07", "transform": {"translation": [3, 0.20, 3.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_7", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 206}},
+    {"id": 871007, "name": "Acceptance Idle Tick 08", "transform": {"translation": [-3, 0.20, 4.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_8", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 207}},
+    {"id": 871008, "name": "Acceptance Idle Tick 09", "transform": {"translation": [-2, 0.20, 4.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_9", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 208}},
+    {"id": 871009, "name": "Acceptance Idle Tick 10", "transform": {"translation": [-1, 0.20, 4.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_10", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 209}},
+    {"id": 871010, "name": "Acceptance Idle Tick 11", "transform": {"translation": [0, 0.20, 4.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_11", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 210}},
+    {"id": 871011, "name": "Acceptance Idle Tick 12", "transform": {"translation": [1, 0.20, 4.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_12", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 211}},
+    {"id": 871012, "name": "Acceptance Idle Tick 13", "transform": {"translation": [2, 0.20, 4.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_13", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 212}},
+    {"id": 871013, "name": "Acceptance Idle Tick 14", "transform": {"translation": [3, 0.20, 4.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_14", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 213}},
+    {"id": 871014, "name": "Acceptance Idle Tick 15", "transform": {"translation": [-3, 0.20, 4.7], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_15", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 214}},
+    {"id": 871015, "name": "Acceptance Idle Tick 16", "transform": {"translation": [-2, 0.20, 4.7], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_16", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 215}},
+    {"id": 871016, "name": "Acceptance Idle Tick 17", "transform": {"translation": [-1, 0.20, 4.7], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_17", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 216}},
+    {"id": 871017, "name": "Acceptance Idle Tick 18", "transform": {"translation": [0, 0.20, 4.7], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_18", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 217}},
+    {"id": 871018, "name": "Acceptance Idle Tick 19", "transform": {"translation": [1, 0.20, 4.7], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_19", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 218}},
+    {"id": 871019, "name": "Acceptance Idle Tick 20", "transform": {"translation": [2, 0.20, 4.7], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_20", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 219}},
+    {"id": 871020, "name": "Acceptance Idle Tick 21", "transform": {"translation": [3, 0.20, 4.7], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_21", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 220}},
+    {"id": 871021, "name": "Acceptance Idle Tick 22", "transform": {"translation": [-3, 0.20, 5.3], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_22", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 221}},
+    {"id": 871022, "name": "Acceptance Idle Tick 23", "transform": {"translation": [-2, 0.20, 5.3], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_23", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 222}},
+    {"id": 871023, "name": "Acceptance Idle Tick 24", "transform": {"translation": [-1, 0.20, 5.3], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_24", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 223}},
+    {"id": 871024, "name": "Acceptance Idle Tick 25", "transform": {"translation": [0, 0.20, 5.3], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_25", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 224}},
+    {"id": 871025, "name": "Acceptance Idle Tick 26", "transform": {"translation": [1, 0.20, 5.3], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_26", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 225}},
+    {"id": 871026, "name": "Acceptance Idle Tick 27", "transform": {"translation": [2, 0.20, 5.3], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_27", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 226}},
+    {"id": 871027, "name": "Acceptance Idle Tick 28", "transform": {"translation": [3, 0.20, 5.3], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_28", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 227}},
+    {"id": 871028, "name": "Acceptance Idle Tick 29", "transform": {"translation": [-3, 0.20, 5.9], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_29", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 228}},
+    {"id": 871029, "name": "Acceptance Idle Tick 30", "transform": {"translation": [-2, 0.20, 5.9], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_30", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 229}},
+    {"id": 871030, "name": "Acceptance Idle Tick 31", "transform": {"translation": [-1, 0.20, 5.9], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_31", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 230}},
+    {"id": 871031, "name": "Acceptance Idle Tick 32", "transform": {"translation": [0, 0.20, 5.9], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_32", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 231}},
+    {"id": 871032, "name": "Acceptance Idle Tick 33", "transform": {"translation": [1, 0.20, 5.9], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_33", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 232}},
+    {"id": 871033, "name": "Acceptance Idle Tick 34", "transform": {"translation": [2, 0.20, 5.9], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_34", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 233}},
+    {"id": 871034, "name": "Acceptance Idle Tick 35", "transform": {"translation": [3, 0.20, 5.9], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_35", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 234}},
+    {"id": 871035, "name": "Acceptance Idle Tick 36", "transform": {"translation": [-3, 0.20, 6.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_36", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 235}},
+    {"id": 871036, "name": "Acceptance Idle Tick 37", "transform": {"translation": [-2, 0.20, 6.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_37", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 236}},
+    {"id": 871037, "name": "Acceptance Idle Tick 38", "transform": {"translation": [-1, 0.20, 6.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_38", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 237}},
+    {"id": 871038, "name": "Acceptance Idle Tick 39", "transform": {"translation": [0, 0.20, 6.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_39", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 238}},
+    {"id": 871039, "name": "Acceptance Idle Tick 40", "transform": {"translation": [1, 0.20, 6.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_40", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 239}},
+    {"id": 871040, "name": "Acceptance Idle Tick 41", "transform": {"translation": [2, 0.20, 6.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_41", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 240}},
+    {"id": 871041, "name": "Acceptance Idle Tick 42", "transform": {"translation": [3, 0.20, 6.5], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_42", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 241}},
+    {"id": 871042, "name": "Acceptance Idle Tick 43", "transform": {"translation": [-3, 0.20, 7.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_43", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 242}},
+    {"id": 871043, "name": "Acceptance Idle Tick 44", "transform": {"translation": [-2, 0.20, 7.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_44", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 243}},
+    {"id": 871044, "name": "Acceptance Idle Tick 45", "transform": {"translation": [-1, 0.20, 7.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_45", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 244}},
+    {"id": 871045, "name": "Acceptance Idle Tick 46", "transform": {"translation": [0, 0.20, 7.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_46", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 245}},
+    {"id": 871046, "name": "Acceptance Idle Tick 47", "transform": {"translation": [1, 0.20, 7.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_47", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 246}},
+    {"id": 871047, "name": "Acceptance Idle Tick 48", "transform": {"translation": [2, 0.20, 7.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_48", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 247}},
+    {"id": 871048, "name": "Acceptance Idle Tick 49", "transform": {"translation": [3, 0.20, 7.1], "rotation": [0.0,0.0,0.0,1.0], "scale": [0.16,0.16,0.16]}, "mesh": {"mesh_id": 8350, "material_id": 8349}, "script": {"source": "assets/scripts/user/representative_idle_tick.lua", "language": "lua", "entry": "default", "module_id": "acceptance_idle_tick_49", "enabled": true, "reload_on_save": false, "params": {"amplitude": "0.02", "rate": "1.0"}}, "hierarchy": {"parent": 8399, "sibling_order": 248}}
+  ],
+  "cameras": [
+    {
+      "id": 8400,
+      "name": "Acceptance Player Entity",
+      "fov": 68.0,
+      "near_plane": 0.04,
+      "far_plane": 160.0,
+      "focus_distance": 9.0,
+      "aperture_radius": 0.0,
+      "f_stop": 5.6,
+      "exposure_compensation": 0.35
+    }
+  ],
+  "benchmark": {
+    "enabled": true,
+    "frame_target": 64,
+    "warmup_frames": 4
+  }
+}

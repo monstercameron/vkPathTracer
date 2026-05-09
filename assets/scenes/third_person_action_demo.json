@@ -325,7 +325,7 @@
         "scale": [1.0, 1.0, 1.0]
       },
       "script": {
-        "source": "assets/scripts/third_person_action_player.lua",
+        "source": "assets/scripts/user/third_person_action_player.lua",
         "language": "lua",
         "entry": "default",
         "enabled": true,

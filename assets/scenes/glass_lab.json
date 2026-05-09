@@ -246,7 +246,7 @@
       },
       "hierarchy": {"parent": 606, "sibling_order": 0},
       "script": {
-        "source": "assets/scripts/generic_fps_camera.lua",
+        "source": "assets/scripts/systems/generic_fps_camera.lua",
         "language": "lua",
         "entry": "default",
         "module_id": "generic_fps_camera",

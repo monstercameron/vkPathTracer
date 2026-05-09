@@ -261,7 +261,7 @@
         "radius": 0.55
       },
       "script": {
-        "source": "assets/scripts/ecs_lifecycle_light.lua",
+        "source": "assets/scripts/user/ecs_lifecycle_light.lua",
         "language": "lua",
         "entry": "default",
         "enabled": true,
@@ -310,7 +310,7 @@
         "material_id": 7102
       },
       "script": {
-        "source": "assets/scripts/ecs_lifecycle_mover.lua",
+        "source": "assets/scripts/user/ecs_lifecycle_mover.lua",
         "language": "lua",
         "entry": "default",
         "enabled": true,
@@ -347,7 +347,7 @@
         "material_id": 7103
       },
       "script": {
-        "source": "assets/scripts/ecs_lifecycle_spawner.lua",
+        "source": "assets/scripts/user/ecs_lifecycle_spawner.lua",
         "language": "lua",
         "entry": "default",
         "enabled": true,
@@ -384,7 +384,7 @@
         "material_id": 7104
       },
       "script": {
-        "source": "assets/scripts/ecs_lifecycle_dormant.lua",
+        "source": "assets/scripts/user/ecs_lifecycle_dormant.lua",
         "language": "lua",
         "entry": "default",
         "enabled": false,

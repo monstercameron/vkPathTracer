@@ -291,7 +291,7 @@
         "primary": true
       },
       "script": {
-        "source": "assets/scripts/fps_weapon_demo.lua",
+        "source": "assets/scripts/user/fps_weapon_demo.lua",
         "language": "lua",
         "entry": "default",
         "module_id": "fps_weapon_demo",
@@ -323,8 +323,12 @@
           "bullet_visual_radius": "0.022",
           "bullet_visual_length": "0.16",
           "flashlight_name": "FPS Player Flashlight",
-          "flashlight_intensity": "28",
-          "flashlight_radius": "6",
+          "flashlight_intensity": "38",
+          "flashlight_radius": "14",
+          "flashlight_beam_degrees": "8",
+          "flashlight_blend": "0.10",
+          "flashlight_forward_offset": "0.18",
+          "flashlight_drop": "0.06",
           "target_name": "FPS Hero Target Collision Proxy",
           "weapon_name": "FPS Player Rifle Model",
           "show_controls": "true"
@@ -452,8 +456,8 @@
       },
       "light": {
         "type": "sphere area",
-        "color": [1.0, 0.88, 0.68],
-        "intensity": 34.0,
+        "color": [1.0, 0.86, 0.62],
+        "intensity": 7.5,
         "radius": 1.4
       },
       "hierarchy": {
@@ -466,8 +470,8 @@
       "name": "Kiara Dawn HDRI Scene Fill",
       "light": {
         "type": "environment hdri",
-        "color": [1.0, 0.96, 0.88],
-        "intensity": 0.82,
+        "color": [0.78, 0.84, 0.96],
+        "intensity": 0.18,
         "radius": 0.0
       },
       "hierarchy": {
@@ -485,8 +489,8 @@
       },
       "light": {
         "type": "point",
-        "color": [0.38, 0.58, 1.0],
-        "intensity": 8.0,
+        "color": [0.34, 0.52, 1.0],
+        "intensity": 3.5,
         "radius": 1.2
       },
       "hierarchy": {
@@ -498,15 +502,18 @@
       "id": 7318,
       "name": "FPS Player Flashlight",
       "transform": {
-        "translation": [0.12, 1.54, 5.28],
+        "translation": [0.0, 1.66, 6.4],
         "rotation": [0.0, 0.0, 0.0, 1.0],
         "scale": [0.10, 0.10, 0.10]
       },
       "light": {
-        "type": "point",
-        "color": [0.80, 0.90, 1.0],
+        "type": "spot",
+        "color": [1.0, 0.95, 0.82],
         "intensity": 0.0,
-        "radius": 6.0
+        "radius": 14.0,
+        "direction": [0.0, 0.0, 0.0],
+        "beam_angle": 8.0,
+        "blend": 0.10
       },
       "hierarchy": {
         "parent": 7299,
@@ -582,7 +589,7 @@
       "name": "FPS Range Sphere Target 01",
       "transform": {"translation": [-2.4, 1.44, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.34, 0.34, 0.34]},
       "mesh": {"mesh_id": 7352, "material_id": 7347},
-      "physics": {"enabled": true, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
+      "physics": {"enabled": false, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
       "hierarchy": {"parent": 7299, "sibling_order": 13}
     },
     {
@@ -606,7 +613,7 @@
       "name": "FPS Range Sphere Target 02",
       "transform": {"translation": [-1.2, 1.44, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.34, 0.34, 0.34]},
       "mesh": {"mesh_id": 7352, "material_id": 7347},
-      "physics": {"enabled": true, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
+      "physics": {"enabled": false, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
       "hierarchy": {"parent": 7299, "sibling_order": 16}
     },
     {
@@ -630,7 +637,7 @@
       "name": "FPS Range Sphere Target 03",
       "transform": {"translation": [0.0, 1.44, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.34, 0.34, 0.34]},
       "mesh": {"mesh_id": 7352, "material_id": 7347},
-      "physics": {"enabled": true, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
+      "physics": {"enabled": false, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
       "hierarchy": {"parent": 7299, "sibling_order": 19}
     },
     {
@@ -654,7 +661,7 @@
       "name": "FPS Range Sphere Target 04",
       "transform": {"translation": [1.2, 1.44, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.34, 0.34, 0.34]},
       "mesh": {"mesh_id": 7352, "material_id": 7347},
-      "physics": {"enabled": true, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
+      "physics": {"enabled": false, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
       "hierarchy": {"parent": 7299, "sibling_order": 22}
     },
     {
@@ -678,7 +685,7 @@
       "name": "FPS Range Sphere Target 05",
       "transform": {"translation": [2.4, 1.44, -5.85], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.34, 0.34, 0.34]},
       "mesh": {"mesh_id": 7352, "material_id": 7347},
-      "physics": {"enabled": true, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
+      "physics": {"enabled": false, "mass": 0.38, "dynamic": false, "body_type": "kinematic", "shape": "sphere", "friction": 0.45, "restitution": 0.55, "gravity_scale": 0.0, "allow_sleeping": true, "continuous_collision": false},
       "hierarchy": {"parent": 7299, "sibling_order": 25}
     },
     {

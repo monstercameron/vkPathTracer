@@ -235,7 +235,7 @@
         "scale": [1.05, 1.05, 1.05]
       },
       "script": {
-        "source": "assets/scripts/live_edit_model_lab.lua",
+        "source": "assets/scripts/user/live_edit_model_lab.lua",
         "language": "lua",
         "entry": "default",
         "module_id": "live_edit_model_lab",

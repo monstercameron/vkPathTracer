@@ -238,7 +238,7 @@
         "material_id": 9712
       },
       "script": {
-        "source": "assets/scripts/audio_interaction_demo.lua",
+        "source": "assets/scripts/user/audio_interaction_demo.lua",
         "language": "lua",
         "entry": "default",
         "params": {
