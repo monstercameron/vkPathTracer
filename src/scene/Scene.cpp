@@ -248,6 +248,8 @@ std::string_view to_string(ComponentKind kind) {
       return "Skeleton";
     case ComponentKind::Ragdoll:
       return "Ragdoll";
+    case ComponentKind::Animation:
+      return "Animation";
     default:
       return "Unknown";
   }
@@ -326,6 +328,13 @@ vkpt::core::Result<SceneWorld> SceneDocument::to_world() const {
       // ECS variant until later phases need transform-system reads.
       if (auto* record = world.get_entity(id)) {
         record->skeleton = entity.skeleton;
+      }
+    }
+    if (!entity.animation_clips.empty()) {
+      // Phase 3 ANI06: clips ride along on EntityRecord; the AnimationComponent
+      // (if any) holds an index into this array.
+      if (auto* record = world.get_entity(id)) {
+        record->clips = entity.animation_clips;
       }
     }
   }

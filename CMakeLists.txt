@@ -498,6 +498,8 @@ set(PT_CPU_SOURCES
   src/editor/UiModelsState.cpp
 
   # Scene, scripting, materials, and physics
+  src/animation/AnimationClip.cpp
+  src/animation/AnimationSampler.cpp
   src/animation/Skeleton.cpp
   src/assets/AssetImporters.cpp
   src/assets/AssetImportersTexture.cpp
@@ -977,6 +979,8 @@ add_executable(pt_scripting_smoke EXCLUDE_FROM_ALL
   src/jobs/JobSystem.cpp
   src/pathtracer/CpuBvhAccelerator.cpp
   src/pathtracer/SceneConversion.cpp
+  src/animation/AnimationClip.cpp
+  src/animation/AnimationSampler.cpp
   src/animation/Skeleton.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
@@ -1020,6 +1024,8 @@ add_executable(pt_physics_contract_smoke EXCLUDE_FROM_ALL
   tests/physics_contract_smoke.cpp
   src/core/log/Log.cpp
   src/core/metrics/Metrics.cpp
+  src/animation/AnimationClip.cpp
+  src/animation/AnimationSampler.cpp
   src/animation/Skeleton.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp
@@ -1108,6 +1114,8 @@ target_compile_features(pt_scene_contract_smoke PRIVATE cxx_std_23)
 
 add_executable(pt_skeleton_import_smoke EXCLUDE_FROM_ALL
   tests/skeleton_import_smoke.cpp
+  src/animation/AnimationClip.cpp
+  src/animation/AnimationSampler.cpp
   src/animation/Skeleton.cpp
   src/assets/AssetImporters.cpp
   src/assets/AssetImportersTexture.cpp
@@ -1151,6 +1159,8 @@ endif()
 # when built without PT_ENABLE_JOLT.
 add_executable(pt_ragdoll_smoke EXCLUDE_FROM_ALL
   tests/ragdoll_smoke.cpp
+  src/animation/AnimationClip.cpp
+  src/animation/AnimationSampler.cpp
   src/animation/Skeleton.cpp
   src/assets/AssetImporters.cpp
   src/assets/AssetImportersTexture.cpp
@@ -1188,6 +1198,51 @@ if(PT_ENABLE_JOLT)
     PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
 endif()
 
+# Phase 3 ANI02/03/06: animation clip + sampler smoke. Mirrors the asset
+# loader source list of pt_skeleton_import_smoke and pt_ragdoll_smoke (the
+# glTF loader pulls clips out of the same asset path) and adds the new
+# animation translation units.
+add_executable(pt_animation_sampler_smoke EXCLUDE_FROM_ALL
+  tests/animation_sampler_smoke.cpp
+  src/animation/AnimationClip.cpp
+  src/animation/AnimationSampler.cpp
+  src/animation/Skeleton.cpp
+  src/assets/AssetImporters.cpp
+  src/assets/AssetImportersTexture.cpp
+  src/assets/SceneAssetLoader.cpp
+  src/assets/SceneAssetLoaderSupport.cpp
+  src/assets/SceneAssetObjLoader.cpp
+  src/assets/SceneAssetGltfLoader.cpp
+  src/core/health/Health.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/scene/Json.cpp
+  src/scene/Scene.cpp
+  src/scene/SceneDocumentExport.cpp
+  src/scene/SceneDocumentLoad.cpp
+  src/scene/SceneScriptBootstrap.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
+  src/physics/PhysicsWorld.cpp
+  src/physics/Ragdoll.cpp
+  src/pathtracer/SceneConversion.cpp
+)
+
+target_include_directories(pt_animation_sampler_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_animation_sampler_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_animation_sampler_smoke PRIVATE Threads::Threads)
+
+if(PT_ENABLE_JOLT)
+  target_link_libraries(pt_animation_sampler_smoke PRIVATE ${PT_JOLT_TARGET})
+  target_compile_definitions(pt_animation_sampler_smoke PRIVATE
+    PT_ENABLE_JOLT
+    PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
+endif()
+
 add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
   tests/scene_script_bootstrap_smoke.cpp
   src/assets/AssetImporters.cpp
@@ -1200,6 +1255,8 @@ add_executable(pt_scene_script_bootstrap_smoke EXCLUDE_FROM_ALL
   src/core/log/Log.cpp
   src/core/metrics/Metrics.cpp
   src/pathtracer/SceneConversion.cpp
+  src/animation/AnimationClip.cpp
+  src/animation/AnimationSampler.cpp
   src/animation/Skeleton.cpp
   src/physics/PhysicsWorld.cpp
   src/physics/Ragdoll.cpp

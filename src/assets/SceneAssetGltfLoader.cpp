@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "animation/AnimationClip.h"
 #include "animation/Skeleton.h"
 #include "scene/Json.h"
 
@@ -750,6 +751,9 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
 
   // Phase 1 ANI01: import the first skin (skeleton) if present. The hero asset
   // uses a single skin, which is the common case; multi-skin support can layer on.
+  // node_to_joint is lifted to the outer scope so the Phase 3 animation
+  // parser can resolve channel.target.node -> joint-local index.
+  std::unordered_map<std::size_t, std::int32_t> node_to_joint;
   if (const auto* skins_node = JsonMember(root, "skins");
       skins_node != nullptr &&
       skins_node->kind == vkpt::scene::JsonValue::Kind::Array &&
@@ -789,7 +793,6 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
       if (joint_indices_ok && ibm_ok) {
         // node-index -> joint-local index lookup, used to translate child node
         // refs into joint-local parent indices.
-        std::unordered_map<std::size_t, std::int32_t> node_to_joint;
         node_to_joint.reserve(joint_count);
         for (std::size_t j = 0; j < joint_count; ++j) {
           node_to_joint.emplace(joint_node_indices[j], static_cast<std::int32_t>(j));
@@ -863,6 +866,233 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
         result.skeleton = std::move(skeleton);
       } else if (diagnostics) {
         diagnostics->push_back("glTF skin import skipped: malformed joints/inverseBindMatrices");
+      }
+    }
+  }
+
+  // Phase 3 ANI02/06: parse animation clips. Each clip is a list of channels
+  // bound to skeleton joints; channels targeting non-skeleton nodes or
+  // morph-target weights are ignored. CubicSpline samplers are imported as
+  // Linear with a once-per-clip diagnostic — full cubic support is deferred.
+  if (result.skeleton.has_value() && !node_to_joint.empty()) {
+    const std::int32_t skeleton_joint_count =
+        static_cast<std::int32_t>(result.skeleton->joints.size());
+    if (const auto* animations_node = JsonMember(root, "animations");
+        animations_node != nullptr &&
+        animations_node->kind == vkpt::scene::JsonValue::Kind::Array) {
+      result.animation_clips.reserve(animations_node->array.size());
+      for (std::size_t a = 0; a < animations_node->array.size(); ++a) {
+        const auto& animation_node = animations_node->array[a];
+        const auto* samplers_node = JsonMember(animation_node, "samplers");
+        const auto* channels_node = JsonMember(animation_node, "channels");
+        if (samplers_node == nullptr || channels_node == nullptr ||
+            samplers_node->kind != vkpt::scene::JsonValue::Kind::Array ||
+            channels_node->kind != vkpt::scene::JsonValue::Kind::Array) {
+          continue;
+        }
+
+        // Pre-cache parsed sampler entries. Each holds:
+        //   input  = accessor index for time (float scalar array)
+        //   output = accessor index for value (float vec3/vec4 array)
+        //   interp = Step | Linear | CubicSpline (default Linear)
+        struct SamplerCache {
+          std::size_t input = std::numeric_limits<std::size_t>::max();
+          std::size_t output = std::numeric_limits<std::size_t>::max();
+          vkpt::animation::Interpolation interp =
+              vkpt::animation::Interpolation::Linear;
+        };
+        std::vector<SamplerCache> cached_samplers;
+        cached_samplers.reserve(samplers_node->array.size());
+        for (const auto& sampler_node : samplers_node->array) {
+          SamplerCache sc;
+          sc.input = JsonIndexMember(sampler_node, "input")
+                         .value_or(std::numeric_limits<std::size_t>::max());
+          sc.output = JsonIndexMember(sampler_node, "output")
+                          .value_or(std::numeric_limits<std::size_t>::max());
+          const auto interp_str = JsonStringMember(sampler_node, "interpolation",
+                                                   "LINEAR");
+          if (interp_str == "STEP") {
+            sc.interp = vkpt::animation::Interpolation::Step;
+          } else if (interp_str == "CUBICSPLINE") {
+            sc.interp = vkpt::animation::Interpolation::CubicSpline;
+          } else {
+            sc.interp = vkpt::animation::Interpolation::Linear;
+          }
+          cached_samplers.push_back(sc);
+        }
+
+        vkpt::animation::AnimationClip clip;
+        clip.name = JsonStringMember(animation_node, "name",
+                                     "animation_" + std::to_string(a));
+        clip.tracks.resize(static_cast<std::size_t>(skeleton_joint_count));
+        for (std::int32_t j = 0; j < skeleton_joint_count; ++j) {
+          clip.tracks[static_cast<std::size_t>(j)].joint_index = j;
+        }
+
+        bool any_skeleton_channel = false;
+        bool warned_cubic_spline_for_clip = false;
+
+        for (const auto& channel_node : channels_node->array) {
+          const auto sampler_index = JsonIndexMember(channel_node, "sampler");
+          const auto* target = JsonMember(channel_node, "target");
+          if (!sampler_index || target == nullptr) {
+            continue;
+          }
+          const auto target_node = JsonIndexMember(*target, "node");
+          const auto path_str = JsonStringMember(*target, "path");
+          if (!target_node || path_str.empty()) {
+            continue;
+          }
+          if (path_str == "weights") {
+            // Morph-target animation isn't supported in P3.
+            continue;
+          }
+          const auto joint_it = node_to_joint.find(*target_node);
+          if (joint_it == node_to_joint.end()) {
+            continue;  // channel targets a non-skeleton node
+          }
+          if (*sampler_index >= cached_samplers.size()) {
+            continue;
+          }
+          const auto& sc = cached_samplers[*sampler_index];
+          if (sc.input >= accessors.size() || sc.output >= accessors.size()) {
+            continue;
+          }
+          // For CubicSpline samplers glTF stores 3 values per keyframe
+          // (in_tangent, value, out_tangent). We currently extract only the
+          // value channel and demote the track to Linear; warn once.
+          if (sc.interp == vkpt::animation::Interpolation::CubicSpline) {
+            if (!warned_cubic_spline_for_clip && diagnostics) {
+              diagnostics->push_back(
+                  "glTF clip '" + clip.name +
+                  "' uses CUBICSPLINE interpolation; importing as LINEAR");
+            }
+            warned_cubic_spline_for_clip = true;
+          }
+
+          std::vector<float> times;
+          std::size_t time_components = 0u;
+          if (!GltfReadAccessorFloats(accessors, buffer_views, buffers,
+                                      sc.input, times, &time_components) ||
+              time_components != 1u || times.empty()) {
+            continue;
+          }
+          std::vector<float> values;
+          std::size_t value_components = 0u;
+          if (!GltfReadAccessorFloats(accessors, buffer_views, buffers,
+                                      sc.output, values, &value_components)) {
+            continue;
+          }
+
+          // For CubicSpline imports we slice out only the value entries
+          // (every 3rd block of components). For non-cubic, every entry is a
+          // value.
+          const std::size_t key_count = times.size();
+          const std::size_t expected_value_count =
+              sc.interp == vkpt::animation::Interpolation::CubicSpline
+                  ? key_count * 3u * value_components
+                  : key_count * value_components;
+          if (values.size() < expected_value_count) {
+            continue;
+          }
+          auto value_at = [&](std::size_t key, std::size_t comp) -> float {
+            const std::size_t base =
+                sc.interp == vkpt::animation::Interpolation::CubicSpline
+                    ? (key * 3u + 1u) * value_components  // skip in_tangent
+                    : key * value_components;
+            return values[base + comp];
+          };
+
+          const std::int32_t joint_index = joint_it->second;
+          auto& track =
+              clip.tracks[static_cast<std::size_t>(joint_index)];
+          // The channel-level interpolation overrides any prior assignment
+          // for the same joint; in well-formed glTF assets all channels for a
+          // joint share the same sampler interpolation.
+          track.interpolation =
+              sc.interp == vkpt::animation::Interpolation::CubicSpline
+                  ? vkpt::animation::Interpolation::Linear
+                  : sc.interp;
+
+          if (path_str == "translation" && value_components == 3u) {
+            track.translation.reserve(track.translation.size() + key_count);
+            for (std::size_t k = 0; k < key_count; ++k) {
+              vkpt::animation::TranslationKey key;
+              key.time = times[k];
+              key.value.x = value_at(k, 0u);
+              key.value.y = value_at(k, 1u);
+              key.value.z = value_at(k, 2u);
+              track.translation.push_back(key);
+            }
+            any_skeleton_channel = true;
+          } else if (path_str == "rotation" && value_components == 4u) {
+            track.rotation.reserve(track.rotation.size() + key_count);
+            for (std::size_t k = 0; k < key_count; ++k) {
+              vkpt::animation::RotationKey key;
+              key.time = times[k];
+              // glTF rotation order is x,y,z,w — same as our Quat layout.
+              key.value.x = value_at(k, 0u);
+              key.value.y = value_at(k, 1u);
+              key.value.z = value_at(k, 2u);
+              key.value.w = value_at(k, 3u);
+              track.rotation.push_back(key);
+            }
+            any_skeleton_channel = true;
+          } else if (path_str == "scale" && value_components == 3u) {
+            track.scale.reserve(track.scale.size() + key_count);
+            for (std::size_t k = 0; k < key_count; ++k) {
+              vkpt::animation::ScaleKey key;
+              key.time = times[k];
+              key.value.x = value_at(k, 0u);
+              key.value.y = value_at(k, 1u);
+              key.value.z = value_at(k, 2u);
+              track.scale.push_back(key);
+            }
+            any_skeleton_channel = true;
+          }
+        }
+
+        if (!any_skeleton_channel) {
+          if (diagnostics) {
+            diagnostics->push_back("glTF clip '" + clip.name +
+                                   "' has no skeleton-bound channels; skipped");
+          }
+          continue;
+        }
+
+        // Compute clip duration as the max key time across all tracks/paths.
+        float duration = 0.0f;
+        for (const auto& track : clip.tracks) {
+          if (!track.translation.empty()) {
+            duration = std::max(duration, track.translation.back().time);
+          }
+          if (!track.rotation.empty()) {
+            duration = std::max(duration, track.rotation.back().time);
+          }
+          if (!track.scale.empty()) {
+            duration = std::max(duration, track.scale.back().time);
+          }
+        }
+        clip.duration_seconds = duration;
+
+        // Drop tracks that ended up with no keys at all (joints not animated).
+        clip.tracks.erase(
+            std::remove_if(clip.tracks.begin(), clip.tracks.end(),
+                           [](const vkpt::animation::JointTrack& tr) {
+                             return tr.translation.empty() &&
+                                    tr.rotation.empty() && tr.scale.empty();
+                           }),
+            clip.tracks.end());
+
+        std::vector<std::string> issues;
+        if (!vkpt::animation::validate(clip, skeleton_joint_count, &issues) &&
+            diagnostics) {
+          for (const auto& issue : issues) {
+            diagnostics->push_back("glTF animation validate: " + issue);
+          }
+        }
+
+        result.animation_clips.push_back(std::move(clip));
       }
     }
   }

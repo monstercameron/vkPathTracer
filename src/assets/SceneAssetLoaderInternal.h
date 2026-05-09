@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "animation/AnimationClip.h"
 #include "animation/Skeleton.h"
 #include "scene/Scene.h"
 
@@ -50,6 +51,9 @@ struct ObjLoadResult {
   vkpt::scene::TransformComponent root_transform;
   // Phase 1 ANI01: skeletal hierarchy if the source asset declared a skin.
   std::optional<vkpt::animation::Skeleton> skeleton;
+  // Phase 3 ANI02/06: authored animation clips that target the skeleton's
+  // joints. Filled by the glTF loader from the top-level "animations" array.
+  std::vector<vkpt::animation::AnimationClip> animation_clips;
 };
 
 std::string PathString(const std::filesystem::path& path);

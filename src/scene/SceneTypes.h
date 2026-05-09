@@ -33,6 +33,7 @@ enum class ComponentKind : std::uint8_t {
   BenchmarkTag,
   Skeleton,
   Ragdoll,
+  Animation,
   Count
 };
 
@@ -218,6 +219,18 @@ struct RagdollComponent {
   bool self_collision = false;
 };
 
+// Phase 3 ANI06: per-entity animation playback state. The `clip_index` is an
+// index into the entity's per-instance AnimationClip storage on EntityRecord
+// (see SceneWorld.h). The sampler in animation/AnimationSampler.h reads this
+// component, samples the clip, and writes into joint_world_matrices.
+struct AnimationComponent {
+  std::int32_t clip_index = -1;  // -1 = no clip selected
+  float time_seconds = 0.0f;
+  float speed = 1.0f;
+  bool loop = true;
+  bool paused = false;
+};
+
 using ComponentVariant = std::variant<
     IdentityComponent,
     TransformComponent,
@@ -233,7 +246,8 @@ using ComponentVariant = std::variant<
     AudioEmitterComponent,
     UiPanelComponent,
     BenchmarkTagComponent,
-    RagdollComponent>;
+    RagdollComponent,
+    AnimationComponent>;
 
 std::string_view to_string(ComponentKind kind);
 std::string_view to_string(TransformAuthority authority);

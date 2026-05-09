@@ -261,6 +261,9 @@ bool ImportModelAsset(vkpt::scene::SceneDocument& document,
     root.has_skeleton = true;
     root.skeleton = *loaded.skeleton;
   }
+  if (!loaded.animation_clips.empty()) {
+    root.animation_clips = std::move(loaded.animation_clips);
+  }
   const auto root_id = root.id;
   document.entities.push_back(std::move(root));
   local_stats.imported_root_entity = root_id;

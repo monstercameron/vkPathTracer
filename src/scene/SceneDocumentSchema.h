@@ -5,6 +5,7 @@
 #include <string_view>
 #include <vector>
 
+#include "animation/AnimationClip.h"
 #include "animation/Skeleton.h"
 #include "core/Types.h"
 #include "scene/SceneTypes.h"
@@ -63,6 +64,10 @@ struct SceneEntityDefinition {
   UiPanelComponent ui_panel;
   BenchmarkTagComponent benchmark_tag;
   SkeletonComponent skeleton;
+  // Phase 3 ANI06: per-entity animation clips. This field is *not* serialized
+  // to JSON — clips ride along when the runtime imports a glTF asset and are
+  // attached to the resulting EntityRecord by SceneDocument::to_world.
+  std::vector<vkpt::animation::AnimationClip> animation_clips;
 };
 
 struct SceneAssetDefinition {

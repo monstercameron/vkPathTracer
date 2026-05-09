@@ -79,6 +79,8 @@ std::string_view ComponentKindName(ComponentKind kind) {
       return "Skeleton";
     case ComponentKind::Ragdoll:
       return "Ragdoll";
+    case ComponentKind::Animation:
+      return "Animation";
     case ComponentKind::Count:
       break;
   }
@@ -493,6 +495,12 @@ vkpt::core::Status SceneWorld::add_component(vkpt::core::StableId id, ComponentK
         return SceneOk("ragdoll component set");
       }
       return ComponentMismatchStatus(kind);
+    case ComponentKind::Animation:
+      if (const auto* value = std::get_if<AnimationComponent>(&component)) {
+        record->animation = *value;
+        return SceneOk("animation component set");
+      }
+      return ComponentMismatchStatus(kind);
     case ComponentKind::Skeleton:
       // Skeleton is not part of ComponentVariant; callers attach via
       // EntityRecord::skeleton directly (see Scene.cpp::to_world). Reject
@@ -566,6 +574,9 @@ bool SceneWorld::remove_component(vkpt::core::StableId id, ComponentKind kind) {
       return true;
     case ComponentKind::Ragdoll:
       record->ragdoll.reset();
+      return true;
+    case ComponentKind::Animation:
+      record->animation.reset();
       return true;
     case ComponentKind::Skeleton:
       record->skeleton.reset();
@@ -706,6 +717,11 @@ std::vector<vkpt::core::StableId> SceneWorld::query(ComponentKind kind) const {
         break;
       case ComponentKind::Ragdoll:
         if (entity->ragdoll.has_value()) {
+          out.push_back(id);
+        }
+        break;
+      case ComponentKind::Animation:
+        if (entity->animation.has_value()) {
           out.push_back(id);
         }
         break;

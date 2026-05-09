@@ -1510,6 +1510,138 @@ int LuaEntityDisableRagdoll(lua_State* lua) {
   return 0;
 }
 
+// Phase 3 ANI06: animation lifecycle bindings. The component lives on
+// EntityRecord::animation and indexes into EntityRecord::clips. Setters
+// always go through WorldCommands so writes are deferred to the per-tick
+// flush like every other binding.
+namespace {
+
+vkpt::scene::AnimationComponent CurrentAnimationOrDefault(
+    LuaHostContext* host, vkpt::core::StableEntityId entity_id) {
+  vkpt::scene::AnimationComponent component{};
+  if (host != nullptr && host->world != nullptr) {
+    if (const auto* entity = host->world->get_entity(entity_id);
+        entity != nullptr && entity->animation.has_value()) {
+      component = *entity->animation;
+    }
+  }
+  return component;
+}
+
+}  // namespace
+
+int LuaEntitySetAnimationClip(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
+    return 0;
+  }
+  if (!lua_isstring(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected clip name string");
+  }
+  const std::string clip_name = lua_tostring(lua, 2);
+  std::int32_t found_index = -1;
+  if (host->world != nullptr) {
+    if (const auto* entity = host->world->get_entity(entity_id);
+        entity != nullptr) {
+      for (std::size_t i = 0; i < entity->clips.size(); ++i) {
+        if (entity->clips[i].name == clip_name) {
+          found_index = static_cast<std::int32_t>(i);
+          break;
+        }
+      }
+    }
+  }
+  if (found_index < 0) {
+    return 0;  // unknown clip — silent no-op
+  }
+  auto component = CurrentAnimationOrDefault(host, entity_id);
+  component.clip_index = found_index;
+  component.time_seconds = 0.0f;
+  host->commands->add_set_component(entity_id,
+                                    vkpt::scene::ComponentKind::Animation,
+                                    component);
+  return 0;
+}
+
+int LuaEntitySetAnimationTime(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
+    return 0;
+  }
+  if (!lua_isnumber(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected number seconds");
+  }
+  auto component = CurrentAnimationOrDefault(host, entity_id);
+  component.time_seconds = static_cast<float>(lua_tonumber(lua, 2));
+  host->commands->add_set_component(entity_id,
+                                    vkpt::scene::ComponentKind::Animation,
+                                    component);
+  return 0;
+}
+
+int LuaEntitySetAnimationSpeed(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
+    return 0;
+  }
+  if (!lua_isnumber(lua, 2)) {
+    return luaL_argerror(lua, 2, "expected number speed factor");
+  }
+  auto component = CurrentAnimationOrDefault(host, entity_id);
+  component.speed = static_cast<float>(lua_tonumber(lua, 2));
+  host->commands->add_set_component(entity_id,
+                                    vkpt::scene::ComponentKind::Animation,
+                                    component);
+  return 0;
+}
+
+int LuaEntityPauseAnimation(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
+    return 0;
+  }
+  auto component = CurrentAnimationOrDefault(host, entity_id);
+  component.paused = true;
+  host->commands->add_set_component(entity_id,
+                                    vkpt::scene::ComponentKind::Animation,
+                                    component);
+  return 0;
+}
+
+int LuaEntityResumeAnimation(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->commands == nullptr || entity_id == 0) {
+    return 0;
+  }
+  auto component = CurrentAnimationOrDefault(host, entity_id);
+  component.paused = false;
+  host->commands->add_set_component(entity_id,
+                                    vkpt::scene::ComponentKind::Animation,
+                                    component);
+  return 0;
+}
+
+int LuaEntityAnimationTime(lua_State* lua) {
+  auto* host = Host(lua);
+  const auto entity_id = LuaSelfEntity(lua, 1);
+  if (host == nullptr || host->world == nullptr) {
+    lua_pushnumber(lua, 0.0);
+    return 1;
+  }
+  const auto* entity = host->world->get_entity(entity_id);
+  if (entity == nullptr || !entity->animation.has_value()) {
+    lua_pushnumber(lua, 0.0);
+    return 1;
+  }
+  lua_pushnumber(lua, static_cast<lua_Number>(entity->animation->time_seconds));
+  return 1;
+}
+
 int LuaEntityGetMaterialId(lua_State* lua) {
   auto* host = Host(lua);
   const auto entity_id = LuaSelfEntity(lua, 1);
@@ -1612,6 +1744,18 @@ void BuildEntityPrototype(lua_State* lua, bool pure) {
     lua_setfield(lua, -2, "enable_ragdoll");
     lua_pushcfunction(lua, LuaEntityDisableRagdoll);
     lua_setfield(lua, -2, "disable_ragdoll");
+    lua_pushcfunction(lua, LuaEntitySetAnimationClip);
+    lua_setfield(lua, -2, "set_animation_clip");
+    lua_pushcfunction(lua, LuaEntitySetAnimationTime);
+    lua_setfield(lua, -2, "set_animation_time");
+    lua_pushcfunction(lua, LuaEntitySetAnimationSpeed);
+    lua_setfield(lua, -2, "set_animation_speed");
+    lua_pushcfunction(lua, LuaEntityPauseAnimation);
+    lua_setfield(lua, -2, "pause_animation");
+    lua_pushcfunction(lua, LuaEntityResumeAnimation);
+    lua_setfield(lua, -2, "resume_animation");
+    lua_pushcfunction(lua, LuaEntityAnimationTime);
+    lua_setfield(lua, -2, "animation_time");
   }
   // Stash prototype in registry under a known key for PushEntityObject's fast
   // path to find it. lua_setfield consumes the value, so push a dup first.
@@ -1679,6 +1823,18 @@ void PushEntityObject(lua_State* lua, LuaHostContext& host, vkpt::core::StableEn
     lua_setfield(lua, -2, "set_camera");
     lua_pushcfunction(lua, LuaEntitySetUiPanel);
     lua_setfield(lua, -2, "set_ui_panel");
+    lua_pushcfunction(lua, LuaEntitySetAnimationClip);
+    lua_setfield(lua, -2, "set_animation_clip");
+    lua_pushcfunction(lua, LuaEntitySetAnimationTime);
+    lua_setfield(lua, -2, "set_animation_time");
+    lua_pushcfunction(lua, LuaEntitySetAnimationSpeed);
+    lua_setfield(lua, -2, "set_animation_speed");
+    lua_pushcfunction(lua, LuaEntityPauseAnimation);
+    lua_setfield(lua, -2, "pause_animation");
+    lua_pushcfunction(lua, LuaEntityResumeAnimation);
+    lua_setfield(lua, -2, "resume_animation");
+    lua_pushcfunction(lua, LuaEntityAnimationTime);
+    lua_setfield(lua, -2, "animation_time");
   }
 }
 

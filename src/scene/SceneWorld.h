@@ -14,6 +14,7 @@
 #include "core/contracts/Result.h"
 #include "core/contracts/SubsystemStatus.h"
 #include "core/health/Health.h"
+#include "animation/AnimationClip.h"
 #include "animation/Skeleton.h"
 #include "core/Types.h"
 #include "scene/FrameLifecycle.h"
@@ -188,6 +189,11 @@ class SceneWorld : public IEcsWorld {
     std::optional<BenchmarkTagComponent> benchmark_tag;
     std::optional<SkeletonComponent> skeleton;
     std::optional<RagdollComponent> ragdoll;
+    // Phase 3 ANI06: per-entity authored clips (filled by the asset loader
+    // when an asset includes glTF animations) plus an optional active-clip
+    // playback state.
+    std::vector<vkpt::animation::AnimationClip> clips;
+    std::optional<AnimationComponent> animation;
     // Phase 2 RAG02: parallel-to-skeleton joint world matrices, written by
     // physics (when ragdoll active) or by the animation sampler (later).
     // Empty when no skeleton is attached. SimWorker copies this from the
