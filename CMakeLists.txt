@@ -500,6 +500,7 @@ set(PT_CPU_SOURCES
   # Scene, scripting, materials, and physics
   src/animation/AnimationClip.cpp
   src/animation/AnimationSampler.cpp
+  src/animation/AnimationSkinning.cpp
   src/animation/Skeleton.cpp
   src/assets/AssetImporters.cpp
   src/assets/AssetImportersTexture.cpp
@@ -1239,6 +1240,53 @@ target_link_libraries(pt_animation_sampler_smoke PRIVATE Threads::Threads)
 if(PT_ENABLE_JOLT)
   target_link_libraries(pt_animation_sampler_smoke PRIVATE ${PT_JOLT_TARGET})
   target_compile_definitions(pt_animation_sampler_smoke PRIVATE
+    PT_ENABLE_JOLT
+    PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
+endif()
+
+# Phase 4 SKN01-03 / ANI04-05: skinning pixel-hash smoke. Mirrors the asset
+# loader source list of pt_animation_sampler_smoke and adds the new
+# AnimationSkinning translation unit. Validates per-vertex JOINTS_0/WEIGHTS_0
+# import + bind-pose skinning matrix identity property + deterministic
+# hash over the skinned vertex stream.
+add_executable(pt_skinning_pixel_hash_smoke EXCLUDE_FROM_ALL
+  tests/skinning_pixel_hash_smoke.cpp
+  src/animation/AnimationClip.cpp
+  src/animation/AnimationSampler.cpp
+  src/animation/AnimationSkinning.cpp
+  src/animation/Skeleton.cpp
+  src/assets/AssetImporters.cpp
+  src/assets/AssetImportersTexture.cpp
+  src/assets/SceneAssetLoader.cpp
+  src/assets/SceneAssetLoaderSupport.cpp
+  src/assets/SceneAssetObjLoader.cpp
+  src/assets/SceneAssetGltfLoader.cpp
+  src/core/health/Health.cpp
+  src/core/log/Log.cpp
+  src/core/metrics/Metrics.cpp
+  src/scene/Json.cpp
+  src/scene/Scene.cpp
+  src/scene/SceneDocumentExport.cpp
+  src/scene/SceneDocumentLoad.cpp
+  src/scene/SceneScriptBootstrap.cpp
+  src/scene/SceneWorld.cpp
+  src/scene/SceneWorldExtraction.cpp
+  src/scene/WorldCommandBuffer.cpp
+  src/physics/PhysicsWorld.cpp
+  src/physics/Ragdoll.cpp
+  src/pathtracer/SceneConversion.cpp
+)
+
+target_include_directories(pt_skinning_pixel_hash_smoke PRIVATE
+  "${CMAKE_SOURCE_DIR}/src"
+)
+
+target_compile_features(pt_skinning_pixel_hash_smoke PRIVATE cxx_std_23)
+target_link_libraries(pt_skinning_pixel_hash_smoke PRIVATE Threads::Threads)
+
+if(PT_ENABLE_JOLT)
+  target_link_libraries(pt_skinning_pixel_hash_smoke PRIVATE ${PT_JOLT_TARGET})
+  target_compile_definitions(pt_skinning_pixel_hash_smoke PRIVATE
     PT_ENABLE_JOLT
     PT_JOLT_GIT_TAG_STRING="${PT_JOLT_GIT_TAG}")
 endif()

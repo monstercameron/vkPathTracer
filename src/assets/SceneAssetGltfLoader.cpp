@@ -633,6 +633,49 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
     result.materials.push_back(ObjMaterial{});
   }
 
+  // Phase 4 SKN01: detect skinned meshes and resolve the skin's joint table so
+  // we can remap per-vertex JOINTS_0 (which index into skin.joints[]) into
+  // skeleton-local indices. We keep the same "first skin only" assumption used
+  // by ANI01: a node referencing skin index 0 with a mesh marks that mesh as
+  // skinned; per-vertex JOINTS_0 values are remapped through the joints[]
+  // table built here.
+  std::vector<std::int32_t> skin0_joint_remap;  // skin.joints[i] -> joint-local i (identity for first skin in our map)
+  std::unordered_map<std::size_t, bool> mesh_is_skinned;
+  if (const auto* nodes_pre = JsonMember(root, "nodes");
+      nodes_pre != nullptr &&
+      nodes_pre->kind == vkpt::scene::JsonValue::Kind::Array) {
+    if (const auto* skins_pre = JsonMember(root, "skins");
+        skins_pre != nullptr &&
+        skins_pre->kind == vkpt::scene::JsonValue::Kind::Array &&
+        !skins_pre->array.empty()) {
+      // Skin 0's joints[] -> glTF node index list. We treat the index INTO
+      // joints[] (the skinning vertex attribute value) as the joint-local index
+      // directly: the skeleton importer below builds the Skeleton in the same
+      // order. So the remap is identity-up-to-bounds-check in the common case.
+      const auto* joints_array_pre = JsonMember(skins_pre->array[0], "joints");
+      if (joints_array_pre != nullptr &&
+          joints_array_pre->kind == vkpt::scene::JsonValue::Kind::Array) {
+        skin0_joint_remap.reserve(joints_array_pre->array.size());
+        for (std::size_t j = 0; j < joints_array_pre->array.size(); ++j) {
+          skin0_joint_remap.push_back(static_cast<std::int32_t>(j));
+        }
+      }
+    }
+    // Tag every mesh referenced by a node that has a `skin` field (any skin)
+    // as skinned. We only consume JOINTS_0/WEIGHTS_0 if the mesh is tagged.
+    for (const auto& node_entry : nodes_pre->array) {
+      const auto skin_index_member = JsonIndexMember(node_entry, "skin");
+      if (!skin_index_member.has_value()) {
+        continue;
+      }
+      const auto mesh_index_member = JsonIndexMember(node_entry, "mesh");
+      if (!mesh_index_member.has_value()) {
+        continue;
+      }
+      mesh_is_skinned[*mesh_index_member] = true;
+    }
+  }
+
   result.geometry.reserve(meshes_node->array.size());
   for (std::size_t mesh_index = 0; mesh_index < meshes_node->array.size(); ++mesh_index) {
     // Only triangle primitives are emitted; other modes are skipped instead of triangulated here.
@@ -716,6 +759,84 @@ ObjLoadResult LoadGltf(const std::filesystem::path& gltf_path,
       if (bucket.texcoords.size() != bucket.vertices.size()) {
         bucket.texcoords.clear();
       }
+
+      // Phase 4 SKN01: read JOINTS_0 + WEIGHTS_0 if the parent mesh is skinned.
+      // Both must be present; missing one is treated as "not skinned" for this
+      // primitive. JOINTS_0 values index into skin.joints[]; we remap them
+      // through `skin0_joint_remap` so they become skeleton-local. Weights are
+      // normalized to sum=1.0 with an epsilon guard.
+      const auto skinned_it = mesh_is_skinned.find(mesh_index);
+      const bool primitive_is_skinned = skinned_it != mesh_is_skinned.end() && skinned_it->second;
+      if (primitive_is_skinned) {
+        const auto joints_accessor = JsonIndexMember(*attributes, "JOINTS_0");
+        const auto weights_accessor = JsonIndexMember(*attributes, "WEIGHTS_0");
+        if (joints_accessor.has_value() && weights_accessor.has_value()) {
+          std::vector<std::uint32_t> joints_raw;
+          std::size_t joints_components = 0u;
+          std::vector<float> weights_raw;
+          std::size_t weights_components = 0u;
+          const bool joints_ok = GltfReadAccessorUint(accessors,
+                                                     buffer_views,
+                                                     buffers,
+                                                     *joints_accessor,
+                                                     joints_raw,
+                                                     &joints_components) &&
+                                 joints_components == 4u &&
+                                 joints_raw.size() == bucket.vertices.size() * 4u;
+          const bool weights_ok = GltfReadAccessorFloats(accessors,
+                                                        buffer_views,
+                                                        buffers,
+                                                        *weights_accessor,
+                                                        weights_raw,
+                                                        &weights_components) &&
+                                 weights_components == 4u &&
+                                 weights_raw.size() == bucket.vertices.size() * 4u;
+          if (joints_ok && weights_ok) {
+            const std::size_t vert_count = bucket.vertices.size();
+            bucket.joint_indices.resize(vert_count);
+            bucket.joint_weights.resize(vert_count);
+            const std::int32_t remap_count =
+                static_cast<std::int32_t>(skin0_joint_remap.size());
+            for (std::size_t v = 0; v < vert_count; ++v) {
+              std::array<std::uint32_t, 4> idx{0u, 0u, 0u, 0u};
+              std::array<float, 4> wts{0.0f, 0.0f, 0.0f, 0.0f};
+              for (std::size_t k = 0; k < 4u; ++k) {
+                const std::uint32_t raw = joints_raw[v * 4u + k];
+                // Treat the JOINTS_0 value as the skin.joints[] entry index
+                // directly: our skeleton import preserves that ordering 1:1.
+                // Out-of-range indices clamp to 0 (root) with weight 0.
+                if (remap_count > 0 && static_cast<std::int32_t>(raw) < remap_count) {
+                  idx[k] = static_cast<std::uint32_t>(skin0_joint_remap[raw]);
+                } else {
+                  idx[k] = 0u;
+                }
+                const float w = weights_raw[v * 4u + k];
+                wts[k] = std::isfinite(w) && w > 0.0f ? w : 0.0f;
+              }
+              const float sum = wts[0] + wts[1] + wts[2] + wts[3];
+              if (sum > 1.0e-6f) {
+                const float inv = 1.0f / sum;
+                wts[0] *= inv;
+                wts[1] *= inv;
+                wts[2] *= inv;
+                wts[3] *= inv;
+              } else {
+                // Degenerate vertex: bind to root with full weight so it
+                // doesn't collapse to origin.
+                idx = {0u, 0u, 0u, 0u};
+                wts = {1.0f, 0.0f, 0.0f, 0.0f};
+              }
+              bucket.joint_indices[v] = idx;
+              bucket.joint_weights[v] = wts;
+            }
+          } else if (diagnostics) {
+            diagnostics->push_back(
+                "glTF skinning attributes malformed for mesh '" + mesh_name +
+                "'; vertex skinning skipped");
+          }
+        }
+      }
+
       (void)mesh_name;
       result.geometry.push_back(std::move(bucket));
     }

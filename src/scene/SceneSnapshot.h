@@ -124,6 +124,12 @@ enum class RenderSceneSnapshotChange : std::uint8_t {
   Transform = 1u << 1u,
   Camera = 1u << 2u,
   Material = 1u << 3u,
+  // Phase 4 SKN03: per-frame skinning matrix updates for any skinned mesh.
+  // Triggers a BLAS refit on the GPU backends (when wired) and a no-op on
+  // backends that do not support skinning. Independent of Topology/Transform
+  // because the underlying RTInstance descriptor does not change — only the
+  // skinned vertex buffer + acceleration structure for that instance does.
+  SkinningMatricesChanged = 1u << 4u,
 };
 
 enum class SnapshotTransitionAction : std::uint8_t {

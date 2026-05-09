@@ -508,6 +508,9 @@ std::string SnapshotChangeReason(RenderSceneSnapshotChange changes) {
   if (HasChange(changes, RenderSceneSnapshotChange::Material)) {
     append("material");
   }
+  if (HasChange(changes, RenderSceneSnapshotChange::SkinningMatricesChanged)) {
+    append("skinning");
+  }
   return out;
 }
 

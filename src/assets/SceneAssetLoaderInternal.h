@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -34,11 +35,21 @@ struct ObjMaterial {
   std::string metallic_texture;
 };
 
+// Phase 4 SKN01: per-vertex skinning attributes. Filled only when the source
+// primitive has both `JOINTS_0` and `WEIGHTS_0` attributes AND the parent node
+// references a skin. `joint_indices` is parallel to `vertices` (one VEC4 of
+// skeleton-local joint indices per vertex), `joint_weights` likewise. Indices
+// are remapped through the skin's `joints[]` table so they are joint-local.
+// Weights are normalized to sum=1 with epsilon guard.
 struct ObjGeometryBucket {
   std::string material_name = "obj_default";
   std::vector<vkpt::scene::Vec3> vertices;
   std::vector<vkpt::scene::Vec2> texcoords;
   std::vector<std::uint32_t> indices;
+  // Phase 4 SKN01: per-vertex skinning attributes (parallel to `vertices`).
+  // Empty when the primitive is not skinned.
+  std::vector<std::array<std::uint32_t, 4>> joint_indices;
+  std::vector<std::array<float, 4>> joint_weights;
 };
 
 struct ObjLoadResult {

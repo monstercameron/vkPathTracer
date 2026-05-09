@@ -1,0 +1,112 @@
+{
+  "metadata": {
+    "schema": "1.0",
+    "scene_name": "Skinned Hero Demo",
+    "author": "vkPathTracer",
+    "created": "2026-05-09"
+  },
+  "assets": [
+    {
+      "id": 8901,
+      "type": "model/gltf",
+      "uri": "../models/low_poly_hero/character.gltf",
+      "name": "Hero Skinned",
+      "parent": 8900,
+      "sibling_order": 1,
+      "disable_imported_animation": false,
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    }
+  ],
+  "materials": [
+    {
+      "id": 8801,
+      "name": "Demo floor",
+      "family": "diffuse",
+      "albedo": [0.42, 0.42, 0.45],
+      "roughness": 0.85
+    }
+  ],
+  "geometry": [
+    {
+      "id": 8701,
+      "name": "demo_floor_quad",
+      "primitive": "triangle",
+      "material_id": 8801,
+      "vertices": [
+        [-4.0, 0.0, -4.0],
+        [4.0, 0.0, -4.0],
+        [4.0, 0.0, 4.0],
+        [-4.0, 0.0, 4.0]
+      ],
+      "indices": [0, 1, 2, 0, 2, 3]
+    }
+  ],
+  "entities": [
+    {
+      "id": 8900,
+      "name": "Skinned Hero Demo Root",
+      "hierarchy": {
+        "parent": 0,
+        "sibling_order": 0
+      }
+    },
+    {
+      "id": 8902,
+      "name": "Demo Camera",
+      "transform": {
+        "translation": [0.0, 1.6, 3.5],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "camera": {
+        "fov": 45.0,
+        "near_plane": 0.05,
+        "far_plane": 60.0
+      },
+      "hierarchy": {
+        "parent": 8900,
+        "sibling_order": 2
+      }
+    },
+    {
+      "id": 8903,
+      "name": "Demo Floor",
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "mesh": {
+        "mesh_id": 8701,
+        "material_id": 8801
+      },
+      "hierarchy": {
+        "parent": 8900,
+        "sibling_order": 3
+      }
+    },
+    {
+      "id": 8904,
+      "name": "Key Light",
+      "transform": {
+        "translation": [2.0, 4.0, 2.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "light": {
+        "type": "sphere area",
+        "color": [1.0, 0.96, 0.92],
+        "intensity": 28.0,
+        "radius": 0.6
+      },
+      "hierarchy": {
+        "parent": 8900,
+        "sibling_order": 4
+      }
+    }
+  ]
+}
