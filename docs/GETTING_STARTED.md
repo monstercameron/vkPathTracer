@@ -237,10 +237,18 @@ Before editing:
 High-signal verification commands:
 
 ```powershell
-cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp
-.\build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --ui-model-smoke --platform headless --console --no-env-file
-.\build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --dynamic-physics-gate --platform headless --backend d3d12 --console --no-env-file
-.\build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --third-person-script-gate --platform headless --backend d3d12 --console --no-env-file
+cmake --build --preset windows-clangcl-d3d12-qt-debug --target ptapp pt_observability_smoke pt_scripting_smoke pt_script_dispatch_contract_smoke pt_scene_script_bootstrap_smoke pt_snapshot_bus_smoke pt_multi_gpu_accumulation_smoke pt_job_health_smoke pt_frame_pacer_smoke pt_sim_worker_smoke
+
+# Each smoke binary prints "ok" / "ALL PASSED" on success and exits non-zero on failure.
+foreach ($s in 'pt_observability_smoke','pt_scripting_smoke','pt_script_dispatch_contract_smoke','pt_scene_script_bootstrap_smoke','pt_snapshot_bus_smoke','pt_multi_gpu_accumulation_smoke','pt_job_health_smoke','pt_frame_pacer_smoke','pt_sim_worker_smoke') {
+  & ".\build\presets\windows-clangcl-d3d12-qt-debug\bin\$s.exe"
+}
+
+# Headless self-test (build info, CPU, backends, assets, shaders, job system, scene schema, artifact write).
+.\build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --doctor --platform headless --console --no-env-file
+
+# Stress gate (interactive; produces qt_stress_gate_report.json + metrics_final.json under <output>).
+.\build\presets\windows-clangcl-d3d12-qt-debug\bin\ptapp.exe --window --qt-stress-gate --qt-stress-phase-seconds 5 --qt-stress-scene assets\scenes\cornell_native.json --qt-stress-output artifacts\perf-cornell --platform qt
 ```
 
 If the linker reports `permission denied` writing `bin\ptapp.exe`, the previous
@@ -273,13 +281,21 @@ Vulkan preset cannot find SDK:
 Qt app starts but plugins are missing:
 
 - Rebuild the Qt preset; `windeployqt` runs after linking.
-- See `docs/qt_diagnostics.md`.
+- Confirm the kit's `plugins/platforms/qwindowsd.dll` (debug) or `qwindows.dll` (release) is next to `ptapp.exe`.
 
 D3D12 path fails on startup:
 
 - Run `ptapp --doctor --check-backends --console --no-env-file`.
 - Confirm the GPU and driver support the requested path.
 - Try `--backend cpu` to separate app/runtime issues from GPU backend issues.
+
+Black bars or partial rows on the canvas:
+
+- A frames-in-flight readback fence regression. Make sure you are on a build that includes `d898249` or later. The auto path picks D3D12+DXR which uses the fix path.
+
+Multi-GPU does not fan out:
+
+- `--gpus 2 --include-integrated` will initialize both adapters but the D3D12 path tracer dispatches the whole frame as one tile, so only the primary adapter renders. The infrastructure is in place; getting actual fan-out needs the backend to advertise `tile_height < frame_height`.
 
 ## Source Map
 
@@ -303,9 +319,6 @@ Important directories:
 
 ## Documentation Pointers
 
-- `README.md`: project overview, CLI examples, architecture notes.
-- `docs/qt_diagnostics.md`: Qt runtime and plugin diagnostics.
-- `docs/qt_threading.md`: Qt/render-thread rules.
-- `docs/optimization_guide.md`: performance guidance and benchmark context.
-- `docs/ci-smoke-plan.md`: smoke targets and expected checks.
-- `docs/lua_scripting.md`: Lua script components, lifecycle hooks, params, sandbox limits, and Qt scripting panel behavior.
+- `README.md` — project overview, CLI examples, architecture summary, full flag reference.
+- `git log` — project history. The two `archive/*` tags on origin (`archive/origin-main-pre-reset-...` and `archive/arch-snapshot-bus-...`) preserve pre-cleanup state if you need to look at old approaches.
+- `assets/scripts/systems/` — engine-shipped Lua scripts demonstrating the binding API. Each file has a header comment listing params, bindings used, lifecycle hooks, and an example usage line. Read these before authoring scripts under `assets/scripts/user/`.

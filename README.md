@@ -80,9 +80,13 @@ A cleanly structured, benchmarkable, interactive path-tracing platform that stil
 ## Where things are
 
 ```
-README.md     project overview and quickstart
-docs/         architecture spec, changelog, todos, implementation notes, Qt shell migration docs
-experiments/  throwaway spikes and feel-tests
+README.md                  project overview and quickstart
+docs/GETTING_STARTED.md    operational setup, presets, agent workflow
+src/                       engine, runtime, GPU backends, Qt shell, scripting, scene
+assets/scenes/             scene JSON fixtures
+assets/scripts/            Lua scripts (systems/ user/ test/ buckets)
+tests/                     smoke targets
+experiments/               throwaway spikes and feel-tests
 ```
 
 ---
@@ -105,7 +109,7 @@ tool paths, smoke commands, and code-agent workflow notes, see
 
 On Windows you can get Clang and Ninja through the **LLVM installer** or via Visual Studio's "Clang tools for Windows" component. CMake is available from cmake.org.
 
-For Qt builds, install a Qt 6 kit that matches the compiler ABI you are using. On Windows, the MSVC 64-bit Qt kit is the expected match for `clang-cl`; either run CMake from the Qt developer environment or set `Qt6_DIR` to the kit's `lib/cmake/Qt6` directory. Missing runtime plugins are a deployment problem, not a renderer problem; see [`docs/qt_diagnostics.md`](docs/qt_diagnostics.md).
+For Qt builds, install a Qt 6 kit that matches the compiler ABI you are using. On Windows, the MSVC 64-bit Qt kit is the expected match for `clang-cl`; either run CMake from the Qt developer environment or set `Qt6_DIR` to the kit's `lib/cmake/Qt6` directory. Missing runtime plugins are a deployment problem, not a renderer problem; the Qt presets run `windeployqt` after link to drop the plugin set next to `ptapp.exe`.
 
 ---
 
@@ -267,16 +271,7 @@ The Qt path is a platform/editor shell. Renderer backends receive native handles
 
 On Windows Qt builds, `ptapp.exe` uses the GUI subsystem and does not open a separate terminal by default. Pass `--console` or `--terminal` only when you want interactive stdout/stderr diagnostics.
 
-Current panel status: native Qt docks and the native `QStatusBar` are wired. The shell shows scene graph, inspector, materials, lights, camera, render settings, benchmark, diagnostics, performance, debug views, asset browser, timeline, scripting, and physics docks, with dock layout persisted through `QSettings`.
-
-Qt shell docs:
-
-- [`docs/qt_port.md`](docs/qt_port.md) - setup, presets, examples, migration checklist
-- [`docs/platform_contract.md`](docs/platform_contract.md) - ownership boundaries and migration rules
-- [`docs/window_lifecycle.md`](docs/window_lifecycle.md) - Qt/raw/headless lifecycle differences
-- [`docs/qt_native_surface.md`](docs/qt_native_surface.md) - native handle and D3D12 surface contract
-- [`docs/qt_threading.md`](docs/qt_threading.md) - UI/render thread handoff and shutdown order
-- [`docs/qt_diagnostics.md`](docs/qt_diagnostics.md) - troubleshooting and required diagnostic fields
+Native Qt docks and the native `QStatusBar` are wired. The shell shows scene graph, inspector, materials, lights, camera, render settings, benchmark, diagnostics, performance, debug views, asset browser, timeline, scripting, and physics docks, with dock layout persisted through `QSettings`.
 
 ---
 
@@ -313,7 +308,7 @@ ptapp --list-backends
 | Render thread does not stop | Close must signal render stop, join the render thread, flush the backend, then destroy Qt widgets. |
 | D3D12 device removed | Log the device-removed reason, tear down swapchain resources before the Qt surface dies, and allow WARP or a clean fallback where supported. |
 
-Detailed guidance is in [`docs/qt_diagnostics.md`](docs/qt_diagnostics.md), [`docs/qt_native_surface.md`](docs/qt_native_surface.md), and [`docs/qt_threading.md`](docs/qt_threading.md).
+If a problem isn't covered above, run `ptapp --doctor --console --no-env-file` and inspect the structured JSON in `artifacts/`. Crashes write a self-contained bundle under `artifacts/crashes/<timestamp>/` (build_info, crash_state, last_log_events, ui_events, scene/runtime/resource state) — that's the primary diagnostic surface.
 
 ---
 
@@ -349,7 +344,9 @@ ptapp [options]
   --exit                Exit window mode after one frame unless --frames is set
   --console, --terminal Attach or create a console for GUI diagnostics
   --scene <path>        Set startup scene
-  --backend <name>      Select backend
+  --backend <name>      Select backend (auto picks D3D12+DXR / Vulkan / CPU)
+  --gpus <N>            Use N GPUs (0 = auto-detect; default 1)
+  --include-integrated  When --gpus > 1, include integrated adapters (default skips < 1 GiB VRAM)
   --log-level <n>       Select log level
   --crash-test          Simulate a crash and write crash artifacts
   --render              Render using scalar CPU path tracer
@@ -454,6 +451,6 @@ Transform authority is explicit per entity — Physics, Animation, Script, Edito
 
 ## Status
 
-Active native prototype. The single-file D3D12 spike in [`experiments/protopt/`](experiments/protopt/) is now historical context; the current app has a CMake-driven `ptapp`, Qt/raw/headless platform paths, CPU preview/reference rendering, D3D12 backend work, Jolt physics, Lua scripting, asset import, editor models, benchmark tooling, and self-diagnostics.
+Active native prototype. The single-file D3D12 spike in [`experiments/protopt/`](experiments/protopt/) is now historical context; the current app has a CMake-driven `ptapp`, Qt/raw/headless platform paths, CPU preview/reference rendering, D3D12 (compute + DXR) and Vulkan backends, frames-in-flight GPU pipelining, multi-GPU dispatch plumbing, Jolt physics, Lua scripting (sandboxed, instruction + memory + wall-clock budgets), asset import, editor models, benchmark tooling, and self-diagnostics. Auto backend detection picks D3D12+DXR when available, Vulkan next, CPU last.
 
-Full architecture is specified in [`docs/plan.md`](docs/plan.md), with current implementation notes spread through `docs/qt_*.md`, [`docs/changelog.md`](docs/changelog.md), and [`docs/todos.md`](docs/todos.md).
+For setup recipes, agent-friendly verification commands, and per-platform troubleshooting see [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md). Project history is in `git log`.
