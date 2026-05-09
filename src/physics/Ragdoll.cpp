@@ -567,4 +567,179 @@ bool Ragdoll::is_added_to_world() const noexcept {
   return m_impl != nullptr && m_impl->added_to_world;
 }
 
+#ifdef PT_ENABLE_JOLT
+
+namespace {
+
+// Extract the world translation (column 3) from a column-major 4x4.
+JPH::RVec3 ExtractTranslation(const vkpt::scene::Mat4& m) {
+  return JPH::RVec3(m.values[12], m.values[13], m.values[14]);
+}
+
+// Build a Jolt orientation that maps capsule local +Y to bone direction
+// (parent->child). Mirrors the alignment math used in Ragdoll::build().
+JPH::Quat OrientForBoneDirection(const JPH::Vec3& dir_norm) {
+  const JPH::Vec3 local_y = JPH::Vec3::sAxisY();
+  const float dot = local_y.Dot(dir_norm);
+  if (dot > 0.9999f) {
+    return JPH::Quat::sIdentity();
+  }
+  if (dot < -0.9999f) {
+    return JPH::Quat::sRotation(JPH::Vec3::sAxisX(),
+                                static_cast<float>(JPH::JPH_PI));
+  }
+  const JPH::Vec3 cross = local_y.Cross(dir_norm).Normalized();
+  const float angle = std::acos(std::clamp(dot, -1.0f, 1.0f));
+  return JPH::Quat::sRotation(cross, angle);
+}
+
+}  // namespace
+
+#endif  // PT_ENABLE_JOLT
+
+bool Ragdoll::seed_pose_from_skeleton(
+    const std::vector<vkpt::scene::Mat4>& joint_world_matrices,
+    const std::vector<vkpt::scene::Mat4>* prev_joint_world_matrices,
+    float dt) {
+  if (m_impl == nullptr || !m_impl->built) {
+    return false;
+  }
+  const std::size_t joint_count = m_impl->skeleton.joints.size();
+  if (joint_world_matrices.size() != joint_count) {
+    return false;
+  }
+  if (prev_joint_world_matrices != nullptr &&
+      prev_joint_world_matrices->size() != joint_count) {
+    return false;
+  }
+
+#ifdef PT_ENABLE_JOLT
+  if (m_impl->world == nullptr) {
+    return false;  // not added to a world yet
+  }
+  auto& bi = m_impl->world->GetBodyInterface();
+
+  const bool has_velocity = (prev_joint_world_matrices != nullptr) &&
+                            std::isfinite(dt) && dt > 0.0f;
+
+  for (auto& rec : m_impl->bones) {
+    if (rec.body_id.IsInvalid() || rec.joint_index < 0) {
+      continue;
+    }
+    const auto child_idx = static_cast<std::size_t>(rec.joint_index);
+    const auto& joint = m_impl->skeleton.joints[child_idx];
+    if (joint.parent_index < 0) {
+      continue;
+    }
+    const auto parent_idx = static_cast<std::size_t>(joint.parent_index);
+
+    const JPH::RVec3 parent_pos =
+        ExtractTranslation(joint_world_matrices[parent_idx]);
+    const JPH::RVec3 child_pos =
+        ExtractTranslation(joint_world_matrices[child_idx]);
+    const JPH::Vec3 axis = JPH::Vec3(child_pos - parent_pos);
+    const float bone_len = axis.Length();
+    if (!std::isfinite(bone_len) || bone_len < 1.0e-4f) {
+      // Degenerate; leave body where it is.
+      continue;
+    }
+    const JPH::Vec3 dir_norm = axis / bone_len;
+    const JPH::Quat orient = OrientForBoneDirection(dir_norm);
+    const JPH::RVec3 center = parent_pos + JPH::RVec3(0.5f * axis);
+
+    bi.SetPositionAndRotation(rec.body_id, center, orient,
+                              JPH::EActivation::Activate);
+
+    JPH::Vec3 lin_vel(0.0f, 0.0f, 0.0f);
+    JPH::Vec3 ang_vel(0.0f, 0.0f, 0.0f);
+    if (has_velocity) {
+      const auto& prev = *prev_joint_world_matrices;
+      const JPH::RVec3 prev_parent = ExtractTranslation(prev[parent_idx]);
+      const JPH::RVec3 prev_child = ExtractTranslation(prev[child_idx]);
+      const JPH::RVec3 prev_center = prev_parent + JPH::RVec3(0.5f *
+                                       JPH::Vec3(prev_child - prev_parent));
+      const JPH::Vec3 lin = JPH::Vec3(center - prev_center) / dt;
+      // Angular velocity from the change in bone direction. Use the small-angle
+      // approximation: omega ~= (prev_dir x cur_dir) / dt — this is finite for
+      // any non-degenerate previous pose and produces zero when both poses
+      // coincide.
+      const JPH::Vec3 prev_axis = JPH::Vec3(prev_child - prev_parent);
+      const float prev_len = prev_axis.Length();
+      if (std::isfinite(prev_len) && prev_len > 1.0e-4f) {
+        const JPH::Vec3 prev_dir = prev_axis / prev_len;
+        ang_vel = prev_dir.Cross(dir_norm) / dt;
+      }
+      if (std::isfinite(lin.GetX()) && std::isfinite(lin.GetY()) &&
+          std::isfinite(lin.GetZ())) {
+        lin_vel = lin;
+      }
+    }
+    bi.SetLinearVelocity(rec.body_id, lin_vel);
+    bi.SetAngularVelocity(rec.body_id, ang_vel);
+  }
+
+  return true;
+#else
+  (void)joint_world_matrices;
+  (void)prev_joint_world_matrices;
+  (void)dt;
+  return false;
+#endif
+}
+
+bool Ragdoll::apply_impulse_to_joint(std::int32_t joint_index,
+                                     vkpt::scene::Vec3 impulse) {
+  if (m_impl == nullptr || !m_impl->built) {
+    return false;
+  }
+  if (joint_index < 0 ||
+      static_cast<std::size_t>(joint_index) >= m_impl->joint_to_bone.size()) {
+    return false;
+  }
+  const std::int32_t bone_index = m_impl->joint_to_bone[
+      static_cast<std::size_t>(joint_index)];
+  if (bone_index < 0) {
+    // Root joint (no body owns it). Try to forward the impulse to the first
+    // child bone whose parent is this joint — that's the "spine root" body.
+    for (std::size_t b = 0; b < m_impl->bones.size(); ++b) {
+      const auto& rec = m_impl->bones[b];
+      if (rec.joint_index < 0) continue;
+      const auto& jj = m_impl->skeleton.joints[
+          static_cast<std::size_t>(rec.joint_index)];
+      if (jj.parent_index == joint_index) {
+#ifdef PT_ENABLE_JOLT
+        if (m_impl->world == nullptr || rec.body_id.IsInvalid()) {
+          return false;
+        }
+        m_impl->world->GetBodyInterface().AddImpulse(
+            rec.body_id,
+            JPH::Vec3(impulse.x, impulse.y, impulse.z));
+        return true;
+#else
+        (void)impulse;
+        return false;
+#endif
+      }
+    }
+    return false;
+  }
+
+#ifdef PT_ENABLE_JOLT
+  if (m_impl->world == nullptr) {
+    return false;
+  }
+  const auto& rec = m_impl->bones[static_cast<std::size_t>(bone_index)];
+  if (rec.body_id.IsInvalid()) {
+    return false;
+  }
+  m_impl->world->GetBodyInterface().AddImpulse(
+      rec.body_id,
+      JPH::Vec3(impulse.x, impulse.y, impulse.z));
+  return true;
+#else
+  (void)impulse;
+  return false;
+#endif
+}
+
 }  // namespace vkpt::physics

@@ -68,6 +68,26 @@ class Ragdoll {
   /// parent body's transform plus the bind-relative offset.
   std::vector<vkpt::scene::Mat4> read_joint_world_matrices() const;
 
+  /// Phase 5 RAG06: spawn ragdoll bodies at the supplied pose (typically the
+  /// animation pose just before activation). Each Jolt body is teleported to
+  /// align with the bone (parent->joint axis) defined by the supplied
+  /// matrices. If `prev_joint_world_matrices` is non-null and its size matches
+  /// the skeleton, linear+angular velocities are derived from the delta over
+  /// `dt` and stamped on each body so the ragdoll inherits the animation's
+  /// momentum. Returns false if the ragdoll isn't built / added to a world,
+  /// or if `joint_world_matrices` size is mismatched.
+  bool seed_pose_from_skeleton(
+      const std::vector<vkpt::scene::Mat4>& joint_world_matrices,
+      const std::vector<vkpt::scene::Mat4>* prev_joint_world_matrices = nullptr,
+      float dt = 1.0f / 60.0f);
+
+  /// Phase 5 RAG07: apply a world-space impulse to the body that owns the
+  /// joint at `joint_index`. Returns false if the index is out of range or
+  /// no body owns that joint (e.g. root joint with no body, or ragdoll not
+  /// added to a world). The impulse is applied at the body's center of mass.
+  bool apply_impulse_to_joint(std::int32_t joint_index,
+                              vkpt::scene::Vec3 impulse);
+
   /// Diagnostic accessors.
   std::size_t body_count() const noexcept;
   std::size_t constraint_count() const noexcept;

@@ -1160,6 +1160,7 @@ endif()
 # when built without PT_ENABLE_JOLT.
 add_executable(pt_ragdoll_smoke EXCLUDE_FROM_ALL
   tests/ragdoll_smoke.cpp
+  src/animation/AnimationAuthority.cpp
   src/animation/AnimationClip.cpp
   src/animation/AnimationSampler.cpp
   src/animation/Skeleton.cpp

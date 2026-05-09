@@ -217,6 +217,14 @@ struct RagdollComponent {
   float head_capsule_radius = 0.12f;
   float density = 1000.0f;
   bool self_collision = false;
+  // Phase 5 RAG05-07: one-shot activation hints. Consumers (SimWorker / smoke
+  // harnesses) read these on the frame the ragdoll flips active and clear
+  // them after applying. Persistent across frames is fine — clearing is the
+  // consumer's job, not the schema's.
+  bool seed_from_animation = false;
+  bool has_impulse = false;
+  Vec3 impulse{0.0f, 0.0f, 0.0f};
+  std::string impulse_joint;  // optional — empty means "spine"
 };
 
 // Phase 3 ANI06: per-entity animation playback state. The `clip_index` is an

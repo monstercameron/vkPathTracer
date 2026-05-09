@@ -1483,6 +1483,37 @@ int LuaEntityEnableRagdoll(lua_State* lua) {
       component.self_collision = lua_toboolean(lua, -1) != 0;
     }
     lua_pop(lua, 1);
+    // Phase 5 RAG06: optional pose seeding from current animation pose.
+    lua_getfield(lua, 2, "seed_from_animation");
+    if (lua_isboolean(lua, -1)) {
+      component.seed_from_animation = lua_toboolean(lua, -1) != 0;
+    }
+    lua_pop(lua, 1);
+    // Phase 5 RAG07: optional impulse + target joint. The impulse is a
+    // {x, y, z} table; missing fields default to 0. impulse_joint is a string
+    // joint name; empty/absent means the consumer falls back to the spine /
+    // root body.
+    lua_getfield(lua, 2, "impulse");
+    if (lua_istable(lua, -1)) {
+      vkpt::scene::Vec3 imp{0.0f, 0.0f, 0.0f};
+      lua_getfield(lua, -1, "x");
+      if (lua_isnumber(lua, -1)) imp.x = static_cast<float>(lua_tonumber(lua, -1));
+      lua_pop(lua, 1);
+      lua_getfield(lua, -1, "y");
+      if (lua_isnumber(lua, -1)) imp.y = static_cast<float>(lua_tonumber(lua, -1));
+      lua_pop(lua, 1);
+      lua_getfield(lua, -1, "z");
+      if (lua_isnumber(lua, -1)) imp.z = static_cast<float>(lua_tonumber(lua, -1));
+      lua_pop(lua, 1);
+      component.impulse = imp;
+      component.has_impulse = true;
+    }
+    lua_pop(lua, 1);
+    lua_getfield(lua, 2, "impulse_joint");
+    if (lua_isstring(lua, -1)) {
+      component.impulse_joint = lua_tostring(lua, -1);
+    }
+    lua_pop(lua, 1);
   }
   host->commands->add_set_component(entity_id,
                                     vkpt::scene::ComponentKind::Ragdoll,
