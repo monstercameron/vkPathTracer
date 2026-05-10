@@ -2238,22 +2238,17 @@
                            ? entity
                            : world.get_entity(host_id);
           if (host == nullptr) continue;
-          auto rag_world = qtRagdollWorld.read_ragdoll_joint_matrices(handle);
-          if (rag_world.empty()) continue;
-          // Subtract entity translation so values are stored in
-          // entity-local space (matches the animation sampler convention).
-          // The transform offset comes from the script-bearing origin
-          // entity; the host's own transform is identity by convention for
-          // imported asset roots.
-          if (entity->transform.has_value()) {
-            const auto& t = entity->transform->translation;
-            for (auto& m : rag_world) {
-              m.values[12] -= t.x;
-              m.values[13] -= t.y;
-              m.values[14] -= t.z;
-            }
-          }
-          host->joint_world_matrices = std::move(rag_world);
+          auto rag_local = qtRagdollWorld.read_ragdoll_joint_matrices(handle);
+          if (rag_local.empty()) continue;
+          // RagdollWorld::read_ragdoll_joint_matrices() now returns
+          // matrices in MESH-LOCAL skinning frame (matches the convention
+          // produced by AnimationSampler::compose_world_matrices()), so
+          // the previous translation-subtract here would over-shift.
+          // See the comment chain in Ragdoll::read_joint_local_skinning_matrices():
+          // each joint folds the owning body's rigid motion since build()
+          // into bind_world[j], expressed in mesh-local space — exactly
+          // what compute_skinning_matrices() expects.
+          host->joint_world_matrices = std::move(rag_local);
         }
 
         // Phase 4 GPU side: compute skinning matrices and stage them onto a

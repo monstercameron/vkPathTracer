@@ -128,6 +128,11 @@ struct Ragdoll::Impl {
     JPH::RVec3 joint_world_at_build{};
     // Bone direction at build time (parent->child, normalized).
     JPH::Vec3 bone_dir_at_build = JPH::Vec3::sAxisY();
+    // Body's bind world transform (T(center_at_build) * orient_at_build).
+    // Used by read_joint_local_skinning_matrices() to compute the rigid
+    // motion the body has undergone since build().
+    JPH::Vec3 body_bind_center{0.0f, 0.0f, 0.0f};
+    JPH::Quat body_bind_rot = JPH::Quat::sIdentity();
   };
 
   RagdollConfig config{};
@@ -261,6 +266,11 @@ bool Ragdoll::build(const vkpt::animation::Skeleton& skeleton,
         orient,
         JPH::EMotionType::Dynamic,
         static_cast<JPH::ObjectLayer>(kRagdollDynamicLayer));
+    // Cache the body's bind absolute-world transform so post-step readback
+    // can compute the rigid motion since build() (used to fold ragdoll
+    // output into a skinning-correct mesh-local frame).
+    rec.body_bind_center = JPH::Vec3(center);
+    rec.body_bind_rot = orient;
     rec.settings.mAllowSleeping = true;
     rec.settings.mFriction = 0.5f;
     rec.settings.mRestitution = 0.0f;
@@ -528,6 +538,150 @@ std::vector<vkpt::scene::Mat4> Ragdoll::read_joint_world_matrices() const {
   // Fallback (Jolt disabled): return spawn-anchored bind pose.
   for (std::size_t i = 0; i < m_impl->skeleton.joints.size(); ++i) {
     out[i] = MulMat4Local(m_impl->spawn_world, m_impl->bind_world[i]);
+  }
+#endif
+
+  return out;
+}
+
+std::vector<vkpt::scene::Mat4> Ragdoll::read_joint_local_skinning_matrices()
+    const {
+  std::vector<vkpt::scene::Mat4> out;
+  if (!m_impl->built) {
+    return out;
+  }
+  const std::size_t joint_count = m_impl->skeleton.joints.size();
+  out.assign(joint_count, IdentityMat4Local());
+
+  // mesh_local_origin_world translation = column 3 of spawn_world. The
+  // spawn world transform is constructed by callers as a pure translation
+  // (the entity's world translation), so its inverse is also a pure
+  // translation. We pre-extract it so we can shift world-space matrices
+  // back into mesh-local space with a single column-3 subtraction.
+  const float ox = m_impl->spawn_world.values[12];
+  const float oy = m_impl->spawn_world.values[13];
+  const float oz = m_impl->spawn_world.values[14];
+
+  // Precompute bind absolute-world matrices per joint (mesh-local bind
+  // shifted by spawn translation). For an auto-rigged humanoid, bind_world
+  // is a pure translation so this is also pure-translation.
+  std::vector<vkpt::scene::Mat4> bind_world_abs(joint_count);
+  for (std::size_t j = 0; j < joint_count; ++j) {
+    bind_world_abs[j] = MulMat4Local(m_impl->spawn_world,
+                                     m_impl->bind_world[j]);
+  }
+
+#ifdef PT_ENABLE_JOLT
+  // Helper: convert a JPH Mat44 (column-major) into vkpt::scene::Mat4.
+  auto from_jph = [](const JPH::Mat44& m44) {
+    vkpt::scene::Mat4 r{};
+    for (std::size_t col = 0; col < 4u; ++col) {
+      JPH::Vec4 c = m44.GetColumn4(static_cast<JPH::uint>(col));
+      r.values[col * 4u + 0u] = c.GetX();
+      r.values[col * 4u + 1u] = c.GetY();
+      r.values[col * 4u + 2u] = c.GetZ();
+      r.values[col * 4u + 3u] = c.GetW();
+    }
+    return r;
+  };
+
+  // For each joint that has an owning bone:
+  //   delta_world = body_now_world * inverse(body_bind_world)
+  //   joint_now_world = delta_world * bind_world_abs[joint]
+  //   joint_now_local = T(-spawn_translation) * joint_now_world
+  // Joints with no owning bone fall back to bind_world (identity skinning).
+  auto apply_for_joint = [&](std::size_t joint_index,
+                             const Impl::BoneRecord& rec) {
+    if (m_impl->world == nullptr || rec.body_id.IsInvalid()) {
+      // Pre-add or invalid body: use bind world (mesh-local) so
+      // skinning is identity.
+      out[joint_index] = m_impl->bind_world[joint_index];
+      return;
+    }
+    JPH::RVec3 pos;
+    JPH::Quat rot;
+    m_impl->world->GetBodyInterface().GetPositionAndRotation(rec.body_id, pos,
+                                                              rot);
+    const JPH::Mat44 body_now =
+        JPH::Mat44::sRotationTranslation(rot, pos);
+    // Inverse of T(c)*R = R^T * T(-c). Jolt provides
+    // sInverseRotationTranslation for this rotation+translation form.
+    const JPH::Mat44 body_bind_inv =
+        JPH::Mat44::sInverseRotationTranslation(rec.body_bind_rot,
+                                                rec.body_bind_center);
+    const JPH::Mat44 delta_world = body_now * body_bind_inv;
+    // Convert bind_world_abs[j] (engine Mat4) into a JPH Mat44 to compose.
+    const auto& jw = bind_world_abs[joint_index];
+    JPH::Vec4 c0(jw.values[0],  jw.values[1],  jw.values[2],  jw.values[3]);
+    JPH::Vec4 c1(jw.values[4],  jw.values[5],  jw.values[6],  jw.values[7]);
+    JPH::Vec4 c2(jw.values[8],  jw.values[9],  jw.values[10], jw.values[11]);
+    JPH::Vec4 c3(jw.values[12], jw.values[13], jw.values[14], jw.values[15]);
+    JPH::Mat44 joint_bind_world(c0, c1, c2, c3);
+    JPH::Mat44 joint_now_world = delta_world * joint_bind_world;
+    auto local = from_jph(joint_now_world);
+    // Pre-multiply by inverse spawn (pure translation): subtract origin
+    // from the translation column.
+    local.values[12] -= ox;
+    local.values[13] -= oy;
+    local.values[14] -= oz;
+    // Suppress numerical drift on the homogeneous row.
+    local.values[3]  = 0.0f;
+    local.values[7]  = 0.0f;
+    local.values[11] = 0.0f;
+    local.values[15] = 1.0f;
+    out[joint_index] = local;
+  };
+
+  for (std::size_t j = 0; j < joint_count; ++j) {
+    const std::int32_t bone_idx = m_impl->joint_to_bone[j];
+    if (bone_idx >= 0) {
+      apply_for_joint(j, m_impl->bones[static_cast<std::size_t>(bone_idx)]);
+      continue;
+    }
+    // Root or detached joint: try to fold a child bone's rigid motion
+    // through the joint position so the root matrix tracks the spine
+    // body. If no usable child exists, fall back to bind_world (mesh
+    // local) which makes skinning identity for that joint.
+    out[j] = m_impl->bind_world[j];
+    for (const auto& rec : m_impl->bones) {
+      if (rec.joint_index < 0) continue;
+      const auto& jj =
+          m_impl->skeleton.joints[static_cast<std::size_t>(rec.joint_index)];
+      if (static_cast<std::size_t>(jj.parent_index) != j) continue;
+      if (rec.body_id.IsInvalid() || m_impl->world == nullptr) break;
+      // Reuse the same delta-world math but anchor at THIS joint's bind.
+      const JPH::Mat44 body_bind_inv =
+          JPH::Mat44::sInverseRotationTranslation(rec.body_bind_rot,
+                                                  JPH::RVec3(rec.body_bind_center));
+      JPH::RVec3 pos;
+      JPH::Quat rot;
+      m_impl->world->GetBodyInterface().GetPositionAndRotation(rec.body_id, pos,
+                                                                rot);
+      const JPH::Mat44 body_now =
+          JPH::Mat44::sRotationTranslation(rot, pos);
+      const JPH::Mat44 delta_world = body_now * body_bind_inv;
+      const auto& jw = bind_world_abs[j];
+      JPH::Vec4 c0(jw.values[0],  jw.values[1],  jw.values[2],  jw.values[3]);
+      JPH::Vec4 c1(jw.values[4],  jw.values[5],  jw.values[6],  jw.values[7]);
+      JPH::Vec4 c2(jw.values[8],  jw.values[9],  jw.values[10], jw.values[11]);
+      JPH::Vec4 c3(jw.values[12], jw.values[13], jw.values[14], jw.values[15]);
+      JPH::Mat44 joint_bind_world(c0, c1, c2, c3);
+      JPH::Mat44 joint_now_world = delta_world * joint_bind_world;
+      auto local = from_jph(joint_now_world);
+      local.values[12] -= ox;
+      local.values[13] -= oy;
+      local.values[14] -= oz;
+      local.values[3]  = 0.0f;
+      local.values[7]  = 0.0f;
+      local.values[11] = 0.0f;
+      local.values[15] = 1.0f;
+      out[j] = local;
+      break;
+    }
+  }
+#else
+  for (std::size_t j = 0; j < joint_count; ++j) {
+    out[j] = m_impl->bind_world[j];
   }
 #endif
 

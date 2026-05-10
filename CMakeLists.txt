@@ -1310,6 +1310,7 @@ add_executable(pt_hero_hit_demo_smoke EXCLUDE_FROM_ALL
   src/animation/AnimationAuthority.cpp
   src/animation/AnimationClip.cpp
   src/animation/AnimationSampler.cpp
+  src/animation/AnimationSkinning.cpp
   src/animation/Skeleton.cpp
   src/assets/AssetImporters.cpp
   src/assets/AssetImportersTexture.cpp

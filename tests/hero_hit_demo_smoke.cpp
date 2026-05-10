@@ -28,6 +28,7 @@
 #include "animation/AnimationAuthority.h"
 #include "animation/AnimationClip.h"
 #include "animation/AnimationSampler.h"
+#include "animation/AnimationSkinning.h"
 #include "animation/Skeleton.h"
 #include "assets/SceneAssetLoaderInternal.h"
 #include "audio/AudioSystem.h"
@@ -530,6 +531,108 @@ int main(int argc, char** argv) {
 
   if (!Check(script_errors_total == 0,
              "script errors during smoke run")) {
+    return 1;
+  }
+
+  // ---- Regression: ragdoll-driven skinning produces a coherent mesh ----
+  //
+  // Build a fresh ragdoll, seed it from the bind pose, step physics 1 frame,
+  // then compute the LBS-skinned vertex positions using the new mesh-local
+  // skinning frame (read_joint_local_skinning_matrices()). At rest, with
+  // the ragdoll near bind pose and a single 1/60s step, the max per-vertex
+  // deviation from the bind position should be tiny (<1.0 world unit).
+  // BEFORE the fix, ragdoll output was in absolute world space — multiplying
+  // by inverse_bind compounded the spawn translation into every vertex,
+  // producing massive deviations and a visibly exploded mesh.
+  float regression_max_dev = 0.0f;
+  std::size_t regression_vert_count = 0u;
+  {
+    vkpt::physics::Ragdoll regression_rag;
+    const auto regression_spawn = TranslationMat4(0.0f, 1.0f, 0.0f);
+    if (!Check(regression_rag.build(skeleton, regression_spawn,
+                                    vkpt::physics::RagdollConfig{}),
+               "regression ragdoll build failed")) {
+      return 1;
+    }
+    regression_rag.add_to_world(jph_world);
+
+    // Seed from bind pose (in absolute world space, matching the spawn).
+    auto bind_world_local =
+        vkpt::animation::compute_bind_world_matrices(skeleton);
+    auto bind_world_seed = bind_world_local;
+    for (auto& m : bind_world_seed) {
+      m.values[12] += regression_spawn.values[12];
+      m.values[13] += regression_spawn.values[13];
+      m.values[14] += regression_spawn.values[14];
+    }
+    if (!Check(regression_rag.seed_pose_from_skeleton(bind_world_seed,
+                                                      nullptr, kDt),
+               "regression ragdoll seed failed")) {
+      return 1;
+    }
+    // Single 1/60s step.
+    jph_world.Update(kDt, 1, &temp_alloc, &job_system);
+
+    // Pull mesh-local skinning matrices and compute the LBS deformation.
+    const auto local_mats = regression_rag.read_joint_local_skinning_matrices();
+    if (!Check(local_mats.size() == skeleton.joints.size(),
+               "regression local-skinning matrices size mismatch")) {
+      return 1;
+    }
+    const auto skin_mats = vkpt::animation::compute_skinning_matrices(
+        skeleton, local_mats);
+    // Apply per-vertex LBS to the bind-pose vertices of every primitive
+    // that carries skin weights. Compare against the bind-pose vertex
+    // (mesh-local) and track the worst deviation.
+    auto skin_point = [&](const std::array<std::uint32_t, 4>& idx,
+                          const std::array<float, 4>& w,
+                          const vkpt::scene::Vec3& bp) {
+      vkpt::scene::Vec3 out{0.0f, 0.0f, 0.0f};
+      for (std::size_t k = 0; k < 4u; ++k) {
+        if (w[k] == 0.0f) continue;
+        if (idx[k] >= skin_mats.size()) continue;
+        const auto& m = skin_mats[idx[k]];
+        const float x = m.values[0] * bp.x + m.values[4] * bp.y +
+                        m.values[8] * bp.z + m.values[12];
+        const float y = m.values[1] * bp.x + m.values[5] * bp.y +
+                        m.values[9] * bp.z + m.values[13];
+        const float z = m.values[2] * bp.x + m.values[6] * bp.y +
+                        m.values[10] * bp.z + m.values[14];
+        out.x += w[k] * x;
+        out.y += w[k] * y;
+        out.z += w[k] * z;
+      }
+      return out;
+    };
+    for (const auto& bucket : loaded.geometry) {
+      if (bucket.joint_indices.empty() || bucket.joint_weights.empty()) {
+        continue;
+      }
+      if (bucket.joint_indices.size() != bucket.vertices.size()) continue;
+      for (std::size_t v = 0; v < bucket.vertices.size(); ++v) {
+        const auto& bp = bucket.vertices[v];
+        const auto sp =
+            skin_point(bucket.joint_indices[v], bucket.joint_weights[v], bp);
+        const float dx = sp.x - bp.x;
+        const float dy = sp.y - bp.y;
+        const float dz = sp.z - bp.z;
+        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::isfinite(dist) && dist > regression_max_dev) {
+          regression_max_dev = dist;
+        }
+        ++regression_vert_count;
+      }
+    }
+    regression_rag.remove_from_world(jph_world);
+  }
+  // Print for visibility regardless of pass/fail.
+  std::cout << "hero_hit_demo_smoke: vertex_skinning_max_deviation="
+            << regression_max_dev << " m"
+            << " (" << regression_vert_count << " skinned verts)\n";
+  if (!Check(regression_max_dev < 1.0f,
+             "ragdoll-driven skinning produces incoherent mesh: max vertex "
+             "deviation exceeded 1.0m at near-bind pose")) {
+    std::cerr << "  regression_max_dev=" << regression_max_dev << "\n";
     return 1;
   }
 

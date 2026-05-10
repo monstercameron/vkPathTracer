@@ -68,6 +68,22 @@ class Ragdoll {
   /// parent body's transform plus the bind-relative offset.
   std::vector<vkpt::scene::Mat4> read_joint_world_matrices() const;
 
+  /// Read current per-joint matrices in MESH-LOCAL space, in the same frame
+  /// as `compute_world_matrices(skeleton, ...)` produces from animation
+  /// sampling. The output is the matrix to feed directly into
+  /// `compute_skinning_matrices(skeleton, joint_world_matrices)` so the LBS
+  /// path produces a coherent deformation when the ragdoll drives skinning.
+  ///
+  /// For each joint, the rigid motion of the owning Jolt body since `build()`
+  /// is computed in absolute world space, applied to the joint's bind
+  /// absolute world matrix, then expressed in mesh-local space (i.e.
+  /// pre-multiplied by `inverse(spawn_world)`). When the ragdoll has not
+  /// moved (post-build, pre-step), the result equals `bind_world[j]` in
+  /// mesh-local space, so `joint_world * inverse_bind` yields identity and
+  /// skinning is a no-op.
+  std::vector<vkpt::scene::Mat4>
+  read_joint_local_skinning_matrices() const;
+
   /// Phase 5 RAG06: spawn ragdoll bodies at the supplied pose (typically the
   /// animation pose just before activation). Each Jolt body is teleported to
   /// align with the bone (parent->joint axis) defined by the supplied

@@ -229,9 +229,13 @@ RagdollHandle RagdollWorld::attach_ragdoll(
   Impl::Entry entry;
   entry.entity = entity;
   entry.joint_count = skeleton.joints.size();
-  // Initial snapshot = bind pose so reads before the first step() return
-  // a valid frame instead of an empty vector.
-  entry.snapshot = rd->read_joint_world_matrices();
+  // Initial snapshot = bind pose in MESH-LOCAL skinning frame so reads
+  // before the first step() return identity-skinning matrices (the qt
+  // skinning path multiplies by inverse_bind, which expects mesh-local
+  // input). See Ragdoll::read_joint_local_skinning_matrices() — at
+  // build-time, no rigid motion has been applied yet, so the output
+  // equals bind_world[j] in mesh-local space.
+  entry.snapshot = rd->read_joint_local_skinning_matrices();
   entry.ragdoll = std::move(rd);
   const auto id = m_impl->next_id.fetch_add(1u, std::memory_order_relaxed);
   m_impl->ragdolls.emplace(id, std::move(entry));
@@ -338,7 +342,14 @@ void RagdollWorld::step(float dt) {
                            m_impl->job_system.get());
   for (auto& [id, entry] : m_impl->ragdolls) {
     if (entry.ragdoll) {
-      entry.snapshot = entry.ragdoll->read_joint_world_matrices();
+      // Mesh-local skinning frame: see comment in attach_ragdoll(). Each
+      // joint's matrix folds the body's rigid motion since build() into
+      // bind_world[j], producing a transform suitable for direct LBS
+      // (joint_world * inverse_bind = correct deformation). Without this
+      // conversion, ragdoll-driven skinning would compound the entity's
+      // world translation and the body's bind orientation into the
+      // skinning matrix, exploding the mesh on hit.
+      entry.snapshot = entry.ragdoll->read_joint_local_skinning_matrices();
     }
   }
   m_impl->step_counter.fetch_add(1u, std::memory_order_relaxed);
