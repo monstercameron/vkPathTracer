@@ -708,6 +708,42 @@
         // skeletal entities are present (early-outs inside tick_animations).
         if (qtScriptsRunning()) {
           qtTickAnimationsAndRagdolls(qtInputDt, qtFrameCount);
+          // Phase 4 GPU side (P4 CPU fallback): when CPU skinning has just
+          // mutated qtScene.local_vertices for skinned instances, the
+          // backend's vertex buffer must be re-uploaded so dynamic-instance
+          // intersection sees the posed mesh. The full GPU compute + BLAS
+          // refit dispatch is a documented scope cut (see
+          // skin_vertices_cs.hlsl); this path keeps the demo visually
+          // correct on D3D12, Vulkan, and CPU backends without depending on
+          // any backend-specific GPU dispatch wiring. The rebuild cost is
+          // bounded by the dynamic-instance vertex count (hero mesh:
+          // ~few-hundred to ~few-thousand verts), and the existing
+          // load_scene_snapshot path is the same one used by editor scene
+          // edits, so frames-in-flight / readback fence / tile aggregator
+          // / BG mode all behave identically. When no skinning is needed,
+          // we skip the rebuild entirely (early-out via qtSkinnedSceneDirty).
+          if (qtSkinnedSceneDirty && !qtSkinnedSnapshotEntries.empty()) {
+            if (qtUseBg && qtRenderCoordinator) {
+              // BG mode: republish the scene snapshot with topology dirty so
+              // the coordinator picks up the new local_vertices on the next
+              // worker swap. Avoids touching qtTracer directly from the qt
+              // thread (the BG worker owns it). This is the same pattern
+              // qtReloadEditedScene uses for full reloads under BG mode.
+              qtPublishRenderSnapshotForBackground(true, false, false, false);
+            } else if (qtTracerReady && qtTracer) {
+              // Sync (GPU/CPU foreground) path: rebuild scene buffers +
+              // acceleration. Reset accumulation so the new pose isn't
+              // ghosted with the old one.
+              const bool ok =
+                  qtTracer->load_scene_snapshot(qtScene) &&
+                  qtTracer->build_or_update_acceleration();
+              if (ok) {
+                (void)qtTracer->reset_accumulation();
+                qtSampleIndex = 0u;
+                (void)qtPublishRenderSnapshot(true, false, false, false);
+              }
+            }
+          }
         }
         qtApplyPhysicsSimulation(qtFrameStart);
         const auto qtAfterPhysics = std::chrono::steady_clock::now();

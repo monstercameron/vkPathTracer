@@ -96,6 +96,7 @@
 // the include back in alongside the IPhysicsWorld extension that exposes the
 // shared JPH::PhysicsSystem.
 #include "animation/AnimationSampler.h"
+#include "animation/AnimationSkinning.h"
 #include "scene/Scene.h"
 #include "scene/SceneScriptBootstrap.h"
 #include "scene/SnapshotRing.h"
@@ -1516,6 +1517,13 @@ int RunApp(int argc, char** argv) {
       // entities → ~1.5s per BuildQtDockPanels). The dock panel content
       // is editor-facing and tolerates a 200ms post-stop delay.
       std::uint64_t qtLastMutationPublishNs = 0u;
+      // Phase 4 GPU side (P4 CPU fallback): per-frame skinning matrices and a
+      // dirty flag tracking whether qtScene.local_vertices currently holds a
+      // posed mesh that must be reset to bind pose when no skinned entity is
+      // present this frame. Declared above qtPublishRenderSnapshot so the
+      // lambda capture sees them.
+      std::vector<vkpt::scene::SkinnedInstanceEntry> qtSkinnedSnapshotEntries;
+      bool qtSkinnedSceneDirty = false;
       auto qtPublishRenderSnapshot =
           [&](bool topology_changed,
               bool transform_changed,
@@ -1552,6 +1560,18 @@ int RunApp(int argc, char** argv) {
             qtScene,
             previous.get(),
             qtSnapshotRevisions);
+        // Phase 4 GPU side: attach the per-frame skinning matrices computed
+        // during qtTickAnimationsAndRagdolls. Carrying them on the snapshot
+        // makes the data observable to any backend that adopts GPU compute
+        // skinning + BLAS refit later — the only missing piece versus the
+        // documented Phase 4 GPU dispatch path.
+        if (snapshot && !qtSkinnedSnapshotEntries.empty()) {
+          auto* mutable_snapshot =
+              const_cast<vkpt::scene::RenderSceneSnapshot*>(snapshot.get());
+          for (const auto& entry : qtSkinnedSnapshotEntries) {
+            vkpt::scene::AttachSkinnedInstance(*mutable_snapshot, entry);
+          }
+        }
         const auto generation = snapshot ? snapshot->generation : 0u;
         if (generation != 0u) {
           vkpt::core::metrics::RegisterPublishInput(generation, pending_input_ns);

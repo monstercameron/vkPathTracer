@@ -286,6 +286,13 @@ bool ImportModelAsset(vkpt::scene::SceneDocument& document,
     if (bucket.texcoords.size() == bucket.vertices.size()) {
       geometry.texcoords = bucket.texcoords;
     }
+    // Phase 4 GPU side: forward per-vertex JOINTS_0/WEIGHTS_0 if the source
+    // primitive is part of a skin. Both arrays are parallel to vertices.
+    if (bucket.joint_indices.size() == bucket.vertices.size() &&
+        bucket.joint_weights.size() == bucket.vertices.size()) {
+      geometry.joint_indices = bucket.joint_indices;
+      geometry.joint_weights = bucket.joint_weights;
+    }
     document.geometry.push_back(std::move(geometry));
 
     vkpt::scene::SceneEntityDefinition entity;

@@ -1017,6 +1017,9 @@ vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
   reserve_capacity(scene.texcoords, meshVertexCapacity);
   reserve_capacity(scene.indices, meshIndexCapacity);
   reserve_capacity(scene.local_vertices, dynamicVertexCapacity);
+  reserve_capacity(scene.bind_local_vertices, dynamicVertexCapacity);
+  reserve_capacity(scene.local_joint_indices, dynamicVertexCapacity);
+  reserve_capacity(scene.local_joint_weights, dynamicVertexCapacity);
   reserve_capacity(scene.local_indices, dynamicIndexCapacity);
 
   std::size_t meshCullCandidates = 0u;
@@ -1151,8 +1154,27 @@ vkpt::core::Result<PathTracerSceneSnapshot> BuildSceneDataFromDocumentAtFrame(
       }
       instance.local_first_vertex = static_cast<uint32_t>(scene.local_vertices.size());
       instance.local_vertex_count = static_cast<uint32_t>(geometry->vertices.size());
-      for (const auto& vertex : geometry->vertices) {
+      // Phase 4 GPU side: per-vertex JOINTS_0/WEIGHTS_0 are parallel to
+      // local_vertices. When the source geometry is skinned, copy them; when
+      // it is not, push zero-initialized entries to keep the array parallel.
+      const bool geometrySkinned =
+          geometry->joint_indices.size() == geometry->vertices.size() &&
+          geometry->joint_weights.size() == geometry->vertices.size();
+      const std::size_t vertexCount = geometry->vertices.size();
+      for (std::size_t v = 0; v < vertexCount; ++v) {
+        const auto& vertex = geometry->vertices[v];
         scene.local_vertices.push_back(Vec3{vertex.x, vertex.y, vertex.z});
+        scene.bind_local_vertices.push_back(Vec3{vertex.x, vertex.y, vertex.z});
+        if (geometrySkinned) {
+          scene.local_joint_indices.push_back(geometry->joint_indices[v]);
+          scene.local_joint_weights.push_back(geometry->joint_weights[v]);
+        } else {
+          scene.local_joint_indices.push_back({0u, 0u, 0u, 0u});
+          scene.local_joint_weights.push_back({0.0f, 0.0f, 0.0f, 0.0f});
+        }
+      }
+      if (geometrySkinned) {
+        instance.flags |= kRTInstanceFlagSkinned;
       }
       instance.local_first_index = static_cast<uint32_t>(scene.local_indices.size());
       instance.local_index_count = static_cast<uint32_t>(validIndexCount);

@@ -335,6 +335,24 @@ vkpt::core::Result<SceneWorld> SceneDocument::to_world() const {
       // (if any) holds an index into this array.
       if (auto* record = world.get_entity(id)) {
         record->clips = entity.animation_clips;
+        // Phase 4 GPU side: when an asset import attached clips to a
+        // skeleton-bearing entity but no explicit AnimationComponent was
+        // authored, default to playing the first clip. This is what lets
+        // the animation sampler's tick_animations() loop write
+        // joint_world_matrices each frame for imported assets — without
+        // this, the clips array sits dormant and skeletal characters
+        // freeze at bind pose. Authored AnimationComponents (added later
+        // by scene script bootstrap or editor) overwrite this default.
+        if (record->skeleton.has_value() &&
+            !record->animation.has_value()) {
+          AnimationComponent default_anim;
+          default_anim.clip_index = 0;
+          default_anim.time_seconds = 0.0f;
+          default_anim.speed = 1.0f;
+          default_anim.loop = true;
+          default_anim.paused = false;
+          record->animation = default_anim;
+        }
       }
     }
   }

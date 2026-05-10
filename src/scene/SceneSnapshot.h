@@ -12,6 +12,7 @@
 
 #include "core/contracts/Result.h"
 #include "pathtracer/PathTracer.h"
+#include "scene/SceneTypes.h"
 
 namespace vkpt::scene {
 
@@ -67,6 +68,18 @@ struct RenderInstanceMotion {
   vkpt::pathtracer::RTInstance current{};
 };
 
+// Phase 4 GPU side: per-instance skinning matrices for the GPU compute
+// dispatch / CPU fallback. `instance_index` indexes into `snapshot.instances`.
+// `skinning_matrices` is computed as `joint_world * inverse_bind` for every
+// joint of the entity's skeleton, so size == skeleton.joints.size(). The
+// flag `RenderSceneSnapshotChange::SkinningMatricesChanged` is set on the
+// snapshot whenever any matrix differs from the previous frame.
+struct SkinnedInstanceEntry {
+  std::uint32_t instance_index = 0u;
+  std::uint32_t skeleton_joint_count = 0u;
+  std::vector<vkpt::scene::Mat4> skinning_matrices;
+};
+
 struct SnapshotAccelerationHandle {
   std::shared_ptr<const vkpt::pathtracer::IRayAccelerator> cpu_bvh;
   vkpt::pathtracer::RayAcceleratorBuildInfo cpu_bvh_info{};
@@ -102,6 +115,10 @@ struct RenderSceneSnapshot {
   CowArray<vkpt::pathtracer::RTHitLight> lights;
   CowArray<vkpt::pathtracer::Vec3> environment_map;
   CowArray<RenderInstanceMotion> instance_motion;
+  // Phase 4 GPU side: per-skinned-instance matrices, populated by the snapshot
+  // builder when an entity carries a skeleton with non-empty joint world
+  // matrices. Empty when no skinned entity is in the scene.
+  std::vector<SkinnedInstanceEntry> skinned_instances;
 
   vkpt::pathtracer::Vec3 environment_color{0.0f, 0.0f, 0.0f};
   vkpt::pathtracer::Vec3 environment_map_scale{0.0f, 0.0f, 0.0f};
@@ -214,5 +231,22 @@ SimSnapshotTickResult PublishSimTickSnapshot(SimSnapshotTickRequest request);
 std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> DiffInstanceTransforms(
     const RenderSceneSnapshot& previous,
     const RenderSceneSnapshot& current);
+
+// Phase 4 GPU side: attach or replace a SkinnedInstanceEntry on the snapshot.
+// Used by the host application after BuildRenderSceneSnapshot when an entity
+// carries a skeleton with non-empty joint world matrices for the frame.
+void AttachSkinnedInstance(RenderSceneSnapshot& snapshot,
+                           SkinnedInstanceEntry entry);
+
+// Phase 4 GPU side: CPU-side linear-blended skinning fallback. Reads
+// `scene.bind_local_vertices`, `scene.local_joint_indices`,
+// `scene.local_joint_weights` plus the per-instance skinning matrices and
+// writes `scene.local_vertices` for every instance flagged as skinned. The
+// hard-fallback path of the P4 GPU side: visually correct, slower than the
+// GPU compute dispatch, but preserves all frames-in-flight / fence
+// invariants because it runs on the CPU before the backend's
+// update_instance_transforms call.
+void ApplyCpuSkinningToScene(vkpt::pathtracer::PathTracerSceneSnapshot& scene,
+                             const std::vector<SkinnedInstanceEntry>& entries);
 
 }  // namespace vkpt::scene

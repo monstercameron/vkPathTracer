@@ -2065,6 +2065,112 @@
           entity->joint_world_matrices = std::move(rag_world);
         }
 
+        // Phase 4 GPU side: compute skinning matrices and stage them onto a
+        // per-entity cache so the next snapshot publish carries them. The
+        // CPU skinning fallback (ApplyCpuSkinningToScene) deforms
+        // qtScene.local_vertices in place so dynamic-instance intersection
+        // (which reads local_vertices via local_first_vertex) sees the
+        // posed mesh. The full GPU compute + BLAS refit dispatch remains a
+        // documented Phase 4 scope cut (see skin_vertices_cs.hlsl); this
+        // path is the hard fallback authorized by that scope.
+        qtSkinnedSnapshotEntries.clear();
+        bool anySkinned = false;
+        std::size_t debug_skel_count = 0;
+        std::size_t debug_jw_empty = 0;
+        std::size_t debug_no_match_inst = 0;
+        for (const auto entity_id : world.all_entities()) {
+          auto* entity = world.get_entity(entity_id);
+          if (entity == nullptr) continue;
+          if (!entity->skeleton.has_value()) continue;
+          ++debug_skel_count;
+          if (entity->joint_world_matrices.empty()) {
+            ++debug_jw_empty;
+            continue;
+          }
+          const auto& skel = *entity->skeleton;
+          if (entity->joint_world_matrices.size() != skel.joints.size()) continue;
+          auto matrices = vkpt::animation::compute_skinning_matrices(
+              skel, entity->joint_world_matrices);
+          // The skeleton lives on the imported asset root; the RT instances
+          // are typically child mesh entities (one per material bucket).
+          // Match the skeleton to every RT instance whose parent chain
+          // includes this entity, AND to a direct match if any (for hand-
+          // authored single-entity meshes).
+          std::vector<std::uint32_t> matched_instances;
+          if (auto it = qtRtInstanceIndexByEntity.find(entity_id);
+              it != qtRtInstanceIndexByEntity.end()) {
+            matched_instances.push_back(it->second);
+          }
+          for (const auto child_id : world.all_entities()) {
+            if (child_id == entity_id) continue;
+            const auto* child = world.get_entity(child_id);
+            if (child == nullptr) continue;
+            // Walk parent chain looking for entity_id.
+            vkpt::core::StableEntityId cursor = child_id;
+            bool linked = false;
+            for (int depth = 0; depth < 16; ++depth) {
+              const auto* cur = world.get_entity(cursor);
+              if (cur == nullptr) break;
+              if (!cur->hierarchy.has_value()) break;
+              const auto parent = cur->hierarchy->parent;
+              if (parent == 0u) break;
+              if (parent == entity_id) { linked = true; break; }
+              cursor = parent;
+            }
+            if (!linked) continue;
+            if (auto it2 = qtRtInstanceIndexByEntity.find(child_id);
+                it2 != qtRtInstanceIndexByEntity.end()) {
+              matched_instances.push_back(it2->second);
+            }
+          }
+          if (matched_instances.empty()) {
+            ++debug_no_match_inst;
+            continue;
+          }
+          for (const auto inst_idx : matched_instances) {
+            vkpt::scene::SkinnedInstanceEntry entry;
+            entry.instance_index = inst_idx;
+            entry.skeleton_joint_count =
+                static_cast<std::uint32_t>(skel.joints.size());
+            entry.skinning_matrices = matrices;
+            qtSkinnedSnapshotEntries.push_back(std::move(entry));
+          }
+          anySkinned = true;
+        }
+        if (anySkinned) {
+          // CPU-side skinning into qtScene.local_vertices. This is the
+          // hard-fallback authorized by the P4 GPU-side scope: visually
+          // correct, slower than GPU compute, but preserves all
+          // frames-in-flight / readback-fence invariants because mutation
+          // happens on the qt thread before the renderer reads the scene.
+          vkpt::scene::ApplyCpuSkinningToScene(qtScene, qtSkinnedSnapshotEntries);
+          if (!qtSkinnedSceneDirty) {
+            logger.log(vkpt::log::Severity::Info, "skinning",
+                       "cpu skinning active (P4 hard fallback)",
+                       {{"entries", std::to_string(qtSkinnedSnapshotEntries.size())},
+                        {"first_joints", std::to_string(qtSkinnedSnapshotEntries.front().skeleton_joint_count)}});
+          }
+          qtSkinnedSceneDirty = true;
+        } else {
+          static int skinning_diag_logged = 0;
+          if (skinning_diag_logged == 0 && debug_skel_count > 0) {
+            skinning_diag_logged = 1;
+            logger.log(vkpt::log::Severity::Info, "skinning",
+                       "skinning gate diagnostic",
+                       {{"skeletal_entities", std::to_string(debug_skel_count)},
+                        {"with_empty_joint_world", std::to_string(debug_jw_empty)},
+                        {"no_matching_rt_instance", std::to_string(debug_no_match_inst)}});
+          }
+          if (qtSkinnedSceneDirty) {
+            // Last frame had skinning; this frame doesn't. Restore bind pose so
+            // the mesh doesn't stick at the last skinned position.
+            if (qtScene.local_vertices.size() == qtScene.bind_local_vertices.size()) {
+              qtScene.local_vertices = qtScene.bind_local_vertices;
+            }
+            qtSkinnedSceneDirty = false;
+          }
+        }
+
         const auto tickEnd = std::chrono::steady_clock::now();
         VKP_METRIC_OBSERVE(
             "vkp.qt.animation_tick_us",

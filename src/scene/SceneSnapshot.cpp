@@ -747,6 +747,38 @@ RenderSceneSnapshotChange CompareRenderSceneSnapshots(
   if (previous->material_revision != current.material_revision) {
     change |= RenderSceneSnapshotChange::Material;
   }
+  // Phase 4 GPU side: detect skinning matrix updates by comparing the
+  // per-instance matrix arrays directly. We only consider counts/values; the
+  // builder rewrites these whenever joint_world_matrices change.
+  bool skinning_changed = false;
+  if (previous->skinned_instances.size() != current.skinned_instances.size()) {
+    skinning_changed = true;
+  } else {
+    for (std::size_t i = 0; !skinning_changed && i < current.skinned_instances.size(); ++i) {
+      const auto& a = previous->skinned_instances[i];
+      const auto& b = current.skinned_instances[i];
+      if (a.instance_index != b.instance_index ||
+          a.skeleton_joint_count != b.skeleton_joint_count ||
+          a.skinning_matrices.size() != b.skinning_matrices.size()) {
+        skinning_changed = true;
+        break;
+      }
+      for (std::size_t m = 0; m < a.skinning_matrices.size(); ++m) {
+        const auto& va = a.skinning_matrices[m].values;
+        const auto& vb = b.skinning_matrices[m].values;
+        for (std::size_t k = 0; k < 16u; ++k) {
+          if (va[k] != vb[k]) {
+            skinning_changed = true;
+            break;
+          }
+        }
+        if (skinning_changed) break;
+      }
+    }
+  }
+  if (skinning_changed && !current.skinned_instances.empty()) {
+    change |= RenderSceneSnapshotChange::SkinningMatricesChanged;
+  }
   return change;
 }
 
@@ -871,6 +903,74 @@ SimSnapshotTickResult PublishSimTickSnapshot(SimSnapshotTickRequest request) {
     return result;
   }
   return request.snapshots->publish_sim_tick(std::move(request));
+}
+
+void AttachSkinnedInstance(RenderSceneSnapshot& snapshot,
+                           SkinnedInstanceEntry entry) {
+  // Replace any existing entry for this instance in-place; otherwise append.
+  for (auto& existing : snapshot.skinned_instances) {
+    if (existing.instance_index == entry.instance_index) {
+      existing = std::move(entry);
+      return;
+    }
+  }
+  snapshot.skinned_instances.push_back(std::move(entry));
+}
+
+void ApplyCpuSkinningToScene(vkpt::pathtracer::PathTracerSceneSnapshot& scene,
+                             const std::vector<SkinnedInstanceEntry>& entries) {
+  if (entries.empty()) {
+    return;
+  }
+  if (scene.local_vertices.size() != scene.bind_local_vertices.size() ||
+      scene.local_vertices.size() != scene.local_joint_indices.size() ||
+      scene.local_vertices.size() != scene.local_joint_weights.size()) {
+    // Skinning attribute streams desynced from local vertex stream — skip
+    // skinning rather than corrupting geometry. The scope-cut path is OK as
+    // long as bind-pose vertices are preserved.
+    return;
+  }
+  for (const auto& entry : entries) {
+    if (entry.instance_index >= scene.instances.size()) continue;
+    const auto& instance = scene.instances[entry.instance_index];
+    if ((instance.flags & vkpt::pathtracer::kRTInstanceFlagSkinned) == 0u) continue;
+    if (entry.skinning_matrices.empty()) continue;
+    const std::uint32_t first = instance.local_first_vertex;
+    const std::uint32_t count = instance.local_vertex_count;
+    if (first + count > scene.local_vertices.size()) continue;
+    const std::size_t joint_count = entry.skinning_matrices.size();
+    for (std::uint32_t v = 0; v < count; ++v) {
+      const std::uint32_t vi = first + v;
+      const auto& bind = scene.bind_local_vertices[vi];
+      const auto& idx = scene.local_joint_indices[vi];
+      const auto& w = scene.local_joint_weights[vi];
+      const float total_w = w[0] + w[1] + w[2] + w[3];
+      if (total_w <= 0.0f) {
+        scene.local_vertices[vi] = bind;
+        continue;
+      }
+      // Linear-blended skinning: weighted sum of bone matrices applied to
+      // bind-pose position. Column-major 4x4 multiply matches Skeleton.cpp /
+      // AnimationSampler.cpp / AnimationSkinning.cpp convention.
+      float ax = 0.0f, ay = 0.0f, az = 0.0f;
+      for (std::size_t k = 0; k < 4u; ++k) {
+        const std::uint32_t ji = idx[k];
+        const float wk = w[k];
+        if (ji >= joint_count || wk == 0.0f) continue;
+        const auto& m = entry.skinning_matrices[ji].values;
+        // m is column-major: [c*4 + r]; column 0 is m[0..3], column 12+ is translation.
+        const float xp = m[0] * bind.x + m[4] * bind.y + m[8] * bind.z + m[12];
+        const float yp = m[1] * bind.x + m[5] * bind.y + m[9] * bind.z + m[13];
+        const float zp = m[2] * bind.x + m[6] * bind.y + m[10] * bind.z + m[14];
+        ax += wk * xp;
+        ay += wk * yp;
+        az += wk * zp;
+      }
+      // Renormalize when weights don't sum to 1 (e.g., partial JOINTS_0 set).
+      const float inv = 1.0f / total_w;
+      scene.local_vertices[vi] = vkpt::pathtracer::Vec3{ax * inv, ay * inv, az * inv};
+    }
+  }
 }
 
 std::vector<vkpt::pathtracer::RTInstanceTransformUpdate> DiffInstanceTransforms(

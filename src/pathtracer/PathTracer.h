@@ -267,6 +267,11 @@ enum RTInstanceFlags : uint32_t {
   kRTInstanceFlagDynamicTransform = 1u << 0u,
   kRTInstanceFlagPhysicsControlled = 1u << 1u,
   kRTInstanceFlagTransformDirty = 1u << 2u,
+  // Phase 4 GPU side: marks an instance whose local_vertices are deformed
+  // each frame by linear-blended skinning. The owning system updates the
+  // skinning matrices on the RenderSceneSnapshot, then rewrites
+  // local_vertices in place for this instance before the BVH refit.
+  kRTInstanceFlagSkinned = 1u << 3u,
 };
 
 struct RTInstance {
@@ -359,6 +364,19 @@ struct PathTracerSceneSnapshot {
   // RTInstance transforms to avoid changing vertex/index buffers per physics step.
   std::vector<Vec3> local_vertices;
   std::vector<uint32_t> local_indices;
+  // Phase 4 GPU side: per-vertex skinning attributes for skinned instances,
+  // parallel to local_vertices. Empty entries (all-zero indices, all-zero
+  // weights) for non-skinned vertices keep the buffer compact and parallel.
+  // RTInstance::flags carries kRTInstanceFlagSkinned to mark which slots are
+  // active. The CPU/GPU skinning step deforms local_vertices in place using
+  // the per-frame skinning matrices on the RenderSceneSnapshot.
+  std::vector<std::array<std::uint32_t, 4>> local_joint_indices;
+  std::vector<std::array<float, 4>> local_joint_weights;
+  // Bind-pose copy of local_vertices for skinned instances. Each frame the
+  // CPU skinning step rewrites local_vertices = bind_local_vertices skinned
+  // by the per-frame matrices, so the deformation is applied to the original
+  // bind pose rather than the previous frame's deformed pose.
+  std::vector<Vec3> bind_local_vertices;
   std::vector<RTInstance> instances;
   std::vector<RTTessellationRequest> tessellation_requests;
   std::vector<RTSdfPrimitive> sdf_primitives;

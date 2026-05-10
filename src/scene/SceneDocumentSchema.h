@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -118,6 +119,15 @@ struct SceneGeometryDefinition {
   std::vector<Vec2> texcoords;
   std::vector<std::uint32_t> indices;
   vkpt::core::StableId material_id = 0;
+
+  // Phase 4 SKN/GPU: per-vertex skinning attributes, parallel to `vertices`.
+  // Empty when the source primitive is not part of a skin. `joint_indices`
+  // holds joint-local indices remapped through the skin's joints[] table;
+  // `joint_weights` is normalized to sum=1. Carried so the renderer (CPU or
+  // GPU compute) can deform bind-pose vertices using the per-frame skinning
+  // matrices on the snapshot.
+  std::vector<std::array<std::uint32_t, 4>> joint_indices;
+  std::vector<std::array<float, 4>> joint_weights;
 
   struct TessellationSettings {
     bool enabled = false;
