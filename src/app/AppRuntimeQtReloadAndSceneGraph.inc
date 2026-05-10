@@ -1919,6 +1919,88 @@
       // smoke (tests/hero_hit_demo_smoke) covers the full path with a
       // dedicated JPH::PhysicsSystem; production wiring is tracked under the
       // RAG-MAIN-LOOP TODO below.
+      // RAG-LIVE-LOOP fix: when the script-bearing entity carries
+      // RagdollComponent / AnimationComponent but the Skeleton is on a
+      // different entity (the asset-import root or one of its descendants —
+      // typically a sibling under the same parent for `assets[].parent ==
+      // entity.parent`), we need to walk the scene to locate the skeleton
+      // host. The wiring lambda then attaches the ragdoll keyed by the
+      // origin entity id (so script-side enable_ragdoll mapping stays
+      // intact) but seeds + reads pose data through the resolved skeleton
+      // host. The cache below is populated lazily and cleared whenever the
+      // scene is reloaded.
+      std::unordered_map<vkpt::core::StableEntityId,
+                         vkpt::core::StableEntityId>
+          qtRagdollSkeletonHostByOrigin;
+      auto qtResolveSkeletonHost =
+          [&](vkpt::scene::SceneWorld& world,
+              vkpt::core::StableEntityId origin)
+              -> vkpt::core::StableEntityId {
+        if (origin == 0u) {
+          return 0u;
+        }
+        auto* origin_entity = world.get_entity(origin);
+        if (origin_entity != nullptr && origin_entity->skeleton.has_value()) {
+          return origin;
+        }
+        if (auto cached = qtRagdollSkeletonHostByOrigin.find(origin);
+            cached != qtRagdollSkeletonHostByOrigin.end()) {
+          // Validate cached entry still has a skeleton; entity may have been
+          // destroyed by a scene edit.
+          if (auto* host = world.get_entity(cached->second);
+              host != nullptr && host->skeleton.has_value()) {
+            return cached->second;
+          }
+          qtRagdollSkeletonHostByOrigin.erase(cached);
+        }
+        // BFS over descendants first.
+        std::vector<vkpt::core::StableEntityId> frontier =
+            world.children_of(origin);
+        for (std::size_t i = 0; i < frontier.size(); ++i) {
+          const auto candidate = frontier[i];
+          if (auto* rec = world.get_entity(candidate);
+              rec != nullptr && rec->skeleton.has_value()) {
+            qtRagdollSkeletonHostByOrigin[origin] = candidate;
+            return candidate;
+          }
+          auto next = world.children_of(candidate);
+          frontier.insert(frontier.end(), next.begin(), next.end());
+          if (frontier.size() > 256u) break;  // safety cap
+        }
+        // Fallback: walk siblings under the same parent. The hero_hit_demo
+        // scene parents both the asset-ref entity (script + ragdoll +
+        // animation) and the imported asset root (skeleton + clips) under
+        // the same demo root, making them siblings.
+        if (origin_entity != nullptr && origin_entity->hierarchy.has_value()) {
+          const auto parent = origin_entity->hierarchy->parent;
+          if (parent != 0u) {
+            for (const auto sibling : world.children_of(parent)) {
+              if (sibling == origin) continue;
+              if (auto* rec = world.get_entity(sibling);
+                  rec != nullptr && rec->skeleton.has_value()) {
+                qtRagdollSkeletonHostByOrigin[origin] = sibling;
+                return sibling;
+              }
+              // Walk descendants of the sibling too.
+              std::vector<vkpt::core::StableEntityId> sib_frontier =
+                  world.children_of(sibling);
+              for (std::size_t i = 0; i < sib_frontier.size(); ++i) {
+                const auto cand = sib_frontier[i];
+                if (auto* rec = world.get_entity(cand);
+                    rec != nullptr && rec->skeleton.has_value()) {
+                  qtRagdollSkeletonHostByOrigin[origin] = cand;
+                  return cand;
+                }
+                auto next = world.children_of(cand);
+                sib_frontier.insert(sib_frontier.end(), next.begin(), next.end());
+                if (sib_frontier.size() > 256u) break;
+              }
+            }
+          }
+        }
+        return 0u;
+      };
+      bool qtSceneTreeDumpDone = false;
       auto qtTickAnimationsAndRagdolls =
           [&](double dtSeconds, vkpt::core::FrameIndex frameIndex) {
         (void)frameIndex;
@@ -1932,9 +2014,88 @@
             std::min(dtSeconds, 0.10));  // cap for safety
         auto& world = qtScriptRuntimeWorldCache->world;
         const auto tickStart = std::chrono::steady_clock::now();
+        // One-shot scene tree dump for ragdoll/animation diagnostics. Logs
+        // each entity's id + parent + which of {skeleton, ragdoll, anim,
+        // clips} are present. Helps verify the parent->skeleton mapping when
+        // skinning/ragdoll appears broken.
+        if (!qtSceneTreeDumpDone) {
+          qtSceneTreeDumpDone = true;
+          for (const auto eid : world.all_entities()) {
+            auto* rec = world.get_entity(eid);
+            if (rec == nullptr) continue;
+            const auto parent = rec->hierarchy.has_value()
+                                    ? rec->hierarchy->parent
+                                    : vkpt::core::StableEntityId{0};
+            logger.log(vkpt::log::Severity::Info, "ragdoll",
+                       "scene tree at startup",
+                       {{"entity_id", std::to_string(eid)},
+                        {"parent_id", std::to_string(parent)},
+                        {"name", rec->identity.name},
+                        {"has_skeleton",
+                         rec->skeleton.has_value() ? "1" : "0"},
+                        {"has_ragdoll",
+                         rec->ragdoll.has_value() ? "1" : "0"},
+                        {"has_animation",
+                         rec->animation.has_value() ? "1" : "0"},
+                        {"has_clips",
+                         rec->clips.empty() ? "0" : "1"}});
+          }
+        }
         // 1. Animation sampler — early-outs internally on entities with no
         //    skeleton / no AnimationComponent / no clips, so this is cheap on
         //    scenes that don't carry any animated entities.
+        //    RAG-LIVE-LOOP: relay AnimationComponents authored on a
+        //    non-skeleton entity (e.g. the asset-ref entity) to the resolved
+        //    skeleton host so the sampler sees them paired up. We mirror the
+        //    component onto the host (replacing only when the host doesn't
+        //    already have its own authored component) and mirror the clips
+        //    list back to the origin if the host has clips but origin
+        //    doesn't (so the origin's lua bindings still resolve clip
+        //    names).
+        for (const auto eid : world.all_entities()) {
+          auto* rec = world.get_entity(eid);
+          if (rec == nullptr) continue;
+          if (rec->skeleton.has_value()) continue;  // skeleton host already
+          if (!rec->animation.has_value()) continue;
+          const auto host_id = qtResolveSkeletonHost(world, eid);
+          if (host_id == 0u || host_id == eid) continue;
+          auto* host = world.get_entity(host_id);
+          if (host == nullptr || !host->skeleton.has_value()) continue;
+          // Mirror clips both ways. The asset loader fills clips on the
+          // host (skeleton owner); the lua bindings on the origin entity
+          // need to see them too so set_animation_clip("idle") can resolve
+          // the name. Conversely, if the scene authored clips on the
+          // origin (rare), forward them to the host.
+          if (rec->clips.empty() && !host->clips.empty()) {
+            rec->clips = host->clips;
+          }
+          if (host->clips.empty() && !rec->clips.empty()) {
+            host->clips = rec->clips;
+          }
+          // Forward AnimationComponent fields from origin to host.
+          // The script may have called set_animation_clip with a name that
+          // didn't resolve at script time (origin's clips were empty until
+          // the mirror above). On the next tick origin still has
+          // clip_index=-1; in that case keep host's auto-selected clip
+          // (default 0) so the asset still animates. If the origin has a
+          // valid clip_index, that is the script's authoritative choice.
+          if (!host->animation.has_value()) {
+            host->animation = rec->animation;
+          }
+          auto& host_anim = *host->animation;
+          const auto& src = *rec->animation;
+          if (src.clip_index >= 0) {
+            host_anim.clip_index = src.clip_index;
+          }
+          host_anim.speed = src.speed;
+          host_anim.loop = src.loop;
+          host_anim.paused = src.paused;
+          // time_seconds is advanced by tick_animations on the host; do
+          // not overwrite from the origin every frame (would freeze
+          // playback at 0). Only honor explicit script writes via
+          // set_animation_time would require origin->host one-shot — out
+          // of scope; current scenes rely on continuous playback.
+        }
         vkpt::animation::tick_animations(world, dt);
         // 2. Ragdoll lifecycle + step. RAG-MAIN-LOOP wiring: when an
         //    entity's RagdollComponent.active flips false->true, attach a
@@ -1951,11 +2112,23 @@
               entity->ragdoll.has_value() && entity->ragdoll->active;
           const auto handleIt = qtRagdollHandles.find(entity_id);
           const bool hasHandle = (handleIt != qtRagdollHandles.end());
+          // Resolve the skeleton host. If the origin entity carries the
+          // skeleton itself, host_id == entity_id and `host_entity` aliases
+          // `entity`. Otherwise the host is a sibling/descendant carrying
+          // the skeleton + clips imported from the model asset.
+          const auto host_id =
+              entity->skeleton.has_value()
+                  ? entity_id
+                  : qtResolveSkeletonHost(world, entity_id);
+          auto* host_entity = (host_id == 0u || host_id == entity_id)
+                                  ? entity
+                                  : world.get_entity(host_id);
 
           if (wantsActive && !hasHandle &&
-              entity->skeleton.has_value() &&
+              host_entity != nullptr &&
+              host_entity->skeleton.has_value() &&
               qtRagdollWorld.is_available()) {
-            const auto& skel = *entity->skeleton;
+            const auto& skel = *host_entity->skeleton;
             // Spawn pose: use entity's translation as world origin.
             vkpt::scene::Mat4 spawn{};
             spawn.values[0] = 1.0f;
@@ -1980,10 +2153,13 @@
               logger.log(vkpt::log::Severity::Info, "ragdoll",
                          "ragdoll_attached_qt",
                          {{"entity_id", std::to_string(entity_id)},
+                          {"skeleton_host_id", std::to_string(host_id)},
                           {"handle", std::to_string(handle.id)},
                           {"joints", std::to_string(skel.joints.size())}});
               // Seed from the freshly-sampled animation pose if requested.
-              auto anim_world = entity->joint_world_matrices;
+              // Read pose from the SKELETON HOST (not the origin entity);
+              // the sampler writes joint_world_matrices on the host.
+              auto anim_world = host_entity->joint_world_matrices;
               if (entity->transform.has_value()) {
                 const auto& t = entity->transform->translation;
                 for (auto& m : anim_world) {
@@ -2026,9 +2202,11 @@
           }
 
           // Cache the just-sampled animation pose for any future seed call.
-          if (entity->skeleton.has_value() &&
-              !entity->joint_world_matrices.empty()) {
-            qtRagdollPrevAnim[entity_id] = entity->joint_world_matrices;
+          // Read from the host_entity (skeleton owner), key by origin
+          // entity_id so the seed lookup at activation matches.
+          if (host_entity != nullptr && host_entity->skeleton.has_value() &&
+              !host_entity->joint_world_matrices.empty()) {
+            qtRagdollPrevAnim[entity_id] = host_entity->joint_world_matrices;
             if (entity->transform.has_value()) {
               const auto& t = entity->transform->translation;
               for (auto& m : qtRagdollPrevAnim[entity_id]) {
@@ -2044,16 +2222,29 @@
         qtRagdollWorld.step(dt);
 
         // 4. After step, for each active ragdoll write joint matrices into
-        //    the entity record so the renderer/skinning consumes the
-        //    physics pose (authority arbiter would otherwise hand back
-        //    animation results).
+        //    the SKELETON HOST entity record so the renderer/skinning
+        //    consumes the physics pose (authority arbiter would otherwise
+        //    hand back animation results). The handle is keyed by origin
+        //    entity_id (matching the lua-side enable_ragdoll mapping) but
+        //    we resolve to the host before writing.
         for (const auto& [entity_id, handle] : qtRagdollHandles) {
           auto* entity = world.get_entity(entity_id);
           if (entity == nullptr) continue;
+          const auto host_id =
+              entity->skeleton.has_value()
+                  ? entity_id
+                  : qtResolveSkeletonHost(world, entity_id);
+          auto* host = (host_id == 0u || host_id == entity_id)
+                           ? entity
+                           : world.get_entity(host_id);
+          if (host == nullptr) continue;
           auto rag_world = qtRagdollWorld.read_ragdoll_joint_matrices(handle);
           if (rag_world.empty()) continue;
           // Subtract entity translation so values are stored in
           // entity-local space (matches the animation sampler convention).
+          // The transform offset comes from the script-bearing origin
+          // entity; the host's own transform is identity by convention for
+          // imported asset roots.
           if (entity->transform.has_value()) {
             const auto& t = entity->transform->translation;
             for (auto& m : rag_world) {
@@ -2062,7 +2253,7 @@
               m.values[14] -= t.z;
             }
           }
-          entity->joint_world_matrices = std::move(rag_world);
+          host->joint_world_matrices = std::move(rag_world);
         }
 
         // Phase 4 GPU side: compute skinning matrices and stage them onto a
