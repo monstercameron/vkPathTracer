@@ -57,6 +57,14 @@ struct RenderSceneSnapshotRevisions {
   std::uint64_t transform_revision = 1u;
   std::uint64_t camera_revision = 1u;
   std::uint64_t material_revision = 1u;
+  // Phase 4 GPU side perf: bumped when CPU skinning rewrites
+  // PathTracerSceneSnapshot::local_vertices in place. Independent of
+  // topology_revision: skinning does NOT change instance/index/material/light
+  // arrays, so the COW snapshot can keep reusing all of those and only
+  // rebuild the local_vertices CoW. Folding skinning into topology here used
+  // to force the slow-path full snapshot rebuild + accumulator reset every
+  // frame and tanked FPS to 0.3 on the soldier ragdoll demo.
+  std::uint64_t skinning_revision = 1u;
   std::uint64_t wall_time_ns = 0u;
 };
 
@@ -100,6 +108,10 @@ struct RenderSceneSnapshot {
   std::uint64_t transform_revision = 0u;
   std::uint64_t camera_revision = 0u;
   std::uint64_t material_revision = 0u;
+  // Phase 4 GPU side perf: bumped when CPU skinning rewrites local_vertices.
+  // Compared independently of topology_revision so a skinned-only frame
+  // doesn't force the slow-path full rebuild.
+  std::uint64_t skinning_revision = 0u;
   std::uint64_t wall_time_ns = 0u;
 
   CowArray<vkpt::pathtracer::Vec3> vertices;
@@ -132,6 +144,14 @@ struct RenderSceneSnapshot {
       path_tracer_scene;
 
   bool geometry_storage_reused_from(const RenderSceneSnapshot& other) const;
+  // Skinning-aware reuse check: same as geometry_storage_reused_from but
+  // ignores local_vertices. For skinned frames the local_vertices CoW is
+  // always rebuilt, but the rest of the geometry storage (vertices, indices,
+  // texcoords, etc.) is unchanged, so the BVH descriptor can still be reused
+  // for the static-instance portion. The dynamic-instance backend path
+  // handles the moved local geometry separately via the per-frame BLAS
+  // refit.
+  bool static_geometry_storage_reused_from(const RenderSceneSnapshot& other) const;
   const vkpt::pathtracer::PathTracerSceneSnapshot& path_tracer_scene_snapshot() const;
 };
 
@@ -147,6 +167,14 @@ enum class RenderSceneSnapshotChange : std::uint8_t {
   // because the underlying RTInstance descriptor does not change — only the
   // skinned vertex buffer + acceleration structure for that instance does.
   SkinningMatricesChanged = 1u << 4u,
+  // Phase 4 GPU side perf: the snapshot's local_vertices array was rebuilt
+  // because CPU-LBS rewrote them this frame. Distinguishes "geometry actually
+  // moved" from a SkinningMatricesChanged-only frame where the snapshot
+  // builder reused the previous local_vertices CoW (e.g. matrices changed
+  // but the resulting positions are identical). Backends use this to know
+  // they need to re-upload local_vertices and refit the dynamic-instance
+  // BLAS without the heavy "Topology" full-rebuild path.
+  SkinnedVerticesChanged = 1u << 5u,
 };
 
 enum class SnapshotTransitionAction : std::uint8_t {

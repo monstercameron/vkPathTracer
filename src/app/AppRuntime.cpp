@@ -1528,7 +1528,8 @@ int RunApp(int argc, char** argv) {
           [&](bool topology_changed,
               bool transform_changed,
               bool camera_changed,
-              bool material_changed) -> std::uint64_t {
+              bool material_changed,
+              bool skinning_changed = false) -> std::uint64_t {
         const auto _vkp_publish_t0_ns = vkpt::core::metrics::UiInputLatencyNowNs();
         const auto pending_input_ns =
             vkpt::core::metrics::ConsumePendingInputForPublish();
@@ -1554,6 +1555,15 @@ int RunApp(int argc, char** argv) {
         if (material_changed) {
           ++qtSnapshotRevisions.material_revision;
           VKP_METRIC_INC("vkp.scene.publish_by_source.material_total");
+          qtLastMutationPublishNs = _vkp_publish_t0_ns;
+        }
+        // Phase 4 GPU side perf: skinning revision is independent of all the
+        // others. Bumping it forces BuildRenderSceneSnapshot to rebuild the
+        // local_vertices CoW only, while keeping the topology-same fast path
+        // active for everything else (instances/materials/textures/lights).
+        if (skinning_changed) {
+          ++qtSnapshotRevisions.skinning_revision;
+          VKP_METRIC_INC("vkp.scene.publish_by_source.skinning_total");
           qtLastMutationPublishNs = _vkp_publish_t0_ns;
         }
         auto snapshot = vkpt::scene::BuildRenderSceneSnapshot(
@@ -1938,6 +1948,7 @@ int RunApp(int argc, char** argv) {
       bool qtDeferredBackgroundTransformChanged = false;
       bool qtDeferredBackgroundCameraChanged = false;
       bool qtDeferredBackgroundMaterialChanged = false;
+      bool qtDeferredBackgroundSkinningChanged = false;
       auto qtFlushDeferredBackgroundSnapshot = [&]() -> std::uint64_t {
         if (!qtDeferredBackgroundSnapshotPending) {
           return 0u;
@@ -1946,16 +1957,19 @@ int RunApp(int argc, char** argv) {
         const bool transformChanged = qtDeferredBackgroundTransformChanged;
         const bool cameraChanged = qtDeferredBackgroundCameraChanged;
         const bool materialChanged = qtDeferredBackgroundMaterialChanged;
+        const bool skinningChanged = qtDeferredBackgroundSkinningChanged;
         qtDeferredBackgroundSnapshotPending = false;
         qtDeferredBackgroundTopologyChanged = false;
         qtDeferredBackgroundTransformChanged = false;
         qtDeferredBackgroundCameraChanged = false;
         qtDeferredBackgroundMaterialChanged = false;
+        qtDeferredBackgroundSkinningChanged = false;
 
         const auto generation = qtPublishRenderSnapshot(topologyChanged,
                                                         transformChanged,
                                                         cameraChanged,
-                                                        materialChanged);
+                                                        materialChanged,
+                                                        skinningChanged);
         if (qtUseBg && qtRenderCoordinator && generation != 0u) {
           qtOverlayRequiredRenderGeneration =
               std::max(qtOverlayRequiredRenderGeneration, generation);
@@ -1966,7 +1980,8 @@ int RunApp(int argc, char** argv) {
           [&](bool topology_changed,
               bool transform_changed,
               bool camera_changed,
-              bool material_changed) -> std::uint64_t {
+              bool material_changed,
+              bool skinning_changed = false) -> std::uint64_t {
         if (qtDeferBackgroundSnapshotPublishes && qtUseBg && qtRenderCoordinator) {
           qtDeferredBackgroundSnapshotPending = true;
           qtDeferredBackgroundTopologyChanged =
@@ -1977,12 +1992,15 @@ int RunApp(int argc, char** argv) {
               qtDeferredBackgroundCameraChanged || camera_changed;
           qtDeferredBackgroundMaterialChanged =
               qtDeferredBackgroundMaterialChanged || material_changed;
+          qtDeferredBackgroundSkinningChanged =
+              qtDeferredBackgroundSkinningChanged || skinning_changed;
           return 0u;
         }
         const auto generation = qtPublishRenderSnapshot(topology_changed,
                                                         transform_changed,
                                                         camera_changed,
-                                                        material_changed);
+                                                        material_changed,
+                                                        skinning_changed);
         if (qtUseBg && qtRenderCoordinator && generation != 0u) {
           qtOverlayRequiredRenderGeneration =
               std::max(qtOverlayRequiredRenderGeneration, generation);

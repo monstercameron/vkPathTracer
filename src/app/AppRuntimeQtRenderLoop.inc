@@ -724,23 +724,27 @@
           // we skip the rebuild entirely (early-out via qtSkinnedSceneDirty).
           if (qtSkinnedSceneDirty && !qtSkinnedSnapshotEntries.empty()) {
             if (qtUseBg && qtRenderCoordinator) {
-              // BG mode: republish the scene snapshot with topology dirty so
-              // the coordinator picks up the new local_vertices on the next
-              // worker swap. Avoids touching qtTracer directly from the qt
-              // thread (the BG worker owns it). This is the same pattern
-              // qtReloadEditedScene uses for full reloads under BG mode.
-              qtPublishRenderSnapshotForBackground(true, false, false, false);
+              // BG mode: republish the scene snapshot with the skinning flag
+              // (NOT topology) so the coordinator picks up the new
+              // local_vertices on the next worker swap without forcing the
+              // slow-path full snapshot rebuild + accumulator reset. The
+              // dedicated skinning_revision is the only delta vs the
+              // previous snapshot, so all other CoW arrays
+              // (instances/materials/textures/lights/etc.) reuse storage and
+              // the coordinator keeps the per-pixel accumulator running.
+              qtPublishRenderSnapshotForBackground(false, false, false, false, true);
             } else if (qtTracerReady && qtTracer) {
               // Sync (GPU/CPU foreground) path: rebuild scene buffers +
-              // acceleration. Reset accumulation so the new pose isn't
-              // ghosted with the old one.
+              // acceleration. Don't reset the accumulator here — the
+              // skinning-only DecideSnapshotTransition path keeps it alive
+              // so static pixels (background) converge while dynamic pixels
+              // (the moving character) settle each frame. Same skinning
+              // flag pattern as the BG branch.
               const bool ok =
                   qtTracer->load_scene_snapshot(qtScene) &&
                   qtTracer->build_or_update_acceleration();
               if (ok) {
-                (void)qtTracer->reset_accumulation();
-                qtSampleIndex = 0u;
-                (void)qtPublishRenderSnapshot(true, false, false, false);
+                (void)qtPublishRenderSnapshot(false, false, false, false, true);
               }
             }
           }

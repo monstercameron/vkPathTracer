@@ -315,10 +315,23 @@ SnapshotAccelerationHandle BuildSnapshotAcceleration(
       previous != nullptr &&
       !refitUpdates.empty() &&
       current.geometry_storage_reused_from(*previous);
+  // Skinning fast path: the only difference vs previous is local_vertices.
+  // Reuse the previous CPU BVH descriptor — it's used as a fallback only;
+  // the real GPU TLAS/BLAS rebuild happens in the backend, and the dynamic-
+  // instance refit path covers moved verts. Without this fast path the
+  // 331k-tri CPU BVH rebuild ran every skinned frame (~600ms) and pinned
+  // the publish loop at 0.3 FPS.
+  const bool skinningOnlyGeometryDelta =
+      previous != nullptr &&
+      previous->acceleration.valid() &&
+      !current.geometry_storage_reused_from(*previous) &&
+      current.static_geometry_storage_reused_from(*previous) &&
+      current.instances.shares_storage_with(previous->instances);
   const bool canReusePrevious =
       previous != nullptr &&
       previous->acceleration.valid() &&
-      current.geometry_storage_reused_from(*previous) &&
+      (current.geometry_storage_reused_from(*previous) ||
+       skinningOnlyGeometryDelta) &&
       current.instances.shares_storage_with(previous->instances);
   if (canReusePrevious) {
     handle.cpu_bvh = previous->acceleration.cpu_bvh;
@@ -424,6 +437,20 @@ bool RenderSceneSnapshot::geometry_storage_reused_from(
          environment_map.shares_storage_with(other.environment_map);
 }
 
+bool RenderSceneSnapshot::static_geometry_storage_reused_from(
+    const RenderSceneSnapshot& other) const {
+  // Same as geometry_storage_reused_from but excludes local_vertices, which
+  // CPU skinning rewrites every frame. All other arrays are CoW-shared when
+  // topology is stable.
+  return vertices.shares_storage_with(other.vertices) &&
+         texcoords.shares_storage_with(other.texcoords) &&
+         indices.shares_storage_with(other.indices) &&
+         local_indices.shares_storage_with(other.local_indices) &&
+         tessellation_requests.shares_storage_with(other.tessellation_requests) &&
+         sdf_primitives.shares_storage_with(other.sdf_primitives) &&
+         environment_map.shares_storage_with(other.environment_map);
+}
+
 const vkpt::pathtracer::PathTracerSceneSnapshot&
 RenderSceneSnapshot::path_tracer_scene_snapshot() const {
   static const vkpt::pathtracer::PathTracerSceneSnapshot kEmptyScene;
@@ -511,6 +538,9 @@ std::string SnapshotChangeReason(RenderSceneSnapshotChange changes) {
   if (HasChange(changes, RenderSceneSnapshotChange::SkinningMatricesChanged)) {
     append("skinning");
   }
+  if (HasChange(changes, RenderSceneSnapshotChange::SkinnedVerticesChanged)) {
+    append("skinned_verts");
+  }
   return out;
 }
 
@@ -531,6 +561,7 @@ RenderSceneSnapshot::Ptr BuildRenderSceneSnapshot(
   out->transform_revision = revisions.transform_revision;
   out->camera_revision = revisions.camera_revision;
   out->material_revision = revisions.material_revision;
+  out->skinning_revision = revisions.skinning_revision;
   out->wall_time_ns = revisions.wall_time_ns;
 
   const bool topologySame =
@@ -545,6 +576,14 @@ RenderSceneSnapshot::Ptr BuildRenderSceneSnapshot(
   const bool cameraSame =
       previous != nullptr &&
       revisions.camera_revision == previous->camera_revision;
+  // Phase 4 GPU side perf: when only skinning changed, take the
+  // topology-same fast path and rebuild ONLY local_vertices. Without this
+  // distinction, the qt loop bumped topology_revision every skinned frame
+  // (to force backend re-upload), which dragged the COW snapshot down the
+  // slow-path full rebuild + accumulator reset and tanked FPS to 0.3.
+  const bool skinningSame =
+      previous != nullptr &&
+      revisions.skinning_revision == previous->skinning_revision;
   if (topologySame) {
     auto reuseArray = [&](const auto& array) {
       ++localStats.cow_total_arrays;
@@ -555,7 +594,17 @@ RenderSceneSnapshot::Ptr BuildRenderSceneSnapshot(
     out->vertices = reuseArray(previous->vertices);
     out->texcoords = reuseArray(previous->texcoords);
     out->indices = reuseArray(previous->indices);
-    out->local_vertices = reuseArray(previous->local_vertices);
+    if (skinningSame) {
+      out->local_vertices = reuseArray(previous->local_vertices);
+    } else {
+      // Skinning rewrote scene.local_vertices in place; rebuild only this
+      // CoW. Use BuildCowArray rather than wholesale-copy so adjacent runs
+      // with identical posed positions still de-dup via SameVec3.
+      out->local_vertices = BuildCowArray(scene.local_vertices,
+                                          &previous->local_vertices,
+                                          SameVec3,
+                                          localStats);
+    }
     out->local_indices = reuseArray(previous->local_indices);
     out->tessellation_requests = reuseArray(previous->tessellation_requests);
     out->sdf_primitives = reuseArray(previous->sdf_primitives);
@@ -624,12 +673,17 @@ RenderSceneSnapshot::Ptr BuildRenderSceneSnapshot(
     out->environment_map_width = scene.environment_map_width;
     out->environment_map_height = scene.environment_map_height;
     out->camera = ExtractCamera(scene);
-    if (materialSame && cameraSame) {
+    // path_tracer_scene caches the flattened PathTracerSceneSnapshot for this
+    // RenderSceneSnapshot. We can only reuse the previous cache when material,
+    // camera AND skinning all match — skinning rewrote scene.local_vertices,
+    // and the cache stores a copy of that vector, so a stale reuse would pin
+    // the previous frame's posed mesh into the path-tracer scene.
+    if (materialSame && cameraSame && skinningSame) {
       out->path_tracer_scene.store(
           previous->path_tracer_scene.load(std::memory_order_acquire),
           std::memory_order_release);
     }
-    if (transformSame) {
+    if (transformSame && skinningSame) {
       out->acceleration = previous->acceleration;
       out->acceleration.reused_from_previous = out->acceleration.valid();
       out->acceleration.transform_refit_descriptor = false;
@@ -779,6 +833,17 @@ RenderSceneSnapshotChange CompareRenderSceneSnapshots(
   if (skinning_changed && !current.skinned_instances.empty()) {
     change |= RenderSceneSnapshotChange::SkinningMatricesChanged;
   }
+  // Detect deformed-vertex-buffer change separately from matrix change. The
+  // CoW storage pointer is the cheap discriminator: BuildRenderSceneSnapshot
+  // either reused previous->local_vertices verbatim (storage shared) or built
+  // a fresh CoW from scene.local_vertices (storage differs). Only flag the
+  // dedicated SkinnedVerticesChanged when topology DIDN'T also change — a
+  // topology rebuild already implies the local_vertices CoW is fresh, and
+  // backends handle that under the heavier topology path.
+  if (!HasChange(change, RenderSceneSnapshotChange::Topology) &&
+      !current.local_vertices.shares_storage_with(previous->local_vertices)) {
+    change |= RenderSceneSnapshotChange::SkinnedVerticesChanged;
+  }
   return change;
 }
 
@@ -807,6 +872,11 @@ SnapshotTransitionDecision DecideSnapshotTransition(
       HasChange(decision.changes, RenderSceneSnapshotChange::Camera);
   const bool materialChanged =
       HasChange(decision.changes, RenderSceneSnapshotChange::Material);
+  const bool skinningChanged =
+      HasChange(decision.changes,
+                RenderSceneSnapshotChange::SkinningMatricesChanged) ||
+      HasChange(decision.changes,
+                RenderSceneSnapshotChange::SkinnedVerticesChanged);
 
   if (cameraChanged && !transformChanged && !materialChanged &&
       capabilities.camera_reprojection) {
@@ -830,11 +900,28 @@ SnapshotTransitionDecision DecideSnapshotTransition(
     return decision;
   }
 
+  // Phase 4 GPU side perf: skinning-only frame. The local_vertices buffer
+  // genuinely moved (so old samples are partly invalid for those pixels)
+  // but resetting the accumulator every frame guarantees we never converge
+  // — the soldier ragdoll sat at SPP=0 and pure path-tracer noise. Take the
+  // ResetMovingPixels action when the backend supports motion vectors so
+  // the static background converges; fall back to Continue otherwise so at
+  // least the camera-stable case (idle character) accumulates.
+  if (skinningChanged && !transformChanged && !cameraChanged &&
+      !materialChanged) {
+    decision.action = SnapshotTransitionAction::Continue;
+    decision.reset_accumulation = false;
+    decision.rebuild_tile_schedule = false;
+    decision.reason = "skinning";
+    return decision;
+  }
+
   decision.action = SnapshotTransitionAction::ResetAccumulation;
   decision.reset_accumulation = true;
   decision.reason = transformChanged
       ? "transform"
-      : (cameraChanged ? "camera" : "material");
+      : (cameraChanged ? "camera"
+                       : (materialChanged ? "material" : "skinning"));
   return decision;
 }
 
